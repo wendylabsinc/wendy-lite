@@ -1,0 +1,13 @@
+[sections:wendy_hal_exports]
+entries:
+    .wendy_hal_exports+
+
+[scheme:wendy_hal_exports_default]
+entries:
+    wendy_hal_exports -> flash_rodata
+
+[mapping:wendy_hal_exports]
+archive: *
+entries:
+    * (wendy_hal_exports_default);
+        wendy_hal_exports -> flash_rodata KEEP() ALIGN(4) SURROUND(wendy_hal_exports_array)

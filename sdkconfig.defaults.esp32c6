@@ -1,0 +1,7 @@
+# Wokwi-compatible overrides for ESP32-C6 simulation
+
+# Use UART console
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+
+# Enable embedded demo WASM binary
+CONFIG_WENDY_DEMO_EMBEDDED=y

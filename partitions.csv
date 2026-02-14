@@ -1,0 +1,8 @@
+# Name,     Type, SubType, Offset,   Size,     Flags
+# Note: partition table sized for 4MB flash (Wokwi default)
+nvs,        data, nvs,     0x9000,   0x6000,
+phy_init,   data, phy,     0xf000,   0x1000,
+factory,    app,  factory, 0x10000,  0x180000,
+wasm_a,     data, 0x80,    0x190000, 0x100000,
+wasm_b,     data, 0x81,    0x290000, 0x100000,
+storage,    data, spiffs,  0x390000, 0x10000,

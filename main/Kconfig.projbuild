@@ -1,0 +1,94 @@
+menu "Wendy MCU Firmware Configuration"
+
+    config WENDY_FIRMWARE_VERSION_MAJOR
+        int "Firmware version major"
+        default 0
+
+    config WENDY_FIRMWARE_VERSION_MINOR
+        int "Firmware version minor"
+        default 1
+
+    config WENDY_FIRMWARE_VERSION_PATCH
+        int "Firmware version patch"
+        default 0
+
+    menu "WASM Runtime"
+        config WENDY_WASM_STACK_SIZE
+            int "WASM stack size (bytes)"
+            default 32768
+            help
+                Stack size for the WASM runtime execution environment.
+
+        config WENDY_WASM_HEAP_SIZE
+            int "WASM heap size (bytes)"
+            default 262144
+            help
+                Heap size available to WASM applications. On ESP32-S3 with
+                PSRAM, this can be increased significantly.
+
+        config WENDY_WASM_USE_PSRAM
+            bool "Allocate WASM heap from PSRAM"
+            default y if SPIRAM
+            help
+                When PSRAM is available, allocate the WASM heap from
+                external memory to preserve internal SRAM.
+    endmenu
+
+    menu "Hardware Abstraction Layer"
+        config WENDY_HAL_GPIO
+            bool "Enable GPIO HAL"
+            default y
+
+        config WENDY_HAL_I2C
+            bool "Enable I2C HAL"
+            default y
+
+        config WENDY_HAL_I2C_PORT
+            int "Default I2C port number"
+            depends on WENDY_HAL_I2C
+            default 0
+            range 0 1
+
+        config WENDY_HAL_I2C_SDA
+            int "Default I2C SDA pin"
+            depends on WENDY_HAL_I2C
+            default 8
+
+        config WENDY_HAL_I2C_SCL
+            int "Default I2C SCL pin"
+            depends on WENDY_HAL_I2C
+            default 9
+
+        config WENDY_HAL_I2C_FREQ_HZ
+            int "Default I2C frequency (Hz)"
+            depends on WENDY_HAL_I2C
+            default 100000
+
+        config WENDY_HAL_TIMER
+            bool "Enable Timer HAL"
+            default y
+    endmenu
+
+    config WENDY_DEMO_EMBEDDED
+        bool "Embed demo WASM binary (for Wokwi / headless testing)"
+        default n
+        help
+            Compile a hand-assembled blink WASM binary into the firmware.
+            On boot the firmware will auto-run this demo instead of
+            waiting for a USB upload. Useful for Wokwi simulation.
+
+    menu "USB Communication"
+        config WENDY_USB_CDC_ENABLED
+            bool "Enable USB CDC protocol"
+            default y
+
+        config WENDY_USB_PROTOCOL_VERSION
+            int "USB protocol version"
+            default 1
+
+        config WENDY_USB_CHUNK_SIZE
+            int "Upload chunk size (bytes)"
+            default 4096
+    endmenu
+
+endmenu

@@ -1,0 +1,28 @@
+# Target: ESP32-C6
+CONFIG_IDF_TARGET="esp32c6"
+
+# Flash size (8MB to accommodate dual WASM slots)
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# Partition table - custom for dual WASM slots
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# WAMR configuration
+CONFIG_WENDY_WASM_STACK_SIZE=32768
+CONFIG_WENDY_WASM_HEAP_SIZE=262144
+
+# Disable WAMR pthread (causes assert in FreeRTOS tasks)
+# CONFIG_WAMR_ENABLE_LIB_PTHREAD is not set
+# CONFIG_WAMR_ENABLE_SHARED_MEMORY is not set
+
+# Wendy HAL defaults
+CONFIG_WENDY_HAL_GPIO=y
+CONFIG_WENDY_HAL_I2C=y
+CONFIG_WENDY_HAL_TIMER=y
+
+# USB CDC not available on C6 (no native USB OTG)
+# CONFIG_WENDY_USB_CDC_ENABLED is not set
+
+# Console over UART (compatible with Wokwi and most debug setups)
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y

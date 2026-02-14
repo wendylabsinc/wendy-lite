@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "author": "Wendy",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "id": "esp",
+      "type": "board-esp32-c6-devkitc-1",
+      "left": 0,
+      "top": 0
+    },
+    {
+      "id": "led1",
+      "type": "wokwi-led",
+      "left": 350,
+      "top": 50,
+      "attrs": { "color": "green" }
+    },
+    {
+      "id": "r1",
+      "type": "wokwi-resistor",
+      "left": 280,
+      "top": 70,
+      "attrs": { "value": "220" }
+    },
+    {
+      "id": "led2",
+      "type": "wokwi-led",
+      "left": 350,
+      "top": 120,
+      "attrs": { "color": "red" }
+    },
+    {
+      "id": "r2",
+      "type": "wokwi-resistor",
+      "left": 280,
+      "top": 140,
+      "attrs": { "value": "220" }
+    }
+  ],
+  "connections": [
+    ["esp:TX", "$serialMonitor:RX", "", []],
+    ["esp:RX", "$serialMonitor:TX", "", []],
+    ["esp:2", "r1:1", "green", []],
+    ["r1:2", "led1:A", "green", []],
+    ["led1:C", "esp:GND.1", "black", []],
+    ["esp:4", "r2:1", "red", []],
+    ["r2:2", "led2:A", "red", []],
+    ["led2:C", "esp:GND.2", "black", []]
+  ],
+  "serialMonitor": { "display": "terminal" }
+}
