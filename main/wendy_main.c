@@ -19,6 +19,10 @@
 #include "wendy_usb.h"
 #endif
 
+#if CONFIG_WENDY_WIFI_ENABLED
+#include "wendy_wifi.h"
+#endif
+
 #if CONFIG_WENDY_DEMO_EMBEDDED
 #include "demo_wasm.h"
 #endif
@@ -88,7 +92,30 @@ static void on_stop(void) { xEventGroupSetBits(s_events, EVT_STOP_REQUEST); }
 static void on_reset(void){ xEventGroupSetBits(s_events, EVT_RESET_REQUEST); }
 #endif /* CONFIG_WENDY_USB_CDC_ENABLED */
 
-/* ── WASM execution task ────────────────────────────────────────────── */
+/* ── WiFi callbacks ────────────────────────────────────────────────── */
+
+#if CONFIG_WENDY_WIFI_ENABLED
+static void wifi_on_upload_complete(const uint8_t *data, uint32_t len, uint8_t slot)
+{
+    ESP_LOGI(TAG, "WASM binary downloaded via WiFi: %lu bytes (on flash)",
+             (unsigned long)len);
+
+    /* Data was streamed directly to flash — signal the main thread
+     * to load from the wasm_a partition instead of from a RAM buffer. */
+    if (s_pending_wasm) {
+        free(s_pending_wasm);
+        s_pending_wasm = NULL;
+    }
+    s_pending_wasm_len = 0;
+    xEventGroupSetBits(s_events, EVT_UPLOAD_READY);
+}
+
+static void wifi_on_run(void)  { xEventGroupSetBits(s_events, EVT_RUN_REQUEST); }
+static void wifi_on_stop(void) { xEventGroupSetBits(s_events, EVT_STOP_REQUEST); }
+static void wifi_on_reset(void){ xEventGroupSetBits(s_events, EVT_RESET_REQUEST); }
+#endif /* CONFIG_WENDY_WIFI_ENABLED */
+
+/* ── WASM execution thread ─────────────────────────────────────────── */
 
 static void *wasm_exec_thread(void *arg)
 {
@@ -109,11 +136,15 @@ static void start_wasm_module(const uint8_t *wasm_buf, uint32_t wasm_len)
 {
     if (s_current_module) {
         wendy_wasm_stop(s_current_module);
-        if (s_wasm_thread_active) {
-            vTaskDelay(pdMS_TO_TICKS(200));
+        for (int i = 0; i < 50 && s_wasm_thread_active; i++) {
+            vTaskDelay(pdMS_TO_TICKS(100));
         }
         wendy_wasm_unload(s_current_module);
         s_current_module = NULL;
+
+        /* Reinitialize WAMR runtime to clear internal state */
+        wendy_wasm_reinit();
+        wendy_hal_export_init();
     }
 
     esp_err_t err = wendy_wasm_load(wasm_buf, wasm_len, &s_current_module);
@@ -137,6 +168,146 @@ static void start_wasm_module(const uint8_t *wasm_buf, uint32_t wasm_len)
     } else {
         pthread_detach(s_wasm_thread);
     }
+}
+
+/* ── WASM management thread (runs in pthread context for WAMR) ─────── */
+
+static void *wasm_main_thread(void *arg)
+{
+    /* Initialize the WASM runtime — must be in pthread context */
+    wendy_wasm_config_t wasm_cfg = WENDY_WASM_CONFIG_DEFAULT();
+    wasm_cfg.output_cb  = wasm_output_cb;
+    wasm_cfg.output_ctx = NULL;
+
+    esp_err_t err = wendy_wasm_init(&wasm_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "WASM runtime init failed");
+        return NULL;
+    }
+
+    /* Register HAL native functions with WAMR */
+    err = wendy_hal_export_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "some HAL exports failed to register");
+    }
+
+    /*
+     * Boot logic:
+     * 1. If WENDY_DEMO_EMBEDDED is set, run the compiled-in demo WASM
+     * 2. Otherwise, try loading from flash partition (previous upload)
+     * 3. Otherwise, wait for USB upload
+     */
+#if CONFIG_WENDY_DEMO_EMBEDDED
+    /* If WiFi already downloaded a binary before this thread started,
+     * skip the embedded demo — the event loop will load from flash. */
+    if (xEventGroupGetBits(s_events) & EVT_UPLOAD_READY) {
+        ESP_LOGI(TAG, "WiFi download ready, skipping embedded demo");
+    } else {
+        ESP_LOGI(TAG, "running embedded demo WASM (%lu bytes)...",
+                 (unsigned long)demo_wasm_binary_len);
+        start_wasm_module(demo_wasm_binary, demo_wasm_binary_len);
+    }
+#else
+    /* If WiFi (or another transport) already set s_pending_wasm before
+     * this thread started, skip the flash load and use it directly. */
+    if (s_pending_wasm && s_pending_wasm_len > 0) {
+        ESP_LOGI(TAG, "WASM binary already pending (%lu bytes), starting...",
+                 (unsigned long)s_pending_wasm_len);
+        start_wasm_module(s_pending_wasm, s_pending_wasm_len);
+    } else {
+        wendy_wasm_module_handle_t flash_module = NULL;
+        err = wendy_wasm_load_from_partition("wasm_a", &flash_module);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "found WASM binary in flash, auto-starting...");
+            s_current_module = flash_module;
+
+            pthread_attr_t attr;
+            pthread_attr_init(&attr);
+            pthread_attr_setstacksize(&attr, 8192);
+            s_wasm_thread_active = true;
+            if (pthread_create(&s_wasm_thread, &attr, wasm_exec_thread, s_current_module) == 0) {
+                pthread_detach(s_wasm_thread);
+            } else {
+                s_wasm_thread_active = false;
+            }
+            pthread_attr_destroy(&attr);
+        } else {
+            ESP_LOGI(TAG, "no WASM binary in flash, waiting for upload...");
+        }
+    }
+#endif
+
+    /* Main event loop */
+    for (;;) {
+        EventBits_t bits = xEventGroupWaitBits(
+            s_events,
+            EVT_UPLOAD_READY | EVT_RUN_REQUEST | EVT_STOP_REQUEST | EVT_RESET_REQUEST,
+            pdTRUE, pdFALSE, portMAX_DELAY);
+
+        if (bits & EVT_STOP_REQUEST) {
+            ESP_LOGI(TAG, "stopping WASM module...");
+            if (s_current_module) {
+                wendy_wasm_stop(s_current_module);
+            }
+        }
+
+        if (bits & EVT_RESET_REQUEST) {
+            ESP_LOGI(TAG, "resetting device...");
+            if (s_current_module) {
+                wendy_wasm_stop(s_current_module);
+                vTaskDelay(pdMS_TO_TICKS(100));
+                wendy_wasm_unload(s_current_module);
+                s_current_module = NULL;
+            }
+            esp_restart();
+        }
+
+        if ((bits & EVT_UPLOAD_READY) || (bits & EVT_RUN_REQUEST)) {
+            if (s_pending_wasm && s_pending_wasm_len > 0) {
+                ESP_LOGI(TAG, "starting WASM module (%lu bytes)...",
+                         (unsigned long)s_pending_wasm_len);
+                start_wasm_module(s_pending_wasm, s_pending_wasm_len);
+            } else if (bits & EVT_UPLOAD_READY) {
+                /* WiFi download wrote directly to flash — load from partition */
+                ESP_LOGI(TAG, "loading WASM from flash (WiFi download)...");
+
+                /* Stop and wait for execution thread to finish */
+                if (s_current_module) {
+                    wendy_wasm_stop(s_current_module);
+                    for (int i = 0; i < 50 && s_wasm_thread_active; i++) {
+                        vTaskDelay(pdMS_TO_TICKS(100));
+                    }
+                    wendy_wasm_unload(s_current_module);
+                    s_current_module = NULL;
+                }
+
+                /* Reinitialize WAMR runtime to clear internal state,
+                 * then re-register HAL native symbols */
+                wendy_wasm_reinit();
+                wendy_hal_export_init();
+
+                wendy_wasm_module_handle_t flash_module = NULL;
+                esp_err_t lerr = wendy_wasm_load_from_partition("wasm_a", &flash_module);
+                if (lerr == ESP_OK) {
+                    s_current_module = flash_module;
+                    pthread_attr_t a;
+                    pthread_attr_init(&a);
+                    pthread_attr_setstacksize(&a, 8192);
+                    s_wasm_thread_active = true;
+                    if (pthread_create(&s_wasm_thread, &a, wasm_exec_thread, s_current_module) == 0) {
+                        pthread_detach(s_wasm_thread);
+                    } else {
+                        s_wasm_thread_active = false;
+                    }
+                    pthread_attr_destroy(&a);
+                } else {
+                    ESP_LOGE(TAG, "failed to load WASM from flash");
+                }
+            }
+        }
+    }
+
+    return NULL;
 }
 
 /* ── HAL initialization ─────────────────────────────────────────────── */
@@ -177,23 +348,6 @@ void app_main(void)
 
     s_events = xEventGroupCreate();
 
-    /* Initialize the WASM runtime */
-    wendy_wasm_config_t wasm_cfg = WENDY_WASM_CONFIG_DEFAULT();
-    wasm_cfg.output_cb  = wasm_output_cb;
-    wasm_cfg.output_ctx = NULL;
-
-    err = wendy_wasm_init(&wasm_cfg);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "WASM runtime init failed");
-        return;
-    }
-
-    /* Register HAL native functions with WAMR */
-    err = wendy_hal_export_init();
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "some HAL exports failed to register");
-    }
-
     /* Initialize hardware */
     init_hal();
 
@@ -211,69 +365,38 @@ void app_main(void)
     }
 #endif
 
-    /*
-     * Boot logic:
-     * 1. If WENDY_DEMO_EMBEDDED is set, run the compiled-in demo WASM
-     * 2. Otherwise, try loading from flash partition (previous upload)
-     * 3. Otherwise, wait for USB upload
-     */
-#if CONFIG_WENDY_DEMO_EMBEDDED
-    ESP_LOGI(TAG, "running embedded demo WASM (%lu bytes)...",
-             (unsigned long)demo_wasm_binary_len);
-    start_wasm_module(demo_wasm_binary, demo_wasm_binary_len);
-#else
-    wendy_wasm_module_handle_t flash_module = NULL;
-    err = wendy_wasm_load_from_partition("wasm_a", &flash_module);
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG, "found WASM binary in flash, auto-starting...");
-        s_current_module = flash_module;
-
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setstacksize(&attr, 8192);
-        s_wasm_thread_active = true;
-        if (pthread_create(&s_wasm_thread, &attr, wasm_exec_thread, s_current_module) == 0) {
-            pthread_detach(s_wasm_thread);
-        } else {
-            s_wasm_thread_active = false;
-        }
-        pthread_attr_destroy(&attr);
-    } else {
-        ESP_LOGI(TAG, "no WASM binary in flash, waiting for upload...");
+    /* Initialize WiFi transport (if enabled) */
+#if CONFIG_WENDY_WIFI_ENABLED
+    wendy_wifi_callbacks_t wifi_cbs = {
+        .on_upload_complete = wifi_on_upload_complete,
+        .on_run             = wifi_on_run,
+        .on_stop            = wifi_on_stop,
+        .on_reset           = wifi_on_reset,
+    };
+    err = wendy_wifi_init(&wifi_cbs);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "WiFi init failed (running without WiFi)");
     }
 #endif
 
-    /* Main event loop */
-    for (;;) {
-        EventBits_t bits = xEventGroupWaitBits(
-            s_events,
-            EVT_UPLOAD_READY | EVT_RUN_REQUEST | EVT_STOP_REQUEST | EVT_RESET_REQUEST,
-            pdTRUE, pdFALSE, portMAX_DELAY);
+    /*
+     * Spawn the WASM management thread.
+     * WAMR internally uses pthread_self() for thread-env tracking,
+     * so all WAMR API calls must happen from pthread context —
+     * not from the FreeRTOS app_main task.
+     */
+    pthread_t wasm_main;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 16384);
 
-        if (bits & EVT_STOP_REQUEST) {
-            ESP_LOGI(TAG, "stopping WASM module...");
-            if (s_current_module) {
-                wendy_wasm_stop(s_current_module);
-            }
-        }
-
-        if (bits & EVT_RESET_REQUEST) {
-            ESP_LOGI(TAG, "resetting device...");
-            if (s_current_module) {
-                wendy_wasm_stop(s_current_module);
-                vTaskDelay(pdMS_TO_TICKS(100));
-                wendy_wasm_unload(s_current_module);
-                s_current_module = NULL;
-            }
-            esp_restart();
-        }
-
-        if ((bits & EVT_UPLOAD_READY) || (bits & EVT_RUN_REQUEST)) {
-            if (s_pending_wasm && s_pending_wasm_len > 0) {
-                ESP_LOGI(TAG, "starting WASM module (%lu bytes)...",
-                         (unsigned long)s_pending_wasm_len);
-                start_wasm_module(s_pending_wasm, s_pending_wasm_len);
-            }
-        }
+    int ret = pthread_create(&wasm_main, &attr, wasm_main_thread, NULL);
+    pthread_attr_destroy(&attr);
+    if (ret != 0) {
+        ESP_LOGE(TAG, "failed to create WASM main thread");
+        return;
     }
+    pthread_detach(wasm_main);
+
+    /* app_main returns; FreeRTOS scheduler keeps running */
 }

@@ -2,7 +2,12 @@
 
 #include "driver/gpio.h"
 #include "driver/ledc.h"
+#include "esp_adc/adc_oneshot.h"
 #include "esp_log.h"
+
+#if CONFIG_WENDY_CALLBACK
+#include "wendy_callback.h"
+#endif
 
 static const char *TAG = "wendy_hal_gpio";
 
@@ -13,6 +18,19 @@ static struct {
     ledc_channel_t channel;
 } s_pwm_map[MAX_PWM_CHANNELS];
 static int s_pwm_count = 0;
+
+/* ADC state */
+static adc_oneshot_unit_handle_t s_adc1_handle;
+static bool s_adc1_initialized = false;
+
+/* GPIO interrupt handler IDs */
+#define MAX_GPIO_ISR 16
+static struct {
+    int pin;
+    uint32_t handler_id;
+    bool active;
+} s_gpio_isr[MAX_GPIO_ISR];
+static bool s_gpio_isr_service_installed = false;
 
 int wendy_hal_gpio_configure(int pin, wendy_gpio_mode_t mode, wendy_gpio_pull_t pull)
 {
@@ -130,3 +148,126 @@ int wendy_hal_gpio_set_pwm(int pin, uint32_t freq_hz, uint8_t duty_pct)
 
     return 0;
 }
+
+/* ── ADC ──────────────────────────────────────────────────────────────── */
+
+int wendy_hal_gpio_analog_read(int pin)
+{
+    /* Map GPIO pin to ADC1 channel. This is chip-specific;
+     * for ESP32-C6, ADC1 channels are GPIO0-6. */
+    adc_channel_t channel;
+    esp_err_t err = adc_oneshot_io_to_channel(pin, NULL, &channel);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "pin %d is not an ADC pin", pin);
+        return -1;
+    }
+
+    if (!s_adc1_initialized) {
+        adc_oneshot_unit_init_cfg_t init_cfg = {
+            .unit_id = ADC_UNIT_1,
+        };
+        err = adc_oneshot_new_unit(&init_cfg, &s_adc1_handle);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "adc_oneshot_new_unit failed: %s", esp_err_to_name(err));
+            return -1;
+        }
+        s_adc1_initialized = true;
+    }
+
+    adc_oneshot_chan_cfg_t chan_cfg = {
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+    err = adc_oneshot_config_channel(s_adc1_handle, channel, &chan_cfg);
+    if (err != ESP_OK) {
+        return -1;
+    }
+
+    int raw = 0;
+    err = adc_oneshot_read(s_adc1_handle, channel, &raw);
+    if (err != ESP_OK) {
+        return -1;
+    }
+    return raw;
+}
+
+/* ── GPIO Interrupts ──────────────────────────────────────────────────── */
+
+#if CONFIG_WENDY_CALLBACK
+
+static void IRAM_ATTR gpio_isr_handler(void *arg)
+{
+    int idx = (int)(uintptr_t)arg;
+    if (idx >= 0 && idx < MAX_GPIO_ISR && s_gpio_isr[idx].active) {
+        int level = gpio_get_level((gpio_num_t)s_gpio_isr[idx].pin);
+        wendy_callback_post_from_isr(s_gpio_isr[idx].handler_id,
+                                      (uint32_t)s_gpio_isr[idx].pin,
+                                      (uint32_t)level, 0);
+    }
+}
+
+int wendy_hal_gpio_set_interrupt(int pin, int edge_type, uint32_t handler_id)
+{
+    /* edge_type: 1=rising, 2=falling, 3=any */
+    gpio_int_type_t intr;
+    switch (edge_type) {
+    case 1: intr = GPIO_INTR_POSEDGE;    break;
+    case 2: intr = GPIO_INTR_NEGEDGE;    break;
+    case 3: intr = GPIO_INTR_ANYEDGE;    break;
+    default: return -1;
+    }
+
+    if (!s_gpio_isr_service_installed) {
+        esp_err_t err = gpio_install_isr_service(0);
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGE(TAG, "gpio_install_isr_service failed: %s", esp_err_to_name(err));
+            return -1;
+        }
+        s_gpio_isr_service_installed = true;
+    }
+
+    /* Find or allocate ISR slot */
+    int idx = -1;
+    for (int i = 0; i < MAX_GPIO_ISR; i++) {
+        if (s_gpio_isr[i].active && s_gpio_isr[i].pin == pin) {
+            idx = i;
+            break;
+        }
+    }
+    if (idx < 0) {
+        for (int i = 0; i < MAX_GPIO_ISR; i++) {
+            if (!s_gpio_isr[i].active) {
+                idx = i;
+                break;
+            }
+        }
+    }
+    if (idx < 0) {
+        ESP_LOGE(TAG, "no free GPIO ISR slots");
+        return -1;
+    }
+
+    s_gpio_isr[idx].pin = pin;
+    s_gpio_isr[idx].handler_id = handler_id;
+    s_gpio_isr[idx].active = true;
+
+    gpio_set_intr_type((gpio_num_t)pin, intr);
+    gpio_isr_handler_add((gpio_num_t)pin, gpio_isr_handler, (void *)(uintptr_t)idx);
+
+    return 0;
+}
+
+int wendy_hal_gpio_clear_interrupt(int pin)
+{
+    for (int i = 0; i < MAX_GPIO_ISR; i++) {
+        if (s_gpio_isr[i].active && s_gpio_isr[i].pin == pin) {
+            gpio_isr_handler_remove((gpio_num_t)pin);
+            gpio_set_intr_type((gpio_num_t)pin, GPIO_INTR_DISABLE);
+            s_gpio_isr[i].active = false;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+#endif /* CONFIG_WENDY_CALLBACK */

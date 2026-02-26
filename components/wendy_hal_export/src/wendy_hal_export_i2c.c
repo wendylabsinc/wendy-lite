@@ -5,7 +5,6 @@
 /**
  * WASM host functions for I2C.
  *
- * Imported in WASM as:
  *   (import "wendy" "i2c_init"       (func (param i32 i32 i32 i32) (result i32)))
  *   (import "wendy" "i2c_scan"       (func (param i32 i32 i32) (result i32)))
  *   (import "wendy" "i2c_write"      (func (param i32 i32 i32 i32) (result i32)))
@@ -69,11 +68,11 @@ static int i2c_write_read_wrapper(wasm_exec_env_t exec_env,
 }
 
 static NativeSymbol s_i2c_symbols[] = {
-    { "i2c_init",       (void *)i2c_init_wrapper,       "(iiii)i",    NULL },
-    { "i2c_scan",       (void *)i2c_scan_wrapper,       "(iii)i",     NULL },
-    { "i2c_write",      (void *)i2c_write_wrapper,      "(iiii)i",    NULL },
-    { "i2c_read",       (void *)i2c_read_wrapper,       "(iiii)i",    NULL },
-    { "i2c_write_read", (void *)i2c_write_read_wrapper, "(iiiiii)i",  NULL },
+    { "i2c_init",       (void *)i2c_init_wrapper,       "(iiii)i",      NULL },
+    { "i2c_scan",       (void *)i2c_scan_wrapper,       "(iii)i",       NULL },
+    { "i2c_write",      (void *)i2c_write_wrapper,      "(iiii)i",      NULL },
+    { "i2c_read",       (void *)i2c_read_wrapper,       "(iiii)i",      NULL },
+    { "i2c_write_read", (void *)i2c_write_read_wrapper, "(iiiiii)i",    NULL },
 };
 
 int wendy_hal_export_i2c(void)

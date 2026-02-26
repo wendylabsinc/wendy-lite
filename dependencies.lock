@@ -1,6 +1,29 @@
 dependencies:
+  espressif/led_strip:
+    component_hash: 
+      28621486f77229aaf81c71f5e15d6fbf36c2949cf11094e07090593e659e7639
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 3.0.3
+  espressif/mdns:
+    component_hash: 
+      29e47564b1a7ee778135e17fbbf2a2773f71c97ebabfe626c8eda7c958a7ad16
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.9.1
   espressif/wasm-micro-runtime:
-    component_hash: 3c293f91ea03b469937b97ea9044cbae85e2b08ff17454b82910493d6723e3ed
+    component_hash: 
+      3c293f91ea03b469937b97ea9044cbae85e2b08ff17454b82910493d6723e3ed
     dependencies:
     - name: idf
       require: private
@@ -17,10 +40,12 @@ dependencies:
   idf:
     source:
       type: idf
-    version: 5.3.0
+    version: 5.5.1
 direct_dependencies:
+- espressif/led_strip
+- espressif/mdns
 - espressif/wasm-micro-runtime
 - idf
-manifest_hash: 4a03aed72f49c8588938740fbf121dfa4a5b40b7bda5629e637f9ed8066cdd47
+manifest_hash: 901373903db58851a8b5cbfd49509d790c47c545841cfcb64eeda6448050ebba
 target: esp32c6
 version: 2.0.0

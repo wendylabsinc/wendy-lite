@@ -9,20 +9,59 @@ CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
 # WAMR configuration
-CONFIG_WENDY_WASM_STACK_SIZE=32768
-CONFIG_WENDY_WASM_HEAP_SIZE=262144
+CONFIG_WENDY_WASM_STACK_SIZE=16384
+CONFIG_WENDY_WASM_HEAP_SIZE=32768
 
 # Disable WAMR pthread (causes assert in FreeRTOS tasks)
 # CONFIG_WAMR_ENABLE_LIB_PTHREAD is not set
 # CONFIG_WAMR_ENABLE_SHARED_MEMORY is not set
 
+# Disable WAMR built-in WASI (we provide our own shim)
+# CONFIG_WAMR_ENABLE_LIBC_WASI is not set
+
 # Wendy HAL defaults
 CONFIG_WENDY_HAL_GPIO=y
 CONFIG_WENDY_HAL_I2C=y
 CONFIG_WENDY_HAL_TIMER=y
+CONFIG_WENDY_HAL_NEOPIXEL=y
+
+# Callback subsystem
+CONFIG_WENDY_CALLBACK=y
+
+# System functions
+CONFIG_WENDY_SYS=y
+
+# NVS storage
+CONFIG_WENDY_STORAGE=y
+
+# UART
+CONFIG_WENDY_UART=y
+
+# SPI
+CONFIG_WENDY_SPI=y
+
+# OpenTelemetry
+CONFIG_WENDY_OTEL=y
+
+# WASI shim
+CONFIG_WENDY_WASI_SHIM=y
+
+# BLE disabled by default (requires BT stack)
+# CONFIG_WENDY_BLE is not set
+
+# App-facing networking disabled by default
+# CONFIG_WENDY_NET is not set
+
+# App-facing USB disabled by default (no OTG on C6)
+# CONFIG_WENDY_APP_USB is not set
 
 # USB CDC not available on C6 (no native USB OTG)
 # CONFIG_WENDY_USB_CDC_ENABLED is not set
+
+# WiFi transport for WASM download
+CONFIG_WENDY_WIFI_ENABLED=y
+CONFIG_WENDY_WIFI_SSID=""
+CONFIG_WENDY_WIFI_PASSWORD=""
 
 # Console over UART (compatible with Wokwi and most debug setups)
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y

@@ -53,6 +53,31 @@ int wendy_hal_gpio_write(int pin, int level);
  */
 int wendy_hal_gpio_set_pwm(int pin, uint32_t freq_hz, uint8_t duty_pct);
 
+/**
+ * Read an analog value from an ADC-capable GPIO pin.
+ * @param pin  GPIO number (must be ADC-capable)
+ * @return Raw ADC value (0–4095 for 12-bit), or -1 on error
+ */
+int wendy_hal_gpio_analog_read(int pin);
+
+#if CONFIG_WENDY_CALLBACK
+/**
+ * Set a GPIO interrupt and route it through the callback system.
+ * @param pin         GPIO number
+ * @param edge_type   1=rising, 2=falling, 3=any edge
+ * @param handler_id  Callback handler ID
+ * @return 0 on success
+ */
+int wendy_hal_gpio_set_interrupt(int pin, int edge_type, uint32_t handler_id);
+
+/**
+ * Clear a GPIO interrupt.
+ * @param pin  GPIO number
+ * @return 0 on success
+ */
+int wendy_hal_gpio_clear_interrupt(int pin);
+#endif
+
 /* ── I2C ────────────────────────────────────────────────────────────── */
 
 /**
@@ -108,6 +133,32 @@ int wendy_hal_i2c_write_read(int bus, uint8_t addr,
                               const uint8_t *write_data, int write_len,
                               uint8_t *read_buf, int read_len);
 
+/* ── NeoPixel (WS2812) ─────────────────────────────────────────────── */
+
+/**
+ * Initialize a NeoPixel LED strip using the RMT peripheral.
+ * @param pin       GPIO connected to the data line
+ * @param num_leds  Number of LEDs in the strip
+ * @return 0 on success
+ */
+int wendy_hal_neopixel_init(int pin, int num_leds);
+
+/**
+ * Set a pixel color and refresh the strip.
+ * @param index  LED index (0-based)
+ * @param r      Red   0–255
+ * @param g      Green 0–255
+ * @param b      Blue  0–255
+ * @return 0 on success
+ */
+int wendy_hal_neopixel_set(int index, int r, int g, int b);
+
+/**
+ * Turn off all LEDs.
+ * @return 0 on success
+ */
+int wendy_hal_neopixel_clear(void);
+
 /* ── Timer ──────────────────────────────────────────────────────────── */
 
 /**
@@ -129,6 +180,15 @@ uint64_t wendy_hal_timer_millis(void);
  * @return Timer ID (>0) on success, negative on error
  */
 int wendy_hal_timer_schedule(uint32_t ms, void (*cb)(void *), void *arg);
+
+/**
+ * Schedule a repeating callback every `ms` milliseconds.
+ * @param ms   Interval in milliseconds
+ * @param cb   Callback function
+ * @param arg  Argument passed to callback
+ * @return Timer ID (>0) on success, negative on error
+ */
+int wendy_hal_timer_schedule_interval(uint32_t ms, void (*cb)(void *), void *arg);
 
 /**
  * Cancel a scheduled timer.

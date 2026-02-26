@@ -114,9 +114,33 @@ esp_err_t wendy_wasm_get_mem_stats(wendy_wasm_module_handle_t module,
                                     wendy_wasm_mem_stats_t *stats);
 
 /**
+ * Get the currently running WASM module handle.
+ * Returns NULL if no module is running.
+ */
+wendy_wasm_module_handle_t wendy_wasm_get_current_module(void);
+
+/**
+ * Get the current WAMR execution environment (wasm_exec_env_t).
+ * Returns NULL if no module is running. Cast to wasm_exec_env_t.
+ */
+void *wendy_wasm_get_current_exec_env(void);
+
+/**
+ * Get the current WAMR module instance (wasm_module_inst_t).
+ * Returns NULL if no module is running. Cast to wasm_module_inst_t.
+ */
+void *wendy_wasm_get_current_module_inst(void);
+
+/**
  * Shut down the WASM runtime entirely.
  */
 void wendy_wasm_deinit(void);
+
+/**
+ * Destroy and reinitialize the WASM runtime.
+ * Clears all internal WAMR state. Native symbols must be re-registered after.
+ */
+esp_err_t wendy_wasm_reinit(void);
 
 #ifdef __cplusplus
 }

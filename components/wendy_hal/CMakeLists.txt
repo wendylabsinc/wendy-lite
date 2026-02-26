@@ -12,6 +12,10 @@ if(CONFIG_WENDY_HAL_TIMER)
     list(APPEND srcs "src/wendy_hal_timer.c")
 endif()
 
+if(CONFIG_WENDY_HAL_NEOPIXEL)
+    list(APPEND srcs "src/wendy_hal_neopixel.c")
+endif()
+
 # Ensure at least one source file
 if(NOT srcs)
     # Create a dummy source if nothing is enabled
@@ -19,8 +23,10 @@ if(NOT srcs)
     list(APPEND srcs "${CMAKE_CURRENT_BINARY_DIR}/wendy_hal_stub.c")
 endif()
 
+set(requires driver esp_timer led_strip esp_adc wendy_callback)
+
 idf_component_register(
     SRCS ${srcs}
     INCLUDE_DIRS "include"
-    REQUIRES driver esp_timer
+    REQUIRES ${requires}
 )

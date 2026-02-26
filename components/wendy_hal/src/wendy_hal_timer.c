@@ -14,6 +14,8 @@ typedef struct {
     void (*cb)(void *);
     void *arg;
     bool active;
+    bool repeating;
+    uint32_t handler_id;    /* for callback dispatch */
 } timer_slot_t;
 
 static timer_slot_t s_timers[MAX_TIMERS];
@@ -34,38 +36,42 @@ static void timer_callback(void *arg)
     if (slot->active && slot->cb) {
         slot->cb(slot->arg);
     }
-    slot->active = false;
+    if (!slot->repeating) {
+        slot->active = false;
+    }
+}
+
+static int find_free_slot(void)
+{
+    /* Find a free slot */
+    for (int i = 0; i < MAX_TIMERS; i++) {
+        if (!s_timers[i].active && !s_timers[i].handle) {
+            return i;
+        }
+    }
+    /* Reclaim completed timers */
+    for (int i = 0; i < MAX_TIMERS; i++) {
+        if (!s_timers[i].active && s_timers[i].handle) {
+            esp_timer_delete(s_timers[i].handle);
+            s_timers[i].handle = NULL;
+            return i;
+        }
+    }
+    return -1;
 }
 
 int wendy_hal_timer_schedule(uint32_t ms, void (*cb)(void *), void *arg)
 {
-    /* Find a free slot */
-    int id = -1;
-    for (int i = 0; i < MAX_TIMERS; i++) {
-        if (!s_timers[i].active && !s_timers[i].handle) {
-            id = i;
-            break;
-        }
-    }
-    /* Also reclaim completed timers */
-    if (id < 0) {
-        for (int i = 0; i < MAX_TIMERS; i++) {
-            if (!s_timers[i].active && s_timers[i].handle) {
-                esp_timer_delete(s_timers[i].handle);
-                s_timers[i].handle = NULL;
-                id = i;
-                break;
-            }
-        }
-    }
+    int id = find_free_slot();
     if (id < 0) {
         ESP_LOGE(TAG, "no free timer slots");
         return -1;
     }
 
-    s_timers[id].cb     = cb;
-    s_timers[id].arg    = arg;
-    s_timers[id].active = true;
+    s_timers[id].cb        = cb;
+    s_timers[id].arg       = arg;
+    s_timers[id].active    = true;
+    s_timers[id].repeating = false;
 
     esp_timer_create_args_t args = {
         .callback        = timer_callback,
@@ -91,6 +97,45 @@ int wendy_hal_timer_schedule(uint32_t ms, void (*cb)(void *), void *arg)
     }
 
     return id + 1; /* return 1-based ID */
+}
+
+int wendy_hal_timer_schedule_interval(uint32_t ms, void (*cb)(void *), void *arg)
+{
+    int id = find_free_slot();
+    if (id < 0) {
+        ESP_LOGE(TAG, "no free timer slots");
+        return -1;
+    }
+
+    s_timers[id].cb        = cb;
+    s_timers[id].arg       = arg;
+    s_timers[id].active    = true;
+    s_timers[id].repeating = true;
+
+    esp_timer_create_args_t args = {
+        .callback        = timer_callback,
+        .arg             = &s_timers[id],
+        .dispatch_method = ESP_TIMER_TASK,
+        .name            = "wendy_interval",
+    };
+
+    esp_err_t err = esp_timer_create(&args, &s_timers[id].handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_timer_create failed: %s", esp_err_to_name(err));
+        s_timers[id].active = false;
+        return -1;
+    }
+
+    err = esp_timer_start_periodic(s_timers[id].handle, (uint64_t)ms * 1000);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_timer_start_periodic failed: %s", esp_err_to_name(err));
+        esp_timer_delete(s_timers[id].handle);
+        s_timers[id].handle = NULL;
+        s_timers[id].active = false;
+        return -1;
+    }
+
+    return id + 1;
 }
 
 int wendy_hal_timer_cancel(int timer_id)

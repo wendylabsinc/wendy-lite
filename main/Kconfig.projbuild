@@ -67,6 +67,97 @@ menu "Wendy MCU Firmware Configuration"
         config WENDY_HAL_TIMER
             bool "Enable Timer HAL"
             default y
+
+        config WENDY_HAL_NEOPIXEL
+            bool "Enable NeoPixel (WS2812) HAL"
+            default y
+
+    endmenu
+
+    menu "Callback Subsystem"
+        config WENDY_CALLBACK
+            bool "Enable callback dispatch system"
+            default y
+            help
+                Enable the FreeRTOS queue-based callback dispatch system.
+                Required for timer callbacks, GPIO interrupts, BLE events,
+                and other async operations from WASM.
+    endmenu
+
+    menu "System Functions"
+        config WENDY_SYS
+            bool "Enable system host functions"
+            default y
+            help
+                System functions: uptime, reboot, firmware version,
+                device ID, sleep, yield.
+    endmenu
+
+    menu "Storage (NVS)"
+        config WENDY_STORAGE
+            bool "Enable NVS storage host functions"
+            default y
+            help
+                NVS-backed key/value storage accessible from WASM apps.
+    endmenu
+
+    menu "UART"
+        config WENDY_UART
+            bool "Enable UART host functions"
+            default y
+            help
+                UART serial port access from WASM apps.
+    endmenu
+
+    menu "SPI"
+        config WENDY_SPI
+            bool "Enable SPI host functions"
+            default y
+            help
+                SPI master bus access from WASM apps.
+    endmenu
+
+    menu "OpenTelemetry"
+        config WENDY_OTEL
+            bool "Enable OpenTelemetry host functions"
+            default y
+            help
+                In-memory logging, metrics, and tracing from WASM apps.
+    endmenu
+
+    menu "WASI Shim"
+        config WENDY_WASI_SHIM
+            bool "Enable WASI Preview 1 shim"
+            default y
+            help
+                Minimal WASI Preview 1 implementation for compatibility
+                with wasm32-wasip1 binaries (Rust, etc.).
+    endmenu
+
+    menu "BLE"
+        config WENDY_BLE
+            bool "Enable BLE host functions"
+            default n
+            depends on BT_ENABLED && BT_NIMBLE_ENABLED
+            help
+                BLE GAP and GATT functions using NimBLE.
+    endmenu
+
+    menu "Networking (App-facing)"
+        config WENDY_NET
+            bool "Enable networking host functions"
+            default n
+            help
+                WiFi control, BSD sockets, DNS, and TLS from WASM apps.
+    endmenu
+
+    menu "App USB"
+        config WENDY_APP_USB
+            bool "Enable app-facing USB functions"
+            default n
+            help
+                USB CDC and HID access from WASM apps.
+                Only functional on ESP32-S2/S3 with USB OTG.
     endmenu
 
     config WENDY_DEMO_EMBEDDED
@@ -76,6 +167,39 @@ menu "Wendy MCU Firmware Configuration"
             Compile a hand-assembled blink WASM binary into the firmware.
             On boot the firmware will auto-run this demo instead of
             waiting for a USB upload. Useful for Wokwi simulation.
+
+    menu "WiFi Communication"
+        config WENDY_WIFI_ENABLED
+            bool "Enable WiFi transport"
+            default n
+            help
+                Connect to WiFi, register this device via mDNS,
+                and listen for UDP reload broadcasts that carry the
+                host's HTTP address for WASM binary downloads.
+
+        config WENDY_WIFI_SSID
+            string "WiFi SSID"
+            depends on WENDY_WIFI_ENABLED
+            default "Wokwi-GUEST"
+
+        config WENDY_WIFI_PASSWORD
+            string "WiFi password"
+            depends on WENDY_WIFI_ENABLED
+            default ""
+
+        config WENDY_WIFI_UDP_PORT
+            int "UDP reload listener port"
+            depends on WENDY_WIFI_ENABLED
+            default 4210
+
+        config WENDY_WIFI_MDNS_HOSTNAME
+            string "mDNS hostname"
+            depends on WENDY_WIFI_ENABLED
+            default "wendy-device"
+            help
+                The mDNS hostname this device advertises on the network.
+                The device will be discoverable as <hostname>.local.
+    endmenu
 
     menu "USB Communication"
         config WENDY_USB_CDC_ENABLED
