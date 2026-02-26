@@ -22,6 +22,8 @@ let package = Package(
                     "-Xlinker", "--no-entry",
                     "-Xlinker", "--export=_start",
                     "-Xlinker", "--allow-undefined",
+                    "-Xlinker", "--initial-memory=131072",
+                    "-Xlinker", "-z", "-Xlinker", "stack-size=8192",
                 ])
             ]
         )

@@ -163,10 +163,9 @@ class ReuseAddrHTTPServer(http.server.HTTPServer):
 
 
 class WasmHandler(http.server.BaseHTTPRequestHandler):
-    """Serves a single WASM file at /app.wasm, then shuts down."""
+    """Serves a WASM file at /app.wasm."""
 
     wasm_path = None
-    server_ref = None  # set before serving
 
     def do_GET(self):
         if self.path == "/app.wasm":
@@ -179,8 +178,6 @@ class WasmHandler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(data)
                 print(f"Served {self.wasm_path} ({len(data)} bytes)")
-                # Shut down after first successful download
-                threading.Thread(target=self.server_ref.shutdown, daemon=True).start()
             except FileNotFoundError:
                 self.send_error(404, "WASM file not found")
         else:
@@ -202,7 +199,6 @@ def serve_wasm(wasm_path, port, udp_port, auto_reload=False, device_ips=None):
     # Bind HTTP server first (port 0 = OS picks a free port)
     WasmHandler.wasm_path = wasm_path
     httpd = ReuseAddrHTTPServer(("0.0.0.0", port), WasmHandler)
-    WasmHandler.server_ref = httpd
     actual_port = httpd.server_address[1]
 
     print(f"Serving '{wasm_path}' at http://{local_ip}:{actual_port}/app.wasm")

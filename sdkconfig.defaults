@@ -9,8 +9,9 @@ CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
 # WAMR configuration
-CONFIG_WENDY_WASM_STACK_SIZE=16384
-CONFIG_WENDY_WASM_HEAP_SIZE=32768
+CONFIG_WENDY_WASM_STACK_SIZE=8192
+CONFIG_WENDY_WASM_HEAP_SIZE=8192
+CONFIG_WENDY_WASM_POOL_SIZE=180224
 
 # Disable WAMR pthread (causes assert in FreeRTOS tasks)
 # CONFIG_WAMR_ENABLE_LIB_PTHREAD is not set
@@ -46,7 +47,15 @@ CONFIG_WENDY_OTEL=y
 # WASI shim
 CONFIG_WENDY_WASI_SHIM=y
 
-# BLE disabled by default (requires BT stack)
+# BLE stack (NimBLE)
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=2
+
+# BLE provisioning and discovery
+CONFIG_WENDY_BLE_PROV=y
+
+# App-facing BLE host functions disabled by default
 # CONFIG_WENDY_BLE is not set
 
 # App-facing networking disabled by default

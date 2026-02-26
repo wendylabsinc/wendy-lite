@@ -19,6 +19,10 @@
 #include "services/gatt/ble_svc_gatt.h"
 #endif
 
+#if CONFIG_WENDY_BLE_PROV
+#include "wendy_ble_prov.h"
+#endif
+
 static const char *TAG = "wendy_ble";
 
 #if CONFIG_BT_ENABLED && CONFIG_BT_NIMBLE_ENABLED
@@ -92,6 +96,15 @@ static void ble_on_sync(void)
 esp_err_t wendy_ble_init(void)
 {
     if (s_ble_initialized) return ESP_OK;
+
+#if CONFIG_WENDY_BLE_PROV
+    /* If BLE provisioning already started NimBLE, skip re-init */
+    if (wendy_ble_prov_nimble_ready()) {
+        ESP_LOGI(TAG, "NimBLE already initialized by BLE prov, skipping init");
+        s_ble_initialized = true;
+        return ESP_OK;
+    }
+#endif
 
     esp_err_t err = nimble_port_init();
     if (err != ESP_OK) {

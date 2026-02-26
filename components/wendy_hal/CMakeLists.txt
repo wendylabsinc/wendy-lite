@@ -16,6 +16,10 @@ if(CONFIG_WENDY_HAL_NEOPIXEL)
     list(APPEND srcs "src/wendy_hal_neopixel.c")
 endif()
 
+if(CONFIG_WENDY_HAL_RMT)
+    list(APPEND srcs "src/wendy_hal_rmt.c")
+endif()
+
 # Ensure at least one source file
 if(NOT srcs)
     # Create a dummy source if nothing is enabled

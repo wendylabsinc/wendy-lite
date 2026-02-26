@@ -1,0 +1,12 @@
+{
+  "options": {
+    "runtime": "stub",
+    "exportStart": "_initialize",
+    "noExportMemory": false,
+    "use": "abort=",
+    "optimizeLevel": 3,
+    "shrinkLevel": 2,
+    "outFile": "build/ts_blink.wasm"
+  },
+  "entries": ["assembly/index.ts"]
+}

@@ -11,6 +11,8 @@
 #include "esp_partition.h"
 #include "nvs_flash.h"
 
+#include "esp_netif.h"
+
 #include "wendy_wasm.h"
 #include "wendy_hal.h"
 #include "wendy_hal_export.h"
@@ -23,18 +25,21 @@
 #include "wendy_wifi.h"
 #endif
 
-#if CONFIG_WENDY_DEMO_EMBEDDED
-#include "demo_wasm.h"
+#if CONFIG_WENDY_BLE_PROV
+#include "wendy_ble_prov.h"
+#include "nvs.h"
 #endif
 
 static const char *TAG = "wendy_main";
 
 /* ── Event bits ─────────────────────────────────────────────────────── */
 
-#define EVT_UPLOAD_READY   BIT0
-#define EVT_RUN_REQUEST    BIT1
-#define EVT_STOP_REQUEST   BIT2
-#define EVT_RESET_REQUEST  BIT3
+#define EVT_UPLOAD_READY      BIT0
+#define EVT_RUN_REQUEST       BIT1
+#define EVT_STOP_REQUEST      BIT2
+#define EVT_RESET_REQUEST     BIT3
+#define EVT_PROV_WIFI_CREDS   BIT4
+#define EVT_PROV_CLEAR_CREDS  BIT5
 
 static EventGroupHandle_t s_events;
 
@@ -45,6 +50,25 @@ static uint8_t *s_pending_wasm = NULL;
 static uint32_t s_pending_wasm_len = 0;
 static pthread_t s_wasm_thread;
 static bool s_wasm_thread_active = false;
+
+/* ── BLE provisioning state ─────────────────────────────────────────── */
+
+#if CONFIG_WENDY_BLE_PROV
+static char s_ble_prov_ssid[33];
+static char s_ble_prov_pass[65];
+
+static void on_ble_wifi_creds(const char *ssid, const char *password)
+{
+    strlcpy(s_ble_prov_ssid, ssid, sizeof(s_ble_prov_ssid));
+    strlcpy(s_ble_prov_pass, password, sizeof(s_ble_prov_pass));
+    xEventGroupSetBits(s_events, EVT_PROV_WIFI_CREDS);
+}
+
+static void on_ble_clear_creds(void)
+{
+    xEventGroupSetBits(s_events, EVT_PROV_CLEAR_CREDS);
+}
+#endif /* CONFIG_WENDY_BLE_PROV */
 
 /* ── stdout redirect ────────────────────────────────────────────────── */
 
@@ -142,6 +166,11 @@ static void start_wasm_module(const uint8_t *wasm_buf, uint32_t wasm_len)
         wendy_wasm_unload(s_current_module);
         s_current_module = NULL;
 
+        /* Release hardware resources claimed by the old module */
+#if CONFIG_WENDY_HAL_RMT
+        wendy_hal_rmt_release_all();
+#endif
+
         /* Reinitialize WAMR runtime to clear internal state */
         wendy_wasm_reinit();
         wendy_hal_export_init();
@@ -193,21 +222,9 @@ static void *wasm_main_thread(void *arg)
 
     /*
      * Boot logic:
-     * 1. If WENDY_DEMO_EMBEDDED is set, run the compiled-in demo WASM
-     * 2. Otherwise, try loading from flash partition (previous upload)
-     * 3. Otherwise, wait for USB upload
+     * 1. Try loading from flash partition (previous upload)
+     * 2. Otherwise, wait for upload via USB/WiFi
      */
-#if CONFIG_WENDY_DEMO_EMBEDDED
-    /* If WiFi already downloaded a binary before this thread started,
-     * skip the embedded demo — the event loop will load from flash. */
-    if (xEventGroupGetBits(s_events) & EVT_UPLOAD_READY) {
-        ESP_LOGI(TAG, "WiFi download ready, skipping embedded demo");
-    } else {
-        ESP_LOGI(TAG, "running embedded demo WASM (%lu bytes)...",
-                 (unsigned long)demo_wasm_binary_len);
-        start_wasm_module(demo_wasm_binary, demo_wasm_binary_len);
-    }
-#else
     /* If WiFi (or another transport) already set s_pending_wasm before
      * this thread started, skip the flash load and use it directly. */
     if (s_pending_wasm && s_pending_wasm_len > 0) {
@@ -235,7 +252,6 @@ static void *wasm_main_thread(void *arg)
             ESP_LOGI(TAG, "no WASM binary in flash, waiting for upload...");
         }
     }
-#endif
 
     /* Main event loop */
     for (;;) {
@@ -280,6 +296,11 @@ static void *wasm_main_thread(void *arg)
                     wendy_wasm_unload(s_current_module);
                     s_current_module = NULL;
                 }
+
+                /* Release hardware resources claimed by the old module */
+#if CONFIG_WENDY_HAL_RMT
+                wendy_hal_rmt_release_all();
+#endif
 
                 /* Reinitialize WAMR runtime to clear internal state,
                  * then re-register HAL native symbols */
@@ -348,6 +369,13 @@ void app_main(void)
 
     s_events = xEventGroupCreate();
 
+    /* Pre-allocate the WAMR memory pool while RAM is still plentiful,
+     * before WiFi and BLE claim large chunks. */
+    err = wendy_wasm_prealloc_pool(CONFIG_WENDY_WASM_POOL_SIZE);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "WAMR pool pre-allocation failed");
+    }
+
     /* Initialize hardware */
     init_hal();
 
@@ -365,6 +393,18 @@ void app_main(void)
     }
 #endif
 
+    /* Initialize BLE provisioning and discovery (if enabled) */
+#if CONFIG_WENDY_BLE_PROV
+    wendy_ble_prov_callbacks_t ble_prov_cbs = {
+        .on_wifi_creds  = on_ble_wifi_creds,
+        .on_clear_creds = on_ble_clear_creds,
+    };
+    err = wendy_ble_prov_init(&ble_prov_cbs);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "BLE provisioning init failed");
+    }
+#endif
+
     /* Initialize WiFi transport (if enabled) */
 #if CONFIG_WENDY_WIFI_ENABLED
     wendy_wifi_callbacks_t wifi_cbs = {
@@ -374,10 +414,113 @@ void app_main(void)
         .on_reset           = wifi_on_reset,
     };
     err = wendy_wifi_init(&wifi_cbs);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "WiFi init failed (running without WiFi)");
-    }
+
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "WiFi connected");
+#if CONFIG_WENDY_BLE_PROV
+        /* Get IP address for BLE status */
+        esp_netif_ip_info_t ip_info;
+        esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+            char ip_str[16];
+            snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip_info.ip));
+            wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_CONNECTED, ip_str);
+        } else {
+            wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_CONNECTED, NULL);
+        }
 #endif
+    } else if (err == WENDY_WIFI_ERR_NO_CREDS) {
+        ESP_LOGW(TAG, "no WiFi credentials, waiting for BLE provisioning...");
+#if CONFIG_WENDY_BLE_PROV
+        wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_NO_CREDS, NULL);
+
+        /* Provisioning wait loop — blocks until WiFi connects via BLE */
+        bool provisioned = false;
+        while (!provisioned) {
+            EventBits_t bits = xEventGroupWaitBits(
+                s_events,
+                EVT_PROV_WIFI_CREDS | EVT_PROV_CLEAR_CREDS,
+                pdTRUE, pdFALSE, portMAX_DELAY);
+
+            if (bits & EVT_PROV_CLEAR_CREDS) {
+                ESP_LOGI(TAG, "clearing saved WiFi credentials");
+                nvs_handle_t nvs;
+                if (nvs_open("wendy_prov", NVS_READWRITE, &nvs) == ESP_OK) {
+                    nvs_erase_all(nvs);
+                    nvs_commit(nvs);
+                    nvs_close(nvs);
+                }
+                wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_NO_CREDS, NULL);
+            }
+
+            if (bits & EVT_PROV_WIFI_CREDS) {
+                ESP_LOGI(TAG, "BLE provisioning: connecting to '%s'...", s_ble_prov_ssid);
+                wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_CONNECTING, NULL);
+
+                esp_err_t conn_err = wendy_wifi_try_connect(s_ble_prov_ssid, s_ble_prov_pass);
+                if (conn_err == ESP_OK) {
+                    esp_netif_ip_info_t ip_info;
+                    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+                    if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+                        char ip_str[16];
+                        snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip_info.ip));
+                        wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_CONNECTED, ip_str);
+                    } else {
+                        wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_CONNECTED, NULL);
+                    }
+                    provisioned = true;
+                } else {
+                    ESP_LOGW(TAG, "BLE provisioning: WiFi connection failed");
+                    wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_FAILED, NULL);
+                }
+            }
+        }
+#endif /* CONFIG_WENDY_BLE_PROV */
+    } else {
+        ESP_LOGW(TAG, "WiFi init failed (running without WiFi)");
+#if CONFIG_WENDY_BLE_PROV
+        wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_FAILED, NULL);
+
+        /* Enter provisioning wait loop on hard failure too */
+        bool provisioned = false;
+        while (!provisioned) {
+            EventBits_t bits = xEventGroupWaitBits(
+                s_events,
+                EVT_PROV_WIFI_CREDS | EVT_PROV_CLEAR_CREDS,
+                pdTRUE, pdFALSE, portMAX_DELAY);
+
+            if (bits & EVT_PROV_CLEAR_CREDS) {
+                nvs_handle_t nvs;
+                if (nvs_open("wendy_prov", NVS_READWRITE, &nvs) == ESP_OK) {
+                    nvs_erase_all(nvs);
+                    nvs_commit(nvs);
+                    nvs_close(nvs);
+                }
+                wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_NO_CREDS, NULL);
+            }
+
+            if (bits & EVT_PROV_WIFI_CREDS) {
+                wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_CONNECTING, NULL);
+                esp_err_t conn_err = wendy_wifi_try_connect(s_ble_prov_ssid, s_ble_prov_pass);
+                if (conn_err == ESP_OK) {
+                    esp_netif_ip_info_t ip_info;
+                    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+                    if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+                        char ip_str[16];
+                        snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip_info.ip));
+                        wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_CONNECTED, ip_str);
+                    } else {
+                        wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_CONNECTED, NULL);
+                    }
+                    provisioned = true;
+                } else {
+                    wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_FAILED, NULL);
+                }
+            }
+        }
+#endif /* CONFIG_WENDY_BLE_PROV */
+    }
+#endif /* CONFIG_WENDY_WIFI_ENABLED */
 
     /*
      * Spawn the WASM management thread.
@@ -388,7 +531,7 @@ void app_main(void)
     pthread_t wasm_main;
     pthread_attr_t attr;
     pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, 16384);
+    pthread_attr_setstacksize(&attr, 8192);
 
     int ret = pthread_create(&wasm_main, &attr, wasm_main_thread, NULL);
     pthread_attr_destroy(&attr);

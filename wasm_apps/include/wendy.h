@@ -68,6 +68,17 @@ int i2c_write_read(int bus, int addr,
                     const unsigned char *wr, int wr_len,
                     unsigned char *rd, int rd_len);
 
+/* ── RMT (timing-buffer) ───────────────────────────────────────────── */
+
+__attribute__((import_module("wendy"), import_name("rmt_configure")))
+int rmt_configure(int pin, int resolution_hz);
+
+__attribute__((import_module("wendy"), import_name("rmt_transmit")))
+int rmt_transmit(int channel_id, const unsigned char *buf, int len);
+
+__attribute__((import_module("wendy"), import_name("rmt_release")))
+int rmt_release(int channel_id);
+
 /* ── NeoPixel (WS2812) ─────────────────────────────────────────────── */
 
 __attribute__((import_module("wendy"), import_name("neopixel_init")))

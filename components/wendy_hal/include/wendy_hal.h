@@ -133,6 +133,37 @@ int wendy_hal_i2c_write_read(int bus, uint8_t addr,
                               const uint8_t *write_data, int write_len,
                               uint8_t *read_buf, int read_len);
 
+/* ── RMT (timing-buffer) ───────────────────────────────────────────── */
+
+/**
+ * Configure an RMT TX channel.
+ * @param pin            GPIO number
+ * @param resolution_hz  Tick resolution in Hz (e.g. 10000000 for 10 MHz)
+ * @return channel_id (>=0) on success, negative on error
+ */
+int wendy_hal_rmt_configure(int pin, int resolution_hz);
+
+/**
+ * Transmit packed RMT symbols.
+ * @param channel_id  ID returned by wendy_hal_rmt_configure
+ * @param buf         Array of packed uint32_t RMT symbols
+ * @param len         Buffer size in bytes (must be multiple of 4)
+ * @return 0 on success
+ */
+int wendy_hal_rmt_transmit(int channel_id, const unsigned char *buf, int len);
+
+/**
+ * Release an RMT channel.
+ * @param channel_id  ID returned by wendy_hal_rmt_configure
+ * @return 0 on success
+ */
+int wendy_hal_rmt_release(int channel_id);
+
+/**
+ * Release all active RMT channels. Called on WASM module unload.
+ */
+void wendy_hal_rmt_release_all(void);
+
 /* ── NeoPixel (WS2812) ─────────────────────────────────────────────── */
 
 /**

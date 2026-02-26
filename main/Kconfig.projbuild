@@ -21,10 +21,18 @@ menu "Wendy MCU Firmware Configuration"
 
         config WENDY_WASM_HEAP_SIZE
             int "WASM heap size (bytes)"
-            default 262144
+            default 32768
             help
-                Heap size available to WASM applications. On ESP32-S3 with
-                PSRAM, this can be increased significantly.
+                Heap size available to WASM applications (inside WAMR pool).
+
+        config WENDY_WASM_POOL_SIZE
+            int "WAMR memory pool size (bytes)"
+            default 180224
+            help
+                Total pre-allocated pool for the WAMR runtime. This is
+                grabbed early in boot before WiFi/BLE consume RAM.
+                Must fit linear memory + heap + stack + WAMR overhead.
+                ESP32-C6: 176 KB (294 KB total, ~114 KB left for WiFi/BLE).
 
         config WENDY_WASM_USE_PSRAM
             bool "Allocate WASM heap from PSRAM"
@@ -71,6 +79,13 @@ menu "Wendy MCU Firmware Configuration"
         config WENDY_HAL_NEOPIXEL
             bool "Enable NeoPixel (WS2812) HAL"
             default y
+
+        config WENDY_HAL_RMT
+            bool "Enable RMT timing-buffer HAL"
+            default y
+            help
+                Raw RMT peripheral access for precise timing waveforms
+                (WS2812, IR, etc.) from WASM apps.
 
     endmenu
 
@@ -143,6 +158,25 @@ menu "Wendy MCU Firmware Configuration"
                 BLE GAP and GATT functions using NimBLE.
     endmenu
 
+    menu "BLE Provisioning"
+        config WENDY_BLE_PROV
+            bool "Enable BLE WiFi provisioning and discovery"
+            default y
+            depends on BT_ENABLED && BT_NIMBLE_ENABLED
+            help
+                Advertise via BLE as "Wendy-XXXX" and expose a GATT service
+                that allows clients to write WiFi credentials.  Credentials
+                are stored in NVS and survive reboots.
+
+        config WENDY_BLE_PROV_DEVICE_PREFIX
+            string "BLE device name prefix"
+            depends on WENDY_BLE_PROV
+            default "Wendy"
+            help
+                The BLE advertising name will be "<prefix>-XXXX" where XXXX
+                is derived from the last 2 bytes of the BT MAC address.
+    endmenu
+
     menu "Networking (App-facing)"
         config WENDY_NET
             bool "Enable networking host functions"
@@ -159,14 +193,6 @@ menu "Wendy MCU Firmware Configuration"
                 USB CDC and HID access from WASM apps.
                 Only functional on ESP32-S2/S3 with USB OTG.
     endmenu
-
-    config WENDY_DEMO_EMBEDDED
-        bool "Embed demo WASM binary (for Wokwi / headless testing)"
-        default n
-        help
-            Compile a hand-assembled blink WASM binary into the firmware.
-            On boot the firmware will auto-run this demo instead of
-            waiting for a USB upload. Useful for Wokwi simulation.
 
     menu "WiFi Communication"
         config WENDY_WIFI_ENABLED

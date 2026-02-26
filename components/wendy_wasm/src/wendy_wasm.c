@@ -29,6 +29,11 @@ struct wendy_wasm_module {
 static bool s_initialized = false;
 static wendy_wasm_config_t s_config;
 
+/* ── Pre-allocated memory pool ─────────────────────────────────────── */
+
+static uint8_t *s_pool_buf  = NULL;
+static uint32_t s_pool_size = 0;
+
 /* ── Current module tracking (for host functions) ──────────────────── */
 
 static wendy_wasm_module_handle_t s_current_module_handle;
@@ -54,39 +59,26 @@ void *wendy_wasm_get_current_module_inst(void)
     return NULL;
 }
 
-/* ── Custom allocator that can target PSRAM ─────────────────────────── */
+/* ── Pre-allocate pool (call before WiFi/BLE init) ─────────────────── */
 
-static void *wamr_malloc(unsigned int size)
+esp_err_t wendy_wasm_prealloc_pool(uint32_t pool_size)
 {
-#if CONFIG_SPIRAM
-    if (s_config.use_psram) {
-        return heap_caps_aligned_alloc(8, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (s_pool_buf) {
+        ESP_LOGW(TAG, "pool already allocated");
+        return ESP_OK;
     }
-#endif
-    return heap_caps_aligned_alloc(8, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-}
 
-static void *wamr_realloc(void *ptr, unsigned int size)
-{
-    if (!ptr) {
-        return wamr_malloc(size);
+    s_pool_buf = heap_caps_aligned_alloc(8, pool_size,
+                                          MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!s_pool_buf) {
+        ESP_LOGE(TAG, "failed to pre-allocate %lu byte pool",
+                 (unsigned long)pool_size);
+        return ESP_ERR_NO_MEM;
     }
-    /*
-     * heap_caps_aligned_alloc has no realloc counterpart.
-     * We don't know the old allocation size, so we must use
-     * heap_caps_realloc which works for heap_caps allocations.
-     */
-#if CONFIG_SPIRAM
-    if (s_config.use_psram) {
-        return heap_caps_realloc(ptr, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    }
-#endif
-    return heap_caps_realloc(ptr, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-}
 
-static void wamr_free(void *ptr)
-{
-    heap_caps_free(ptr);
+    s_pool_size = pool_size;
+    ESP_LOGI(TAG, "pre-allocated %lu byte WAMR pool", (unsigned long)pool_size);
+    return ESP_OK;
 }
 
 /* ── stdout / stderr redirect ───────────────────────────────────────── */
@@ -118,6 +110,22 @@ static NativeSymbol s_builtin_symbols[] = {
     { "wendy_print", (void *)wendy_print_wrapper, "(*~)i", NULL },
 };
 
+/*
+ * Stub for __stack_chk_fail – emitted by compilers with stack-smashing
+ * protection (e.g. Swift Embedded).  Inside the WASM sandbox a stack
+ * overflow is already contained, so we just trap.
+ */
+static void stack_chk_fail_wrapper(wasm_exec_env_t exec_env)
+{
+    ESP_LOGE(TAG, "WASM __stack_chk_fail – stack smashing detected, trapping");
+    wasm_runtime_set_exception(wasm_runtime_get_module_inst(exec_env),
+                               "stack smashing detected");
+}
+
+static NativeSymbol s_env_symbols[] = {
+    { "__stack_chk_fail", (void *)stack_chk_fail_wrapper, "()", NULL },
+};
+
 /* ── Public API ─────────────────────────────────────────────────────── */
 
 esp_err_t wendy_wasm_init(const wendy_wasm_config_t *config)
@@ -134,10 +142,14 @@ esp_err_t wendy_wasm_init(const wendy_wasm_config_t *config)
     RuntimeInitArgs init_args;
     memset(&init_args, 0, sizeof(init_args));
 
-    init_args.mem_alloc_type = Alloc_With_Allocator;
-    init_args.mem_alloc_option.allocator.malloc_func  = wamr_malloc;
-    init_args.mem_alloc_option.allocator.realloc_func = wamr_realloc;
-    init_args.mem_alloc_option.allocator.free_func    = wamr_free;
+    if (s_pool_buf) {
+        init_args.mem_alloc_type = Alloc_With_Pool;
+        init_args.mem_alloc_option.pool.heap_buf  = s_pool_buf;
+        init_args.mem_alloc_option.pool.heap_size = s_pool_size;
+    } else {
+        ESP_LOGW(TAG, "no pre-allocated pool, falling back to system heap");
+        init_args.mem_alloc_type = Alloc_With_System_Allocator;
+    }
 
     if (!wasm_runtime_full_init(&init_args)) {
         ESP_LOGE(TAG, "wasm_runtime_full_init failed");
@@ -149,6 +161,14 @@ esp_err_t wendy_wasm_init(const wendy_wasm_config_t *config)
                                        s_builtin_symbols,
                                        sizeof(s_builtin_symbols) / sizeof(s_builtin_symbols[0]))) {
         ESP_LOGE(TAG, "failed to register builtin natives");
+        return ESP_FAIL;
+    }
+
+    /* Register "env" module stubs (e.g. __stack_chk_fail for Swift Embedded) */
+    if (!wasm_runtime_register_natives("env",
+                                       s_env_symbols,
+                                       sizeof(s_env_symbols) / sizeof(s_env_symbols[0]))) {
+        ESP_LOGE(TAG, "failed to register env natives");
         return ESP_FAIL;
     }
 
@@ -177,7 +197,7 @@ esp_err_t wendy_wasm_load(const uint8_t *wasm_buf, uint32_t wasm_len,
     }
 
     /* WAMR may modify the buffer, so keep an owned copy */
-    mod->wasm_buf = wamr_malloc(wasm_len);
+    mod->wasm_buf = wasm_runtime_malloc(wasm_len);
     if (!mod->wasm_buf) {
         free(mod);
         return ESP_ERR_NO_MEM;
@@ -192,7 +212,7 @@ esp_err_t wendy_wasm_load(const uint8_t *wasm_buf, uint32_t wasm_len,
                                           error_buf, sizeof(error_buf));
     if (!mod->wasm_module) {
         ESP_LOGE(TAG, "load failed: %s", error_buf);
-        wamr_free(mod->wasm_buf);
+        wasm_runtime_free(mod->wasm_buf);
         free(mod);
         return ESP_FAIL;
     }
@@ -208,7 +228,7 @@ esp_err_t wendy_wasm_load(const uint8_t *wasm_buf, uint32_t wasm_len,
     if (!mod->module_inst) {
         ESP_LOGE(TAG, "instantiate failed: %s", error_buf);
         wasm_runtime_unload(mod->wasm_module);
-        wamr_free(mod->wasm_buf);
+        wasm_runtime_free(mod->wasm_buf);
         free(mod);
         return ESP_FAIL;
     }
@@ -220,7 +240,7 @@ esp_err_t wendy_wasm_load(const uint8_t *wasm_buf, uint32_t wasm_len,
         ESP_LOGE(TAG, "create exec_env failed");
         wasm_runtime_deinstantiate(mod->module_inst);
         wasm_runtime_unload(mod->wasm_module);
-        wamr_free(mod->wasm_buf);
+        wasm_runtime_free(mod->wasm_buf);
         free(mod);
         return ESP_FAIL;
     }
@@ -267,7 +287,7 @@ esp_err_t wendy_wasm_load_from_partition(const char *partition_label,
         return ESP_ERR_NO_MEM;
     }
 
-    mod->wasm_buf = wamr_malloc(wasm_len);
+    mod->wasm_buf = wasm_runtime_malloc(wasm_len);
     if (!mod->wasm_buf) {
         free(mod);
         return ESP_ERR_NO_MEM;
@@ -276,7 +296,7 @@ esp_err_t wendy_wasm_load_from_partition(const char *partition_label,
 
     err = esp_partition_read(part, 4, mod->wasm_buf, wasm_len);
     if (err != ESP_OK) {
-        wamr_free(mod->wasm_buf);
+        wasm_runtime_free(mod->wasm_buf);
         free(mod);
         return err;
     }
@@ -287,7 +307,7 @@ esp_err_t wendy_wasm_load_from_partition(const char *partition_label,
                                           error_buf, sizeof(error_buf));
     if (!mod->wasm_module) {
         ESP_LOGE(TAG, "load failed: %s", error_buf);
-        wamr_free(mod->wasm_buf);
+        wasm_runtime_free(mod->wasm_buf);
         free(mod);
         return ESP_FAIL;
     }
@@ -302,7 +322,7 @@ esp_err_t wendy_wasm_load_from_partition(const char *partition_label,
     if (!mod->module_inst) {
         ESP_LOGE(TAG, "instantiate failed: %s", error_buf);
         wasm_runtime_unload(mod->wasm_module);
-        wamr_free(mod->wasm_buf);
+        wasm_runtime_free(mod->wasm_buf);
         free(mod);
         return ESP_FAIL;
     }
@@ -313,7 +333,7 @@ esp_err_t wendy_wasm_load_from_partition(const char *partition_label,
         ESP_LOGE(TAG, "create exec_env failed");
         wasm_runtime_deinstantiate(mod->module_inst);
         wasm_runtime_unload(mod->wasm_module);
-        wamr_free(mod->wasm_buf);
+        wasm_runtime_free(mod->wasm_buf);
         free(mod);
         return ESP_FAIL;
     }
@@ -397,7 +417,7 @@ void wendy_wasm_unload(wendy_wasm_module_handle_t module)
         wasm_runtime_unload(module->wasm_module);
     }
     if (module->wasm_buf) {
-        wamr_free(module->wasm_buf);
+        wasm_runtime_free(module->wasm_buf);
     }
     free(module);
 }

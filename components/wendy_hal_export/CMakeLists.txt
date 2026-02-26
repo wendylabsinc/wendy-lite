@@ -16,6 +16,10 @@ if(CONFIG_WENDY_HAL_NEOPIXEL)
     list(APPEND srcs "src/wendy_hal_export_neopixel.c")
 endif()
 
+if(CONFIG_WENDY_HAL_RMT)
+    list(APPEND srcs "src/wendy_hal_export_rmt.c")
+endif()
+
 # All subsystem components are listed unconditionally here.
 # The C code guards actual usage with #if CONFIG_WENDY_<X>.
 set(requires

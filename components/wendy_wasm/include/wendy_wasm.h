@@ -52,7 +52,18 @@ typedef struct wendy_wasm_module *wendy_wasm_module_handle_t;
 }
 
 /**
+ * Pre-allocate the WAMR memory pool from internal RAM.
+ * Call this BEFORE WiFi/BLE init to reserve memory while it is still available.
+ * The pool is used by wendy_wasm_init() via Alloc_With_Pool.
+ *
+ * @param pool_size  Size in bytes (e.g., 200 * 1024)
+ * @return ESP_OK on success
+ */
+esp_err_t wendy_wasm_prealloc_pool(uint32_t pool_size);
+
+/**
  * Initialize the WASM runtime. Must be called once at boot.
+ * If wendy_wasm_prealloc_pool() was called, uses the pre-allocated pool.
  */
 esp_err_t wendy_wasm_init(const wendy_wasm_config_t *config);
 

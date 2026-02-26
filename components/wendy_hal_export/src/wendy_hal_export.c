@@ -16,6 +16,9 @@ int wendy_hal_export_timer(void);
 #if CONFIG_WENDY_HAL_NEOPIXEL
 int wendy_hal_export_neopixel(void);
 #endif
+#if CONFIG_WENDY_HAL_RMT
+int wendy_hal_export_rmt(void);
+#endif
 
 /* New subsystem registration functions */
 #if CONFIG_WENDY_CALLBACK
@@ -92,6 +95,14 @@ esp_err_t wendy_hal_export_init(void)
     count++;
     if (wendy_hal_export_neopixel() != 0) {
         ESP_LOGE(TAG, "NeoPixel export registration failed");
+        errors++;
+    }
+#endif
+
+#if CONFIG_WENDY_HAL_RMT
+    count++;
+    if (wendy_hal_export_rmt() != 0) {
+        ESP_LOGE(TAG, "RMT export registration failed");
         errors++;
     }
 #endif
