@@ -1,3 +1,4 @@
 build
 wasm_apps/swift_blink/.build
 wasm_apps/rust_blink/target
+.build

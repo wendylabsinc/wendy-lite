@@ -9,6 +9,7 @@
 #   make wat_blink    # build just the WAT blink app
 #   make rust_blink   # build the Rust blink app (requires cargo)
 #   make zig_blink    # build the Zig blink app (requires zig)
+#   make swift_display # build the Swift display app (requires Swift 6.0+)
 #   make clean        # remove build artifacts
 
 CC       ?= clang
@@ -19,7 +20,7 @@ C_APPS    = blink i2c_sensor
 WAT_APPS  = wat_blink
 OUTPUTS   = $(addsuffix .wasm, $(C_APPS) $(WAT_APPS))
 
-.PHONY: all clean $(C_APPS) $(WAT_APPS) rust_blink zig_blink
+.PHONY: all clean $(C_APPS) $(WAT_APPS) rust_blink zig_blink swift_display
 
 all: $(OUTPUTS)
 
@@ -55,6 +56,13 @@ zig_blink:
 	cd zig_blink && zig build
 	cp zig_blink/zig-out/bin/zig_blink.wasm zig_blink.wasm
 
+# --- Swift display app (requires Swift 6.0+ with Embedded support) ---
+
+swift_display:
+	cd swift_display && swift build --triple wasm32-none-none-wasm
+	cp swift_display/.build/debug/SwiftDisplay.wasm swift_display.wasm
+
 clean:
-	rm -f $(OUTPUTS) rust_blink.wasm zig_blink.wasm
+	rm -f $(OUTPUTS) rust_blink.wasm zig_blink.wasm swift_display.wasm
 	rm -rf rust_blink/target zig_blink/zig-out zig_blink/.zig-cache
+	rm -rf swift_display/.build swift_blink/.build
