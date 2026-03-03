@@ -25,6 +25,10 @@
 #include "wendy_wifi.h"
 #endif
 
+#if CONFIG_WENDY_CLOUD_PROV
+#include "wendy_cloud_prov.h"
+#endif
+
 #if CONFIG_WENDY_BLE_PROV
 #include "wendy_ble_prov.h"
 #include "nvs.h"
@@ -390,6 +394,14 @@ void app_main(void)
     err = wendy_usb_init(&usb_cbs);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "USB CDC init failed (running headless)");
+    }
+#endif
+
+    /* Initialize cloud provisioning (must be before BLE so locked flag is ready) */
+#if CONFIG_WENDY_CLOUD_PROV
+    err = wendy_cloud_prov_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "cloud provisioning init failed");
     }
 #endif
 

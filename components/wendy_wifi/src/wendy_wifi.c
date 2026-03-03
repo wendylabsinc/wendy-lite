@@ -16,6 +16,7 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "mdns.h"
+#include "esp_mac.h"
 
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
@@ -184,19 +185,32 @@ static esp_err_t save_nvs_creds(const char *ssid, const char *password)
 
 static esp_err_t register_mdns_service(void)
 {
-    esp_err_t err = mdns_init();
+    /* Build device name from BT MAC to match BLE advertising name */
+    char device_name[32];
+    char hostname[32];
+    uint8_t mac[6];
+    esp_err_t err = esp_read_mac(mac, ESP_MAC_BT);
+    if (err != ESP_OK) {
+        snprintf(device_name, sizeof(device_name), "Wendy-0000");
+        snprintf(hostname, sizeof(hostname), "wendy-0000");
+    } else {
+        snprintf(device_name, sizeof(device_name), "Wendy-%02X%02X", mac[4], mac[5]);
+        snprintf(hostname, sizeof(hostname), "wendy-%02x%02x", mac[4], mac[5]);
+    }
+
+    err = mdns_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "mDNS init failed: %s", esp_err_to_name(err));
         return err;
     }
 
-    err = mdns_hostname_set(CONFIG_WENDY_WIFI_MDNS_HOSTNAME);
+    err = mdns_hostname_set(hostname);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "mDNS hostname set failed: %s", esp_err_to_name(err));
         return err;
     }
 
-    err = mdns_service_add("Wendy Device", "_wendy", "_tcp",
+    err = mdns_service_add(device_name, "_wendy", "_tcp",
                            CONFIG_WENDY_WIFI_UDP_PORT, NULL, 0);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "mDNS service add failed: %s", esp_err_to_name(err));
@@ -204,7 +218,7 @@ static esp_err_t register_mdns_service(void)
     }
 
     ESP_LOGI(TAG, "registered mDNS service _wendy._tcp as '%s' on port %d",
-             CONFIG_WENDY_WIFI_MDNS_HOSTNAME, CONFIG_WENDY_WIFI_UDP_PORT);
+             device_name, CONFIG_WENDY_WIFI_UDP_PORT);
     return ESP_OK;
 }
 
@@ -378,6 +392,17 @@ static void udp_listener_task(void *arg)
 static void start_services(void)
 {
     if (s_services_started) return;
+
+#if CONFIG_WENDY_CLOUD_PROV
+    {
+        extern bool wendy_cloud_is_provisioned(void);
+        if (wendy_cloud_is_provisioned()) {
+            ESP_LOGI(TAG, "cloud-provisioned: skipping UDP listener and mDNS");
+            s_services_started = true;
+            return;
+        }
+    }
+#endif
 
     esp_err_t err = register_mdns_service();
     if (err != ESP_OK) {

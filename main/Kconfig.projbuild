@@ -177,6 +177,38 @@ menu "Wendy MCU Firmware Configuration"
                 is derived from the last 2 bytes of the BT MAC address.
     endmenu
 
+    menu "Cloud Provisioning"
+        config WENDY_CLOUD_PROV
+            bool "Enable cloud certificate provisioning via BLE"
+            default n
+            depends on WENDY_BLE_PROV
+            help
+                Expose a BLE GATT service for provisioning a device certificate,
+                private key, and cloud endpoint URL. Once committed, the device
+                is locked and cannot be re-provisioned without erasing NVS.
+
+        config WENDY_CLOUD_PROV_CERT_BUF_SIZE
+            int "Certificate receive buffer size (bytes)"
+            depends on WENDY_CLOUD_PROV
+            default 2048
+            help
+                Maximum size for the client certificate PEM received via BLE.
+
+        config WENDY_CLOUD_PROV_KEY_BUF_SIZE
+            int "Private key receive buffer size (bytes)"
+            depends on WENDY_CLOUD_PROV
+            default 2048
+            help
+                Maximum size for the private key PEM received via BLE.
+
+        config WENDY_CLOUD_PROV_URL_BUF_SIZE
+            int "Cloud URL buffer size (bytes)"
+            depends on WENDY_CLOUD_PROV
+            default 256
+            help
+                Maximum length of the cloud endpoint URL.
+    endmenu
+
     menu "Networking (App-facing)"
         config WENDY_NET
             bool "Enable networking host functions"
@@ -218,13 +250,6 @@ menu "Wendy MCU Firmware Configuration"
             depends on WENDY_WIFI_ENABLED
             default 4210
 
-        config WENDY_WIFI_MDNS_HOSTNAME
-            string "mDNS hostname"
-            depends on WENDY_WIFI_ENABLED
-            default "wendy-device"
-            help
-                The mDNS hostname this device advertises on the network.
-                The device will be discoverable as <hostname>.local.
     endmenu
 
     menu "USB Communication"

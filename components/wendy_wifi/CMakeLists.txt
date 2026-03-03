@@ -12,5 +12,5 @@ endif()
 idf_component_register(
     SRCS ${srcs}
     INCLUDE_DIRS "include"
-    REQUIRES esp_wifi esp_netif esp_event esp_http_client mdns lwip freertos nvs_flash esp_partition
+    REQUIRES esp_wifi esp_netif esp_event esp_http_client mdns lwip freertos nvs_flash esp_partition wendy_cloud_prov
 )

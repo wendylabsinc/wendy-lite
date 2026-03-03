@@ -12,5 +12,5 @@ endif()
 idf_component_register(
     SRCS ${srcs}
     INCLUDE_DIRS "include"
-    REQUIRES bt nvs_flash freertos esp_event
+    REQUIRES bt nvs_flash freertos esp_event wendy_cloud_prov
 )

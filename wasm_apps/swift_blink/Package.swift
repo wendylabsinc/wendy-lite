@@ -3,6 +3,9 @@ import PackageDescription
 
 let package = Package(
     name: "SwiftBlink",
+    dependencies: [
+        .package(url: "https://github.com/apple/swift-container-plugin", from: "1.0.0"),
+    ],
     targets: [
         .target(
             name: "CWendy",
