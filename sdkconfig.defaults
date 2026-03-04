@@ -61,8 +61,8 @@ CONFIG_WENDY_CLOUD_PROV=y
 # App-facing BLE host functions disabled by default
 # CONFIG_WENDY_BLE is not set
 
-# App-facing networking disabled by default
-# CONFIG_WENDY_NET is not set
+# App-facing networking (sockets, DNS, TLS)
+CONFIG_WENDY_NET=y
 
 # App-facing USB disabled by default (no OTG on C6)
 # CONFIG_WENDY_APP_USB is not set

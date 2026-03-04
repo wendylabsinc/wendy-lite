@@ -725,7 +725,7 @@ CONFIG_WENDY_CLOUD_PROV_URL_BUF_SIZE=256
 #
 # Networking (App-facing)
 #
-# CONFIG_WENDY_NET is not set
+CONFIG_WENDY_NET=y
 # end of Networking (App-facing)
 
 #
