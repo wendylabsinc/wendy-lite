@@ -1,0 +1,14 @@
+[package]
+name = "wendy-lite"
+version = "0.1.0"
+edition = "2021"
+description = "Rust bindings for Wendy MCU WASM host functions"
+
+[lib]
+crate-type = ["rlib"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"
