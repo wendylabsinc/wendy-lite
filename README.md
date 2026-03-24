@@ -30,7 +30,7 @@ import PackageDescription
 let package = Package(
     name: "MyApp",
     dependencies: [
-        .package(url: "https://github.com/AnyWendy/wendy-lite.git", branch: "main"),
+        .package(url: "https://github.com/wendylabsinc/wendy-lite.git", branch: "main"),
     ],
     targets: [
         .executableTarget(
@@ -140,7 +140,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-wendy-lite = { git = "https://github.com/AnyWendy/wendy-lite.git" }
+wendy-lite = { git = "https://github.com/wendylabsinc/wendy-lite.git" }
 
 [profile.release]
 opt-level = "z"
