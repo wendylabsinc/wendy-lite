@@ -65,6 +65,16 @@ esp_err_t wendy_callback_post_from_isr(uint32_t handler_id,
 int wendy_callback_dispatch(void *exec_env, void *module_inst);
 
 /**
+ * Wait for at least one callback event up to the specified timeout, then
+ * dispatch that event and any other queued events.
+ * @param exec_env  Current WASM execution environment
+ * @param module_inst  Current WASM module instance
+ * @param timeout_ms  Maximum time to wait in milliseconds
+ * @return number of callbacks dispatched
+ */
+int wendy_callback_wait_and_dispatch(void *exec_env, void *module_inst, uint32_t timeout_ms);
+
+/**
  * Shut down the callback subsystem.
  */
 void wendy_callback_deinit(void);

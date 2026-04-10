@@ -12,6 +12,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 APP_DIR="${1:-swift_blink}"
 APP_PATH="$SCRIPT_DIR/$APP_DIR"
+SWIFT_VERSION="${SWIFT_VERSION:-6.3}"
+SWIFT_SDK="${SWIFT_SDK:-swift-6.3-RELEASE_wasm-embedded}"
+SWIFT_TRIPLE="${SWIFT_TRIPLE:-wasm32-unknown-wasip1}"
 
 if [ ! -f "$APP_PATH/Package.swift" ]; then
     echo "Error: $APP_PATH/Package.swift not found" >&2
@@ -23,9 +26,11 @@ PRODUCT=$(grep -m1 'name:' "$APP_PATH/Package.swift" | sed 's/.*name: *"\([^"]*\
 echo "Building $PRODUCT from $APP_DIR..."
 
 # 1. Build Swift WASM
-(cd "$APP_PATH" && swiftly run +6.2.3 swift build --triple wasm32-unknown-none-wasm -c release)
+(cd "$APP_PATH" && swiftly run +"$SWIFT_VERSION" swift build --swift-sdk "$SWIFT_SDK" --triple "$SWIFT_TRIPLE" -c release)
 
-WASM_FILE="$APP_PATH/.build/release/$PRODUCT.wasm"
+BIN_DIR=$(cd "$APP_PATH" && swiftly run +"$SWIFT_VERSION" swift build --swift-sdk "$SWIFT_SDK" --triple "$SWIFT_TRIPLE" -c release --show-bin-path)
+
+WASM_FILE="$BIN_DIR/$PRODUCT.wasm"
 if [ ! -f "$WASM_FILE" ]; then
     echo "Error: $WASM_FILE not found" >&2
     exit 1

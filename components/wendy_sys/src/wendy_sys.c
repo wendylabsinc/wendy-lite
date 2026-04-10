@@ -11,7 +11,6 @@
 
 #if CONFIG_WENDY_CALLBACK
 #include "wendy_callback.h"
-#include "wendy_wasm.h"
 #endif
 
 static const char *TAG = "wendy_sys";
@@ -61,7 +60,11 @@ static int sys_device_id_wrapper(wasm_exec_env_t exec_env,
 static void sys_sleep_ms_wrapper(wasm_exec_env_t exec_env, int ms)
 {
     if (ms > 0) {
-        vTaskDelay(pdMS_TO_TICKS(ms));
+        TickType_t ticks = pdMS_TO_TICKS(ms);
+        if (ticks == 0) {
+            ticks = 1;
+        }
+        vTaskDelay(ticks);
     }
 }
 
@@ -69,13 +72,35 @@ static void sys_sleep_ms_wrapper(wasm_exec_env_t exec_env, int ms)
 static void sys_yield_wrapper(wasm_exec_env_t exec_env)
 {
 #if CONFIG_WENDY_CALLBACK
-    void *ee = wendy_wasm_get_current_exec_env();
-    void *mi = wendy_wasm_get_current_module_inst();
-    if (ee && mi) {
-        wendy_callback_dispatch(ee, mi);
+    wasm_module_inst_t module_inst = exec_env ? wasm_runtime_get_module_inst(exec_env) : NULL;
+    if (exec_env && module_inst) {
+        wendy_callback_dispatch(exec_env, module_inst);
     }
 #endif
     taskYIELD();
+}
+
+/* sys_wait_for_event(timeout_ms) -> dispatched callback count */
+static int sys_wait_for_event_wrapper(wasm_exec_env_t exec_env, int timeout_ms)
+{
+#if CONFIG_WENDY_CALLBACK
+    wasm_module_inst_t module_inst = exec_env ? wasm_runtime_get_module_inst(exec_env) : NULL;
+    if (exec_env && module_inst) {
+        uint32_t wait_ms = timeout_ms > 0 ? (uint32_t)timeout_ms : 0;
+        return wendy_callback_wait_and_dispatch(exec_env, module_inst, wait_ms);
+    }
+#endif
+
+    if (timeout_ms > 0) {
+        TickType_t ticks = pdMS_TO_TICKS(timeout_ms);
+        if (ticks == 0) {
+            ticks = 1;
+        }
+        vTaskDelay(ticks);
+    } else {
+        taskYIELD();
+    }
+    return 0;
 }
 
 static NativeSymbol s_sys_symbols[] = {
@@ -85,6 +110,7 @@ static NativeSymbol s_sys_symbols[] = {
     { "sys_device_id",        (void *)sys_device_id_wrapper,        "(*~)i",  NULL },
     { "sys_sleep_ms",         (void *)sys_sleep_ms_wrapper,         "(i)",    NULL },
     { "sys_yield",            (void *)sys_yield_wrapper,            "()",     NULL },
+    { "sys_wait_for_event",   (void *)sys_wait_for_event_wrapper,   "(i)i",   NULL },
 };
 
 int wendy_sys_export_init(void)

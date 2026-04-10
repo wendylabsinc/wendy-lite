@@ -9,12 +9,16 @@
 #   make wat_blink    # build just the WAT blink app
 #   make rust_blink   # build the Rust blink app (requires cargo)
 #   make zig_blink    # build the Zig blink app (requires zig)
-#   make swift_display # build the Swift display app (requires Swift 6.0+)
+#   make swift_display # build the Swift display app (requires Swift 6.3 + Wasm SDK)
 #   make clean        # remove build artifacts
 
 CC       ?= clang
 CFLAGS    = --target=wasm32 -O2 -nostdlib -I include
 LDFLAGS   = -Wl,--no-entry -Wl,--export=_start -Wl,--allow-undefined
+SWIFTLY  ?= swiftly
+SWIFT_VERSION ?= 6.3
+SWIFT_SDK ?= swift-6.3-RELEASE_wasm-embedded
+SWIFT_TRIPLE ?= wasm32-unknown-wasip1
 
 C_APPS    = blink i2c_sensor
 WAT_APPS  = wat_blink
@@ -56,11 +60,12 @@ zig_blink:
 	cd zig_blink && zig build
 	cp zig_blink/zig-out/bin/zig_blink.wasm zig_blink.wasm
 
-# --- Swift display app (requires Swift 6.0+ with Embedded support) ---
+# --- Swift display app (requires Swift 6.3 + Embedded Wasm SDK) ---
 
 swift_display:
-	cd swift_display && swift build --triple wasm32-none-none-wasm
-	cp swift_display/.build/debug/SwiftDisplay.wasm swift_display.wasm
+	cd swift_display && $(SWIFTLY) run +$(SWIFT_VERSION) swift build --swift-sdk $(SWIFT_SDK) --triple $(SWIFT_TRIPLE) -c release
+	BIN_DIR=$$(cd swift_display && $(SWIFTLY) run +$(SWIFT_VERSION) swift build --swift-sdk $(SWIFT_SDK) --triple $(SWIFT_TRIPLE) -c release --show-bin-path); \
+		cp "$$BIN_DIR/SwiftDisplay.wasm" swift_display.wasm
 
 clean:
 	rm -f $(OUTPUTS) rust_blink.wasm zig_blink.wasm swift_display.wasm

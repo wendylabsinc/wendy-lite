@@ -6,7 +6,7 @@ The Wendy host firmware exposes a comprehensive set of hardware APIs through WAS
 
 ## Writing WASM Apps
 
-Every Wendy app is a `.wasm` binary that exports a `_start()` function. The firmware loads it into the WAMR runtime and calls `_start`. Your app talks to hardware through host-imported functions from the `"wendy"` module.
+Every Wendy app is a `.wasm` guest. Wendy resolves host imports from the `"wendy"` module, loads the guest into WAMR, and starts it using the entrypoint model produced by your toolchain. C, Rust, WAT, and older Swift guests usually export `_start()`. New Swift guests should prefer `@main` with the Swift WebAssembly SDK and Wendy Lite's async runtime.
 
 Pick your language below.
 
@@ -14,7 +14,18 @@ Pick your language below.
 
 Wendy Lite ships a **WendyLite** SwiftPM library. Add it as a dependency and `import WendyLite`.
 
-**Requirements:** Swift 6.0+ with Embedded Swift support (install via [swiftly](https://swiftlang.github.io/swiftly/))
+**Requirements:**
+
+- Install `swiftly` from [swift.org/install](https://www.swift.org/install/)
+- Install and select Swift 6.3:
+
+```bash
+swiftly install 6.3
+swiftly use 6.3
+```
+
+- Install the Swift SDKs for WebAssembly by following the official guide: [Getting Started with Swift SDKs for WebAssembly](https://www.swift.org/documentation/articles/wasm-getting-started.html)
+- Verify the installed SDK IDs with `swift sdk list`. Wendy Lite uses the Embedded Swift SDK, typically `swift-6.3-RELEASE_wasm-embedded`
 
 **1. Create your app package:**
 
@@ -24,7 +35,7 @@ mkdir MyApp && cd MyApp
 
 ```swift
 // Package.swift
-// swift-tools-version: 6.0
+// swift-tools-version: 6.3
 import PackageDescription
 
 let package = Package(
@@ -44,13 +55,15 @@ let package = Package(
             ],
             linkerSettings: [
                 .unsafeFlags([
-                    "-Xclang-linker", "-nostdlib",
-                    "-Xlinker", "--no-entry",
-                    "-Xlinker", "--export=_start",
                     "-Xlinker", "--allow-undefined",
-                    "-Xlinker", "--initial-memory=131072",
+                    "-Xlinker", "--initial-memory=65536",
+                    "-Xlinker", "--table-base=1",
+                    "-Xlinker", "--strip-all",
+                    "-Xlinker", "--export=malloc",
+                    "-Xlinker", "--export=free",
+                    "-Xlinker", "--export=wendy_handle_callback",
                     "-Xlinker", "-z", "-Xlinker", "stack-size=8192",
-                ])
+                ]),
             ]
         )
     ]
@@ -60,18 +73,23 @@ let package = Package(
 **2. Write your app:**
 
 ```swift
-// Sources/MyApp/main.swift
+// Sources/MyApp/AppMain.swift
 import WendyLite
 
-@_cdecl("_start")
-func start() {
-    GPIO.configure(pin: 8, mode: .output)
+@main
+struct Main {
+    static func main() async {
+        WendyRuntime.initAsyncRuntime()
 
-    while true {
-        GPIO.write(pin: 8, level: 1)
-        System.sleepMs(500)
-        GPIO.write(pin: 8, level: 0)
-        System.sleepMs(500)
+        let clock = WendyClock()
+        GPIO.configure(pin: 8, mode: .output)
+
+        while true {
+            GPIO.write(pin: 8, level: 1)
+            try? await clock.sleep(for: .milliseconds(500))
+            GPIO.write(pin: 8, level: 0)
+            try? await clock.sleep(for: .milliseconds(500))
+        }
     }
 }
 ```
@@ -79,8 +97,13 @@ func start() {
 **3. Build:**
 
 ```bash
-swift build --triple wasm32-unknown-none-wasm -c release
+swiftly run +6.3 swift build \
+    --swift-sdk swift-6.3-RELEASE_wasm-embedded \
+    --triple wasm32-unknown-wasip1 \
+    -c release
 ```
+
+Call `WendyRuntime.initAsyncRuntime()` once at startup and use `WendyClock` instead of `Task.sleep()`, which is unavailable in Embedded Swift.
 
 The `WendyLite` module provides Swift-idiomatic APIs for every subsystem:
 
@@ -274,25 +297,20 @@ Once you have a `.wasm` binary, convert it to a C header and rebuild the firmwar
 # Or manually:
 ./wasm_apps/wasm2header.sh my_app.wasm main/demo_wasm.h
 idf.py build
-idf.py flash
 ```
 
 ## Async Callbacks
 
-Some APIs accept a `handler_id` parameter for async events (GPIO interrupts, timers, BLE events). To receive these callbacks, export a handler function:
+Some APIs accept a `handler_id` parameter for async events (GPIO interrupts, timers, BLE events).
+
+For Swift apps built with `WendyLite`, call `WendyRuntime.initAsyncRuntime()` once from `@main`. Wendy Lite exports `wendy_handle_callback` for you and pumps callbacks in the background, so `WendyClock.sleep`, timers, and other async APIs can resume without manual `System.yield()` calls.
+
+Low-level C and Rust guests still receive callbacks by exporting a handler function and periodically yielding:
 
 ```c
 // C
 void wendy_handle_callback(int handler_id, int arg0, int arg1, int arg2) {
     // Dispatched when you call sys_yield()
-}
-```
-
-```swift
-// Swift
-@_cdecl("wendy_handle_callback")
-func handleCallback(_ handlerId: Int32, _ arg0: Int32, _ arg1: Int32, _ arg2: Int32) {
-    // Dispatched when you call System.yield()
 }
 ```
 
@@ -304,7 +322,7 @@ pub extern "C" fn wendy_handle_callback(handler_id: i32, arg0: i32, arg1: i32, a
 }
 ```
 
-Callbacks are dispatched when your app calls `sys_yield()` / `System.yield()` / `sys::yield_now()`.
+For manual guests, callbacks are dispatched when your app calls `sys_yield()` / `sys::yield_now()`.
 
 ## API Reference
 

@@ -26,6 +26,12 @@ static const char *TAG = "wendy_wasi";
 #define WASI_CLOCK_PROCESS_CPUTIME   2
 #define WASI_CLOCK_THREAD_CPUTIME    3
 
+/* WASI file types */
+#define WASI_FILETYPE_CHARACTER_DEVICE 2
+
+/* wasm32 preview1 fdstat layout is 24 bytes. */
+#define WASI_FDSTAT_SIZE 24
+
 /*
  * fd_write(fd, iovs_offset, iovs_len, nwritten_offset) -> errno
  * WASI iovec: { buf_offset: u32, buf_len: u32 }
@@ -107,6 +113,30 @@ static int wasi_fd_seek(wasm_exec_env_t exec_env,
                          uint32_t new_offset_off)
 {
     return WASI_ENOSYS;
+}
+
+/* fd_fdstat_get(fd, fdstat_ptr) -> errno */
+static int wasi_fd_fdstat_get(wasm_exec_env_t exec_env, int fd,
+                               uint32_t fdstat_off)
+{
+    wasm_module_inst_t inst = wasm_runtime_get_module_inst(exec_env);
+    uint8_t *fdstat;
+
+    if (fd != 0 && fd != 1 && fd != 2) {
+        return WASI_EBADF;
+    }
+
+    if (!wasm_runtime_validate_app_addr(inst, fdstat_off, WASI_FDSTAT_SIZE)) {
+        return WASI_EINVAL;
+    }
+
+    fdstat = wasm_runtime_addr_app_to_native(inst, fdstat_off);
+    memset(fdstat, 0, WASI_FDSTAT_SIZE);
+
+    /* Expose stdio as character devices with no seek/tell rights. */
+    fdstat[0] = WASI_FILETYPE_CHARACTER_DEVICE;
+
+    return WASI_ESUCCESS;
 }
 
 /* fd_prestat_get(fd, prestat_off) -> errno */
@@ -243,6 +273,7 @@ static NativeSymbol s_wasi_symbols[] = {
     { "fd_write",              (void *)wasi_fd_write,              "(iiii)i",      NULL },
     { "fd_read",               (void *)wasi_fd_read,               "(iiii)i",      NULL },
     { "fd_close",              (void *)wasi_fd_close,              "(i)i",         NULL },
+    { "fd_fdstat_get",         (void *)wasi_fd_fdstat_get,         "(ii)i",        NULL },
     { "fd_seek",               (void *)wasi_fd_seek,               "(iIii)i",      NULL },
     { "fd_prestat_get",        (void *)wasi_fd_prestat_get,        "(ii)i",        NULL },
     { "fd_prestat_dir_name",   (void *)wasi_fd_prestat_dir_name,   "(iii)i",       NULL },
