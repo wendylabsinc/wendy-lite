@@ -55,7 +55,7 @@ public struct WendyClock: Sendable {
 
 private let timerCallbackHandlerID: Int32 = 1
 
-/// Called by WendyRuntime.initAsyncRuntime() to wire up timer events.
+/// Called during WendyLiteApp bootstrap to wire up timer events.
 func registerTimerCallback() {
     CallbackDispatch.register(timerCallbackHandlerID) { _, _, _ in
         TimerState.shared.timerFired()

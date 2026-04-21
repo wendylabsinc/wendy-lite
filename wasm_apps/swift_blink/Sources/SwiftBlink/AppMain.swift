@@ -57,38 +57,31 @@ private func sleepMs(_ ms: Int64, clock: WendyClock) async {
     try? await clock.sleep(for: .milliseconds(ms))
 }
 
-private func blinkLoop(channel: Int32, clock: WendyClock) async {
-    while true {
-        ws2812Send(channel, 255, 0, 0)
-        await sleepMs(500, clock: clock)
-        ws2812Send(channel, 0, 255, 0)
-        await sleepMs(500, clock: clock)
-        ws2812Send(channel, 0, 0, 255)
-        await sleepMs(500, clock: clock)
-        ws2812Send(channel, 255, 255, 0)
-        await sleepMs(500, clock: clock)
-        ws2812Send(channel, 0, 255, 255)
-        await sleepMs(500, clock: clock)
-        ws2812Send(channel, 255, 0, 255)
-        await sleepMs(500, clock: clock)
-        ws2812Send(channel, 255, 255, 255)
-        await sleepMs(500, clock: clock)
-        ws2812Send(channel, 0, 0, 0)
-        await sleepMs(500, clock: clock)
-    }
-}
-
 @main
-struct Main {
-    static func main() async {
-        WendyRuntime.initAsyncRuntime()
+struct Main: WendyLiteApp {
+    let clock = WendyClock()
+    var channel: Int32 = -1
 
-        let clock = WendyClock()
-        let channel = RMT.configure(pin: 8, resolutionHz: 10_000_000)
-        if channel < 0 {
-            return
-        }
+    mutating func setup() async {
+        channel = RMT.configure(pin: 8, resolutionHz: 10_000_000)
+    }
 
-        await blinkLoop(channel: channel, clock: clock)
+    mutating func loop() async {
+        ws2812Send(channel, 255, 0, 0)      // red
+        await sleepMs(500, clock: clock)
+        ws2812Send(channel, 0, 255, 0)      // green
+        await sleepMs(500, clock: clock)
+        ws2812Send(channel, 0, 0, 255)      // blue
+        await sleepMs(500, clock: clock)
+        ws2812Send(channel, 255, 255, 0)    // yellow
+        await sleepMs(500, clock: clock)
+        ws2812Send(channel, 0, 255, 255)    // cyan
+        await sleepMs(500, clock: clock)
+        ws2812Send(channel, 255, 0, 255)    // purple
+        await sleepMs(500, clock: clock)
+        ws2812Send(channel, 255, 255, 255)  // white
+        await sleepMs(500, clock: clock)
+        ws2812Send(channel, 0, 0, 0)        // off
+        await sleepMs(500, clock: clock)
     }
 }

@@ -6,7 +6,7 @@ The Wendy host firmware exposes a comprehensive set of hardware APIs through WAS
 
 ## Writing WASM Apps
 
-Every Wendy app is a `.wasm` guest. Wendy resolves host imports from the `"wendy"` module, loads the guest into WAMR, and starts it using the entrypoint model produced by your toolchain. C, Rust, WAT, and older Swift guests usually export `_start()`. New Swift guests should prefer `@main` with the Swift WebAssembly SDK and Wendy Lite's async runtime.
+Every Wendy app is a `.wasm` guest. Wendy resolves host imports from the `"wendy"` module, loads the guest into WAMR, and starts it using the entrypoint model produced by your toolchain. C, Rust, WAT, and older Swift guests usually export `_start()`. New Swift guests should prefer `@main` on a type that conforms to `WendyLiteApp`.
 
 Pick your language below.
 
@@ -77,19 +77,18 @@ let package = Package(
 import WendyLite
 
 @main
-struct Main {
-    static func main() async {
-        WendyRuntime.initAsyncRuntime()
+struct MyApp: WendyLiteApp {
+    let clock = WendyClock()
+    var isOn = false
 
-        let clock = WendyClock()
+    mutating func setup() async {
         GPIO.configure(pin: 8, mode: .output)
+    }
 
-        while true {
-            GPIO.write(pin: 8, level: 1)
-            try? await clock.sleep(for: .milliseconds(500))
-            GPIO.write(pin: 8, level: 0)
-            try? await clock.sleep(for: .milliseconds(500))
-        }
+    mutating func loop() async {
+        GPIO.write(pin: 8, level: isOn ? 1 : 0)
+        isOn.toggle()
+        try? await clock.sleep(for: .milliseconds(500))
     }
 }
 ```
@@ -103,7 +102,7 @@ swiftly run +6.3 swift build \
     -c release
 ```
 
-Call `WendyRuntime.initAsyncRuntime()` once at startup and use `WendyClock` instead of `Task.sleep()`, which is unavailable in Embedded Swift.
+Put one-time startup work in `setup()` and steady-state behavior in `loop()`. Use `WendyClock` instead of `Task.sleep()`, which is unavailable in Embedded Swift.
 
 The `WendyLite` module provides Swift-idiomatic APIs for every subsystem:
 
@@ -303,7 +302,7 @@ idf.py build
 
 Some APIs accept a `handler_id` parameter for async events (GPIO interrupts, timers, BLE events).
 
-For Swift apps built with `WendyLite`, call `WendyRuntime.initAsyncRuntime()` once from `@main`. Wendy Lite exports `wendy_handle_callback` for you and pumps callbacks in the background, so `WendyClock.sleep`, timers, and other async APIs can resume without manual `System.yield()` calls.
+For Swift apps built with `WendyLite`, conform your `@main` type to `WendyLiteApp`. Wendy Lite exports `wendy_handle_callback` for you and pumps callbacks in the background so `WendyClock.sleep` and other async APIs can resume without manual `System.yield()` calls.
 
 Low-level C and Rust guests still receive callbacks by exporting a handler function and periodically yielding:
 
