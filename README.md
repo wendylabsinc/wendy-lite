@@ -17,15 +17,15 @@ Wendy Lite ships a **WendyLite** SwiftPM library. Add it as a dependency and `im
 **Requirements:**
 
 - Install `swiftly` from [swift.org/install](https://www.swift.org/install/)
-- Install and select Swift 6.3:
+- Install and select Swift 6.3.1:
 
 ```bash
-swiftly install 6.3
-swiftly use 6.3
+swiftly install 6.3.1
+swiftly use 6.3.1
 ```
 
 - Install the Swift SDKs for WebAssembly by following the official guide: [Getting Started with Swift SDKs for WebAssembly](https://www.swift.org/documentation/articles/wasm-getting-started.html)
-- Verify the installed SDK IDs with `swift sdk list`. Wendy Lite uses the Embedded Swift SDK, typically `swift-6.3-RELEASE_wasm-embedded`
+- Verify the installed SDK IDs with `swift sdk list`. Wendy Lite uses the Embedded Swift SDK, typically `swift-6.3.1-RELEASE_wasm-embedded`
 
 **1. Create your app package:**
 
@@ -96,8 +96,8 @@ struct MyApp: WendyLiteApp {
 **3. Build:**
 
 ```bash
-swiftly run +6.3 swift build \
-    --swift-sdk swift-6.3-RELEASE_wasm-embedded \
+swiftly run +6.3.1 swift build \
+    --swift-sdk swift-6.3.1-RELEASE_wasm-embedded \
     --triple wasm32-unknown-wasip1 \
     -c release
 ```
