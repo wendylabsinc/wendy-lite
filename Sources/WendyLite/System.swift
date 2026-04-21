@@ -30,6 +30,12 @@ public enum System {
     public static func yield() {
         sys_yield()
     }
+
+    @discardableResult
+    @inline(__always)
+    public static func waitForEvent(timeoutMs: Int32) -> Int32 {
+        sys_wait_for_event(timeoutMs)
+    }
 }
 
 public enum Console {

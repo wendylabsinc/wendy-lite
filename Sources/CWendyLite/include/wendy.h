@@ -132,6 +132,9 @@ void sys_sleep_ms(int ms);
 __attribute__((import_module("wendy"), import_name("sys_yield")))
 void sys_yield(void);
 
+__attribute__((import_module("wendy"), import_name("sys_wait_for_event")))
+int sys_wait_for_event(int timeout_ms);
+
 /* ── Storage (NVS) ──────────────────────────────────────────────────── */
 
 __attribute__((import_module("wendy"), import_name("storage_get")))

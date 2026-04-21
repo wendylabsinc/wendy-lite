@@ -27,6 +27,9 @@ DO_BUILD=true
 RELOAD_ONLY=false
 TARGET=""
 DEVICE_ARGS=""
+SWIFT_VERSION="${SWIFT_VERSION:-6.3}"
+SWIFT_SDK="${SWIFT_SDK:-swift-6.3-RELEASE_wasm-embedded}"
+SWIFT_TRIPLE="${SWIFT_TRIPLE:-wasm32-unknown-wasip1}"
 
 # ── Parse arguments ──────────────────────────────────────────────────
 
@@ -83,9 +86,10 @@ elif [ -d "$WASM_APPS_DIR/$TARGET" ] && [ -f "$WASM_APPS_DIR/$TARGET/Package.swi
         | sed 's/.*name: *"\([^"]*\)".*/\1/')
     if $DO_BUILD; then
         echo "Building Swift app '$PRODUCT' from $TARGET..."
-        (cd "$WASM_APPS_DIR/$TARGET" && swiftly run +6.2.3 swift build --triple wasm32-unknown-none-wasm -c release)
+        (cd "$WASM_APPS_DIR/$TARGET" && swiftly run +"$SWIFT_VERSION" swift build --swift-sdk "$SWIFT_SDK" --triple "$SWIFT_TRIPLE" -c release)
     fi
-    WASM_FILE="$WASM_APPS_DIR/$TARGET/.build/release/$PRODUCT.wasm"
+    BIN_DIR=$(cd "$WASM_APPS_DIR/$TARGET" && swiftly run +"$SWIFT_VERSION" swift build --swift-sdk "$SWIFT_SDK" --triple "$SWIFT_TRIPLE" -c release --show-bin-path)
+    WASM_FILE="$BIN_DIR/$PRODUCT.wasm"
 
 elif [ -d "$WASM_APPS_DIR/$TARGET" ] && [ -f "$WASM_APPS_DIR/$TARGET/Cargo.toml" ]; then
     # Rust app

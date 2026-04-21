@@ -12,6 +12,9 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_WENDY_WASM_STACK_SIZE=8192
 CONFIG_WENDY_WASM_HEAP_SIZE=8192
 CONFIG_WENDY_WASM_POOL_SIZE=229376
+# Classic interpreter uses less RAM than the fast interpreter.
+CONFIG_WAMR_INTERP_CLASSIC=y
+# CONFIG_WAMR_INTERP_FAST is not set
 
 # Disable WAMR pthread (causes assert in FreeRTOS tasks)
 # CONFIG_WAMR_ENABLE_LIB_PTHREAD is not set
@@ -19,6 +22,10 @@ CONFIG_WENDY_WASM_POOL_SIZE=229376
 
 # Disable WAMR built-in WASI (we provide our own shim)
 # CONFIG_WAMR_ENABLE_LIBC_WASI is not set
+# CONFIG_WAMR_ENABLE_MEMORY_PROFILING is not set
+
+# Swift async executables use table/ref instructions from the runtime.
+CONFIG_WAMR_ENABLE_REF_TYPES=y
 
 # Wendy HAL defaults
 CONFIG_WENDY_HAL_GPIO=y
