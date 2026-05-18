@@ -70,6 +70,13 @@ static int s_status_val_len = 1;
 /* Device name (built at init) */
 static char s_device_name[32];
 
+/* True once build_device_name() has populated s_device_name from a real
+ * controller address. Until then s_device_name holds a placeholder
+ * (e.g. "Wendy-INIT") and external readers should treat the name as
+ * not yet available. volatile because it's written by the NimBLE host
+ * task and read by other init paths (mDNS hostname pickup, etc.). */
+static volatile bool s_device_name_resolved = false;
+
 /* Handle for status characteristic (for notifications) */
 static uint16_t s_status_chr_val_handle;
 
@@ -303,6 +310,7 @@ static void build_device_name(void)
     snprintf(s_device_name, sizeof(s_device_name),
              "%s-%02X%02X", CONFIG_WENDY_BLE_PROV_DEVICE_PREFIX,
              addr[1], addr[0]);
+    s_device_name_resolved = true;
 }
 
 /* ── NimBLE host sync callback ─────────────────────────────────────── */
@@ -422,6 +430,11 @@ bool wendy_ble_prov_nimble_ready(void)
     return s_nimble_ready;
 }
 
+const char *wendy_ble_prov_get_device_name(void)
+{
+    return s_device_name_resolved ? s_device_name : NULL;
+}
+
 #else /* BLE prov not enabled */
 
 esp_err_t wendy_ble_prov_init(const wendy_ble_prov_callbacks_t *callbacks)
@@ -439,6 +452,11 @@ void wendy_ble_prov_set_status(wendy_ble_prov_status_t status, const char *ip_ad
 bool wendy_ble_prov_nimble_ready(void)
 {
     return false;
+}
+
+const char *wendy_ble_prov_get_device_name(void)
+{
+    return NULL;
 }
 
 #endif /* CONFIG_WENDY_BLE_PROV */

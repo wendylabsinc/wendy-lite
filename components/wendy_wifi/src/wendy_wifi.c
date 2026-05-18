@@ -18,6 +18,12 @@
 #include "mdns.h"
 #include "esp_mac.h"
 
+#include <ctype.h>
+
+#if CONFIG_WENDY_BLE_PROV
+#include "wendy_ble_prov.h"
+#endif
+
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
 
@@ -185,20 +191,33 @@ static esp_err_t save_nvs_creds(const char *ssid, const char *password)
 
 static esp_err_t register_mdns_service(void)
 {
-    /* Build device name from BT MAC to match BLE advertising name */
+    /* Mirror the BLE advertising name so a device shows the same
+     * Wendy-XXXX identity over BLE and mDNS. wendy_ble_prov is the
+     * single source of truth - it can read the controller's address
+     * whether the controller is native (C6) or remote-over-VHCI (P4),
+     * whereas esp_read_mac(ESP_MAC_BT) only works for native BT and
+     * silently returned zeros on the P4. */
     char device_name[32];
     char hostname[32];
-    uint8_t mac[6];
-    esp_err_t err = esp_read_mac(mac, ESP_MAC_BT);
-    if (err != ESP_OK) {
+    const char *ble_name = NULL;
+#if CONFIG_WENDY_BLE_PROV
+    ble_name = wendy_ble_prov_get_device_name();
+#endif
+    if (ble_name && ble_name[0]) {
+        strlcpy(device_name, ble_name, sizeof(device_name));
+        size_t i = 0;
+        for (; i < sizeof(hostname) - 1 && ble_name[i]; i++) {
+            hostname[i] = (char)tolower((unsigned char)ble_name[i]);
+        }
+        hostname[i] = '\0';
+    } else {
+        /* BLE prov disabled or NimBLE host not yet synced - use a
+         * deterministic fallback. */
         snprintf(device_name, sizeof(device_name), "Wendy-0000");
         snprintf(hostname, sizeof(hostname), "wendy-0000");
-    } else {
-        snprintf(device_name, sizeof(device_name), "Wendy-%02X%02X", mac[4], mac[5]);
-        snprintf(hostname, sizeof(hostname), "wendy-%02x%02x", mac[4], mac[5]);
     }
 
-    err = mdns_init();
+    esp_err_t err = mdns_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "mDNS init failed: %s", esp_err_to_name(err));
         return err;
