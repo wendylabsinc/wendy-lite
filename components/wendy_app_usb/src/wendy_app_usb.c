@@ -13,7 +13,7 @@ static const char *TAG = "wendy_app_usb";
  * On other chips these register as stubs returning -1.
  */
 
-#if SOC_USB_OTG_SUPPORTED
+#if SOC_USB_OTG_SUPPORTED && CONFIG_WENDY_APP_USB
 
 #include "tinyusb.h"
 #include "tusb_cdc_acm.h"

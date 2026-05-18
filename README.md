@@ -4,6 +4,41 @@ Wendy Lite is a WebAssembly runtime for ESP32 microcontrollers. Write your appli
 
 The Wendy host firmware exposes a comprehensive set of hardware APIs through WASM imports — GPIO, I2C, SPI, UART, RMT, NeoPixel, BLE, WiFi, sockets, TLS, USB, NVS storage, timers, and OpenTelemetry.
 
+## Supported Hardware
+
+Wendy Lite firmware builds for two ESP-IDF targets:
+
+| Target | Boards | Wi-Fi / BT | Flash | PSRAM | WAMR pool |
+|---|---|---|---|---|---|
+| `esp32c6` | Espressif ESP32-C6-DevKitC | Native | 4 MB | - | system allocator |
+| `esp32p4` | DFRobot DFR1172 FireBeetle 2, Espressif P4-Function-EV-Board, other P4+C6 boards (see notes) | Via on-board ESP32-C6 over SDIO (ESP-Hosted) | 16 MB | 32 MB | 24 MiB pre-allocated from PSRAM |
+
+The two targets share the same source tree. Per-target overrides live in `sdkconfig.defaults.<target>` plus a target-specific partition CSV. Guest WASM binaries are interchangeable between targets.
+
+## Building the Firmware
+
+### Pick a target
+
+```bash
+idf.py set-target esp32c6      # for the C6 DevKit
+# or
+idf.py set-target esp32p4      # for the DFR1172 FireBeetle 2 (and similar P4 boards)
+```
+
+### Build, flash, monitor
+
+```bash
+idf.py build
+idf.py flash
+idf.py monitor
+```
+
+### ESP32-P4 notes
+
+The P4 build assumes the on-board co-processor is an ESP32-C6 wired the same way as Espressif's ESP32-P4-Function-EV-Board (SDIO 4-bit on GPIO14-19 plus reset on GPIO54). This is the official Espressif reference layout that several third-party boards copy verbatim.
+
+For other P4 boards, if the C6 lives on the same SDIO pins, you may need to adjust the chip revision and possibly the PSRAM mode/speed (`CONFIG_SPIRAM_MODE_HEX`, `CONFIG_SPIRAM_SPEED_200M`) to match your board. If the C6 is on different pins or talks over SPI instead of SDIO, disable `CONFIG_ESP_HOSTED_P4_DEV_BOARD_FUNC_BOARD` and set the transport pins via `idf.py menuconfig` -> *Component config -> ESP-Hosted config*.
+
 ## Writing WASM Apps
 
 Every Wendy app is a `.wasm` guest. Wendy resolves host imports from the `"wendy"` module, loads the guest into WAMR, and starts it using the entrypoint model produced by your toolchain. C, Rust, WAT, and older Swift guests usually export `_start()`. New Swift guests should prefer `@main` on a type that conforms to `WendyLiteApp`.
