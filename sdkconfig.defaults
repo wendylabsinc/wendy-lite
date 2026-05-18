@@ -1,5 +1,6 @@
 # Universal Wendy firmware defaults.
 # Target-specific overrides live in sdkconfig.defaults.<target>:
+#   - sdkconfig.defaults.esp32c5   (single-chip board, dual-band Wi-Fi 6)
 #   - sdkconfig.defaults.esp32c6   (single-chip board)
 #   - sdkconfig.defaults.esp32p4   (FireBeetle 2 ESP32-P4 + on-board C6)
 

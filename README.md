@@ -6,20 +6,23 @@ The Wendy host firmware exposes a comprehensive set of hardware APIs through WAS
 
 ## Supported Hardware
 
-Wendy Lite firmware builds for two ESP-IDF targets:
+Wendy Lite firmware builds for three ESP-IDF targets:
 
 | Target | Boards | Wi-Fi / BT | Flash | PSRAM | WAMR pool |
 |---|---|---|---|---|---|
+| `esp32c5` | Espressif ESP32-C5-DevKitC | Native (2.4 / 5 GHz Wi-Fi 6 + BLE) | 4 MB | - | system allocator |
 | `esp32c6` | Espressif ESP32-C6-DevKitC | Native | 4 MB | - | system allocator |
 | `esp32p4` | DFRobot DFR1172 FireBeetle 2, Espressif P4-Function-EV-Board, other P4+C6 boards (see notes) | Via on-board ESP32-C6 over SDIO (ESP-Hosted) | 16 MB | 32 MB | 24 MiB pre-allocated from PSRAM |
 
-The two targets share the same source tree. Per-target overrides live in `sdkconfig.defaults.<target>` plus a target-specific partition CSV. Guest WASM binaries are interchangeable between targets.
+The three targets share the same source tree. Per-target overrides live in `sdkconfig.defaults.<target>` plus a target-specific partition CSV. Guest WASM binaries are interchangeable between targets.
 
 ## Building the Firmware
 
 ### Pick a target
 
 ```bash
+idf.py set-target esp32c5      # for the C5 DevKit
+# or
 idf.py set-target esp32c6      # for the C6 DevKit
 # or
 idf.py set-target esp32p4      # for the DFR1172 FireBeetle 2 (and similar P4 boards)
