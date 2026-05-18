@@ -22,10 +22,11 @@ static TaskHandle_t s_rx_task;
 static SemaphoreHandle_t s_tx_mutex;
 
 /* Upload state machine */
-static uint8_t *s_upload_buf = NULL;
+static bool     s_upload_active = false;
 static uint32_t s_upload_total = 0;
 static uint32_t s_upload_received = 0;
-static uint32_t s_upload_crc = 0;
+static uint32_t s_upload_expected_crc = 0;
+static uint32_t s_upload_running_crc = 0;
 static uint8_t  s_upload_slot = 0;
 
 /* ── CRC32 ──────────────────────────────────────────────────────────── */
@@ -102,7 +103,7 @@ static void handle_ping(uint8_t seq, const uint8_t *payload, uint32_t len)
         .flash_free       = 0x180000, /* 1.5 MB per slot */
         .sram_free        = (uint32_t)esp_get_free_heap_size(),
         .wasm_slot_active = 0,
-        .has_wasm_loaded  = (s_upload_buf != NULL) ? 1 : 0,
+        .has_wasm_loaded  = s_upload_active ? 1 : 0,
     };
 
 #if CONFIG_WENDY_HAL_GPIO && CONFIG_WENDY_HAL_I2C
@@ -111,6 +112,19 @@ static void handle_ping(uint8_t seq, const uint8_t *payload, uint32_t len)
 
     ESP_LOGI(TAG, "PING received, sending DEVICE_INFO");
     send_message(WENDY_MSG_DEVICE_INFO, seq, &info, sizeof(info));
+}
+
+/* Tear down any in-progress session and notify the consumer. */
+static void abort_active_upload(void)
+{
+    if (!s_upload_active) return;
+    if (s_callbacks.on_upload_abort) {
+        s_callbacks.on_upload_abort(s_upload_slot);
+    }
+    s_upload_active = false;
+    s_upload_total = 0;
+    s_upload_received = 0;
+    s_upload_running_crc = 0;
 }
 
 static void handle_upload_start(uint8_t seq, const uint8_t *payload, uint32_t len)
@@ -122,38 +136,44 @@ static void handle_upload_start(uint8_t seq, const uint8_t *payload, uint32_t le
 
     const wendy_usb_upload_start_t *start = (const wendy_usb_upload_start_t *)payload;
 
-    /* Clean up any previous upload */
-    if (s_upload_buf) {
-        free(s_upload_buf);
-        s_upload_buf = NULL;
-    }
+    /* A previous UPLOAD_START with no matching DONE leaves a stale session;
+     * invalidate it so the consumer's sink doesn't keep half-written state. */
+    abort_active_upload();
 
     if (start->total_size == 0 || start->total_size > 0x180000) {
         send_nack(seq, "invalid size");
         return;
     }
 
-    s_upload_buf = malloc(start->total_size);
-    if (!s_upload_buf) {
-        send_nack(seq, "out of memory");
+    if (!s_callbacks.on_upload_begin) {
+        send_nack(seq, "no upload sink");
         return;
     }
 
-    s_upload_total    = start->total_size;
-    s_upload_received = 0;
-    s_upload_crc      = start->crc32;
-    s_upload_slot     = start->slot;
+    esp_err_t err = s_callbacks.on_upload_begin(start->slot, start->total_size);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "on_upload_begin failed: %s", esp_err_to_name(err));
+        send_nack(seq, "upload begin failed");
+        return;
+    }
+
+    s_upload_active       = true;
+    s_upload_total        = start->total_size;
+    s_upload_received     = 0;
+    s_upload_expected_crc = start->crc32;
+    s_upload_running_crc  = 0;
+    s_upload_slot         = start->slot;
 
     ESP_LOGI(TAG, "UPLOAD_START: %lu bytes, crc=0x%08lx, slot=%d",
              (unsigned long)s_upload_total,
-             (unsigned long)s_upload_crc,
+             (unsigned long)s_upload_expected_crc,
              s_upload_slot);
     send_ack(seq);
 }
 
 static void handle_upload_chunk(uint8_t seq, const uint8_t *payload, uint32_t len)
 {
-    if (!s_upload_buf) {
+    if (!s_upload_active) {
         send_nack(seq, "no upload in progress");
         return;
     }
@@ -166,12 +186,31 @@ static void handle_upload_chunk(uint8_t seq, const uint8_t *payload, uint32_t le
     uint32_t data_len = len - sizeof(wendy_usb_upload_chunk_t);
     const uint8_t *data = payload + sizeof(wendy_usb_upload_chunk_t);
 
-    if (chunk->offset + data_len > s_upload_total) {
+    /* Incremental CRC requires strict in-order chunks; out-of-order would
+     * mean recomputing CRC over the whole sink after the fact. */
+    if (chunk->offset != s_upload_received) {
+        ESP_LOGE(TAG, "out-of-order chunk: got offset %lu, expected %lu",
+                 (unsigned long)chunk->offset,
+                 (unsigned long)s_upload_received);
+        abort_active_upload();
+        send_nack(seq, "out-of-order chunk");
+        return;
+    }
+    if ((uint64_t)chunk->offset + data_len > s_upload_total) {
+        abort_active_upload();
         send_nack(seq, "chunk exceeds total size");
         return;
     }
 
-    memcpy(s_upload_buf + chunk->offset, data, data_len);
+    esp_err_t err = s_callbacks.on_upload_chunk(chunk->offset, data, data_len);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "on_upload_chunk failed: %s", esp_err_to_name(err));
+        abort_active_upload();
+        send_nack(seq, "chunk write failed");
+        return;
+    }
+
+    s_upload_running_crc = esp_rom_crc32_le(s_upload_running_crc, data, data_len);
     s_upload_received += data_len;
 
     send_ack(seq);
@@ -179,34 +218,37 @@ static void handle_upload_chunk(uint8_t seq, const uint8_t *payload, uint32_t le
 
 static void handle_upload_done(uint8_t seq, const uint8_t *payload, uint32_t len)
 {
-    if (!s_upload_buf || s_upload_received < s_upload_total) {
+    if (!s_upload_active || s_upload_received < s_upload_total) {
         send_nack(seq, "upload incomplete");
         return;
     }
 
-    /* Verify CRC */
-    uint32_t actual_crc = wendy_crc32(s_upload_buf, s_upload_total);
-    if (actual_crc != s_upload_crc) {
+    if (s_upload_running_crc != s_upload_expected_crc) {
         ESP_LOGE(TAG, "CRC mismatch: expected 0x%08lx, got 0x%08lx",
-                 (unsigned long)s_upload_crc, (unsigned long)actual_crc);
-        free(s_upload_buf);
-        s_upload_buf = NULL;
+                 (unsigned long)s_upload_expected_crc,
+                 (unsigned long)s_upload_running_crc);
+        abort_active_upload();
         send_nack(seq, "CRC mismatch");
         return;
     }
 
-    ESP_LOGI(TAG, "UPLOAD_DONE: %lu bytes verified", (unsigned long)s_upload_total);
-    send_ack(seq);
-
-    if (s_callbacks.on_upload_complete) {
-        s_callbacks.on_upload_complete(s_upload_buf, s_upload_total, s_upload_slot);
+    esp_err_t err = ESP_OK;
+    if (s_callbacks.on_upload_end) {
+        err = s_callbacks.on_upload_end(s_upload_slot);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "on_upload_end failed: %s", esp_err_to_name(err));
+        abort_active_upload();
+        send_nack(seq, "upload end failed");
+        return;
     }
 
-    /* Callback receives a borrowed pointer; we free after it returns */
-    free(s_upload_buf);
-    s_upload_buf = NULL;
+    ESP_LOGI(TAG, "UPLOAD_DONE: %lu bytes verified", (unsigned long)s_upload_total);
+    s_upload_active = false;
     s_upload_total = 0;
     s_upload_received = 0;
+    s_upload_running_crc = 0;
+    send_ack(seq);
 }
 
 static void handle_run(uint8_t seq)
@@ -427,8 +469,5 @@ void wendy_usb_deinit(void)
         vSemaphoreDelete(s_tx_mutex);
         s_tx_mutex = NULL;
     }
-    if (s_upload_buf) {
-        free(s_upload_buf);
-        s_upload_buf = NULL;
-    }
+    abort_active_upload();
 }

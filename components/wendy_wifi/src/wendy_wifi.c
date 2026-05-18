@@ -12,7 +12,6 @@
 #include "esp_netif.h"
 #include "esp_event.h"
 #include "esp_http_client.h"
-#include "esp_partition.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "mdns.h"
@@ -193,7 +192,7 @@ static esp_err_t register_mdns_service(void)
 {
     /* Mirror the BLE advertising name so a device shows the same
      * Wendy-XXXX identity over BLE and mDNS. wendy_ble_prov is the
-     * single source of truth - it can read the controller's address
+     * single source of truth — it can read the controller's address
      * whether the controller is native (C6) or remote-over-VHCI (P4),
      * whereas esp_read_mac(ESP_MAC_BT) only works for native BT and
      * silently returned zeros on the P4. */
@@ -211,7 +210,7 @@ static esp_err_t register_mdns_service(void)
         }
         hostname[i] = '\0';
     } else {
-        /* BLE prov disabled or NimBLE host not yet synced - use a
+        /* BLE prov disabled or NimBLE host not yet synced — use a
          * deterministic fallback. */
         snprintf(device_name, sizeof(device_name), "Wendy-0000");
         snprintf(hostname, sizeof(hostname), "wendy-0000");
@@ -282,35 +281,25 @@ static esp_err_t download_wasm(void)
         return ESP_FAIL;
     }
 
-    /* Find and erase the flash partition */
-    const esp_partition_t *part = esp_partition_find_first(
-        ESP_PARTITION_TYPE_DATA, 0x80, "wasm_a");
-    if (!part) {
-        ESP_LOGE(TAG, "wasm_a partition not found");
+    if (!s_callbacks.on_upload_begin || !s_callbacks.on_upload_chunk ||
+        !s_callbacks.on_upload_end || !s_callbacks.on_upload_abort) {
+        ESP_LOGE(TAG, "upload callbacks not wired");
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
-        return ESP_FAIL;
+        return ESP_ERR_INVALID_STATE;
     }
 
-    if ((uint32_t)content_length + sizeof(uint32_t) > part->size) {
-        ESP_LOGE(TAG, "WASM binary too large for partition (%d > %lu)",
-                 content_length, (unsigned long)part->size);
+    err = s_callbacks.on_upload_begin(0, (uint32_t)content_length);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "upload begin failed: %s", esp_err_to_name(err));
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
-        return ESP_FAIL;
+        return err;
     }
 
     ESP_LOGI(TAG, "streaming %d bytes to flash...", content_length);
-    esp_partition_erase_range(part, 0, part->size);
 
-    /* Write size header first */
-    uint32_t size = (uint32_t)content_length;
-    esp_partition_write(part, 0, &size, sizeof(size));
-
-    /* Stream HTTP body directly to flash, one chunk at a time */
-    int flash_offset = sizeof(uint32_t);
     int total_read = 0;
-
     while (total_read < content_length) {
         int to_read = content_length - total_read;
         if (to_read > DL_CHUNK_SIZE) {
@@ -320,26 +309,36 @@ static esp_err_t download_wasm(void)
         int read_len = esp_http_client_read(client, (char *)s_dl_chunk, to_read);
         if (read_len <= 0) {
             ESP_LOGE(TAG, "HTTP read error at offset %d", total_read);
+            s_callbacks.on_upload_abort(0);
             esp_http_client_close(client);
             esp_http_client_cleanup(client);
             return ESP_FAIL;
         }
 
-        esp_partition_write(part, flash_offset, s_dl_chunk, read_len);
-        flash_offset += read_len;
+        err = s_callbacks.on_upload_chunk((uint32_t)total_read,
+                                          s_dl_chunk, (uint32_t)read_len);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "upload chunk failed at offset %d: %s",
+                     total_read, esp_err_to_name(err));
+            s_callbacks.on_upload_abort(0);
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            return err;
+        }
         total_read += read_len;
     }
 
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
 
-    ESP_LOGI(TAG, "downloaded %d bytes to flash", total_read);
-
-    /* Notify callback — pass NULL data, caller loads from flash */
-    if (s_callbacks.on_upload_complete) {
-        s_callbacks.on_upload_complete(NULL, (uint32_t)total_read, 0);
+    err = s_callbacks.on_upload_end(0);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "upload end failed: %s", esp_err_to_name(err));
+        s_callbacks.on_upload_abort(0);
+        return err;
     }
 
+    ESP_LOGI(TAG, "downloaded %d bytes", total_read);
     return ESP_OK;
 }
 

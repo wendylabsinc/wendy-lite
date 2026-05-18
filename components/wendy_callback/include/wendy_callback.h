@@ -75,6 +75,12 @@ int wendy_callback_dispatch(void *exec_env, void *module_inst);
 int wendy_callback_wait_and_dispatch(void *exec_env, void *module_inst, uint32_t timeout_ms);
 
 /**
+ * Drain queued callback events and free all handler IDs without deleting the queue.
+ * Called when a WASM guest stops or is replaced.
+ */
+void wendy_callback_reset(void);
+
+/**
  * Shut down the callback subsystem.
  */
 void wendy_callback_deinit(void);
