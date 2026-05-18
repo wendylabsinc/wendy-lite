@@ -1,20 +1,11 @@
-# Target: ESP32-C6
-CONFIG_IDF_TARGET="esp32c6"
+# Universal Wendy firmware defaults.
+# Target-specific overrides live in sdkconfig.defaults.<target>:
+#   - sdkconfig.defaults.esp32c6   (single-chip board)
 
-# Flash size (8MB to accommodate dual WASM slots)
-CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
-
-# Partition table - custom for dual WASM slots
-CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
-
-# WAMR configuration
+# WAMR configuration (interpreter choice is picked per-target).
 CONFIG_WENDY_WASM_STACK_SIZE=8192
 CONFIG_WENDY_WASM_HEAP_SIZE=8192
 CONFIG_WENDY_WASM_POOL_SIZE=229376
-# Classic interpreter uses less RAM than the fast interpreter.
-CONFIG_WAMR_INTERP_CLASSIC=y
-# CONFIG_WAMR_INTERP_FAST is not set
 
 # Disable WAMR pthread (causes assert in FreeRTOS tasks)
 # CONFIG_WAMR_ENABLE_LIB_PTHREAD is not set
@@ -71,12 +62,6 @@ CONFIG_WENDY_CLOUD_PROV=y
 # App-facing networking (sockets, DNS, TLS)
 CONFIG_WENDY_NET=y
 
-# App-facing USB disabled by default (no OTG on C6)
-# CONFIG_WENDY_APP_USB is not set
-
-# USB CDC not available on C6 (no native USB OTG)
-# CONFIG_WENDY_USB_CDC_ENABLED is not set
-
 # WiFi transport for WASM download
 CONFIG_WENDY_WIFI_ENABLED=y
 CONFIG_WENDY_WIFI_SSID=""
@@ -87,22 +72,16 @@ CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 
 # --- Memory optimizations ---
 
-# 1. Size-optimized build (-Os instead of -Og)
+# Size-optimized build (-Os instead of -Og)
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
 CONFIG_COMPILER_OPTIMIZATION_ASSERTION_LEVEL=1
 
-# 2. Disable stack overflow canary (saves RAM per task)
+# Disable stack overflow canary (saves RAM per task)
 CONFIG_FREERTOS_CHECK_STACKOVERFLOW_NONE=y
 
-# Move WiFi/PHY hot paths from IRAM to flash (frees ~15-25 KB DIRAM)
-CONFIG_ESP_WIFI_IRAM_OPT=n
-CONFIG_ESP_WIFI_EXTRA_IRAM_OPT=n
-CONFIG_ESP_WIFI_RX_IRAM_OPT=n
-CONFIG_ESP_WIFI_SLP_IRAM_OPT=n
-CONFIG_ESP_PHY_IRAM_OPT=n
-
-# 3. Tune NimBLE buffer pools (sized for max 2 connections)
+# Tune NimBLE buffer pools (sized for max 2 connections). These apply
+# regardless of whether the controller is native or remote.
 CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=12
 CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=12
 CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=8
