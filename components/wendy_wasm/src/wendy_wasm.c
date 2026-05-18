@@ -63,21 +63,39 @@ void *wendy_wasm_get_current_module_inst(void)
 
 esp_err_t wendy_wasm_prealloc_pool(uint32_t pool_size)
 {
+    if (pool_size == 0) {
+        /* Caller opted out of pre-allocation. wendy_wasm_init() will fall
+         * through to Alloc_With_System_Allocator, letting WAMR and the rest
+         * of the system share the heap dynamically. This trades the hard
+         * ceiling on guest memory for not pre-reserving a fixed chunk that
+         * can starve the wifi DMA pool. */
+        ESP_LOGI(TAG, "pool prealloc skipped (pool_size=0); using system allocator");
+        return ESP_OK;
+    }
+
     if (s_pool_buf) {
         ESP_LOGW(TAG, "pool already allocated");
         return ESP_OK;
     }
 
-    s_pool_buf = heap_caps_aligned_alloc(8, pool_size,
-                                          MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+#if CONFIG_SPIRAM && CONFIG_WENDY_WASM_USE_PSRAM
+    const uint32_t caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    const char *where = "PSRAM";
+#else
+    const uint32_t caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    const char *where = "internal SRAM";
+#endif
+
+    s_pool_buf = heap_caps_aligned_alloc(8, pool_size, caps);
     if (!s_pool_buf) {
-        ESP_LOGE(TAG, "failed to pre-allocate %lu byte pool",
-                 (unsigned long)pool_size);
+        ESP_LOGE(TAG, "failed to pre-allocate %lu byte pool from %s",
+                 (unsigned long)pool_size, where);
         return ESP_ERR_NO_MEM;
     }
 
     s_pool_size = pool_size;
-    ESP_LOGI(TAG, "pre-allocated %lu byte WAMR pool", (unsigned long)pool_size);
+    ESP_LOGI(TAG, "pre-allocated %lu byte WAMR pool from %s",
+             (unsigned long)pool_size, where);
     return ESP_OK;
 }
 

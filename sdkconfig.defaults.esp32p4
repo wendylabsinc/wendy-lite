@@ -65,11 +65,18 @@ CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
 CONFIG_LWIP_TCP_SACK_OUT=y
 
 # --- WAMR runtime: fast interpreter (more code memory, ~2x speed) ---
+# Plenty of PSRAM headroom so the larger fast-interp IR is no concern.
 # CONFIG_WAMR_INTERP_CLASSIC is not set
 CONFIG_WAMR_INTERP_FAST=y
 # Use the normal loader so we can load larger / less constrained modules.
 # CONFIG_WAMR_INTERP_LOADER_MINI is not set
 CONFIG_WAMR_INTERP_LOADER_NORMAL=y
+
+# WAMR pool generously sized since running WASM guests is the entire point:
+# 24 MiB out of the 32 MiB PSRAM. Leaves ~8 MiB PSRAM for system-malloc
+# fallbacks.
+CONFIG_WENDY_WASM_POOL_SIZE=25165824
+CONFIG_WENDY_WASM_USE_PSRAM=y
 
 # App USB / CDC stack is off by default; CDC's TinyUSB pull-in needs an
 # explicit opt-in. (Cleaned up in a later commit via Kconfig depends.)
