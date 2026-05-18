@@ -303,7 +303,13 @@ menu "Wendy MCU Firmware Configuration"
     menu "USB Communication"
         config WENDY_USB_CDC_ENABLED
             bool "Enable USB CDC protocol"
-            default y
+            depends on SOC_USB_OTG_SUPPORTED
+            default n
+            help
+                Host-side TinyUSB CDC channel used to upload WASM
+                guests over USB. Requires a SoC with native USB OTG
+                (ESP32-S2/S3/P4) and the esp_tinyusb managed
+                component. Off by default on every target.
 
         config WENDY_USB_PROTOCOL_VERSION
             int "USB protocol version"

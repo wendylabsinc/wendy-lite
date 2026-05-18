@@ -211,11 +211,24 @@ internal final class TimerHub {
     }
 
     private func durationToMillisecondsRoundedUp(_ duration: Duration) -> Int64 {
-        let components = duration.components
-        let totalAttoseconds = components.seconds &* 1_000 &* attosecondsPerMillisecond + components.attoseconds
-        if totalAttoseconds <= 0 {
+        if duration <= .zero {
             return 0
         }
-        return (totalAttoseconds + attosecondsPerMillisecond - 1) / attosecondsPerMillisecond
+
+        let components = duration.components
+        if components.seconds > Int64.max / 1_000 {
+            return Int64.max
+        }
+
+        var milliseconds = components.seconds * 1_000
+        if components.attoseconds > 0 {
+            let extraMilliseconds = (components.attoseconds + attosecondsPerMillisecond - 1) / attosecondsPerMillisecond
+            if milliseconds > Int64.max - extraMilliseconds {
+                return Int64.max
+            }
+            milliseconds += extraMilliseconds
+        }
+
+        return milliseconds
     }
 }
