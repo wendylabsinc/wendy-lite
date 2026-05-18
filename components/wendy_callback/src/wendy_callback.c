@@ -15,7 +15,7 @@ static uint32_t s_alloc_bitmap; /* bit per handler ID (1..32) */
 
 static wasm_function_inst_t lookup_handler_function(wasm_module_inst_t module_inst)
 {
-    return wasm_runtime_lookup_function(module_inst, "wendy_handle_callback", NULL);
+    return wasm_runtime_lookup_function(module_inst, "wendy_handle_callback");
 }
 
 static void dispatch_event(wasm_exec_env_t exec_env,

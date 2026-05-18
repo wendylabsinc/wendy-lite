@@ -354,9 +354,9 @@ esp_err_t wendy_wasm_run(wendy_wasm_module_handle_t module)
 
     /* Look for _start (WASI) or main */
     wasm_function_inst_t func = wasm_runtime_lookup_function(
-        module->module_inst, "_start", NULL);
+        module->module_inst, "_start");
     if (!func) {
-        func = wasm_runtime_lookup_function(module->module_inst, "main", NULL);
+        func = wasm_runtime_lookup_function(module->module_inst, "main");
     }
     if (!func) {
         ESP_LOGE(TAG, "no _start or main function found");
