@@ -228,6 +228,11 @@ int wendy_hal_timer_schedule_interval(uint32_t ms, void (*cb)(void *), void *arg
  */
 int wendy_hal_timer_cancel(int timer_id);
 
+/**
+ * Cancel and delete all timers owned by the current WASM guest.
+ */
+void wendy_hal_timer_cancel_all(void);
+
 #ifdef __cplusplus
 }
 #endif

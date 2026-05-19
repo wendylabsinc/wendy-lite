@@ -86,8 +86,20 @@ typedef struct __attribute__((packed)) {
 /* ── Callbacks for protocol events ──────────────────────────────────── */
 
 typedef struct {
-    /** Called when a valid WASM binary has been fully uploaded. */
-    void (*on_upload_complete)(const uint8_t *data, uint32_t len, uint8_t slot);
+    /** Called once when an upload starts. Total length is announced upfront so
+     *  the consumer can prepare its sink (e.g. erase a flash partition). */
+    esp_err_t (*on_upload_begin)(uint8_t slot, uint32_t total_len);
+
+    /** Called for each sequential chunk; offset always equals total bytes
+     *  delivered so far. The consumer should append to its sink. */
+    esp_err_t (*on_upload_chunk)(uint32_t offset, const uint8_t *data, uint32_t len);
+
+    /** Called once when all bytes have been delivered and verified. */
+    esp_err_t (*on_upload_end)(uint8_t slot);
+
+    /** Called on any upload failure (CRC mismatch, transport error,
+     *  reset-mid-upload). The consumer should invalidate its sink. */
+    void (*on_upload_abort)(uint8_t slot);
 
     /** Called when the CLI sends RUN. */
     void (*on_run)(void);

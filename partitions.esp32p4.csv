@@ -1,0 +1,9 @@
+# Name,     Type, SubType, Offset,   Size,     Flags
+# 16 MB flash on the DFR1172 (ESP32-P4 FireBeetle 2).
+# App gets ~3 MB headroom (current build sits well under 1 MB); the bulk
+# of the flash goes to the WASM guest slot.
+nvs,        data, nvs,     0x9000,   0x6000,
+phy_init,   data, phy,     0xf000,   0x1000,
+factory,    app,  factory, 0x10000,  0x300000,
+wasm_a,     data, 0x80,    0x310000, 0xc00000,
+storage,    data, spiffs,  0xf10000, 0xf0000,

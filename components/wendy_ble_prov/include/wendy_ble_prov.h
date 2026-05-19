@@ -56,6 +56,18 @@ void wendy_ble_prov_set_status(wendy_ble_prov_status_t status, const char *ip_ad
  */
 bool wendy_ble_prov_nimble_ready(void);
 
+/**
+ * Returns the advertising device name (e.g. "Wendy-EC3A") once the
+ * NimBLE host has synced with the controller and a real address is
+ * available; returns NULL before that. Callers should treat the
+ * NULL case as "not yet known" and fall back to a generic name.
+ *
+ * This is the canonical Wendy-XXXX identity. wendy_wifi uses it for
+ * mDNS so the BLE name and the LAN-side service name always match,
+ * even when the BT controller is remote (e.g. ESP-Hosted on the P4).
+ */
+const char *wendy_ble_prov_get_device_name(void);
+
 #ifdef __cplusplus
 }
 #endif

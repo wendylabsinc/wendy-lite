@@ -13,7 +13,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [esp32c5, esp32c6]
+        include:
+          - target: esp32c5
+            flash_size: 4MB
+          - target: esp32c6
+            flash_size: 4MB
+          - target: esp32p4
+            flash_size: 16MB
     container:
       image: espressif/idf:v5.5.1
     steps:
@@ -34,7 +40,7 @@ jobs:
           esptool.py --chip ${{ matrix.target }} merge_bin \
             -o wendy_mcu_${{ matrix.target }}.bin \
             --flash_mode dio \
-            --flash_size 4MB \
+            --flash_size ${{ matrix.flash_size }} \
             @flash_args
 
       - name: Upload build artifact
@@ -67,7 +73,8 @@ jobs:
             --title "Nightly" \
             --notes "Automated nightly build from \`main\` ($(date -u '+%Y-%m-%d %H:%M UTC')), commit ${{ github.sha }}" \
             wendy_mcu_esp32c5/wendy_mcu_esp32c5.bin \
-            wendy_mcu_esp32c6/wendy_mcu_esp32c6.bin
+            wendy_mcu_esp32c6/wendy_mcu_esp32c6.bin \
+            wendy_mcu_esp32p4/wendy_mcu_esp32p4.bin
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -85,3 +92,4 @@ jobs:
           files: |
             wendy_mcu_esp32c5/wendy_mcu_esp32c5.bin
             wendy_mcu_esp32c6/wendy_mcu_esp32c6.bin
+            wendy_mcu_esp32p4/wendy_mcu_esp32p4.bin

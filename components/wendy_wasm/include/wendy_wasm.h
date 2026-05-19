@@ -103,6 +103,15 @@ esp_err_t wendy_wasm_run(wendy_wasm_module_handle_t module);
 esp_err_t wendy_wasm_stop(wendy_wasm_module_handle_t module);
 
 /**
+ * True between a call to wendy_wasm_stop() and the matching wendy_wasm_run()
+ * returning. Native dispatchers (e.g. wendy_callback) must check this before
+ * calling back into wasm - entering wasm during termination would observe the
+ * "terminated by user" exception and, if cleared, would silently undo the stop
+ * request and let the guest's main loop resume.
+ */
+bool wendy_wasm_is_terminating(void);
+
+/**
  * Unload a WASM module and free all associated resources.
  */
 void wendy_wasm_unload(wendy_wasm_module_handle_t module);

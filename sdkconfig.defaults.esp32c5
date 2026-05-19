@@ -1,5 +1,8 @@
-# Target: ESP32-C6
-CONFIG_IDF_TARGET="esp32c6"
+# Target: ESP32-C5 (dual-band Wi-Fi 6 + BLE single-chip board).
+# Mirrors the C6 overlay; the chips differ on radio (C5 adds 5 GHz) and
+# 802.15.4 (C5 omits) but the firmware-side knobs we care about are the
+# same shape: 4 MB flash, classic WAMR, native Wi-Fi + BT, no USB OTG.
+CONFIG_IDF_TARGET="esp32c5"
 
 # Flash size - keep at 4 MB; partitions.csv is sized accordingly.
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
@@ -8,15 +11,11 @@ CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
-# WAMR: classic interp + mini loader keep flash/RAM use tight on the C6.
+# WAMR: classic interp + mini loader keep flash/RAM use tight on the C5.
 CONFIG_WAMR_INTERP_CLASSIC=y
 # CONFIG_WAMR_INTERP_FAST is not set
 CONFIG_WAMR_INTERP_LOADER_MINI=y
 # CONFIG_WAMR_INTERP_LOADER_NORMAL is not set
-
-# USB CDC not available on C6 (no native USB OTG).
-# CONFIG_WENDY_APP_USB is not set
-# CONFIG_WENDY_USB_CDC_ENABLED is not set
 
 # Move WiFi/PHY hot paths from IRAM to flash (frees ~15-25 KB DIRAM)
 CONFIG_ESP_WIFI_IRAM_OPT=n

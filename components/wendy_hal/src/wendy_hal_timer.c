@@ -1,5 +1,6 @@
 #include "wendy_hal.h"
 
+#include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/timers.h"
 #include "esp_timer.h"
@@ -149,4 +150,15 @@ int wendy_hal_timer_cancel(int timer_id)
     s_timers[idx].handle = NULL;
     s_timers[idx].active = false;
     return 0;
+}
+
+void wendy_hal_timer_cancel_all(void)
+{
+    for (int i = 0; i < MAX_TIMERS; i++) {
+        if (s_timers[i].handle) {
+            esp_timer_stop(s_timers[i].handle);
+            esp_timer_delete(s_timers[i].handle);
+        }
+        memset(&s_timers[i], 0, sizeof(s_timers[i]));
+    }
 }

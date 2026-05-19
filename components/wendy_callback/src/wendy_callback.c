@@ -5,6 +5,7 @@
 #include "freertos/queue.h"
 #include "esp_log.h"
 #include "wasm_export.h"
+#include "wendy_wasm.h"
 
 static const char *TAG = "wendy_callback";
 
@@ -15,7 +16,7 @@ static uint32_t s_alloc_bitmap; /* bit per handler ID (1..32) */
 
 static wasm_function_inst_t lookup_handler_function(wasm_module_inst_t module_inst)
 {
-    return wasm_runtime_lookup_function(module_inst, "wendy_handle_callback", NULL);
+    return wasm_runtime_lookup_function(module_inst, "wendy_handle_callback");
 }
 
 static void dispatch_event(wasm_exec_env_t exec_env,
@@ -27,12 +28,23 @@ static void dispatch_event(wasm_exec_env_t exec_env,
         return;
     }
 
+    if (wendy_wasm_is_terminating()) {
+        return;
+    }
+
     uint32_t argv[4] = { evt.handler_id, evt.arg0, evt.arg1, evt.arg2 };
     if (!wasm_runtime_call_wasm(exec_env, handler_func, 4, argv)) {
         const char *exc = wasm_runtime_get_exception(module_inst);
-        ESP_LOGE(TAG, "callback dispatch failed (handler_id=%lu): %s",
-                 (unsigned long)evt.handler_id, exc ? exc : "unknown");
-        wasm_runtime_clear_exception(module_inst);
+        ESP_LOGE(TAG,
+                 "callback dispatch failed (handler_id=%lu arg0=%lu arg1=%lu arg2=%lu): %s",
+                 (unsigned long)evt.handler_id, (unsigned long)evt.arg0,
+                 (unsigned long)evt.arg1, (unsigned long)evt.arg2,
+                 exc ? exc : "unknown");
+        // Don't clear "terminated by user".
+        // Clearing it would make wasm think it can keep running.
+        if (!wendy_wasm_is_terminating()) {
+            wasm_runtime_clear_exception(module_inst);
+        }
     }
 }
 
@@ -185,6 +197,16 @@ int wendy_callback_wait_and_dispatch(void *exec_env_ptr, void *module_inst_ptr, 
     }
 
     return count;
+}
+
+void wendy_callback_reset(void)
+{
+    if (s_queue) {
+        wendy_callback_event_t evt;
+        while (xQueueReceive(s_queue, &evt, 0) == pdTRUE) {
+        }
+    }
+    s_alloc_bitmap = 0;
 }
 
 void wendy_callback_deinit(void)

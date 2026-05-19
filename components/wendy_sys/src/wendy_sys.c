@@ -15,6 +15,12 @@
 
 static const char *TAG = "wendy_sys";
 
+/* yield, permitting lower-priority tasks to run unlike taskYIELD() */
+static void wendy_sys_yield_to_freertos(void)
+{
+    vTaskDelay(1);
+}
+
 /* sys_uptime_ms() -> i64 */
 static int64_t sys_uptime_ms_wrapper(wasm_exec_env_t exec_env)
 {
@@ -77,7 +83,7 @@ static void sys_yield_wrapper(wasm_exec_env_t exec_env)
         wendy_callback_dispatch(exec_env, module_inst);
     }
 #endif
-    taskYIELD();
+    wendy_sys_yield_to_freertos();
 }
 
 /* sys_wait_for_event(timeout_ms) -> dispatched callback count */
@@ -87,7 +93,10 @@ static int sys_wait_for_event_wrapper(wasm_exec_env_t exec_env, int timeout_ms)
     wasm_module_inst_t module_inst = exec_env ? wasm_runtime_get_module_inst(exec_env) : NULL;
     if (exec_env && module_inst) {
         uint32_t wait_ms = timeout_ms > 0 ? (uint32_t)timeout_ms : 0;
-        return wendy_callback_wait_and_dispatch(exec_env, module_inst, wait_ms);
+        int dispatched = wendy_callback_wait_and_dispatch(exec_env, module_inst,
+                                                          wait_ms);
+        wendy_sys_yield_to_freertos();
+        return dispatched;
     }
 #endif
 
@@ -98,7 +107,7 @@ static int sys_wait_for_event_wrapper(wasm_exec_env_t exec_env, int timeout_ms)
         }
         vTaskDelay(ticks);
     } else {
-        taskYIELD();
+        wendy_sys_yield_to_freertos();
     }
     return 0;
 }
