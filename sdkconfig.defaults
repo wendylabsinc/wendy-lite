@@ -10,8 +10,12 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
 # WAMR configuration
 CONFIG_WENDY_WASM_STACK_SIZE=8192
-CONFIG_WENDY_WASM_HEAP_SIZE=8192
-CONFIG_WENDY_WASM_POOL_SIZE=229376
+CONFIG_WENDY_WASM_HEAP_SIZE=0
+# 0 = use system allocator (no pre-allocated pool). Trades the hard guest
+# ceiling for letting wifi DMA buffers and the wasm runtime share heap
+# dynamically. With a 224 KiB pre-allocated pool on ESP32-C6, the DMA pool
+# was being starved to single bytes, breaking outbound wifi entirely.
+CONFIG_WENDY_WASM_POOL_SIZE=0
 # Classic interpreter uses less RAM than the fast interpreter.
 CONFIG_WAMR_INTERP_CLASSIC=y
 # CONFIG_WAMR_INTERP_FAST is not set
