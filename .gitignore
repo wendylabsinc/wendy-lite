@@ -4,3 +4,4 @@ target
 wasm_apps/swift_blink/.build
 wasm_apps/swift_display/.build
 wasm_apps/rust_blink/target
+.DS_Store
