@@ -29,6 +29,10 @@
 #include "wendy_cloud_prov.h"
 #endif
 
+#if CONFIG_WENDY_CLOUD_ENABLED
+#include "wendy_cloud.h"
+#endif
+
 #if CONFIG_WENDY_BLE_PROV
 #include "wendy_ble_prov.h"
 #include "nvs.h"
@@ -533,6 +537,13 @@ void app_main(void)
 #endif /* CONFIG_WENDY_BLE_PROV */
     }
 #endif /* CONFIG_WENDY_WIFI_ENABLED */
+
+#if CONFIG_WENDY_CLOUD_ENABLED
+    err = wendy_cloud_start();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "cloud start failed: %s", esp_err_to_name(err));
+    }
+#endif
 
     /*
      * Spawn the WASM management thread.

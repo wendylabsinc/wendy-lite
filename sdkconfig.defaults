@@ -65,6 +65,17 @@ CONFIG_WENDY_BLE_PROV=y
 # Cloud provisioning (device certificates via BLE)
 CONFIG_WENDY_CLOUD_PROV=y
 
+# Cloud mTLS connection
+CONFIG_WENDY_CLOUD_ENABLED=y
+
+# mbedTLS memory — dynamic buffers avoid a large upfront allocation at ssl_setup
+# time. Without this, mbedtls_ssl_setup fails with MBEDTLS_ERR_SSL_ALLOC_FAILED
+# (-0x7F00) because WiFi+BLE+WAMR leave insufficient contiguous heap.
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_PEER_CERT=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=8192
+
 # App-facing BLE host functions disabled by default
 # CONFIG_WENDY_BLE is not set
 

@@ -209,6 +209,32 @@ menu "Wendy MCU Firmware Configuration"
                 Maximum length of the cloud endpoint URL.
     endmenu
 
+    menu "Cloud Connection"
+        config WENDY_CLOUD_ENABLED
+            bool "Enable cloud mTLS connection"
+            default n
+            depends on WENDY_CLOUD_PROV && ESP_TLS_USING_MBEDTLS
+            help
+                Open a persistent mTLS socket to the cloud endpoint using
+                credentials provisioned by wendy_cloud_prov.
+
+        config WENDY_CLOUD_TASK_STACK_SIZE
+            int "Cloud task stack size (bytes)"
+            depends on WENDY_CLOUD_ENABLED
+            default 8192
+
+        config WENDY_CLOUD_TASK_PRIORITY
+            int "Cloud task priority"
+            depends on WENDY_CLOUD_ENABLED
+            default 5
+            range 1 24
+
+        config WENDY_CLOUD_RECONNECT_DELAY_MS
+            int "Reconnect delay (ms)"
+            depends on WENDY_CLOUD_ENABLED
+            default 5000
+    endmenu
+
     menu "Networking (App-facing)"
         config WENDY_NET
             bool "Enable networking host functions"
