@@ -34,15 +34,16 @@ struct Main: WendyLiteApp {
                 .pipeline { LineCodec() }
                 .connect(to: Endpoint(hostname: targetHost, port: targetPort))
 
-            _ = try await channel.send(message)
-            await channel.close()
+            try await channel.executeThenClose { (_: Inbound<String>, outbound: Outbound<String>) throws(WendyNetError) -> Void in
+                _ = try await outbound.write(message)
+            }
         } catch {
             _ = error
         }
     }
 }
 
-final class LineCodec: PipelineStage, @unchecked Sendable {
+final class LineCodec: PipelineStage {
     typealias Input = ByteBuffer
     typealias Output = String
 

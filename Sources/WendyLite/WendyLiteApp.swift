@@ -3,7 +3,20 @@ import _Concurrency
 private let runtimeWaitMs: Int32 = 250
 
 private enum RuntimeBootstrapState {
-    nonisolated(unsafe) static var started = false
+    private struct State {
+        var started = false
+    }
+    private static let state = _LockedBox(State())
+
+    /// Atomically check-and-set the `started` flag. Returns `true` if this
+    /// caller is the first to call it (i.e. should perform bootstrap work).
+    static func claim() -> Bool {
+        state.withLockedValue { s in
+            if s.started { return false }
+            s.started = true
+            return true
+        }
+    }
 }
 
 private func pumpAsyncRuntimeOnce(timeoutMs: Int32) {
@@ -12,11 +25,9 @@ private func pumpAsyncRuntimeOnce(timeoutMs: Int32) {
 }
 
 private func bootstrapAsyncRuntime() {
-    if RuntimeBootstrapState.started {
+    if !RuntimeBootstrapState.claim() {
         return
     }
-
-    RuntimeBootstrapState.started = true
     registerTimerCallback()
 
     // Drain any events that arrived before user code starts its main loop.

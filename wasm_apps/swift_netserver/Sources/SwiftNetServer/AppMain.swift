@@ -8,28 +8,22 @@ private let lineEnding = "\n"
 struct Main: WendyLiteApp {
     let clock = WendyClock()
 
-    mutating func setup() async {
-        Task {
-            try? await chatServer()
-        }
-    }
-
     mutating func loop() async {
-        try? await clock.sleep(for: .seconds(60))
+        try? await chatServer()
     }
 }
 
-// MARK: - Chat Example: Pipeline Stages
+// MARK: - Pipeline
 
-/// Converts a newline-delimited byte stream into String messages.
-final class LineCodec: PipelineStage, @unchecked Sendable {
+final class LineCodec: PipelineStage {
     typealias Input = ByteBuffer
     typealias Output = String
 
     private var buffer = ByteBuffer()
 
     func decode(_ input: ByteBuffer, _ emit: (String) -> Void, _ fail: (WendyNetError) -> Void) {
-        buffer.writeBuffer(input)
+        var input = input
+        buffer.writeBuffer(&input)
         while let line = extractLine() {
             emit(line)
         }
@@ -50,7 +44,7 @@ final class LineCodec: PipelineStage, @unchecked Sendable {
                 guard var line = buffer.readSlice(length: i) else {
                     return nil
                 }
-                buffer.moveReaderIndex(by: 1)
+                buffer.moveReaderIndex(forwardBy: 1)
                 let bytes = line.readBytes(length: line.readableBytes) ?? []
                 return String(decoding: bytes, as: UTF8.self)
             }
@@ -59,59 +53,93 @@ final class LineCodec: PipelineStage, @unchecked Sendable {
     }
 }
 
-// MARK: - Chat Server
+// MARK: - Inbox
+//
+// Per-connection message queue.
 
-final class ChatRoom: @unchecked Sendable {
-    var clients: [Channel<String>] = []
+actor Inbox {
+    private var queue: [String] = []
+    private var waiter: CheckedContinuation<String?, Never>?
+    private var closed = false
 
-    func add(_ client: Channel<String>) {
-        clients.append(client)
-    }
-
-    func remove(_ client: Channel<String>) {
-        var index = 0
-        while index < clients.count {
-            if clients[index] === client {
-                clients.remove(at: index)
-            } else {
-                index += 1
-            }
+    func push(_ msg: String) {
+        if closed { return }
+        if let w = waiter {
+            waiter = nil
+            w.resume(returning: msg)
+        } else {
+            queue.append(msg)
         }
     }
 
-    private func openClients(excluding sender: Channel<String>? = nil) -> [Channel<String>] {
-        var open: [Channel<String>] = []
-        var index = 0
-        while index < clients.count {
-            let client = clients[index]
-            if !client.isOpen {
-                clients.remove(at: index)
-                continue
-            }
-            if sender == nil || client !== sender {
-                open.append(client)
-            }
-            index += 1
+    func close() {
+        closed = true
+        if let w = waiter {
+            waiter = nil
+            w.resume(returning: nil)
         }
-        return open
     }
 
-    func broadcast(_ message: String, from sender: Channel<String>) async {
+    func pop() async -> String? {
+        if !queue.isEmpty {
+            return queue.removeFirst()
+        }
+        if closed {
+            return nil
+        }
+        return await withCheckedContinuation { cont in
+            waiter = cont
+        }
+    }
+}
+
+// MARK: - Chat Room
+
+actor ChatRoom {
+    private struct Subscriber {
+        let id: Int
+        let inbox: Inbox
+    }
+
+    private var subscribers: [Subscriber] = []
+    private var nextID = 0
+
+    func subscribe() -> (id: Int, inbox: Inbox) {
+        let id = nextID
+        nextID += 1
+        let inbox = Inbox()
+        subscribers.append(Subscriber(id: id, inbox: inbox))
+        return (id, inbox)
+    }
+
+    func unsubscribe(id: Int) async {
+        if let i = subscribers.firstIndex(where: { $0.id == id }) {
+            let inbox = subscribers[i].inbox
+            subscribers.remove(at: i)
+            await inbox.close()
+        }
+    }
+
+    func broadcast(_ message: String, from senderID: Int) async {
         let outbound = "> \(message)"
-        let recipients = openClients(excluding: sender)
-        for client in recipients {
-            _ = try? await client.send(outbound)
+        // Snapshot the recipients so the actor re-entrant gap between pushes
+        // doesn't accidentally include subscribers added mid-broadcast.
+        let recipients = subscribers.filter { $0.id != senderID }.map { $0.inbox }
+        for inbox in recipients {
+            await inbox.push(outbound)
         }
     }
 
     func broadcastStatus() async {
-        let recipients = openClients()
+        let recipients = subscribers.map { $0.inbox }
         let status = "peers connected: \(recipients.count)"
-        for client in recipients {
-            _ = try? await client.send(status)
+        for inbox in recipients {
+            await inbox.push(status)
         }
     }
 }
+
+// MARK: - Chat Server
 
 func chatServer() async throws(WendyNetError) {
     let net = WendyNet()
@@ -123,26 +151,89 @@ func chatServer() async throws(WendyNetError) {
 
     let listener = try await server.bind(port: 9000)
 
-    Task { [room] in
-        let clock = WendyClock()
-        while true {
-            try? await clock.sleep(for: .seconds(30))
-            await room.broadcastStatus()
-        }
-    }
+    try await listener.executeThenClose { (accepted: Accepted<String>) throws(WendyNetError) -> Void in
+        // Embedded Swift forbids existential `any Error` values, so we can't use
+        // `withThrowingTaskGroup` here.
+        await withTaskGroup(of: Void.self) { group in
+            // Heartbeat -- a structured child of the listener's scope.
+            group.addTask { [room] in
+                let clock = WendyClock()
+                while !Task.isCancelled {
+                    do throws(CancellationError) {
+                        try await clock.sleep(for: .seconds(30))
+                    } catch {
+                        return
+                    }
+                    await room.broadcastStatus()
+                }
+            }
 
-    while let channel = try await listener.accept() {
-        room.add(channel)
-
-        Task { [room, channel] in
+            // Accept loop drives the group. When this loop exits -- by the
+            // listener closing or the surrounding task being cancelled --
+            // the heartbeat child is cancelled and the group unwinds.
             do throws(WendyNetError) {
-                while let msg = try await channel.receive() {
-                    await room.broadcast(msg, from: channel)
+                while let channel = try await accepted.next() {
+                    group.addTask { [room] in
+                        await handleAcceptedChannel(channel: channel, room: room)
+                    }
                 }
             } catch {
-                _ = error
+                // .closed (listener torn down) or .cancelled (task cancelled);
+                // either way, fall through to tear down the group.
             }
-            room.remove(channel)
+
+            group.cancelAll()
         }
+    }
+}
+
+/// Wraps `channel.executeThenClose` for one accepted connection. Body is
+/// explicitly typed-throws because Swift won't infer `throws(WendyNetError)`
+/// for trailing closures captured into Task contexts.
+private func handleAcceptedChannel(channel: Channel<String>, room: ChatRoom) async {
+    let (id, inbox) = await room.subscribe()
+    _ = try? await channel.executeThenClose { (inbound: Inbound<String>, outbound: Outbound<String>) throws(WendyNetError) -> Void in
+        await runConnection(inbound: inbound, outbound: outbound, room: room, id: id, inbox: inbox)
+    }
+    await room.unsubscribe(id: id)
+}
+
+/// Drives a single accepted connection. Reads from `inbound` and broadcasts to
+/// peers; concurrently pumps from `inbox` to `outbound`. When either side ends
+/// (peer disconnect, write error) the other is cancelled via group teardown.
+private func runConnection(
+    inbound: Inbound<String>,
+    outbound: Outbound<String>,
+    room: ChatRoom,
+    id: Int,
+    inbox: Inbox
+) async {
+    await withTaskGroup(of: Void.self) { group in
+        // Read messages from this peer and broadcast to others.
+        group.addTask {
+            do throws(WendyNetError) {
+                while let msg = try await inbound.next() {
+                    await room.broadcast(msg, from: id)
+                }
+            } catch {
+                // Connection torn down -- fall through and
+                // cancel the outbound pump.
+            }
+        }
+
+        // Pump broadcast messages destined for this peer to outbound.
+        group.addTask {
+            while let msg = await inbox.pop() {
+                do throws(WendyNetError) {
+                    _ = try await outbound.write(msg)
+                } catch {
+                    return
+                }
+            }
+        }
+
+        // Wait for either child to finish, then tear down the other.
+        _ = await group.next()
+        group.cancelAll()
     }
 }

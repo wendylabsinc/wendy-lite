@@ -45,6 +45,15 @@
         "revision" : "45eb0224913ea070ec4fba17291b9e7ecf4749ca",
         "version" : "1.5.1"
       }
+    },
+    {
+      "identity" : "wendy-net",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/wendylabsinc/wendy-net.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "5e1cf21796ef825b2f014aec4c967c4b2373297b"
+      }
     }
   ],
   "version" : 3
