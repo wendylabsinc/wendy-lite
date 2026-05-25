@@ -623,12 +623,6 @@ static void wendynet_task_main(void *arg)
 
 static int wendynet_ensure_started_locked(void)
 {
-    if (!s_wendynet_lock) {
-        s_wendynet_lock = xSemaphoreCreateMutex();
-        if (!s_wendynet_lock) {
-            return -1;
-        }
-    }
     if (!s_wendynet_dns_results) {
         s_wendynet_dns_results = xQueueCreate(WENDYNET_DNS_QUEUE_DEPTH,
                                               sizeof(wendynet_dns_result_t));
@@ -1274,6 +1268,14 @@ static NativeSymbol s_net_symbols[] = {
 
 int wendy_net_export_init(void)
 {
+    // Create the mutex eagerly
+    if (!s_wendynet_lock) {
+        s_wendynet_lock = xSemaphoreCreateMutex();
+        if (!s_wendynet_lock) {
+            ESP_LOGE(TAG, "failed to create wendynet mutex");
+            return -1;
+        }
+    }
     if (!wasm_runtime_register_natives("wendy",
                                        s_net_symbols,
                                        sizeof(s_net_symbols) / sizeof(s_net_symbols[0]))) {
