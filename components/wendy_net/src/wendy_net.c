@@ -890,11 +890,15 @@ static int wendynet_socket_recv_wrapper(wasm_exec_env_t exec_env, int socket_han
         return rc;
     }
     size_t n = sock->rx_len < (size_t)len ? sock->rx_len : (size_t)len;
+    bool was_full = (sock->rx_len >= WENDYNET_BUFFER_SIZE);
     memcpy(buf, sock->rx, n);
     if (n < sock->rx_len) {
         memmove(sock->rx, sock->rx + n, sock->rx_len - n);
     }
     sock->rx_len -= n;
+    if (was_full) {
+        wendynet_wake_locked();
+    }
     wendynet_unlock();
     return (int)n;
 }
