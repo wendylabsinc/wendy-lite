@@ -819,8 +819,12 @@ static int wendynet_listener_accept_wrapper(wasm_exec_env_t exec_env, int listen
         return 0;
     }
     int socket_handle = listener->accepted[listener->accepted_head];
+    bool was_full = (listener->accepted_count >= WENDYNET_ACCEPT_QUEUE_SIZE);
     listener->accepted_head = (listener->accepted_head + 1) % WENDYNET_ACCEPT_QUEUE_SIZE;
     listener->accepted_count--;
+    if (was_full) {
+        wendynet_wake_locked();
+    }
     wendynet_unlock();
     return socket_handle;
 }
