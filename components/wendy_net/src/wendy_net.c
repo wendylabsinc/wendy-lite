@@ -838,6 +838,29 @@ static int wendynet_listener_close_wrapper(wasm_exec_env_t exec_env, int listene
     return 0;
 }
 
+/* Returns the local port the listener is bound to, in host byte order. Useful
+ * when bind() was called with port 0 (OS-assigned ephemeral). Returns -1 if
+ * the handle is unknown or the address cannot be retrieved. */
+static int wendynet_listener_port_wrapper(wasm_exec_env_t exec_env, int listener_handle)
+{
+    (void)exec_env;
+    wendynet_lock();
+    wendynet_listener_t *listener = wendynet_find_listener_locked(listener_handle);
+    if (!listener || listener->fd < 0) {
+        wendynet_unlock();
+        return -1;
+    }
+    struct sockaddr_in addr;
+    socklen_t addr_len = sizeof(addr);
+    if (getsockname(listener->fd, (struct sockaddr *)&addr, &addr_len) != 0) {
+        wendynet_unlock();
+        return -1;
+    }
+    int port = (int)ntohs(addr.sin_port);
+    wendynet_unlock();
+    return port;
+}
+
 static int wendynet_socket_status_wrapper(wasm_exec_env_t exec_env, int socket_handle)
 {
     (void)exec_env;
@@ -1253,6 +1276,7 @@ static NativeSymbol s_net_symbols[] = {
     { "wendynet_tcp_connect",    (void *)wendynet_tcp_connect_wrapper,    "(*~i)i",  NULL },
     { "wendynet_listener_accept",(void *)wendynet_listener_accept_wrapper,"(i)i",    NULL },
     { "wendynet_listener_close", (void *)wendynet_listener_close_wrapper, "(i)i",    NULL },
+    { "wendynet_listener_port",  (void *)wendynet_listener_port_wrapper,  "(i)i",    NULL },
     { "wendynet_socket_status",  (void *)wendynet_socket_status_wrapper,  "(i)i",    NULL },
     { "wendynet_socket_recv",    (void *)wendynet_socket_recv_wrapper,    "(i*~)i",  NULL },
     { "wendynet_socket_send",    (void *)wendynet_socket_send_wrapper,    "(i*~)i",  NULL },
