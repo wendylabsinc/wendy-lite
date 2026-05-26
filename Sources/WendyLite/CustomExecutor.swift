@@ -22,6 +22,10 @@
 @_spi(ExperimentalCustomExecutors)
 import _Concurrency
 
+/// Maximum time the runtime will block on the host callback queue when no
+/// Swift work is runnable.
+internal let hostEventWaitCapMs: Int32 = 250
+
 // MARK: - Priority-ordered run queue
 
 fileprivate struct _PendingJob {
@@ -172,9 +176,9 @@ extension WendyMainExecutor: RunLoopExecutor {
 
             // Genuinely idle. Block on the host callback queue;
             // `xQueueReceive` wakes us as soon as anything is posted, so this
-            // isn't polling. The 250 ms cap exists so live-reload's "stop the
-            // wasm" handshake doesn't have to wait arbitrarily long for us to
-            // surface from the block.
+            // isn't polling. The `hostEventWaitCapMs` cap exists so
+            // live-reload's "stop the wasm" handshake doesn't have to wait
+            // arbitrarily long for us to surface from the block.
             //
             // `waitForEvent` also unconditionally trails a `vTaskDelay(1)` on
             // the C side to let lower-priority FreeRTOS tasks (Wi-Fi, the
@@ -184,7 +188,7 @@ extension WendyMainExecutor: RunLoopExecutor {
             // Host callbacks that arrive while Swift is busy queue in the C
             // callback queue and are dispatched here on the next idle pass,
             // which is reached as soon as no Swift task is runnable.
-            _ = System.waitForEvent(timeoutMs: 250)
+            _ = System.waitForEvent(timeoutMs: hostEventWaitCapMs)
             TimerState.shared.drainReady()
         }
     }

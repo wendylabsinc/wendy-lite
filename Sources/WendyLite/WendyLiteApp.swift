@@ -1,8 +1,6 @@
 @_spi(ExperimentalCustomExecutors)
 import _Concurrency
 
-private let runtimeWaitMs: Int32 = 250
-
 private enum RuntimeBootstrapState {
     private struct State {
         var started = false
@@ -44,7 +42,7 @@ private func bootstrapAsyncRuntime() {
 
     _ = Task(priority: .background) {
         while true {
-            pumpAsyncRuntimeOnce(timeoutMs: runtimeWaitMs)
+            pumpAsyncRuntimeOnce(timeoutMs: hostEventWaitCapMs)
             await Task.yield()
         }
     }
