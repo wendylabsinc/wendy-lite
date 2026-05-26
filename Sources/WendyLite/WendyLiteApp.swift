@@ -1,3 +1,4 @@
+@_spi(ExperimentalCustomExecutors)
 import _Concurrency
 
 private let runtimeWaitMs: Int32 = 250
@@ -28,6 +29,14 @@ private func bootstrapAsyncRuntime() {
     if !RuntimeBootstrapState.claim() {
         return
     }
+
+    // If the app opted into `WendyMainExecutor` (via a top-level
+    // `DefaultExecutorFactory` typealias), the executor itself registers the
+    // timer callback and pumps host events from its own run loop.
+    if Task.defaultExecutor is WendyMainExecutor {
+        return
+    }
+
     registerTimerCallback()
 
     // Drain any events that arrived before user code starts its main loop.

@@ -1,6 +1,10 @@
+@_spi(ExperimentalCustomExecutors)
 import WendyLite
 import WendyNet
 import _Concurrency
+
+// Use the async executor optimized for Wendy Lite
+typealias DefaultExecutorFactory = WendyExecutorFactory
 
 private let targetHost = "192.168.1.253"
 private let targetPort: UInt16 = 4000

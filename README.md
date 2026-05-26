@@ -112,7 +112,11 @@ let package = Package(
 
 ```swift
 // Sources/MyApp/AppMain.swift
+@_spi(ExperimentalCustomExecutors)
 import WendyLite
+
+// Opt into the executor optimized for Wendy Lite
+typealias DefaultExecutorFactory = WendyExecutorFactory
 
 @main
 struct MyApp: WendyLiteApp {
@@ -130,6 +134,8 @@ struct MyApp: WendyLiteApp {
     }
 }
 ```
+
+The `@_spi(ExperimentalCustomExecutors)` import and `DefaultExecutorFactory` typealias installs a cooperative executor that minimizes your app's I/O latency in the WASM environment. This relies on Swift features that are currently unstable but it is recommended for improved performance.
 
 **3. Build:**
 

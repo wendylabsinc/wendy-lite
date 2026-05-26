@@ -1,4 +1,8 @@
+@_spi(ExperimentalCustomExecutors)
 import WendyLite
+
+// Use the async executor optimized for Wendy Lite
+typealias DefaultExecutorFactory = WendyExecutorFactory
 
 @inline(__always)
 private func rmtSymbol(
