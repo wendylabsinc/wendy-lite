@@ -2,53 +2,32 @@ import Synchronization
 
 // MARK: - Internal lock primitive
 //
-// This is the only `@unchecked Sendable` declaration in the WendyLite library.
-// It plays the combined role of SwiftNIO's `NIOLockedValueBox` (lock-protected
-// mutation of `Sendable` state) and `NIOLoopBoundBox` (carrier of non-`Sendable`
-// state confined by external discipline). We have only the lock, so the box
-// accepts non-`Sendable` `T` and trusts callers to keep the value inside
-// `withLockedValue`.
+// TODO (Swift 6.4): drop this whole file in favour of `Synchronization.Mutex`.
+// Mutex is not exposed by the embedded `Synchronization` module in our pinned
+// Swift 6.3.x SDK -- the gate was added on `release/6.4.x` in swiftlang/swift
+// commit bfa88573f73 ("Embedded Synchronization: enable `Mutex` for Wasm").
+// Every WendyLite use site holds `Sendable` state and can move to `Mutex`
+// directly once 6.4 ships; `CallbackDispatch` would also need its handler
+// parameter to gain `@Sendable`, which is fine for all in-tree callers.
+// (WendyNet's separate copy in `Backend+WendyLite.swift` stays -- it
+// genuinely needs to wrap non-`Sendable` user pipeline-stage closures.)
 //
-// ## Why `@unchecked Sendable` rather than plain `Sendable`?
-//
-// The class has a `var value: T` of arbitrary `T`. The compiler cannot prove
-// a stored mutable property is safe to share across isolation without knowing
-// the synchronization mechanism. We assert it manually: the value is only ever
-// touched while the spinlock is held, so concurrent calls to `withLockedValue`
-// are serialised even when `T` itself is not `Sendable`.
-//
-// ## Why this is safe with non-Sendable `T` (e.g. WendyNet pipeline stages)
-//
-// Users implement `PipelineStage` as plain non-`Sendable` classes (mirroring
-// SwiftNIO's `ChannelHandler`). The framework captures their `decode`/`encode`
-// into non-`@Sendable` closures and stores them inside this box. Because the
-// lock serialises every entry to those closures, the user's stage methods are
-// invoked from at most one task at a time -- providing the same effective
-// guarantee SwiftNIO's `EventLoop` provides to its handlers.
-//
-// The hazard `@unchecked Sendable` does NOT protect against: extracting the
-// value out of `withLockedValue` and using it from outside the lock. Don't do
-// that with non-`Sendable` `T`. Audit any `withLockedValue { ... return x }`
-// where `x` is non-`Sendable`.
+// `_LockedBox<T>` is a lock-protected carrier for mutable `Sendable` state,
+// the same shape SwiftNIO ships as `NIOLockedValueBox`. The class is marked
+// `@unchecked Sendable` because it contains a mutable stored property
+// (`var value: T`); the compiler can't see that all writes happen inside
+// the lock, so we assert it manually.
 //
 // ## Lock implementation
 //
 // `Synchronization.Atomic<Bool>` spinlock. On WASM's single-threaded
 // cooperative executor the spin loop will never iterate -- there is no other
 // thread to contend with, and synchronous code cannot interleave at the lock
-// boundary. The lock is logically a no-op there, but writing it as a real lock
-// (rather than no synchronization at all) means:
-//
-//   * The `@unchecked Sendable` claim is grounded in lock discipline, not in
-//     "trust the executor"; if WASI ever gains pre-emptive scheduling or
-//     multi-threaded executors, the code still works.
-//   * The code reads honestly -- a reader sees a lock and understands the
-//     guarantee, not a phantom no-op pretending to be one.
-//
-// We avoid `Synchronization.Mutex` here because its `withLock` body returns
-// `sending Result`, which is incompatible with returning non-`Sendable`
-// values out of `withLockedValue` -- defeating our ability to wrap non-Sendable
-// `T`. The atomic-spinlock pattern has no such constraint.
+// boundary. The lock is logically a no-op there, but writing it as a real
+// lock (rather than no synchronization at all) means the `@unchecked Sendable`
+// claim is grounded in lock discipline, not in "trust the executor": if WASI
+// ever gains pre-emptive scheduling or multi-threaded executors, the code
+// still works.
 
 final class _LockedBox<T>: @unchecked Sendable {
     private let locked = Atomic<Bool>(false)
