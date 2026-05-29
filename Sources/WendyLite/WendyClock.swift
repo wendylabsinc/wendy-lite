@@ -66,27 +66,54 @@ func registerTimerCallback() {
 
 private let attosecondsPerMillisecond: Int64 = 1_000_000_000_000_000
 
-private final class SleepRegistration: @unchecked Sendable {
-    var waiterID: UInt64?
-    var isCancelled = false
+/// Per-call cancellation handshake state. Lives between the `operation` and
+/// `onCancel` closures of `withTaskCancellationHandler` for one `sleep()` call.
+fileprivate final class SleepRegistration: Sendable {
+    private struct State {
+        var waiterID: UInt64? = nil
+        var isCancelled = false
+    }
+    private let state = _LockedBox(State())
+
+    func setWaiterID(_ id: UInt64) {
+        state.withLockedValue { $0.waiterID = id }
+    }
+
+    func waiterID() -> UInt64? {
+        state.withLockedValue { $0.waiterID }
+    }
+
+    func markCancelledAndExchangeWaiterID() -> UInt64? {
+        state.withLockedValue { s in
+            s.isCancelled = true
+            return s.waiterID
+        }
+    }
+
+    func isCancelled() -> Bool {
+        state.withLockedValue { $0.isCancelled }
+    }
 }
 
 internal enum TimerState {
-    nonisolated(unsafe) static var shared = TimerHub()
+    static let shared = TimerHub()
 }
 
-internal final class TimerHub {
-    struct Waiter {
+internal final class TimerHub: Sendable {
+    fileprivate struct Waiter {
         let id: UInt64
         let deadline: WendyClock.Instant
         let continuation: CheckedContinuation<Void, Never>
     }
 
-    var waiters: [Waiter] = []
-    var readyWaiters: [Waiter] = []
-    var activeTimerID: Int32 = 0
-    var activeTimerDeadline: WendyClock.Instant?
-    var nextWaiterID: UInt64 = 1
+    private struct State {
+        var waiters: [Waiter] = []
+        var readyWaiters: [Waiter] = []
+        var activeTimerID: Int32 = 0
+        var activeTimerDeadline: WendyClock.Instant? = nil
+        var nextWaiterID: UInt64 = 1
+    }
+    private let state = _LockedBox(State())
 
     func sleep(until deadline: WendyClock.Instant) async throws(CancellationError) {
         if deadline <= WendyClock().now {
@@ -96,29 +123,26 @@ internal final class TimerHub {
             return
         }
 
-        // Safety: the registration fields are accessed unsynchronized from
-        // the operation and onCancel closures. This is correct on the WASM
-        // single-threaded cooperative executor where onCancel cannot interleave
-        // with the synchronous continuation body. The isCancelled check after
-        // setting waiterID handles the case where cancellation arrived before
-        // the continuation was created.
         let registration = SleepRegistration()
-        await withTaskCancellationHandler(operation: {
+        await withTaskCancellationHandler(operation: { [self] in
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                let waiter = Waiter(id: nextWaiterID, deadline: deadline, continuation: continuation)
-                nextWaiterID &+= 1
-                insert(waiter)
-                registration.waiterID = waiter.id
-                rescheduleForEarliestDeadline()
-
-                if registration.isCancelled {
-                    cancelSleep(id: waiter.id)
+                let cancelled: Bool = state.withLockedValue { s in
+                    let id = s.nextWaiterID
+                    s.nextWaiterID &+= 1
+                    insertLocked(Waiter(id: id, deadline: deadline, continuation: continuation), into: &s)
+                    registration.setWaiterID(id)
+                    rescheduleForEarliestDeadlineLocked(state: &s)
+                    return registration.isCancelled()
+                }
+                if cancelled {
+                    if let waiterID = registration.waiterID() {
+                        cancelSleep(id: waiterID)
+                    }
                 }
             }
-        }, onCancel: {
-            registration.isCancelled = true
-            if let waiterID = registration.waiterID {
-                TimerState.shared.cancelSleep(id: waiterID)
+        }, onCancel: { [self] in
+            if let waiterID = registration.markCancelledAndExchangeWaiterID() {
+                cancelSleep(id: waiterID)
             }
         })
 
@@ -128,68 +152,71 @@ internal final class TimerHub {
     }
 
     func cancelSleep(id: UInt64) {
-        if let index = waiters.firstIndex(where: { $0.id == id }) {
-            let waiter = waiters.remove(at: index)
-            rescheduleForEarliestDeadline()
-            waiter.continuation.resume()
-            return
+        let toResume: Waiter? = state.withLockedValue { s in
+            if let index = s.waiters.firstIndex(where: { $0.id == id }) {
+                let waiter = s.waiters.remove(at: index)
+                rescheduleForEarliestDeadlineLocked(state: &s)
+                return waiter
+            }
+            if let index = s.readyWaiters.firstIndex(where: { $0.id == id }) {
+                return s.readyWaiters.remove(at: index)
+            }
+            return nil
         }
-
-        if let index = readyWaiters.firstIndex(where: { $0.id == id }) {
-            let waiter = readyWaiters.remove(at: index)
-            waiter.continuation.resume()
-        }
+        toResume?.continuation.resume()
     }
 
     func timerFired() {
-        activeTimerID = 0
-        activeTimerDeadline = nil
-
         let now = WendyClock().now
-        var remaining: [Waiter] = []
-        remaining.reserveCapacity(waiters.count)
-        readyWaiters.reserveCapacity(readyWaiters.count + waiters.count)
+        state.withLockedValue { s in
+            s.activeTimerID = 0
+            s.activeTimerDeadline = nil
 
-        for waiter in waiters {
-            if waiter.deadline <= now {
-                readyWaiters.append(waiter)
-            } else {
-                remaining.append(waiter)
+            var remaining: [Waiter] = []
+            remaining.reserveCapacity(s.waiters.count)
+            s.readyWaiters.reserveCapacity(s.readyWaiters.count + s.waiters.count)
+
+            for waiter in s.waiters {
+                if waiter.deadline <= now {
+                    s.readyWaiters.append(waiter)
+                } else {
+                    remaining.append(waiter)
+                }
             }
+            s.waiters = remaining
+            rescheduleForEarliestDeadlineLocked(state: &s)
         }
-
-        waiters = remaining
-        rescheduleForEarliestDeadline()
+        // Ready waiters are resumed by `drainReady`, called from the host
+        // tick after `timerFired` returns.
     }
 
     func drainReady() {
-        guard !readyWaiters.isEmpty else {
-            return
+        let toResume: [Waiter] = state.withLockedValue { s in
+            let ready = s.readyWaiters
+            s.readyWaiters.removeAll(keepingCapacity: true)
+            return ready
         }
-
-        let waiters = readyWaiters
-        readyWaiters.removeAll(keepingCapacity: true)
-        for waiter in waiters {
+        for waiter in toResume {
             waiter.continuation.resume()
         }
     }
 
-    private func insert(_ waiter: Waiter) {
-        let index = waiters.firstIndex(where: { waiter.deadline < $0.deadline }) ?? waiters.endIndex
-        waiters.insert(waiter, at: index)
+    private func insertLocked(_ waiter: Waiter, into s: inout State) {
+        let index = s.waiters.firstIndex(where: { waiter.deadline < $0.deadline }) ?? s.waiters.endIndex
+        s.waiters.insert(waiter, at: index)
     }
 
-    private func rescheduleForEarliestDeadline() {
-        guard let nextDeadline = waiters.first?.deadline else {
-            cancelActiveTimerIfNeeded()
+    private func rescheduleForEarliestDeadlineLocked(state s: inout State) {
+        guard let nextDeadline = s.waiters.first?.deadline else {
+            cancelActiveTimerIfNeededLocked(state: &s)
             return
         }
 
-        if activeTimerID != 0, activeTimerDeadline == nextDeadline {
+        if s.activeTimerID != 0, s.activeTimerDeadline == nextDeadline {
             return
         }
 
-        cancelActiveTimerIfNeeded()
+        cancelActiveTimerIfNeededLocked(state: &s)
 
         let now = WendyClock().now
         let delay = now.duration(to: nextDeadline)
@@ -198,24 +225,37 @@ internal final class TimerHub {
         // A negative timer ID means the host could not allocate or start an ESP timer
         // (for example, no free slots or esp_timer_create/start failure). We do not
         // recover from that in this environment; pending sleepers may stall.
-        activeTimerID = Timer.setTimeout(ms: Int32(delayMs), handlerId: timerCallbackHandlerID)
-        activeTimerDeadline = nextDeadline
+        s.activeTimerID = Timer.setTimeout(ms: Int32(delayMs), handlerId: timerCallbackHandlerID)
+        s.activeTimerDeadline = nextDeadline
     }
 
-    private func cancelActiveTimerIfNeeded() {
-        if activeTimerID != 0 {
-            Timer.cancel(timerId: activeTimerID)
-            activeTimerID = 0
+    private func cancelActiveTimerIfNeededLocked(state s: inout State) {
+        if s.activeTimerID != 0 {
+            Timer.cancel(timerId: s.activeTimerID)
+            s.activeTimerID = 0
         }
-        activeTimerDeadline = nil
+        s.activeTimerDeadline = nil
     }
 
     private func durationToMillisecondsRoundedUp(_ duration: Duration) -> Int64 {
-        let components = duration.components
-        let totalAttoseconds = components.seconds &* 1_000 &* attosecondsPerMillisecond + components.attoseconds
-        if totalAttoseconds <= 0 {
+        if duration <= .zero {
             return 0
         }
-        return (totalAttoseconds + attosecondsPerMillisecond - 1) / attosecondsPerMillisecond
+
+        let components = duration.components
+        if components.seconds > Int64.max / 1_000 {
+            return Int64.max
+        }
+
+        var milliseconds = components.seconds * 1_000
+        if components.attoseconds > 0 {
+            let extraMilliseconds = (components.attoseconds + attosecondsPerMillisecond - 1) / attosecondsPerMillisecond
+            if milliseconds > Int64.max - extraMilliseconds {
+                return Int64.max
+            }
+            milliseconds += extraMilliseconds
+        }
+
+        return milliseconds
     }
 }

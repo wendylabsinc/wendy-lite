@@ -78,7 +78,18 @@ CONFIG_WAMR_INTERP_LOADER_NORMAL=y
 CONFIG_WENDY_WASM_POOL_SIZE=25165824
 CONFIG_WENDY_WASM_USE_PSRAM=y
 
-# App USB / CDC stack is off by default; CDC's TinyUSB pull-in needs an
-# explicit opt-in. (Cleaned up in a later commit via Kconfig depends.)
+# App USB / CDC stack is off until something actually needs it.
 # CONFIG_WENDY_APP_USB is not set
 # CONFIG_WENDY_USB_CDC_ENABLED is not set
+
+# wendy_net: large socket pool, buffers in PSRAM.
+CONFIG_WENDY_NET_MAX_SOCKETS=32
+CONFIG_WENDY_NET_MAX_LISTENERS=8
+CONFIG_WENDY_NET_ACCEPT_QUEUE_SIZE=4
+CONFIG_WENDY_NET_BUFFER_SIZE=2048
+CONFIG_WENDY_NET_BUFFERS_IN_PSRAM=y
+# Required for EXT_RAM_BSS_ATTR to actually place the buffers in PSRAM.
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+# lwIP needs to be able to hand out at least the wendynet pool + a few
+# for mDNS / Wi-Fi / system services.
+CONFIG_LWIP_MAX_SOCKETS=40

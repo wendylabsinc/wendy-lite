@@ -12,8 +12,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 APP_DIR="${1:-swift_blink}"
 APP_PATH="$SCRIPT_DIR/$APP_DIR"
-SWIFT_VERSION="${SWIFT_VERSION:-6.3}"
-SWIFT_SDK="${SWIFT_SDK:-swift-6.3-RELEASE_wasm-embedded}"
+SWIFT_VERSION="${SWIFT_VERSION:-6.3.1}"
+SWIFT_SDK="${SWIFT_SDK:-swift-6.3.1-RELEASE_wasm-embedded}"
 SWIFT_TRIPLE="${SWIFT_TRIPLE:-wasm32-unknown-wasip1}"
 
 if [ ! -f "$APP_PATH/Package.swift" ]; then

@@ -215,6 +215,54 @@ menu "Wendy MCU Firmware Configuration"
             default n
             help
                 WiFi control, BSD sockets, DNS, and TLS from WASM apps.
+
+        config WENDY_NET_MAX_SOCKETS
+            int "Max concurrent sockets"
+            depends on WENDY_NET
+            default 4
+            range 1 256
+            help
+                Each socket consumes RX + TX buffer space (see
+                WENDY_NET_BUFFER_SIZE) plus a small descriptor. Must
+                also fit within CONFIG_LWIP_MAX_SOCKETS at the lwIP
+                layer.
+
+        config WENDY_NET_MAX_LISTENERS
+            int "Max concurrent listeners"
+            depends on WENDY_NET
+            default 1
+            range 1 64
+
+        config WENDY_NET_ACCEPT_QUEUE_SIZE
+            int "Per-listener accept queue depth"
+            depends on WENDY_NET
+            default 1
+            range 1 32
+            help
+                Connections queued at a listener but not yet accept()ed
+                by the guest. Each queued slot also occupies one
+                WENDY_NET_MAX_SOCKETS slot.
+
+        config WENDY_NET_BUFFER_SIZE
+            int "Per-socket RX/TX buffer size (bytes)"
+            depends on WENDY_NET
+            default 256
+            range 256 16384
+            help
+                Each socket gets one RX and one TX buffer of this
+                size. Total per-socket cost is therefore 2x this
+                value.
+
+        config WENDY_NET_BUFFERS_IN_PSRAM
+            bool "Place wendy_net buffers in PSRAM"
+            depends on WENDY_NET && SPIRAM
+            default y if SPIRAM
+            help
+                When enabled, the socket/listener arrays are placed in
+                external PSRAM via EXT_RAM_BSS_ATTR. Requires
+                CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y. Frees
+                internal DRAM proportional to the configured pool
+                size.
     endmenu
 
     menu "App USB"
@@ -255,7 +303,13 @@ menu "Wendy MCU Firmware Configuration"
     menu "USB Communication"
         config WENDY_USB_CDC_ENABLED
             bool "Enable USB CDC protocol"
-            default y
+            depends on SOC_USB_OTG_SUPPORTED
+            default n
+            help
+                Host-side TinyUSB CDC channel used to upload WASM
+                guests over USB. Requires a SoC with native USB OTG
+                (ESP32-S2/S3/P4) and the esp_tinyusb managed
+                component. Off by default on every target.
 
         config WENDY_USB_PROTOCOL_VERSION
             int "USB protocol version"

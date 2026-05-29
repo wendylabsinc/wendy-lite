@@ -74,6 +74,9 @@ static uint8_t s_persist_load_slot = 0;
 
 static void reset_guest_resources(void)
 {
+#if CONFIG_WENDY_NET
+    wendy_net_guest_reset();
+#endif
 #if CONFIG_WENDY_HAL_TIMER
     wendy_hal_timer_cancel_all();
 #endif

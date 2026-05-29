@@ -27,8 +27,8 @@ DO_BUILD=true
 RELOAD_ONLY=false
 TARGET=""
 DEVICE_ARGS=""
-SWIFT_VERSION="${SWIFT_VERSION:-6.3}"
-SWIFT_SDK="${SWIFT_SDK:-swift-6.3-RELEASE_wasm-embedded}"
+SWIFT_VERSION="${SWIFT_VERSION:-6.3.1}"
+SWIFT_SDK="${SWIFT_SDK:-swift-6.3.1-RELEASE_wasm-embedded}"
 SWIFT_TRIPLE="${SWIFT_TRIPLE:-wasm32-unknown-wasip1}"
 
 # ── Parse arguments ──────────────────────────────────────────────────
