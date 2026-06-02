@@ -2,7 +2,6 @@ set(srcs "")
 
 if(CONFIG_WENDY_CLOUD_ENABLED)
     list(APPEND srcs "src/wendy_cloud.c")
-    list(APPEND srcs "src/u2_json.c")
 endif()
 
 if(NOT srcs)
@@ -14,5 +13,5 @@ idf_component_register(
     SRCS ${srcs}
     INCLUDE_DIRS "include"
     EMBED_TXTFILES "certs/provisioning.json"
-    REQUIRES esp-tls freertos
+    REQUIRES esp-tls freertos wendy_common
 )
