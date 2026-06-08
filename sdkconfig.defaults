@@ -68,7 +68,7 @@ CONFIG_WENDY_BLE_PROV=y
 CONFIG_WENDY_CLOUD_PROV=y
 
 # Cloud mTLS connection
-CONFIG_WENDY_CLOUD_ENABLED=y
+CONFIG_WENDY_CLOUD_ENABLED=n
 
 # mbedTLS memory — dynamic buffers avoid a large upfront allocation at ssl_setup
 # time. Without this, mbedtls_ssl_setup fails with MBEDTLS_ERR_SSL_ALLOC_FAILED
