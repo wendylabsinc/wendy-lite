@@ -11,11 +11,16 @@
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "esp_event.h"
-#include "esp_http_client.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "mdns.h"
 #include "esp_mac.h"
+#include "wendy_com.h"
+#include "wendy_server.h"
+
+#if CONFIG_WENDY_CLOUD_ENABLED
+#include "wendy_cloud.h"
+#endif
 
 #include <ctype.h>
 
@@ -34,9 +39,7 @@ static const char *TAG = "wendy_wifi";
 
 /* ── State ──────────────────────────────────────────────────────────── */
 
-static wendy_wifi_callbacks_t s_callbacks;
 static EventGroupHandle_t s_wifi_events;
-static TaskHandle_t s_udp_task;
 static bool s_infra_initialized = false;
 static bool s_connected = false;
 static bool s_services_started = false;
@@ -46,10 +49,6 @@ static bool s_services_started = false;
 
 #define WIFI_MAX_RETRIES    5
 static int s_retry_count = 0;
-
-/* Discovered server */
-static char s_server_ip[64];
-static uint16_t s_server_port;
 
 /* ── WiFi event handler ────────────────────────────────────────────── */
 
@@ -188,7 +187,7 @@ static esp_err_t save_nvs_creds(const char *ssid, const char *password)
 
 /* ── mDNS service registration ─────────────────────────────────────── */
 
-static esp_err_t register_mdns_service(void)
+static esp_err_t start_mdns_service(void)
 {
     /* Mirror the BLE advertising name so a device shows the same
      * Wendy-XXXX identity over BLE and mDNS. wendy_ble_prov is the
@@ -228,181 +227,7 @@ static esp_err_t register_mdns_service(void)
         return err;
     }
 
-    err = mdns_service_add(device_name, "_wendy", "_tcp",
-                           CONFIG_WENDY_WIFI_UDP_PORT, NULL, 0);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "mDNS service add failed: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    ESP_LOGI(TAG, "registered mDNS service _wendy._tcp as '%s' on port %d",
-             device_name, CONFIG_WENDY_WIFI_UDP_PORT);
     return ESP_OK;
-}
-
-/* ── HTTP download (streams directly to flash) ────────────────────── */
-
-#define DL_CHUNK_SIZE 1024
-
-static uint8_t s_dl_chunk[DL_CHUNK_SIZE];
-
-static esp_err_t download_wasm(void)
-{
-    char url[128];
-    snprintf(url, sizeof(url), "http://%s:%d/app.wasm", s_server_ip, s_server_port);
-    ESP_LOGI(TAG, "downloading WASM from %s", url);
-
-    esp_http_client_config_t config = {
-        .url = url,
-        .timeout_ms = 10000,
-        .buffer_size = DL_CHUNK_SIZE,
-    };
-
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) {
-        ESP_LOGE(TAG, "failed to init HTTP client");
-        return ESP_FAIL;
-    }
-
-    esp_err_t err = esp_http_client_open(client, 0);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "HTTP open failed: %s", esp_err_to_name(err));
-        esp_http_client_cleanup(client);
-        return ESP_FAIL;
-    }
-
-    int content_length = esp_http_client_fetch_headers(client);
-    int status = esp_http_client_get_status_code(client);
-
-    if (status != 200 || content_length <= 0) {
-        ESP_LOGE(TAG, "HTTP error: status=%d, content_length=%d", status, content_length);
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-        return ESP_FAIL;
-    }
-
-    if (!s_callbacks.on_upload_begin || !s_callbacks.on_upload_chunk ||
-        !s_callbacks.on_upload_end || !s_callbacks.on_upload_abort) {
-        ESP_LOGE(TAG, "upload callbacks not wired");
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    err = s_callbacks.on_upload_begin(0, (uint32_t)content_length);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "upload begin failed: %s", esp_err_to_name(err));
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-        return err;
-    }
-
-    ESP_LOGI(TAG, "streaming %d bytes to flash...", content_length);
-
-    int total_read = 0;
-    while (total_read < content_length) {
-        int to_read = content_length - total_read;
-        if (to_read > DL_CHUNK_SIZE) {
-            to_read = DL_CHUNK_SIZE;
-        }
-
-        int read_len = esp_http_client_read(client, (char *)s_dl_chunk, to_read);
-        if (read_len <= 0) {
-            ESP_LOGE(TAG, "HTTP read error at offset %d", total_read);
-            s_callbacks.on_upload_abort(0);
-            esp_http_client_close(client);
-            esp_http_client_cleanup(client);
-            return ESP_FAIL;
-        }
-
-        err = s_callbacks.on_upload_chunk((uint32_t)total_read,
-                                          s_dl_chunk, (uint32_t)read_len);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "upload chunk failed at offset %d: %s",
-                     total_read, esp_err_to_name(err));
-            s_callbacks.on_upload_abort(0);
-            esp_http_client_close(client);
-            esp_http_client_cleanup(client);
-            return err;
-        }
-        total_read += read_len;
-    }
-
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
-
-    err = s_callbacks.on_upload_end(0);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "upload end failed: %s", esp_err_to_name(err));
-        s_callbacks.on_upload_abort(0);
-        return err;
-    }
-
-    ESP_LOGI(TAG, "downloaded %d bytes", total_read);
-    return ESP_OK;
-}
-
-/* ── UDP listener task ─────────────────────────────────────────────── */
-
-static void udp_listener_task(void *arg)
-{
-    ESP_LOGI(TAG, "UDP listener started on port %d", CONFIG_WENDY_WIFI_UDP_PORT);
-
-    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock < 0) {
-        ESP_LOGE(TAG, "failed to create UDP socket");
-        vTaskDelete(NULL);
-        return;
-    }
-
-    /* Allow broadcast reception */
-    int broadcast = 1;
-    setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast));
-
-    /* Allow address reuse */
-    int reuse = 1;
-    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-
-    struct sockaddr_in addr = {
-        .sin_family = AF_INET,
-        .sin_port = htons(CONFIG_WENDY_WIFI_UDP_PORT),
-        .sin_addr.s_addr = htonl(INADDR_ANY),
-    };
-
-    if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        ESP_LOGE(TAG, "failed to bind UDP socket");
-        close(sock);
-        vTaskDelete(NULL);
-        return;
-    }
-
-    char rx_buf[64];
-    for (;;) {
-        struct sockaddr_in source_addr;
-        socklen_t addrlen = sizeof(source_addr);
-        int len = recvfrom(sock, rx_buf, sizeof(rx_buf) - 1, 0,
-                           (struct sockaddr *)&source_addr, &addrlen);
-
-        if (len > 0) {
-            rx_buf[len] = '\0';
-
-            /* Strip trailing newline/CR */
-            while (len > 0 && (rx_buf[len - 1] == '\n' || rx_buf[len - 1] == '\r')) {
-                rx_buf[--len] = '\0';
-            }
-
-            char parsed_ip[64];
-            uint16_t parsed_port = 0;
-            if (sscanf(rx_buf, "WENDY_RELOAD %63[^:]:%hu", parsed_ip, &parsed_port) == 2) {
-                strlcpy(s_server_ip, parsed_ip, sizeof(s_server_ip));
-                s_server_port = parsed_port;
-                ESP_LOGI(TAG, "WENDY_RELOAD received, server at %s:%d", s_server_ip, s_server_port);
-                download_wasm();
-            } else if (strncmp(rx_buf, "WENDY_RELOAD", 12) == 0) {
-                ESP_LOGW(TAG, "WENDY_RELOAD received but could not parse ip:port from '%s'", rx_buf);
-            }
-        }
-    }
 }
 
 /* ── Start mDNS + UDP listener (called after successful connect) ──── */
@@ -422,29 +247,31 @@ static void start_services(void)
     }
 #endif
 
-    esp_err_t err = register_mdns_service();
+    esp_err_t err = start_mdns_service();
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "mDNS registration failed");
+        ESP_LOGW(TAG, "mDNS initialization failed");
     }
 
-    BaseType_t ret = xTaskCreatePinnedToCore(
-        udp_listener_task, "wendy_wifi_udp", 4096, NULL, 5,
-        &s_udp_task, tskNO_AFFINITY);
-    if (ret != pdPASS) {
-        ESP_LOGE(TAG, "failed to create UDP listener task");
+    // Initialize the mTLS server accessible via the local network
+    wendy_server_start();
+
+    // Initialize the mTLS server accessible via the cloud
+#if CONFIG_WENDY_CLOUD_ENABLED
+    {
+        esp_err_t err = wendy_cloud_start();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "cloud start failed: %s", esp_err_to_name(err));
+        }
     }
+#endif
 
     s_services_started = true;
 }
 
 /* ── Public API ─────────────────────────────────────────────────────── */
 
-esp_err_t wendy_wifi_init(const wendy_wifi_callbacks_t *callbacks)
+esp_err_t wendy_wifi_init(void)
 {
-    if (callbacks) {
-        s_callbacks = *callbacks;
-    }
-
     esp_err_t err = wifi_infra_init();
     if (err != ESP_OK) return err;
 
@@ -511,10 +338,6 @@ bool wendy_wifi_is_connected(void)
 
 void wendy_wifi_deinit(void)
 {
-    if (s_udp_task) {
-        vTaskDelete(s_udp_task);
-        s_udp_task = NULL;
-    }
     mdns_free();
     esp_wifi_stop();
     esp_wifi_deinit();
