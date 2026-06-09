@@ -1,0 +1,9 @@
+# Board overlay: Waveshare ESP32-P4-WIFI6-Touch-LCD-4B (and the
+# ESP32-P4-86-Panel-ETH-2RO, which shares the same PCB).
+
+CONFIG_WENDY_P4_BOARD_NAME="waveshare_lcd_4b"
+
+# 32 MB SPI flash (NOR); 3 MB app, 28 MB wasm_a, 960 KB SPIFFS.
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.esp32p4.waveshare.csv"

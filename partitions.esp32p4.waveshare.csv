@@ -1,0 +1,9 @@
+# Name,     Type, SubType, Offset,    Size,      Flags
+# 32 MB flash on the Waveshare ESP32-P4-WIFI6-Touch-LCD-4B.
+# App gets ~3 MB headroom; the wasm_a slot consumes the bulk of the flash so
+# guests can be large.
+nvs,        data, nvs,     0x9000,    0x6000,
+phy_init,   data, phy,     0xf000,    0x1000,
+factory,    app,  factory, 0x10000,   0x300000,
+wasm_a,     data, 0x80,    0x310000,  0x1C00000,
+storage,    data, spiffs,  0x1F10000, 0xF0000,
