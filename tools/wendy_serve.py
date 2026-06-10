@@ -57,10 +57,13 @@ def send_reload(udp_port, http_host, http_port, device_ips=None):
         sock.sendto(payload, (ip, udp_port))
         print(f"Sent unicast '{payload.decode()}' to {ip}:{udp_port}")
 
-    # Subnet broadcast as fallback
-    broadcast_addr = get_broadcast_address()
-    sock.sendto(payload, (broadcast_addr, udp_port))
-    print(f"Sent broadcast '{payload.decode()}' to {broadcast_addr}:{udp_port}")
+    # Subnet broadcast only as a fallback when no devices were specified:
+    # with multiple Wendy devices on the LAN, a broadcast makes every one
+    # of them download this app, clobbering whatever they were running.
+    if not device_ips:
+        broadcast_addr = get_broadcast_address()
+        sock.sendto(payload, (broadcast_addr, udp_port))
+        print(f"Sent broadcast '{payload.decode()}' to {broadcast_addr}:{udp_port}")
 
     sock.close()
 
