@@ -17,6 +17,7 @@
 #include "esp_mac.h"
 #include "wendy_com.h"
 #include "wendy_server.h"
+#include "wendy_conf.h"
 
 #if CONFIG_WENDY_CLOUD_ENABLED
 #include "wendy_cloud.h"
@@ -286,7 +287,29 @@ esp_err_t wendy_wifi_init(void)
             start_services();
             return ESP_OK;
         }
-        ESP_LOGW(TAG, "NVS credentials failed, trying compile-time config");
+        ESP_LOGW(TAG, "NVS credentials failed");
+    }
+
+    /* Get credential from wendy-conf partition */
+    struct wendy_conf_span ssid_span = wendy_conf_get_network_ssid();
+    struct wendy_conf_span pass_span = wendy_conf_get_network_password();
+    if (ssid_span.size > 0) {
+        ESP_LOGI(TAG, "found wendy-conf credentials");
+        if (ssid_span.size >= sizeof(ssid) || pass_span.size >= sizeof(pass)) {
+            ESP_LOGW(TAG, "wendy-conf credentials too long, skipping");
+        } else {
+            memcpy(ssid, ssid_span.data, ssid_span.size);
+            ssid[ssid_span.size] = '\0';
+            memcpy(pass, pass_span.data, pass_span.size);
+            pass[pass_span.size] = '\0';
+            ESP_LOGI(TAG, "using wendy-conf SSID '%s'", ssid);
+            err = wifi_connect(ssid, pass);
+            if (err == ESP_OK) {
+                start_services();
+                return ESP_OK;
+            }
+        }
+        ESP_LOGW(TAG, "wendy-conf credentials failed");
     }
 
     /* Fall back to compile-time config */
