@@ -1,5 +1,6 @@
 
 #include "wendy_server.h"
+#include "wendy_conf.h"
 #include "wendy_com_link.h"
 #include "esp_tls.h"
 #include "esp_log.h"
@@ -113,6 +114,11 @@ static void _add_link_exec(struct wcom_operation *op)
 
 static void _server_task(void *arg)
 {
+    struct wendy_conf_span key = wendy_conf_get_private_key();
+    struct wendy_conf_span cert = wendy_conf_get_certificate();
+    struct wendy_conf_span chain = wendy_conf_get_chain_of_trust();
+    bool trusted = key.size > 0 && cert.size > 0 && chain.size > 0;
+
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd < 0) {
         ESP_LOGE(TAG, "socket() failed: %d", errno);
@@ -144,8 +150,15 @@ static void _server_task(void *arg)
     }
 
     ESP_LOGI(TAG, "listening on port %d", WENDY_SERVER_PORT);
+    if (trusted) {
+        ESP_LOGI(TAG, "full mTLS enabled: only authenticated clients will be accepted");
+    }
 
-    esp_err_t mdns_err = mdns_service_add(NULL, "_wendy-lite", "_tcp", WENDY_SERVER_PORT, NULL, 0);
+    mdns_txt_item_t txt_item = {
+        .key = "mtls",
+        .value = "true"
+    };
+    esp_err_t mdns_err = mdns_service_add(NULL, "_wendy-lite", "_tcp", WENDY_SERVER_PORT, &txt_item, trusted ? 1 : 0);
     if (mdns_err != ESP_OK) {
         ESP_LOGE(TAG, "mDNS service add failed: %s", esp_err_to_name(mdns_err));
     } else {
@@ -168,13 +181,25 @@ static void _server_task(void *arg)
             continue;
         }
 
-        esp_tls_cfg_server_t cfg = {
-            .servercert_buf   = default_cert_der_start,
-            .servercert_bytes = default_cert_der_end - default_cert_der_start,
-            .serverkey_buf    = default_key_der_start,
-            .serverkey_bytes  = default_key_der_end - default_key_der_start,
-            // no cacert_buf: peer identity checks disabled
-        };
+        esp_tls_cfg_server_t cfg;
+        if (trusted) {
+            cfg = (esp_tls_cfg_server_t){
+                .servercert_buf   = cert.data,
+                .servercert_bytes = cert.size,
+                .serverkey_buf    = key.data,
+                .serverkey_bytes  = key.size,
+                .cacert_buf       = chain.data,
+                .cacert_bytes     = chain.size,
+            };
+        } else {
+            cfg = (esp_tls_cfg_server_t){
+                .servercert_buf   = default_cert_der_start,
+                .servercert_bytes = default_cert_der_end - default_cert_der_start,
+                .serverkey_buf    = default_key_der_start,
+                .serverkey_bytes  = default_key_der_end - default_key_der_start,
+                // no cacert_buf: peer identity checks disabled
+            };
+        }
 
         int ret = esp_tls_server_session_create(&cfg, client_fd, tls);
         if (ret != 0) {

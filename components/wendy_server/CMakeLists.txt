@@ -7,5 +7,5 @@ idf_component_register(
         "certs/default_cert.der"
         "certs/default_key.der"
     REQUIRES
-        wendy_com esp-tls freertos log mdns wendy_common
+        wendy_com wendy_conf esp-tls freertos log mdns wendy_common
 )
