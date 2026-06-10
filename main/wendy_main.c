@@ -14,6 +14,7 @@
 
 #include "esp_netif.h"
 
+#include "wendy_conf.h"
 #include "wendy_wasm.h"
 #include "wendy_hal.h"
 #include "wendy_hal_export.h"
@@ -497,6 +498,9 @@ void app_main(void)
     }
 
     s_events = xEventGroupCreate();
+
+    /* Load configuration from the wendy-conf partition */
+    wendy_conf_init();
 
     /* Pre-allocate the WAMR memory pool while RAM is still plentiful,
      * before WiFi and BLE claim large chunks. */

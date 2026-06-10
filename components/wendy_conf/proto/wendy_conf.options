@@ -1,0 +1,11 @@
+# nanopb field options — all string/repeated fields must be bounded for static
+# allocation on MCU.
+
+WendyConf.device_name                     type:FT_CALLBACK
+WendyConfWifi.networks                    max_count:1
+WendyConfWifiNetwork.ssid                 type:FT_CALLBACK
+WendyConfWifiNetwork.password             type:FT_CALLBACK
+WendyConfCloudProvisioning.cloud_host     type:FT_CALLBACK
+WendyConfCloudProvisioning.key_pem        type:FT_CALLBACK
+WendyConfCloudProvisioning.cert_pem       type:FT_CALLBACK
+WendyConfCloudProvisioning.chain_pem      type:FT_CALLBACK

@@ -44,6 +44,11 @@ PROTO_TARGETS = [
         "components/wendy_com/include/wendy_com_msg.pb.h",
         "components/wendy_com/src/wendy_com_msg.pb.c",
     ),
+    (
+        "components/wendy_conf/proto/wendy_conf.proto",
+        "components/wendy_conf/include/wendy_conf.pb.h",
+        "components/wendy_conf/src/wendy_conf.pb.c",
+    ),
 ]
 
 # (proto path, Go output directory, Go package path)  — all relative to repo root
