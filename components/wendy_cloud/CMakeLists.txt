@@ -12,6 +12,5 @@ endif()
 idf_component_register(
     SRCS ${srcs}
     INCLUDE_DIRS "include"
-    EMBED_TXTFILES "certs/provisioning.json"
-    REQUIRES esp-tls freertos wendy_common
+    REQUIRES esp-tls freertos wendy_conf
 )

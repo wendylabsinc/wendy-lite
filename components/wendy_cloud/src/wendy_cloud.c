@@ -6,87 +6,17 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "u2_json.h"
+#include "wendy_conf.h"
 
 #include <string.h>
 #include <errno.h>
 
 static const char *TAG = "wendy_cloud";
 
-/* TEMP: provisioning JSON file embedded at build time via EMBED_TXTFILES — null-terminated */
-extern const uint8_t s_provisioning_json_start[] asm("_binary_provisioning_json_start");
-extern const uint8_t s_provisioning_json_end[]   asm("_binary_provisioning_json_end");
-
 static volatile wendy_cloud_state_t s_state = WENDY_CLOUD_STATE_IDLE;
 static TaskHandle_t                 s_task  = NULL;
 static esp_tls_t                    *s_tls  = NULL;
 
-static char *_ca_pem;
-static char *_device_cert_pem;
-static char *_device_key_pem;
-static char *_host_name;
-static int _host_port;
-
-
-static esp_err_t _decode_provisioning(void)
-{
-    free(_ca_pem);
-    free(_device_cert_pem);
-    free(_device_key_pem);
-    free(_host_name);
-
-    _ca_pem = NULL;
-    _device_cert_pem = NULL;
-    _device_key_pem = NULL;
-    _host_name = NULL;
-    _host_port = 5555;
-
-    // parse JSON
-
-    U2_JSON json;
-    u2_json_init_with_buf(&json, s_provisioning_json_start, s_provisioning_json_end - s_provisioning_json_start);
-
-    if (u2_json_next(&json) != U2_JSON_ELEM_OBJ)
-        return ESP_ERR_INVALID_ARG;
-    while (u2_json_next(&json) != U2_JSON_ELEM_OBJ_END) {
-        if (u2_json_element(&json) != U2_JSON_ELEM_KEY)
-            return ESP_ERR_INVALID_ARG;
-        if (u2_json_equal_str(&json, "chainPem")) {
-            if (u2_json_next(&json) != U2_JSON_ELEM_STR)
-                return ESP_ERR_INVALID_ARG;
-            _ca_pem = u2_json_str(&json);
-        } else if (u2_json_equal_str(&json, "certPem")) {
-            if (u2_json_next(&json) != U2_JSON_ELEM_STR)
-                return ESP_ERR_INVALID_ARG;
-            _device_cert_pem = u2_json_str(&json);
-        } else if (u2_json_equal_str(&json, "keyPem")) {
-            if (u2_json_next(&json) != U2_JSON_ELEM_STR)
-                return ESP_ERR_INVALID_ARG;
-            _device_key_pem = u2_json_str(&json);
-        } else if (u2_json_equal_str(&json, "cloudHost")) {
-            if (u2_json_next(&json) != U2_JSON_ELEM_STR)
-                return ESP_ERR_INVALID_ARG;
-            _host_name = u2_json_str(&json);
-        } else {
-            u2_json_next(&json);
-            u2_json_skip(&json);
-        }
-    }
-
-    // extract port number
-
-    if (_host_name && *_host_name != 0) {
-        char *p = _host_name + strlen(_host_name) - 1;
-        while (*p >= '0' && *p <= '9' && p > _host_name)
-            p--;
-        if (*p == ':') {
-            *p = '\0';
-            _host_port = (int)strtol(p + 1, NULL, 10);
-        }
-    }
-
-    return ESP_OK;
-}
 
 static esp_err_t cloud_connect(void)
 {
@@ -96,24 +26,38 @@ static esp_err_t cloud_connect(void)
         return ESP_ERR_NO_MEM;
     }
 
+    struct wendy_conf_span host = wendy_conf_get_cloud_host();
+
+    int port = 5054;
+    if (host.size > 0) {
+        const char *p = host.data + host.size - 1;
+        while (p > (const char *)host.data && *p >= '0' && *p <= '9')
+            p--;
+        if (*p == ':') {
+            host.size = p - (const char *)host.data;
+            port = (int)strtol(p + 1, NULL, 10);
+        }
+    }
+
+    ESP_LOGI(TAG, "Connecting to %.*s:%d with mTLS", (int)host.size, host.data, port);
+
+    struct wendy_conf_span key = wendy_conf_get_private_key();
+    struct wendy_conf_span cert = wendy_conf_get_certificate();
+    struct wendy_conf_span chain = wendy_conf_get_chain_of_trust();
+
     esp_tls_cfg_t cfg = {
-        .cacert_buf       = (uint8_t *)_ca_pem,
-        .cacert_bytes     = strlen(_ca_pem) + 1,
-        .clientcert_buf   = (uint8_t *)_device_cert_pem,
-        .clientcert_bytes = strlen(_device_cert_pem) + 1,
-        .clientkey_buf    = (uint8_t *)_device_key_pem,
-        .clientkey_bytes  = strlen(_device_key_pem) + 1,
-        /*
-         * We do not check the CN in the certificate.
-         * The CA chain is still fully verified.
-         */
-        .skip_common_name = true,
+        .cacert_buf       = chain.data,
+        .cacert_bytes     = chain.size,
+        .clientcert_buf   = cert.data,
+        .clientcert_bytes = cert.size,
+        .clientkey_buf    = key.data,
+        .clientkey_bytes  = key.size,
     };
 
     int ret = esp_tls_conn_new_sync(
-        _host_name,
-        strlen(_host_name),
-        _host_port,
+        host.data,
+        host.size,
+        port,
         &cfg,
         s_tls);
 
@@ -139,7 +83,6 @@ static void cloud_task(void *arg)
 
     for (;;) {
         s_state = WENDY_CLOUD_STATE_CONNECTING;
-        ESP_LOGI(TAG, "Connecting to %s:%d with mTLS", _host_name, _host_port);
 
         if (cloud_connect() != ESP_OK) {
             s_state = WENDY_CLOUD_STATE_ERROR;
@@ -183,15 +126,13 @@ esp_err_t wendy_cloud_start(void)
         return ESP_OK;
     }
 
-    esp_err_t err = _decode_provisioning();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "provisioning decode failed");
-        return err;
-    }
-
-    if (!_ca_pem || !_device_cert_pem || !_device_key_pem || !_host_name) {
-        ESP_LOGE(TAG, "no cloud provisioning");
-        return ESP_ERR_INVALID_ARG;
+    struct wendy_conf_span host = wendy_conf_get_cloud_host();
+    struct wendy_conf_span key = wendy_conf_get_private_key();
+    struct wendy_conf_span cert = wendy_conf_get_certificate();
+    struct wendy_conf_span chain = wendy_conf_get_chain_of_trust();
+    if (host.size == 0 || key.size == 0 || cert.size == 0 || chain.size == 0) {
+        ESP_LOGE(TAG, "cloud provisioning not found in wendy_conf");
+        return ESP_FAIL;
     }
 
     BaseType_t ret = xTaskCreatePinnedToCore(
