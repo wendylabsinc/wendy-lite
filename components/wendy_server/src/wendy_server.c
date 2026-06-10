@@ -18,7 +18,7 @@
 //--- literals ---//
 
 #define TAG                       "wendy_server"
-#define WENDY_SERVER_PORT         9111
+#define WENDY_SERVER_PORT         5054
 #define WENDY_SERVER_BACKLOG      4
 #define WENDY_SERVER_TASK_STACK   8192
 #define WENDY_SERVER_TASK_PRIO    5

@@ -319,11 +319,6 @@ menu "Wendy MCU Firmware Configuration"
             depends on WENDY_WIFI_ENABLED
             default ""
 
-        config WENDY_WIFI_UDP_PORT
-            int "UDP reload listener port"
-            depends on WENDY_WIFI_ENABLED
-            default 4210
-
     endmenu
 
     menu "USB Communication"
