@@ -261,7 +261,10 @@ menu "Wendy MCU Firmware Configuration"
             help
                 Each socket gets one RX and one TX buffer of this
                 size. Total per-socket cost is therefore 2x this
-                value.
+                value. For UDP this is also the maximum datagram size:
+                a datagram fills one whole slot and is consumed atomically,
+                so anything larger is truncated. The WendyLite guest's recv
+                buffer must be >= this value or it will truncate datagrams.
 
         config WENDY_NET_BUFFERS_IN_PSRAM
             bool "Place wendy_net buffers in PSRAM"

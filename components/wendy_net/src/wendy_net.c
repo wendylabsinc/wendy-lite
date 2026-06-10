@@ -61,10 +61,19 @@ _Static_assert(WENDYNET_MAX_SOCKETS + WENDYNET_MAX_LISTENERS + 1 <= FD_SETSIZE,
 #define WENDYNET_STATUS_CLOSED   4
 #define WENDYNET_STATUS_ERROR    8
 
+typedef enum {
+    WENDYNET_SOCK_TCP = 0,        /* stream socket, own fd */
+    WENDYNET_SOCK_UDP = 1,        /* datagram socket, own fd; client side uses connect() */
+    WENDYNET_SOCK_UDP_PEER = 2,   /* per-peer association on a UDP listener; shares listener's fd */
+} wendynet_sock_type_t;
+
 typedef struct {
     bool used;
     int handle;
-    int fd;
+    int fd;                       /* own fd for TCP / UDP; -1 for UDP_PEER */
+    wendynet_sock_type_t sock_type;
+    int listener_handle;          /* for UDP_PEER: the parent UDP listener handle */
+    struct sockaddr_in peer_addr; /* for UDP_PEER: remote address (valid iff UDP_PEER) */
     bool resolving;
     bool connecting;
     bool closing;
@@ -98,6 +107,7 @@ typedef struct {
     bool used;
     int handle;
     int fd;
+    bool is_udp;                  /* unconnected datagram listener; demux by source addr */
     int accepted[WENDYNET_ACCEPT_QUEUE_SIZE];
     size_t accepted_head;
     size_t accepted_count;
@@ -115,6 +125,11 @@ static bool s_wendynet_post_pending;
 static int s_wendynet_next_handle = 1;
 static WENDYNET_BSS_ATTR wendynet_socket_t s_wendynet_sockets[WENDYNET_MAX_SOCKETS];
 static WENDYNET_BSS_ATTR wendynet_listener_t s_wendynet_listeners[WENDYNET_MAX_LISTENERS];
+
+/* Scratch buffer for the UDP listener demux recvfrom. The wendynet task is a
+ * singleton and only touches this under wendynet_lock, so a single static
+ * buffer is safe. */
+static WENDYNET_BSS_ATTR uint8_t s_wendynet_udp_pkt[WENDYNET_BUFFER_SIZE];
 
 /* eventfd used to wake the task's select() when other threads mutate state
  * (close marks, queued sends, new sockets/listeners, guest reset). */
@@ -244,11 +259,55 @@ static void wendynet_release_socket_locked(wendynet_socket_t *sock)
     if (!sock || !sock->used) {
         return;
     }
-    if (sock->fd >= 0) {
+    /* UDP_PEER shares the listener's fd — never close it here. */
+    if (sock->fd >= 0 && sock->sock_type != WENDYNET_SOCK_UDP_PEER) {
         close(sock->fd);
     }
     memset(sock, 0, sizeof(*sock));
     sock->fd = -1;
+}
+
+static bool wendynet_sockaddr_equal(const struct sockaddr_in *a,
+                                     const struct sockaddr_in *b)
+{
+    return a->sin_family == b->sin_family
+        && a->sin_port == b->sin_port
+        && a->sin_addr.s_addr == b->sin_addr.s_addr;
+}
+
+static wendynet_socket_t *wendynet_find_udp_peer_locked(int listener_handle,
+                                                         const struct sockaddr_in *addr)
+{
+    for (int i = 0; i < WENDYNET_MAX_SOCKETS; i++) {
+        wendynet_socket_t *sock = &s_wendynet_sockets[i];
+        if (sock->used
+            && sock->sock_type == WENDYNET_SOCK_UDP_PEER
+            && sock->listener_handle == listener_handle
+            && wendynet_sockaddr_equal(&sock->peer_addr, addr)) {
+            return sock;
+        }
+    }
+    return NULL;
+}
+
+/* Close UDP_PEER associations on a listener that is going away (lock held).
+ * Like a TCP peer: raise CLOSED and let the guest drain buffered rx before the
+ * slot is reclaimed; a peer with no buffered rx is freed now. */
+static void wendynet_close_udp_peers_for_listener_locked(int listener_handle)
+{
+    for (int i = 0; i < WENDYNET_MAX_SOCKETS; i++) {
+        wendynet_socket_t *sock = &s_wendynet_sockets[i];
+        if (sock->used
+            && sock->sock_type == WENDYNET_SOCK_UDP_PEER
+            && sock->listener_handle == listener_handle
+            && !sock->closed) {
+            sock->closed = true;
+            wendynet_notify_locked(WENDYNET_EVENT_CLOSED);
+            if (sock->rx_len == 0) {
+                wendynet_release_socket_locked(sock);
+            }
+        }
+    }
 }
 
 static void wendynet_release_drained_closed_socket_locked(wendynet_socket_t *sock)
@@ -272,6 +331,11 @@ static void wendynet_close_listener_locked(wendynet_listener_t *listener)
         size_t index = (listener->accepted_head + i) % WENDYNET_ACCEPT_QUEUE_SIZE;
         wendynet_socket_t *sock = wendynet_find_socket_locked(listener->accepted[index]);
         wendynet_release_socket_locked(sock);
+    }
+    /* For UDP listeners: also close any per-peer associations the guest has
+     * already accepted. They share the listener fd and can't outlive it. */
+    if (listener->is_udp) {
+        wendynet_close_udp_peers_for_listener_locked(listener->handle);
     }
     if (listener->fd >= 0) {
         close(listener->fd);
@@ -360,7 +424,11 @@ static void wendynet_start_resolved_connect_locked(wendynet_socket_t *sock,
 {
     sock->resolving = false;
 
-    int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+    bool is_udp = (sock->sock_type == WENDYNET_SOCK_UDP);
+    int sock_kind = is_udp ? SOCK_DGRAM : SOCK_STREAM;
+    int proto = is_udp ? IPPROTO_UDP : IPPROTO_IP;
+
+    int fd = socket(AF_INET, sock_kind, proto);
     if (fd < 0) {
         sock->closed = true;
         sock->error = true;
@@ -383,7 +451,7 @@ static void wendynet_start_resolved_connect_locked(wendynet_socket_t *sock,
 
     sock->fd = fd;
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-        if (errno == EINPROGRESS) {
+        if (!is_udp && errno == EINPROGRESS) {
             sock->connecting = true;
             return;
         }
@@ -452,12 +520,69 @@ static void wendynet_task_main(void *arg)
         wendynet_lock();
         wendynet_drain_dns_results_locked();
         wendynet_close_marked_sockets_locked();
+
+        /* UDP sends are eager — there's no connection-level backpressure to
+         * wait for. Drain every pending UDP tx queue before sleeping in
+         * select(); each UDP slot holds at most one datagram. */
+        for (int i = 0; i < WENDYNET_MAX_SOCKETS; i++) {
+            wendynet_socket_t *sock = &s_wendynet_sockets[i];
+            if (!sock->used || sock->tx_len == 0
+                || sock->closed || sock->error) {
+                continue;
+            }
+            /* Resolve the egress fd and (for peers) the destination address. */
+            int out_fd = -1;
+            const struct sockaddr *dest = NULL;
+            socklen_t dest_len = 0;
+            if (sock->sock_type == WENDYNET_SOCK_UDP && sock->fd >= 0
+                && !sock->connecting) {
+                out_fd = sock->fd;  /* connected datagram socket */
+            } else if (sock->sock_type == WENDYNET_SOCK_UDP_PEER) {
+                wendynet_listener_t *listener =
+                    wendynet_find_listener_locked(sock->listener_handle);
+                if (listener && listener->fd >= 0) {
+                    out_fd = listener->fd;
+                    dest = (const struct sockaddr *)&sock->peer_addr;
+                    dest_len = sizeof(sock->peer_addr);
+                }
+                /* listener gone: out_fd stays -1, datagram is dropped below */
+            } else {
+                continue;
+            }
+
+            if (out_fd >= 0) {
+                int n = dest
+                    ? sendto(out_fd, sock->tx, sock->tx_len, 0, dest, dest_len)
+                    : send(out_fd, sock->tx, sock->tx_len, 0);
+                if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                    sock->error = true;
+                    wendynet_notify_locked(WENDYNET_EVENT_ERROR | WENDYNET_EVENT_CLOSED);
+                }
+            }
+            /* Whether the send succeeded, returned would-block, or had nowhere
+             * to go, drop the datagram (UDP semantics) and let the guest
+             * enqueue another. */
+            sock->tx_len = 0;
+            wendynet_notify_locked(WENDYNET_EVENT_WRITE_READY);
+        }
+
         for (int i = 0; i < WENDYNET_MAX_LISTENERS; i++) {
-            if (s_wendynet_listeners[i].used && s_wendynet_listeners[i].fd >= 0 &&
-                s_wendynet_listeners[i].accepted_count < WENDYNET_ACCEPT_QUEUE_SIZE) {
-                FD_SET(s_wendynet_listeners[i].fd, &readfds);
-                if (s_wendynet_listeners[i].fd > max_fd) {
-                    max_fd = s_wendynet_listeners[i].fd;
+            wendynet_listener_t *listener = &s_wendynet_listeners[i];
+            if (!listener->used || listener->fd < 0) {
+                continue;
+            }
+            /* UDP listeners always read so established peers are never starved
+             * by a full accept queue: capacity is enforced per-datagram in the
+             * demux loop (new associations spill, existing peers keep flowing).
+             * TCP keeps the accept-queue backpressure — its accepted children
+             * have their own fds, so deferring accept() is harmless. */
+            bool can_read = listener->is_udp
+                ? true
+                : (listener->accepted_count < WENDYNET_ACCEPT_QUEUE_SIZE);
+            if (can_read) {
+                FD_SET(listener->fd, &readfds);
+                if (listener->fd > max_fd) {
+                    max_fd = listener->fd;
                 }
             }
         }
@@ -466,14 +591,21 @@ static void wendynet_task_main(void *arg)
             if (!sock->used || sock->fd < 0) {
                 continue;
             }
+            /* TCP can stream into remaining rx space; UDP slots hold a single
+             * datagram, so only select for read while the slot is empty —
+             * otherwise select() would spin on a readable fd we won't drain. */
+            bool rx_has_space = (sock->sock_type == WENDYNET_SOCK_TCP)
+                ? (sock->rx_len < WENDYNET_BUFFER_SIZE)
+                : (sock->rx_len == 0);
             if (!sock->connecting && !sock->closed && !sock->closing &&
-                !sock->error && sock->rx_len < WENDYNET_BUFFER_SIZE) {
+                !sock->error && rx_has_space) {
                 FD_SET(sock->fd, &readfds);
                 if (sock->fd > max_fd) {
                     max_fd = sock->fd;
                 }
             }
-            if (!sock->closed && !sock->error &&
+            /* UDP tx was drained eagerly above; only TCP waits on writefds. */
+            if (!sock->closed && !sock->error && sock->sock_type == WENDYNET_SOCK_TCP &&
                 (sock->connecting || sock->tx_len > 0)) {
                 FD_SET(sock->fd, &writefds);
                 if (sock->fd > max_fd) {
@@ -510,6 +642,65 @@ static void wendynet_task_main(void *arg)
         for (int i = 0; i < WENDYNET_MAX_LISTENERS; i++) {
             wendynet_listener_t *listener = &s_wendynet_listeners[i];
             if (!listener->used || listener->fd < 0 || !FD_ISSET(listener->fd, &readfds)) {
+                continue;
+            }
+
+            if (listener->is_udp) {
+                /* UDP listener: recvfrom each datagram and demux by source
+                 * address. Always drain to EAGAIN so established peers keep
+                 * receiving regardless of accept-queue pressure. A datagram
+                 * from a new source spawns a UDP_PEER association and enqueues
+                 * it for accept(); if there's no accept-queue room or no free
+                 * socket slot, that datagram is dropped (spilled) but draining
+                 * continues. Existing peers receive into their per-peer rx slot
+                 * (single datagram at a time; drops on full rx are acceptable
+                 * UDP semantics). */
+                for (;;) {
+                    struct sockaddr_in src;
+                    socklen_t src_len = sizeof(src);
+                    int n = recvfrom(listener->fd, s_wendynet_udp_pkt,
+                                     sizeof(s_wendynet_udp_pkt), 0,
+                                     (struct sockaddr *)&src, &src_len);
+                    if (n < 0) {
+                        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                            wendynet_notify_locked(WENDYNET_EVENT_ERROR);
+                        }
+                        break;
+                    }
+
+                    wendynet_socket_t *peer =
+                        wendynet_find_udp_peer_locked(listener->handle, &src);
+                    if (!peer) {
+                        /* New association. Spill (drop this datagram, keep
+                         * draining) if we can't admit one right now — never
+                         * stop reading, or established peers would starve. */
+                        if (listener->accepted_count >= WENDYNET_ACCEPT_QUEUE_SIZE) {
+                            continue;
+                        }
+                        peer = wendynet_alloc_socket_locked(-1);
+                        if (!peer) {
+                            continue;  /* socket table full: spill */
+                        }
+                        peer->sock_type = WENDYNET_SOCK_UDP_PEER;
+                        peer->listener_handle = listener->handle;
+                        peer->peer_addr = src;
+
+                        if (!wendynet_listener_enqueue_locked(listener, peer->handle)) {
+                            wendynet_release_socket_locked(peer);
+                            continue;  /* spill */
+                        }
+                        wendynet_notify_locked(WENDYNET_EVENT_ACCEPT_READY);
+                    }
+
+                    if (peer->rx_len == 0 && n > 0) {
+                        /* n <= sizeof(s_wendynet_udp_pkt) == WENDYNET_BUFFER_SIZE,
+                         * the rx slot size, so the whole datagram fits. */
+                        memcpy(peer->rx, s_wendynet_udp_pkt, (size_t)n);
+                        peer->rx_len = (size_t)n;
+                        wendynet_notify_locked(WENDYNET_EVENT_READ_READY);
+                    }
+                    /* If rx_len > 0 the guest hasn't drained yet — drop. */
+                }
                 continue;
             }
 
@@ -551,6 +742,26 @@ static void wendynet_task_main(void *arg)
         for (int i = 0; i < WENDYNET_MAX_SOCKETS; i++) {
             wendynet_socket_t *sock = &s_wendynet_sockets[i];
             if (!sock->used || sock->fd < 0) {
+                continue;
+            }
+
+            if (sock->sock_type == WENDYNET_SOCK_UDP) {
+                /* UDP standalone (connected client): one datagram per recv,
+                 * read only while the slot is empty. Sends were drained
+                 * eagerly before select(). */
+                if (!sock->closed && !sock->error
+                    && sock->rx_len == 0
+                    && FD_ISSET(sock->fd, &readfds)) {
+                    int n = recv(sock->fd, sock->rx, WENDYNET_BUFFER_SIZE, 0);
+                    if (n > 0) {
+                        sock->rx_len = (size_t)n;
+                        wendynet_notify_locked(WENDYNET_EVENT_READ_READY);
+                    } else if (n < 0
+                               && errno != EAGAIN && errno != EWOULDBLOCK) {
+                        sock->error = true;
+                        wendynet_notify_locked(WENDYNET_EVENT_ERROR | WENDYNET_EVENT_CLOSED);
+                    }
+                }
                 continue;
             }
 
@@ -682,14 +893,16 @@ static int wendynet_drain_events_wrapper(wasm_exec_env_t exec_env)
     return (int)bits;
 }
 
-static int wendynet_tcp_listen_wrapper(wasm_exec_env_t exec_env, int port, int backlog)
+/* Shared body for the TCP/UDP listen wrappers. For UDP, backlog is ignored
+ * (no listen()). Returns a listener handle or -1. */
+static int wendynet_listen_common(int port, bool is_udp, int backlog)
 {
-    (void)exec_env;
     if (port <= 0 || port > 65535) {
         return -1;
     }
 
-    int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+    int fd = socket(AF_INET, is_udp ? SOCK_DGRAM : SOCK_STREAM,
+                    is_udp ? IPPROTO_UDP : IPPROTO_IP);
     if (fd < 0) {
         return -1;
     }
@@ -707,12 +920,12 @@ static int wendynet_tcp_listen_wrapper(wasm_exec_env_t exec_env, int port, int b
         .sin_port = htons((uint16_t)port),
         .sin_addr.s_addr = htonl(INADDR_ANY),
     };
-
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
         close(fd);
         return -1;
     }
-    if (listen(fd, backlog > 0 ? backlog : WENDYNET_ACCEPT_QUEUE_SIZE) != 0) {
+    if (!is_udp &&
+        listen(fd, backlog > 0 ? backlog : WENDYNET_ACCEPT_QUEUE_SIZE) != 0) {
         close(fd);
         return -1;
     }
@@ -730,10 +943,12 @@ static int wendynet_tcp_listen_wrapper(wasm_exec_env_t exec_env, int port, int b
             s_wendynet_listeners[i].used = true;
             s_wendynet_listeners[i].handle = wendynet_alloc_handle_locked();
             s_wendynet_listeners[i].fd = fd;
+            s_wendynet_listeners[i].is_udp = is_udp;
             int handle = s_wendynet_listeners[i].handle;
             wendynet_wake_locked();
             wendynet_unlock();
-            ESP_LOGI(TAG, "WendyNet listening on TCP port %d (handle=%d)", port, handle);
+            ESP_LOGI(TAG, "WendyNet listening on %s port %d (handle=%d)",
+                     is_udp ? "UDP" : "TCP", port, handle);
             return handle;
         }
     }
@@ -743,10 +958,12 @@ static int wendynet_tcp_listen_wrapper(wasm_exec_env_t exec_env, int port, int b
     return -1;
 }
 
-static int wendynet_tcp_connect_wrapper(wasm_exec_env_t exec_env,
-                                        const char *host, int host_len, int port)
+/* Shared body for the TCP/UDP connect wrappers. Allocates a socket slot of the
+ * given sock_type and kicks off async DNS resolution. Returns a socket handle
+ * or -1. */
+static int wendynet_connect_common(const char *host, int host_len, int port,
+                                   wendynet_sock_type_t sock_type)
 {
-    (void)exec_env;
     if (!host || host_len <= 0 || port <= 0 || port > 65535) {
         return -1;
     }
@@ -773,13 +990,15 @@ static int wendynet_tcp_connect_wrapper(wasm_exec_env_t exec_env,
         free(req);
         return -1;
     }
+    sock->sock_type = sock_type;
     sock->resolving = true;
     sock->pending_port = (uint16_t)port;
     int handle = sock->handle;
     req->handle = handle;
     wendynet_unlock();
 
-    ESP_LOGI(TAG, "WendyNet resolving %s:%d (handle=%d)",
+    ESP_LOGI(TAG, "WendyNet (%s) resolving %s:%d (handle=%d)",
+             sock_type == WENDYNET_SOCK_UDP ? "UDP" : "TCP",
              req->hostname, port, handle);
 
     /* Hand off to the tcpip thread. Once tcpip_callback returns ERR_OK,
@@ -797,6 +1016,32 @@ static int wendynet_tcp_connect_wrapper(wasm_exec_env_t exec_env,
         return -1;
     }
     return handle;
+}
+
+static int wendynet_tcp_listen_wrapper(wasm_exec_env_t exec_env, int port, int backlog)
+{
+    (void)exec_env;
+    return wendynet_listen_common(port, false, backlog);
+}
+
+static int wendynet_tcp_connect_wrapper(wasm_exec_env_t exec_env,
+                                        const char *host, int host_len, int port)
+{
+    (void)exec_env;
+    return wendynet_connect_common(host, host_len, port, WENDYNET_SOCK_TCP);
+}
+
+static int wendynet_udp_listen_wrapper(wasm_exec_env_t exec_env, int port)
+{
+    (void)exec_env;
+    return wendynet_listen_common(port, true, 0);
+}
+
+static int wendynet_udp_connect_wrapper(wasm_exec_env_t exec_env,
+                                        const char *host, int host_len, int port)
+{
+    (void)exec_env;
+    return wendynet_connect_common(host, host_len, port, WENDYNET_SOCK_UDP);
 }
 
 static int wendynet_listener_accept_wrapper(wasm_exec_env_t exec_env, int listener_handle)
@@ -874,7 +1119,12 @@ static int wendynet_socket_status_wrapper(wasm_exec_env_t exec_env, int socket_h
     if (sock->rx_len > 0) {
         status |= WENDYNET_STATUS_READABLE;
     }
-    if (sock->tx_len < WENDYNET_BUFFER_SIZE && !sock->resolving &&
+    /* TCP can accept bytes whenever there's buffer space. UDP is single-
+     * datagram per slot so it's writable iff tx_len == 0. */
+    bool tx_has_space = (sock->sock_type == WENDYNET_SOCK_TCP)
+        ? (sock->tx_len < WENDYNET_BUFFER_SIZE)
+        : (sock->tx_len == 0);
+    if (tx_has_space && !sock->resolving &&
         !sock->connecting && !sock->closing &&
         !sock->closed && !sock->error) {
         status |= WENDYNET_STATUS_WRITABLE;
@@ -911,13 +1161,27 @@ static int wendynet_socket_recv_wrapper(wasm_exec_env_t exec_env, int socket_han
         return rc;
     }
     size_t n = sock->rx_len < (size_t)len ? sock->rx_len : (size_t)len;
-    bool was_full = (sock->rx_len >= WENDYNET_BUFFER_SIZE);
+    bool need_wake;
     memcpy(buf, sock->rx, n);
-    if (n < sock->rx_len) {
-        memmove(sock->rx, sock->rx + n, sock->rx_len - n);
+    if (sock->sock_type == WENDYNET_SOCK_UDP
+        || sock->sock_type == WENDYNET_SOCK_UDP_PEER) {
+        /* Datagrams are atomic: consume the whole slot even if the caller's
+         * buffer was smaller. Truncates the message (POSIX MSG_TRUNC). */
+        sock->rx_len = 0;
+        /* A standalone UDP socket is only selected for read while its slot is
+         * empty, so wake the task to re-arm its fd. A UDP_PEER has no own fd
+         * (the listener fd is always selected), so no wake is needed. */
+        need_wake = (sock->sock_type == WENDYNET_SOCK_UDP);
+    } else {
+        /* TCP: if the rx slot was full the task dropped the fd from readfds;
+         * wake it to resume reading now that there's space. */
+        need_wake = (sock->rx_len >= WENDYNET_BUFFER_SIZE);
+        if (n < sock->rx_len) {
+            memmove(sock->rx, sock->rx + n, sock->rx_len - n);
+        }
+        sock->rx_len -= n;
     }
-    sock->rx_len -= n;
-    if (was_full) {
+    if (need_wake) {
         wendynet_wake_locked();
     }
     wendynet_unlock();
@@ -940,6 +1204,25 @@ static int wendynet_socket_send_wrapper(wasm_exec_env_t exec_env, int socket_han
         || sock->closed || sock->error) {
         wendynet_unlock();
         return -2;
+    }
+    /* UDP slots hold one datagram at a time. If a prior datagram is still
+     * buffered, the guest must wait for the task to drain it before queuing
+     * another (returns 0 = would block). The whole datagram must fit. */
+    if (sock->sock_type == WENDYNET_SOCK_UDP
+        || sock->sock_type == WENDYNET_SOCK_UDP_PEER) {
+        if (sock->tx_len > 0) {
+            wendynet_unlock();
+            return 0;
+        }
+        if ((size_t)len > WENDYNET_BUFFER_SIZE) {
+            wendynet_unlock();
+            return -1;
+        }
+        memcpy(sock->tx, data, (size_t)len);
+        sock->tx_len = (size_t)len;
+        wendynet_wake_locked();
+        wendynet_unlock();
+        return len;
     }
     size_t space = WENDYNET_BUFFER_SIZE - sock->tx_len;
     if (space == 0) {
@@ -965,6 +1248,16 @@ static int wendynet_socket_close_wrapper(wasm_exec_env_t exec_env, int socket_ha
     if (!sock) {
         wendynet_unlock();
         return -1;
+    }
+    /* UDP slots have no connection state to drain or shut down. UDP_PEER
+     * additionally has no own fd (it lives on the listener's fd). Just
+     * release the slot. */
+    if (sock->sock_type == WENDYNET_SOCK_UDP
+        || sock->sock_type == WENDYNET_SOCK_UDP_PEER) {
+        wendynet_release_socket_locked(sock);
+        wendynet_wake_locked();
+        wendynet_unlock();
+        return 0;
     }
     // Peer already closed or errored: free the slot now rather than waiting
     // for the task to come around. Otherwise a guest that observes CLOSED via
@@ -1269,11 +1562,13 @@ static NativeSymbol s_net_symbols[] = {
     { "net_send",        (void *)net_send_wrapper,        "(i*~)i",     NULL },
     { "net_recv",        (void *)net_recv_wrapper,        "(i*~)i",     NULL },
     { "net_close",       (void *)net_close_wrapper,       "(i)i",       NULL },
-    /* WendyNet async TCP */
+    /* WendyNet async TCP/UDP */
     { "wendynet_init",           (void *)wendynet_init_wrapper,           "(i)i",    NULL },
     { "wendynet_drain_events",   (void *)wendynet_drain_events_wrapper,   "()i",     NULL },
     { "wendynet_tcp_listen",     (void *)wendynet_tcp_listen_wrapper,     "(ii)i",   NULL },
     { "wendynet_tcp_connect",    (void *)wendynet_tcp_connect_wrapper,    "(*~i)i",  NULL },
+    { "wendynet_udp_listen",     (void *)wendynet_udp_listen_wrapper,     "(i)i",    NULL },
+    { "wendynet_udp_connect",    (void *)wendynet_udp_connect_wrapper,    "(*~i)i",  NULL },
     { "wendynet_listener_accept",(void *)wendynet_listener_accept_wrapper,"(i)i",    NULL },
     { "wendynet_listener_close", (void *)wendynet_listener_close_wrapper, "(i)i",    NULL },
     { "wendynet_listener_port",  (void *)wendynet_listener_port_wrapper,  "(i)i",    NULL },
