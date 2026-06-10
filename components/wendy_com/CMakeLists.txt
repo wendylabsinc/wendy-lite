@@ -9,6 +9,5 @@ idf_component_register(
         "include"
     REQUIRES
         esp-tls mbedtls freertos vfs log
-        wendy_common
         nanopb
 )

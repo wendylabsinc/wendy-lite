@@ -1,5 +1,4 @@
 #include "wendy_net.h"
-#include "wendy_common.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -632,7 +631,6 @@ static int wendynet_ensure_started_locked(void)
         }
     }
     if (s_wakeup_fd < 0) {
-        wendy_common_init_eventfd();
         s_wakeup_fd = eventfd(0, 0);
         if (s_wakeup_fd < 0) {
             ESP_LOGE(TAG, "eventfd() failed");

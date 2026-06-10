@@ -10,6 +10,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_partition.h"
+#include "esp_vfs_eventfd.h"
 #include "nvs_flash.h"
 
 #include "esp_netif.h"
@@ -490,8 +491,15 @@ void app_main(void)
     ESP_LOGI(TAG, "  Target: %s", CONFIG_IDF_TARGET);
     ESP_LOGI(TAG, "========================================");
 
+    esp_vfs_eventfd_config_t cfg = ESP_VFS_EVENTD_CONFIG_DEFAULT();
+    esp_err_t err = esp_vfs_eventfd_register(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_vfs_eventfd_register: %s (continuing)",
+                    esp_err_to_name(err));
+    }
+
     /* NVS */
-    esp_err_t err = nvs_flash_init();
+    err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();
         nvs_flash_init();

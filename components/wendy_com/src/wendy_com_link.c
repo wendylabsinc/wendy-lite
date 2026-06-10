@@ -1,6 +1,5 @@
 
 #include "wendy_com_link.h"
-#include "wendy_common.h"
 #include "esp_log.h"
 #include "esp_tls.h"
 #include "esp_vfs_eventfd.h"
@@ -190,7 +189,6 @@ static void _main(void *arg)
 {
     _main_task = xTaskGetCurrentTaskHandle();
 
-    wendy_common_init_eventfd();
     _wakeup_efd = eventfd(0, 0);
 
     for (;;) {
