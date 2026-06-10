@@ -271,6 +271,9 @@ static void _on_link_state_changed(
             struct _agent_link *ch = &_links[i];
             if (ch->link_id == link_id) {
                 ch->link_id = 0;
+                free(ch->dynamic_buf);
+                ch->dynamic_buf = NULL;
+                ch->dynamic_buf_size = 0;
                 return;
             }
         }
