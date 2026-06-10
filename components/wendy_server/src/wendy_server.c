@@ -6,7 +6,6 @@
 #include "mdns.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "u2_json.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -40,62 +39,15 @@ struct wendy_server_link {
 
 //--- globals ---//
 
-/* TEMP: provisioning JSON file embedded at build time via EMBED_TXTFILES — null-terminated */
-extern const uint8_t s_provisioning_json_start[] asm("_binary_provisioning_json_start");
-extern const uint8_t s_provisioning_json_end[]   asm("_binary_provisioning_json_end");
-static char *_ca_pem;
-static char *_device_cert_pem;
-static char *_device_key_pem;
+extern const uint8_t default_cert_der_start[] asm("_binary_default_cert_der_start");
+extern const uint8_t default_cert_der_end[]   asm("_binary_default_cert_der_end");
+extern const uint8_t default_key_der_start[]  asm("_binary_default_key_der_start");
+extern const uint8_t default_key_der_end[]    asm("_binary_default_key_der_end");
 
 static struct wendy_server_link _links[WENDY_SERVER_MAX_LINKS];
 
 
 //--- internal functions ---//
-
-static esp_err_t _decode_provisioning(void)
-{
-    free(_ca_pem);
-    free(_device_cert_pem);
-    free(_device_key_pem);
-
-    _ca_pem = NULL;
-    _device_cert_pem = NULL;
-    _device_key_pem = NULL;
-
-    // parse JSON
-
-    U2_JSON json;
-    u2_json_init_with_buf(&json, s_provisioning_json_start, s_provisioning_json_end - s_provisioning_json_start);
-
-    if (u2_json_next(&json) != U2_JSON_ELEM_OBJ)
-        return ESP_ERR_INVALID_ARG;
-    while (u2_json_next(&json) != U2_JSON_ELEM_OBJ_END) {
-        if (u2_json_element(&json) != U2_JSON_ELEM_KEY)
-            return ESP_ERR_INVALID_ARG;
-        if (u2_json_equal_str(&json, "chainPem")) {
-            if (u2_json_next(&json) != U2_JSON_ELEM_STR)
-                return ESP_ERR_INVALID_ARG;
-            _ca_pem = u2_json_str(&json);
-        } else if (u2_json_equal_str(&json, "certPem")) {
-            if (u2_json_next(&json) != U2_JSON_ELEM_STR)
-                return ESP_ERR_INVALID_ARG;
-            _device_cert_pem = u2_json_str(&json);
-        } else if (u2_json_equal_str(&json, "keyPem")) {
-            if (u2_json_next(&json) != U2_JSON_ELEM_STR)
-                return ESP_ERR_INVALID_ARG;
-            _device_key_pem = u2_json_str(&json);
-        } else if (u2_json_equal_str(&json, "cloudHost")) {
-            if (u2_json_next(&json) != U2_JSON_ELEM_STR)
-                return ESP_ERR_INVALID_ARG;
-            //_host_name = u2_json_str(&json);
-        } else {
-            u2_json_next(&json);
-            u2_json_skip(&json);
-        }
-    }
-
-    return ESP_OK;
-}
 
 static void _on_state_change(struct wcom_state_change_handler *handler, int link_id, enum wcom_link_state state)
 {
@@ -161,8 +113,6 @@ static void _add_link_exec(struct wcom_operation *op)
 
 static void _server_task(void *arg)
 {
-    _decode_provisioning();
-
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd < 0) {
         ESP_LOGE(TAG, "socket() failed: %d", errno);
@@ -219,10 +169,10 @@ static void _server_task(void *arg)
         }
 
         esp_tls_cfg_server_t cfg = {
-            .servercert_buf   = (uint8_t *)_device_cert_pem,
-            .servercert_bytes = strlen(_device_cert_pem) + 1,
-            .serverkey_buf    = (uint8_t *)_device_key_pem,
-            .serverkey_bytes  = strlen(_device_key_pem) + 1,
+            .servercert_buf   = default_cert_der_start,
+            .servercert_bytes = default_cert_der_end - default_cert_der_start,
+            .serverkey_buf    = default_key_der_start,
+            .serverkey_bytes  = default_key_der_end - default_key_der_start,
             // no cacert_buf: peer identity checks disabled
         };
 
