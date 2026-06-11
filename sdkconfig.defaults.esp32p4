@@ -1,23 +1,23 @@
-# Target: ESP32-P4 (e.g. DFRobot DFR1172 FireBeetle 2 ESP32-P4).
+# Target: ESP32-P4 - knobs common to every supported P4 board.
 # The on-board ESP32-C6 provides Wi-Fi and Bluetooth via ESP-Hosted over SDIO;
 # its slave firmware is pre-flashed at the factory.
+#
+# Board-specific bits (flash size, partition table) live in boards/<board>.defaults
+# and are selected at configure time via an argfile, e.g.:
+#     idf.py @boards/waveshare_lcd_4b.cfg set-target esp32p4
+#     idf.py @boards/dfr1172_firebeetle.cfg set-target esp32p4
+# A bare `set-target esp32p4` with no board is rejected by the top-level
+# CMakeLists.txt (see CONFIG_WENDY_P4_BOARD_NAME).
 CONFIG_IDF_TARGET="esp32p4"
 
-# 16 MB SPI flash on this board.
-CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
-
-# DFRobot DFR1172 ships with early-revision P4 silicon (v1.0). The default
-# IDF build targets v3.1+, which is mutually incompatible - opt into the
-# pre-v3 support path and require at least v1.0.
+# Both currently supported boards ship with early-revision P4 silicon (v1.0).
+# The default IDF build targets v3.1+, which is mutually incompatible - opt into
+# the pre-v3 support path and require at least v1.0. On rev 3.0+ silicon, drop
+# these two knobs and let the IDF defaults stand.
 CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
 CONFIG_ESP32P4_REV_MIN_100=y
 
-# Custom partition table with a comfortable 3 MB app region and most of the
-# remaining flash given to the WASM guest slot.
-CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.esp32p4.csv"
-
-# --- PSRAM (32 MB HEX @ 200 MHz, integrated in the ESP32-P4R32) ---
+# --- PSRAM (32 MB HEX @ 200 MHz, integrated in the ESP32-P4R32 / NRW32) ---
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_HEX=y
 CONFIG_SPIRAM_SPEED_200M=y
@@ -27,11 +27,12 @@ CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 # Anything smaller than this stays in internal SRAM (latency-sensitive),
 # anything larger may land in PSRAM. 16 KiB matches Espressif's guidance.
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
-# Power PSRAM from on-chip LDO2 (default for this board variant).
+# Power PSRAM from on-chip LDO2 (default for both current board variants).
 CONFIG_ESP_LDO_CHAN_PSRAM_DOMAIN=2
 
 # --- ESP-Hosted: Wi-Fi + Bluetooth via on-board C6 over SDIO ---
-# Pin out matches the ESP32-P4-Function-EV-Board (DFR1172 is wired the same).
+# Both the FireBeetle 2 and the Waveshare LCD-4B copy Espressif's
+# P4-Function-EV-Board SDIO pinout
 CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
 CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6=y
 CONFIG_ESP_HOSTED_P4_DEV_BOARD_FUNC_BOARD=y

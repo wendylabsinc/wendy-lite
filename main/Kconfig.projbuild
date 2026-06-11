@@ -12,6 +12,16 @@ menu "Wendy MCU Firmware Configuration"
         int "Firmware version patch"
         default 0
 
+    config WENDY_P4_BOARD_NAME
+        string "ESP32-P4 board name"
+        default ""
+        help
+            Identifies the selected ESP32-P4 board variant. Set to a non-empty
+            value by a boards/<board>.defaults overlay (selected via the
+            matching boards/<board>.cfg argfile). The top-level CMakeLists.txt
+            aborts an esp32p4 build when this is empty, since P4 boards differ
+            in flash size and partition layout. Unused on non-P4 targets.
+
     menu "WASM Runtime"
         config WENDY_WASM_STACK_SIZE
             int "WASM stack size (bytes)"
