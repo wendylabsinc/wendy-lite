@@ -12,9 +12,9 @@ Wendy Lite firmware builds for three ESP-IDF targets:
 |---|---|---|---|---|---|
 | `esp32c5` | Espressif ESP32-C5-DevKitC | Native (2.4 / 5 GHz Wi-Fi 6 + BLE) | 4 MB | - | system allocator |
 | `esp32c6` | Espressif ESP32-C6-DevKitC | Native | 4 MB | - | system allocator |
-| `esp32p4` | DFRobot DFR1172 FireBeetle 2, Espressif P4-Function-EV-Board, other P4+C6 boards (see notes) | Via on-board ESP32-C6 over SDIO (ESP-Hosted) | 16 MB | 32 MB | 24 MiB pre-allocated from PSRAM |
+| `esp32p4` | Waveshare ESP32-P4-WIFI6-Touch-LCD-4B, DFRobot DFR1172 FireBeetle 2, Espressif P4-Function-EV-Board, other P4+C6 boards (see notes) | Via on-board ESP32-C6 over SDIO (ESP-Hosted) | 16-32 MB | 32 MB | 24 MiB pre-allocated from PSRAM |
 
-The three targets share the same source tree. Per-target overrides live in `sdkconfig.defaults.<target>` plus a target-specific partition CSV. Guest WASM binaries are interchangeable between targets.
+The three targets share the same source tree. Per-target overrides live in `sdkconfig.defaults.<target>`. The `esp32p4` target additionally selects a per-board overlay from `boards/` (see [ESP32-P4 notes](#esp32-p4-notes) below). Guest WASM binaries are interchangeable between targets.
 
 ## Building the Firmware
 
@@ -24,8 +24,9 @@ The three targets share the same source tree. Per-target overrides live in `sdkc
 idf.py set-target esp32c5      # for the C5 DevKit
 # or
 idf.py set-target esp32c6      # for the C6 DevKit
-# or
-idf.py set-target esp32p4      # for the DFR1172 FireBeetle 2 (and similar P4 boards)
+# or, for ESP32-P4, select a board overlay:
+idf.py @boards/waveshare_lcd_4b.cfg   set-target esp32p4
+idf.py @boards/dfr1172_firebeetle.cfg set-target esp32p4
 ```
 
 ### Build, flash, monitor
@@ -38,9 +39,23 @@ idf.py monitor
 
 ### ESP32-P4 notes
 
-The P4 build assumes the on-board co-processor is an ESP32-C6 wired the same way as Espressif's ESP32-P4-Function-EV-Board (SDIO 4-bit on GPIO14-19 plus reset on GPIO54). This is the official Espressif reference layout that several third-party boards copy verbatim.
+The P4 build assumes the on-board co-processor is an ESP32-C6 wired the same way as Espressif's ESP32-P4-Function-EV-Board (SDIO 4-bit on GPIO14-19 plus reset on GPIO54). This is the official Espressif reference layout that the currently supported boards copy verbatim.
 
-For other P4 boards, if the C6 lives on the same SDIO pins, you may need to adjust the chip revision and possibly the PSRAM mode/speed (`CONFIG_SPIRAM_MODE_HEX`, `CONFIG_SPIRAM_SPEED_200M`) to match your board. If the C6 is on different pins or talks over SPI instead of SDIO, disable `CONFIG_ESP_HOSTED_P4_DEV_BOARD_FUNC_BOARD` and set the transport pins via `idf.py menuconfig` -> *Component config -> ESP-Hosted config*.
+#### Picking a P4 board
+
+P4 boards differ in flash size and partition layout, so the build selects a board-specific overlay from `boards/`. The overlay is chosen with an `idf.py` argfile passed *before* `set-target`:
+
+```bash
+# Waveshare ESP32-P4-WIFI6-Touch-LCD-4B (32 MB flash, 4" 720x720 MIPI-DSI panel)
+idf.py @boards/waveshare_lcd_4b.cfg set-target esp32p4
+
+# DFRobot DFR1172 FireBeetle 2 ESP32-P4 (16 MB flash, headless)
+idf.py @boards/dfr1172_firebeetle.cfg set-target esp32p4
+```
+
+#### Other P4 boards
+
+For a new board, copy one of the files in `boards/` (the `.defaults` overlay, its `.cfg` argfile, and a partition CSV) and adjust the flash size + partition table. If the C6 is on different pins or talks over SPI instead of SDIO, also override `CONFIG_ESP_HOSTED_P4_DEV_BOARD_FUNC_BOARD` and set the transport pins via `idf.py menuconfig` -> *Component config -> ESP-Hosted config*. If you have rev 3.0+ silicon, drop `CONFIG_ESP32P4_SELECTS_REV_LESS_V3` / `CONFIG_ESP32P4_REV_MIN_100` from `sdkconfig.defaults.esp32p4`.
 
 ## Writing WASM Apps
 
@@ -62,7 +77,12 @@ swiftly install 6.3.1
 swiftly use 6.3.1
 ```
 
-- Install the Swift SDKs for WebAssembly by following the official guide: [Getting Started with Swift SDKs for WebAssembly](https://www.swift.org/documentation/articles/wasm-getting-started.html)
+- Install the Swift SDKs for WebAssembly: [Getting Started with Swift SDKs for WebAssembly](https://www.swift.org/documentation/articles/wasm-getting-started.html)
+
+```bash
+swift sdk install https://download.swift.org/swift-6.3.1-release/wasm-sdk/swift-6.3.1-RELEASE/swift-6.3.1-RELEASE_wasm.artifactbundle.tar.gz --checksum bd47baa20771f366d8beed7970afaa30742b2210097afd15f85427226d8f4cf2
+```
+
 - Verify the installed SDK IDs with `swift sdk list`. Wendy Lite uses the Embedded Swift SDK, typically `swift-6.3.1-RELEASE_wasm-embedded`
 
 **1. Create your app package:**

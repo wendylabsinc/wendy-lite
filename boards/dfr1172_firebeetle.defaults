@@ -1,0 +1,8 @@
+# Board overlay: DFRobot DFR1172 FireBeetle 2 ESP32-P4 (16 MB flash, headless).
+
+CONFIG_WENDY_P4_BOARD_NAME="dfr1172_firebeetle"
+
+# 16 MB SPI flash; 3 MB app, 12 MB wasm_a, 960 KB SPIFFS.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.esp32p4.firebeetle.csv"
