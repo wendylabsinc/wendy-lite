@@ -13,8 +13,9 @@
 typedef enum _WendyComResult {
     WendyComResult_WENDY_COM_RESULT_OK = 0,
     WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR = 1,
-    WendyComResult_WENDY_COM_RESULT_BAD_STATE = 2,
-    WendyComResult_WENDY_COM_RESULT_BUSY = 3
+    WendyComResult_WENDY_COM_RESULT_BAD_PROTOCOL_VERSION = 2,
+    WendyComResult_WENDY_COM_RESULT_BAD_STATE = 3,
+    WendyComResult_WENDY_COM_RESULT_BUSY = 4
 } WendyComResult;
 
 /* Struct definitions */
@@ -25,9 +26,10 @@ typedef struct _WendyComProtocolVersion {
 } WendyComProtocolVersion;
 
 /* Command parameter messages — empty ones serve as presence markers. */
-typedef struct _WendyComGetProtocolVersionParams {
-    char dummy_field;
-} WendyComGetProtocolVersionParams;
+typedef struct _WendyComProtocolVersionParams {
+    uint32_t major;
+    uint32_t minor;
+} WendyComProtocolVersionParams;
 
 typedef struct _WendyComPingParams {
     char dummy_field;
@@ -65,7 +67,7 @@ typedef struct _WendyComCommand {
     uint32_t request_id;
     pb_size_t which_params;
     union {
-        WendyComGetProtocolVersionParams get_protocol_version;
+        WendyComProtocolVersionParams protocol_version;
         WendyComPingParams ping;
         WendyComRebootParams reboot;
         WendyComAppPushBeginParams app_push_begin;
@@ -111,7 +113,7 @@ extern "C" {
 
 /* Initializer values for message structs */
 #define WendyComProtocolVersion_init_default     {0, 0}
-#define WendyComGetProtocolVersionParams_init_default {0}
+#define WendyComProtocolVersionParams_init_default {0, 0}
 #define WendyComPingParams_init_default          {0}
 #define WendyComRebootParams_init_default        {0}
 #define WendyComAppPushBeginParams_init_default  {0}
@@ -119,10 +121,10 @@ extern "C" {
 #define WendyComAppPushEndParams_init_default    {0}
 #define WendyComAppStartParams_init_default      {0}
 #define WendyComAppStopParams_init_default       {0}
-#define WendyComCommand_init_default             {0, 0, {WendyComGetProtocolVersionParams_init_default}}
+#define WendyComCommand_init_default             {0, 0, {WendyComProtocolVersionParams_init_default}}
 #define WendyComResponse_init_default            {0, _WendyComResult_MIN, 0, {WendyComProtocolVersion_init_default}}
 #define WendyComProtocolVersion_init_zero        {0, 0}
-#define WendyComGetProtocolVersionParams_init_zero {0}
+#define WendyComProtocolVersionParams_init_zero  {0, 0}
 #define WendyComPingParams_init_zero             {0}
 #define WendyComRebootParams_init_zero           {0}
 #define WendyComAppPushBeginParams_init_zero     {0}
@@ -130,17 +132,19 @@ extern "C" {
 #define WendyComAppPushEndParams_init_zero       {0}
 #define WendyComAppStartParams_init_zero         {0}
 #define WendyComAppStopParams_init_zero          {0}
-#define WendyComCommand_init_zero                {0, 0, {WendyComGetProtocolVersionParams_init_zero}}
+#define WendyComCommand_init_zero                {0, 0, {WendyComProtocolVersionParams_init_zero}}
 #define WendyComResponse_init_zero               {0, _WendyComResult_MIN, 0, {WendyComProtocolVersion_init_zero}}
 
 /* Field tags (for use in manual encoding/decoding) */
 #define WendyComProtocolVersion_major_tag        1
 #define WendyComProtocolVersion_minor_tag        2
+#define WendyComProtocolVersionParams_major_tag  1
+#define WendyComProtocolVersionParams_minor_tag  2
 #define WendyComAppPushBeginParams_size_tag      1
 #define WendyComAppPushDataParams_offset_tag     1
 #define WendyComAppPushDataParams_data_tag       2
 #define WendyComCommand_request_id_tag           1
-#define WendyComCommand_get_protocol_version_tag 2
+#define WendyComCommand_protocol_version_tag     2
 #define WendyComCommand_ping_tag                 3
 #define WendyComCommand_reboot_tag               4
 #define WendyComCommand_app_push_begin_tag       5
@@ -159,10 +163,11 @@ X(a, STATIC,   SINGULAR, UINT32,   minor,             2)
 #define WendyComProtocolVersion_CALLBACK NULL
 #define WendyComProtocolVersion_DEFAULT NULL
 
-#define WendyComGetProtocolVersionParams_FIELDLIST(X, a) \
-
-#define WendyComGetProtocolVersionParams_CALLBACK NULL
-#define WendyComGetProtocolVersionParams_DEFAULT NULL
+#define WendyComProtocolVersionParams_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   major,             1) \
+X(a, STATIC,   SINGULAR, UINT32,   minor,             2)
+#define WendyComProtocolVersionParams_CALLBACK NULL
+#define WendyComProtocolVersionParams_DEFAULT NULL
 
 #define WendyComPingParams_FIELDLIST(X, a) \
 
@@ -202,7 +207,7 @@ X(a, CALLBACK, SINGULAR, BYTES,    data,              2)
 
 #define WendyComCommand_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   request_id,        1) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (params,get_protocol_version,params.get_protocol_version),   2) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,protocol_version,params.protocol_version),   2) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,ping,params.ping),   3) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,reboot,params.reboot),   4) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,app_push_begin,params.app_push_begin),   5) \
@@ -212,7 +217,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (params,app_start,params.app_start),   8) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,app_stop,params.app_stop),   9)
 #define WendyComCommand_CALLBACK NULL
 #define WendyComCommand_DEFAULT NULL
-#define WendyComCommand_params_get_protocol_version_MSGTYPE WendyComGetProtocolVersionParams
+#define WendyComCommand_params_protocol_version_MSGTYPE WendyComProtocolVersionParams
 #define WendyComCommand_params_ping_MSGTYPE WendyComPingParams
 #define WendyComCommand_params_reboot_MSGTYPE WendyComRebootParams
 #define WendyComCommand_params_app_push_begin_MSGTYPE WendyComAppPushBeginParams
@@ -230,7 +235,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (data,protocol_version,data.protocol_version)
 #define WendyComResponse_data_protocol_version_MSGTYPE WendyComProtocolVersion
 
 extern const pb_msgdesc_t WendyComProtocolVersion_msg;
-extern const pb_msgdesc_t WendyComGetProtocolVersionParams_msg;
+extern const pb_msgdesc_t WendyComProtocolVersionParams_msg;
 extern const pb_msgdesc_t WendyComPingParams_msg;
 extern const pb_msgdesc_t WendyComRebootParams_msg;
 extern const pb_msgdesc_t WendyComAppPushBeginParams_msg;
@@ -243,7 +248,7 @@ extern const pb_msgdesc_t WendyComResponse_msg;
 
 /* Defines for backwards compatibility with code written before nanopb-0.4.0 */
 #define WendyComProtocolVersion_fields &WendyComProtocolVersion_msg
-#define WendyComGetProtocolVersionParams_fields &WendyComGetProtocolVersionParams_msg
+#define WendyComProtocolVersionParams_fields &WendyComProtocolVersionParams_msg
 #define WendyComPingParams_fields &WendyComPingParams_msg
 #define WendyComRebootParams_fields &WendyComRebootParams_msg
 #define WendyComAppPushBeginParams_fields &WendyComAppPushBeginParams_msg
@@ -262,8 +267,8 @@ extern const pb_msgdesc_t WendyComResponse_msg;
 #define WendyComAppPushEndParams_size            0
 #define WendyComAppStartParams_size              0
 #define WendyComAppStopParams_size               0
-#define WendyComGetProtocolVersionParams_size    0
 #define WendyComPingParams_size                  0
+#define WendyComProtocolVersionParams_size       12
 #define WendyComProtocolVersion_size             12
 #define WendyComRebootParams_size                0
 #define WendyComResponse_size                    22

@@ -10,8 +10,8 @@ import (
 )
 
 func run(addr string) error {
-	client := liteclient.NewWendyLiteClient(addr)
-	if err := client.Connect(); err != nil {
+	client := liteclient.NewWendyLiteClient()
+	if err := client.Connect(addr); err != nil {
 		return err
 	}
 	defer client.Close()
@@ -30,14 +30,6 @@ func run(addr string) error {
 		cmd, arg, _ := strings.Cut(line, " ")
 
 		switch cmd {
-		case "version":
-			major, minor, err := client.GetProtocolVersion()
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "version:", err)
-				continue
-			}
-			fmt.Printf("protocol version %d.%d\n", major, minor)
-
 		case "ping":
 			if err := client.Ping(); err != nil {
 				fmt.Fprintln(os.Stderr, "ping:", err)

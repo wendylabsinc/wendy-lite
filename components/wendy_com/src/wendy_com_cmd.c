@@ -10,11 +10,14 @@ static const struct wcom_app_delegate *_app_delegate;
 static int _pushing_client_id = 0;
 
 
-WendyComResult wcom_cmd_get_protocol_version(WendyComProtocolVersion *out)
+WendyComResult wcom_cmd_protocol_version(const WendyComProtocolVersionParams *in, WendyComProtocolVersion *out)
 {
-    ESP_LOGI(TAG, "GET_PROTOCOL_VERSION");
+    ESP_LOGI(TAG, "GET_PROTOCOL_VERSION (client %u.%u)", in->major, in->minor);
     out->major = 1;
     out->minor = 0;
+    if (in->major != 1) {
+        return WendyComResult_WENDY_COM_RESULT_BAD_PROTOCOL_VERSION;
+    }
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 

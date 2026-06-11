@@ -6,7 +6,7 @@
 #include "wendy_com_msg.pb.h"
 #include "wendy_com_common.h"
 
-WendyComResult wcom_cmd_get_protocol_version(WendyComProtocolVersion *out);
+WendyComResult wcom_cmd_protocol_version(const WendyComProtocolVersionParams *in, WendyComProtocolVersion *out);
 WendyComResult wcom_cmd_ping(void);
 WendyComResult wcom_cmd_reboot(void);
 WendyComResult wcom_cmd_app_push_begin(int client_id, size_t size);

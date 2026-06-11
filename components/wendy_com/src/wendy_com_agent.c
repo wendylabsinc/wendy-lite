@@ -146,9 +146,9 @@ static void _process_command(struct _agent_link *link, const uint8_t *body, size
     WendyComResponse resp = { .request_id = cmd.request_id, .result = WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR };
 
     switch (cmd.which_params) {
-    case WendyComCommand_get_protocol_version_tag:
+    case WendyComCommand_protocol_version_tag:
         resp.which_data = WendyComResponse_protocol_version_tag;
-        resp.result = wcom_cmd_get_protocol_version(&resp.data.protocol_version);
+        resp.result = wcom_cmd_protocol_version(&cmd.params.protocol_version, &resp.data.protocol_version);
         break;
     case WendyComCommand_ping_tag:
         resp.result = wcom_cmd_ping();

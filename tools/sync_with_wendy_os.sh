@@ -17,6 +17,7 @@ fi
 PAIRS=(
     "components/wendy_com/proto/wendy_com_msg.proto:Proto/wendy/lite/wendy_com_msg.proto"
     "components/wendy_conf/proto/wendy_conf.proto:Proto/wendy/lite/wendy_conf.proto"
+    "go/console/liteclient/client.go:go/internal/cli/liteclient/client.go"
 )
 
 any_diff=0

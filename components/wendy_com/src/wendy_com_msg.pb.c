@@ -9,7 +9,7 @@
 PB_BIND(WendyComProtocolVersion, WendyComProtocolVersion, AUTO)
 
 
-PB_BIND(WendyComGetProtocolVersionParams, WendyComGetProtocolVersionParams, AUTO)
+PB_BIND(WendyComProtocolVersionParams, WendyComProtocolVersionParams, AUTO)
 
 
 PB_BIND(WendyComPingParams, WendyComPingParams, AUTO)
