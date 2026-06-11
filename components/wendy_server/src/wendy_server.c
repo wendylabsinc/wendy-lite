@@ -64,6 +64,10 @@ static void _on_state_change(struct wcom_state_change_handler *handler, int link
             _links[i].tls = NULL;
             _links[i].link_id = 0;
             wcom_remove_link(link_id);
+            int fd = -1;
+            esp_tls_get_conn_sockfd(tls, &fd);
+            if (fd >= 0)
+                close(fd);
             esp_tls_server_session_delete(tls);
             return;
         }
@@ -92,6 +96,10 @@ static void _add_link_exec(struct wcom_operation *op)
     }
     if (slot < 0) {
         ESP_LOGE(TAG, "max local links reached, rejecting connection");
+        int fd = -1;
+        esp_tls_get_conn_sockfd(aop->tls, &fd);
+        if (fd >= 0)
+            close(fd);
         esp_tls_server_session_delete(aop->tls);
         free(aop);
         return;
@@ -100,6 +108,10 @@ static void _add_link_exec(struct wcom_operation *op)
     int link_id = wcom_add_link(aop->tls);
     if (link_id < 0) {
         ESP_LOGE(TAG, "max links reached, rejecting connection");
+        int fd = -1;
+        esp_tls_get_conn_sockfd(aop->tls, &fd);
+        if (fd >= 0)
+            close(fd);
         esp_tls_server_session_delete(aop->tls);
         free(aop);
         return;
@@ -204,6 +216,7 @@ static void _server_task(void *arg)
         int ret = esp_tls_server_session_create(&cfg, client_fd, tls);
         if (ret != 0) {
             ESP_LOGE(TAG, "TLS handshake failed: 0x%x", -ret);
+            close(client_fd);
             esp_tls_server_session_delete(tls);
             continue;
         }
@@ -213,6 +226,7 @@ static void _server_task(void *arg)
         struct _add_link_op *op = malloc(sizeof(*op));
         if (!op) {
             ESP_LOGE(TAG, "malloc failed");
+            close(client_fd);
             esp_tls_server_session_delete(tls);
             continue;
         }
