@@ -9,7 +9,7 @@ typealias DefaultExecutorFactory = WendyExecutorFactory
 // Client and server in one process. Every board runs the same app, listens on
 // `listenPort`, and sends a periodic hello to a hardcoded hub. Peer discovery
 // will be introduced later.
-private let peerHost = "10.1.1.217"
+private let peerHost = "192.168.1.61"
 private let peerPort: UInt16 = 9000
 private let listenPort: UInt16 = 9000
 private let helloIntervalSeconds = 15
@@ -17,15 +17,11 @@ private let retryDelaySeconds = 5
 
 @main
 struct Main: WendyLiteApp {
-    let clock = WendyClock()
-
-    mutating func setup() async {
-        Task { await runListener() }
-        Task { await runSender() }
-    }
-
-    mutating func loop() async {
-        try? await clock.sleep(for: .seconds(60))
+    func loop() async {
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await runListener() }
+            group.addTask { await runSender() }
+        }
     }
 }
 
@@ -44,16 +40,12 @@ private func runListener() async {
 
             try await listener.executeThenClose { (accepted: Accepted<ByteBuffer>) throws(WendyNetError) -> Void in
                 await withTaskGroup(of: Void.self) { group in
-                    do throws(WendyNetError) {
-                        while let channel = try await accepted.next() {
-                            group.addTask {
-                                await logInbound(channel: channel)
-                            }
+                    while let channel = try? await accepted.next() {
+                        group.addTask {
+                            await logInbound(channel: channel)
                         }
-                    } catch {
-                        // .closed or .cancelled -- fall through and tear the
-                        // group down.
                     }
+                    // Listener closed or errored
                     group.cancelAll()
                 }
             }
@@ -64,8 +56,7 @@ private func runListener() async {
     }
 }
 
-/// Log every datagram from one peer. The association lives until the listener
-/// closes; UDP has no peer-initiated close.
+/// Log every datagram from one peer
 private func logInbound(channel: Channel<ByteBuffer>) async {
     _ = try? await channel.executeThenClose { (inbound: Inbound<ByteBuffer>, _: Outbound<ByteBuffer>) throws(WendyNetError) -> Void in
         while var msg = try await inbound.next() {
@@ -80,14 +71,14 @@ private func logInbound(channel: Channel<ByteBuffer>) async {
 private func runSender() async {
     let clock = WendyClock()
     let startedAt = clock.now
-    let ownId = readDeviceId()
+    // Random per-run tag so messages from different boards are distinguishable
+    let ownId = UInt16.random(in: 0...9999)
 
     while true {
         do throws(WendyNetError) {
             let net = WendyNet()
-            // One long-lived connected-UDP channel: a stable source port means
-            // the hub sees a single peer association per board, rather than
-            // leaking a fresh one per hello.
+            // One long-lived connected-UDP channel. Using a stable source port means
+            // the hub sees a single peer association per board.
             let channel = try await ClientBootstrap(wendyNet: net)
                 .security(.insecure)
                 .reliability(.unreliable)
@@ -106,25 +97,5 @@ private func runSender() async {
             print("[udp] sender failed; reconnecting")
         }
         try? await clock.sleep(for: .seconds(retryDelaySeconds))
-    }
-}
-
-// MARK: - Device identity
-
-/// Hex-MAC device id (e.g. "a1b2c3d4e5f6") so hellos are attributable in logs.
-private func readDeviceId() -> String {
-    var buf = [CChar](repeating: 0, count: 16)
-    let n = buf.withUnsafeMutableBufferPointer { ptr -> Int32 in
-        guard let base = ptr.baseAddress else { return -1 }
-        return System.deviceId(buffer: base, length: Int32(ptr.count))
-    }
-    if n <= 0 { return "unknown" }
-    return buf.withUnsafeBufferPointer { ptr -> String in
-        guard let base = ptr.baseAddress else { return "unknown" }
-        let bytes = UnsafeBufferPointer<UInt8>(
-            start: UnsafeRawPointer(base).assumingMemoryBound(to: UInt8.self),
-            count: Int(n)
-        )
-        return String(decoding: bytes, as: UTF8.self)
     }
 }
