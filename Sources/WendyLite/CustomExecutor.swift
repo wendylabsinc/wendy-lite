@@ -136,11 +136,11 @@ extension WendyMainExecutor: SerialExecutor {
 extension WendyMainExecutor: TaskExecutor {}
 
 extension WendyMainExecutor: RunLoopExecutor {
-    public func run() throws {
-        try runUntil { false }
+    public func run() {
+        runUntil { false }
     }
 
-    public func runUntil(_ condition: () -> Bool) throws {
+    public func runUntil(_ condition: () -> Bool) {
         // Lazily register the timer callback the first time the run loop spins.
         // We can't do this in `init()` because the callback dispatch table is
         // initialised later. Doing it here means whatever ordering the runtime
