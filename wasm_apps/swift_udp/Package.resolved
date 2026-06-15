@@ -1,5 +1,5 @@
 {
-  "originHash" : "4975207f7893ba4324930e5ed96ade3a5a43e5086b424cf116a004a1e6e53b16",
+  "originHash" : "94ce2e2126dc01d5034b35b89cdd9bd02c5411c813035cdb390aad31f46e3c00",
   "pins" : [
     {
       "identity" : "swift-argument-parser",
@@ -44,6 +44,15 @@
       "state" : {
         "revision" : "db774a277f60063a32d854f2980299caf06da041",
         "version" : "1.6.0"
+      }
+    },
+    {
+      "identity" : "wendy-net",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/wendylabsinc/wendy-net.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "c7e356d1424fa29fbe539b268a1b791fe98b8cd2"
       }
     }
   ],
