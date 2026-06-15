@@ -29,7 +29,7 @@ struct Main: WendyLiteApp {
 
 private func runListener() async {
     let clock = WendyClock()
-    while true {
+    while !Task.isCancelled {
         do throws(WendyNetError) {
             let net = WendyNet()
             let listener = try await ServerBootstrap(wendyNet: net)
@@ -74,7 +74,7 @@ private func runSender() async {
     // Random per-run tag so messages from different boards are distinguishable
     let ownId = UInt16.random(in: 0...9999)
 
-    while true {
+    while !Task.isCancelled {
         do throws(WendyNetError) {
             let net = WendyNet()
             // One long-lived connected-UDP channel. Using a stable source port means
