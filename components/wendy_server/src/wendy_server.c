@@ -3,6 +3,9 @@
 #include "wendy_conf.h"
 #include "wendy_com_link.h"
 #include "esp_tls.h"
+#include "mbedtls/ssl.h"
+#include "mbedtls/x509_crt.h"
+#include "mbedtls/oid.h"
 #include "esp_log.h"
 #include "mdns.h"
 #include "freertos/FreeRTOS.h"
@@ -49,6 +52,14 @@ static struct wendy_server_link _links[WENDY_SERVER_MAX_LINKS];
 
 
 //--- internal functions ---//
+
+static int _tls_verify_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags)
+{
+    char buf[256];
+    mbedtls_x509_dn_gets(buf, sizeof(buf), &crt->subject);
+    ESP_LOGI(TAG, "peer cert chain depth %d: %s", depth, buf);
+    return 0;
+}
 
 static void _on_state_change(struct wcom_state_change_handler *handler, int link_id, enum wcom_link_state state)
 {
@@ -213,7 +224,36 @@ static void _server_task(void *arg)
             };
         }
 
-        int ret = esp_tls_server_session_create(&cfg, client_fd, tls);
+#ifdef WENDY_SERVER_DUMP_CERT
+        {
+            mbedtls_x509_crt srv_crt;
+            mbedtls_x509_crt_init(&srv_crt);
+            if (mbedtls_x509_crt_parse_der(&srv_crt, cfg.servercert_buf, cfg.servercert_bytes) == 0) {
+                char buf[256];
+                mbedtls_x509_dn_gets(buf, sizeof(buf), &srv_crt.subject);
+                ESP_LOGI(TAG, "server cert DN: %s", buf);
+            }
+            mbedtls_x509_crt_free(&srv_crt);
+        }
+#endif
+
+        esp_err_t init_ret = esp_tls_server_session_init(&cfg, client_fd, tls);
+        if (init_ret != ESP_OK) {
+            ESP_LOGE(TAG, "TLS session init failed: 0x%x", init_ret);
+            close(client_fd);
+            esp_tls_server_session_delete(tls);
+            continue;
+        }
+
+        // Register the verify callback before the handshake so it fires for every
+        // certificate in the peer's chain (leaf at depth 0, intermediates at depth 1+).
+        mbedtls_ssl_set_verify(esp_tls_get_ssl_context(tls), _tls_verify_cb, NULL);
+
+        int ret;
+        while ((ret = esp_tls_server_session_continue_async(tls)) != 0) {
+            if (ret != ESP_TLS_ERR_SSL_WANT_READ && ret != ESP_TLS_ERR_SSL_WANT_WRITE)
+                break;
+        }
         if (ret != 0) {
             ESP_LOGE(TAG, "TLS handshake failed: 0x%x", -ret);
             close(client_fd);
