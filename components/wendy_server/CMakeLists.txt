@@ -9,3 +9,6 @@ idf_component_register(
     REQUIRES
         wendy_com wendy_conf esp-tls freertos log mdns
 )
+
+target_include_directories(${COMPONENT_LIB} PRIVATE
+    "${IDF_PATH}/components/esp-tls/private_include")
