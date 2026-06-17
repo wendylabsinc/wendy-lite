@@ -107,3 +107,74 @@ jobs:
             wendy_mcu_esp32c6/wendy_mcu_esp32c6.bin
             wendy_mcu_esp32p4_waveshare_lcd_4b/wendy_mcu_esp32p4_waveshare_lcd_4b.bin
             wendy_mcu_esp32p4_dfr1172_firebeetle/wendy_mcu_esp32p4_dfr1172_firebeetle.bin
+
+  # Publish firmware to the GCS bucket + manifests that `wendy os install`
+  # reads from (firmware/<chip>/<version>/ and manifests/<chip>.json +
+  # manifests/master.json). Mirrors the OS-image publish flow in
+  # wendylabsinc/meta-wendyos-jetson by reusing its tools/publisher CLI.
+  # Tag-triggered (stable releases) only.
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # required for GCP workload-identity federation
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      # The publisher lives in the WendyOS builder repo so the OS and firmware
+      # publish paths share one tool. Needs a token with read access to it.
+      - name: Check out publisher tool
+        uses: actions/checkout@v4
+        with:
+          repository: wendylabsinc/meta-wendyos-jetson
+          path: builder
+          token: ${{ secrets.PUBLISHER_REPO_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: builder/tools/publisher/go.mod
+          cache-dependency-path: builder/tools/publisher/go.sum
+
+      - name: Build publisher
+        run: |
+          cd builder/tools/publisher
+          go build -o "$RUNNER_TEMP/publisher" .
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Publish firmware to GCS
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Tags are vX.Y.Z; GCS manifests use plain X.Y.Z.
+          VERSION="${REF_NAME#v}"
+          TOKEN="$(gcloud auth print-access-token)"
+          # The variant name is the chip key that `wendy os install` queries.
+          for variant in \
+            esp32c5 \
+            esp32c6 \
+            esp32p4_waveshare_lcd_4b \
+            esp32p4_dfr1172_firebeetle; do
+            bin="wendy_mcu_${variant}/wendy_mcu_${variant}.bin"
+            echo "Publishing ${variant} v${VERSION} from ${bin}"
+            # Sequential loop keeps master.json writes serial (no race).
+            "$RUNNER_TEMP/publisher" \
+              --firmware \
+              --chip "$variant" \
+              --version "$VERSION" \
+              --file "$bin" \
+              --notify-discord=false \
+              --access-token "$TOKEN" </dev/null
+          done
