@@ -23,6 +23,8 @@
 
 //--- literals ---//
 
+#define WENDY_SERVER_DUMP_CERT    0
+
 #define TAG                       "wendy_server"
 #define WENDY_SERVER_PORT         5054
 #define WENDY_SERVER_BACKLOG      4
@@ -58,9 +60,11 @@ static struct wendy_server_link _links[WENDY_SERVER_MAX_LINKS];
 
 static int _tls_verify_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags)
 {
+#if WENDY_SERVER_DUMP_CERT == 1
     char buf[256];
     mbedtls_x509_dn_gets(buf, sizeof(buf), &crt->subject);
     ESP_LOGI(TAG, "peer cert chain depth %d: %s", depth, buf);
+#endif
     return 0;
 }
 
@@ -146,7 +150,7 @@ static void _strip_server_eku(esp_tls_t *tls)
     // Clear the EKU extension bit so mbedtls_x509_crt_check_extended_key_usage
     // treats the cert as having no EKU restriction (absent = no restriction).
     tls->servercert.ext_types &= ~MBEDTLS_X509_EXT_EXTENDED_KEY_USAGE;
-    ESP_LOGW(TAG, "EKU check bypassed (debug)");
+    ESP_LOGW(TAG, "EKU check bypassed (temp workaround)");
 }
 #endif
 
@@ -239,7 +243,7 @@ static void _server_task(void *arg)
             };
         }
 
-#ifdef WENDY_SERVER_DUMP_CERT
+#if WENDY_SERVER_DUMP_CERT == 1
         {
             mbedtls_x509_crt srv_crt;
             mbedtls_x509_crt_init(&srv_crt);
