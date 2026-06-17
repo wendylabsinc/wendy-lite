@@ -37,7 +37,7 @@ func NewWendyLiteClient() *WendyLiteClient {
 	return &WendyLiteClient{}
 }
 
-func (c *WendyLiteClient) Connect(address string) error {
+func (c *WendyLiteClient) ConnectInsecure(address string) error {
 	conn, err := tls.Dial("tcp", address, &tls.Config{InsecureSkipVerify: true}) //nolint:gosec — device uses self-signed certs
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
@@ -52,16 +52,14 @@ func (c *WendyLiteClient) Connect(address string) error {
 	return nil
 }
 
-func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert tls.Certificate, rootCAs *x509.CertPool) error {
+func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert tls.Certificate, rootCAs x509.CertPool) error {
+	// Verify the certificate chain against our root CAs but skip hostname
+	// checking — devices on a local network don't have SANs.
 	tlsCfg := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS12,
-	}
-	if rootCAs != nil {
-		// Verify the certificate chain against our root CAs but skip hostname
-		// checking — devices on a local network don't have SANs.
-		tlsCfg.InsecureSkipVerify = true //nolint:gosec
-		tlsCfg.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+		Certificates:       []tls.Certificate{cert},
+		MinVersion:         tls.VersionTLS12,
+		InsecureSkipVerify: true, //nolint:gosec
+		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 			certs := make([]*x509.Certificate, len(rawCerts))
 			for i, raw := range rawCerts {
 				c, err := x509.ParseCertificate(raw)
@@ -71,8 +69,9 @@ func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert t
 				certs[i] = c
 			}
 			opts := x509.VerifyOptions{
-				Roots:         rootCAs,
+				Roots:         &rootCAs,
 				Intermediates: x509.NewCertPool(),
+				KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny}, // Temporary workaround
 			}
 			for _, c := range certs[1:] {
 				opts.Intermediates.AddCert(c)
@@ -81,9 +80,7 @@ func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert t
 				return fmt.Errorf("server certificate verification failed: %w", err)
 			}
 			return nil
-		}
-	} else {
-		tlsCfg.InsecureSkipVerify = true //nolint:gosec — device uses self-signed certs
+		},
 	}
 	conn, err := tls.Dial("tcp", address, tlsCfg)
 	if err != nil {
@@ -107,7 +104,9 @@ func (c *WendyLiteClient) Close() error {
 }
 
 func (c *WendyLiteClient) Ping() error {
+	c.requestIdGen++
 	resp, err := c.sendCommand(&wendypb.WendyComCommand{
+		RequestId: c.requestIdGen,
 		Params: &wendypb.WendyComCommand_Ping{
 			Ping: &wendypb.WendyComPingParams{},
 		},
@@ -122,7 +121,9 @@ func (c *WendyLiteClient) Ping() error {
 }
 
 func (c *WendyLiteClient) ResetTargetDevice() error {
+	c.requestIdGen++
 	resp, err := c.sendCommand(&wendypb.WendyComCommand{
+		RequestId: c.requestIdGen,
 		Params: &wendypb.WendyComCommand_Reboot{
 			Reboot: &wendypb.WendyComRebootParams{},
 		},
@@ -152,7 +153,9 @@ func (c *WendyLiteClient) PushApp(path string, onProgress func(written, total ui
 	}
 	size := uint32(info.Size())
 
+	c.requestIdGen++
 	resp, err := c.sendCommand(&wendypb.WendyComCommand{
+		RequestId: c.requestIdGen,
 		Params: &wendypb.WendyComCommand_AppPushBegin{
 			AppPushBegin: &wendypb.WendyComAppPushBeginParams{Size: size},
 		},
@@ -169,7 +172,9 @@ func (c *WendyLiteClient) PushApp(path string, onProgress func(written, total ui
 	for {
 		n, err := f.Read(buf)
 		if n > 0 {
+			c.requestIdGen++
 			resp, serr := c.sendCommand(&wendypb.WendyComCommand{
+				RequestId: c.requestIdGen,
 				Params: &wendypb.WendyComCommand_AppPushData{
 					AppPushData: &wendypb.WendyComAppPushDataParams{
 						Offset: offset,
@@ -196,7 +201,9 @@ func (c *WendyLiteClient) PushApp(path string, onProgress func(written, total ui
 		}
 	}
 
+	c.requestIdGen++
 	resp, err = c.sendCommand(&wendypb.WendyComCommand{
+		RequestId: c.requestIdGen,
 		Params: &wendypb.WendyComCommand_AppPushEnd{
 			AppPushEnd: &wendypb.WendyComAppPushEndParams{},
 		},

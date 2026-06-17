@@ -11,7 +11,7 @@ import (
 
 func run(addr string) error {
 	client := liteclient.NewWendyLiteClient()
-	if err := client.Connect(addr); err != nil {
+	if err := client.ConnectInsecure(addr); err != nil {
 		return err
 	}
 	defer client.Close()
@@ -75,7 +75,7 @@ func run(addr string) error {
 
 		default:
 			fmt.Fprintf(os.Stderr, "unknown command: %q\n", cmd)
-			fmt.Fprintln(os.Stderr, "commands: version, ping, reset, data, start, stop, quit")
+			fmt.Fprintln(os.Stderr, "commands: ping, reset, data, start, stop, quit")
 		}
 	}
 	return scanner.Err()
