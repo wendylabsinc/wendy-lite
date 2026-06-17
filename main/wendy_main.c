@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <pthread.h>
+#include <stdatomic.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -9,10 +10,12 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_partition.h"
+#include "esp_vfs_eventfd.h"
 #include "nvs_flash.h"
 
 #include "esp_netif.h"
 
+#include "wendy_conf.h"
 #include "wendy_wasm.h"
 #include "wendy_hal.h"
 #include "wendy_hal_export.h"
@@ -31,6 +34,7 @@
 
 #if CONFIG_WENDY_WIFI_ENABLED
 #include "wendy_wifi.h"
+#include "wendy_com.h"
 #endif
 
 #if CONFIG_WENDY_CLOUD_PROV
@@ -46,12 +50,13 @@ static const char *TAG = "wendy_main";
 
 /* ── Event bits ─────────────────────────────────────────────────────── */
 
-#define EVT_UPLOAD_READY      BIT0
-#define EVT_RUN_REQUEST       BIT1
-#define EVT_STOP_REQUEST      BIT2
-#define EVT_RESET_REQUEST     BIT3
-#define EVT_PROV_WIFI_CREDS   BIT4
-#define EVT_PROV_CLEAR_CREDS  BIT5
+#if CONFIG_WENDY_USB_CDC_ENABLED
+#define EVT_RUN_REQUEST       BIT0
+#define EVT_STOP_REQUEST      BIT1
+#define EVT_RESET_REQUEST     BIT2
+#endif
+#define EVT_PROV_WIFI_CREDS   BIT3
+#define EVT_PROV_CLEAR_CREDS  BIT4
 
 static EventGroupHandle_t s_events;
 
@@ -59,9 +64,10 @@ static EventGroupHandle_t s_events;
 
 static wendy_wasm_module_handle_t s_current_module = NULL;
 static pthread_t s_wasm_exec_thread;
-static volatile bool s_wasm_active = false;
-static volatile bool s_wasm_flash_busy = false;
+static atomic_bool s_wasm_active = false;
+static atomic_bool s_wasm_flash_busy = false;
 static bool s_current_module_flash_backed = false;
+static bool wasm_app_auto_start_enabled = true;
 
 /* ── Flash-write session (one upload at a time, USB or WiFi) ──────────── */
 
@@ -228,7 +234,6 @@ static esp_err_t wasm_persist_end(uint8_t slot)
     s_persist_load_slot = slot;
     s_persist_load_pending = true;
     ESP_LOGI(TAG, "persist end: slot=%d", slot);
-    xEventGroupSetBits(s_events, EVT_UPLOAD_READY);
     return ESP_OK;
 }
 
@@ -282,18 +287,9 @@ static void on_stop(void) { xEventGroupSetBits(s_events, EVT_STOP_REQUEST); }
 static void on_reset(void){ xEventGroupSetBits(s_events, EVT_RESET_REQUEST); }
 #endif /* CONFIG_WENDY_USB_CDC_ENABLED */
 
-/* ── WiFi callbacks ────────────────────────────────────────────────── */
-
-#if CONFIG_WENDY_WIFI_ENABLED
-static void wifi_on_run(void)  { xEventGroupSetBits(s_events, EVT_RUN_REQUEST); }
-static void wifi_on_stop(void) { xEventGroupSetBits(s_events, EVT_STOP_REQUEST); }
-static void wifi_on_reset(void){ xEventGroupSetBits(s_events, EVT_RESET_REQUEST); }
-#endif /* CONFIG_WENDY_WIFI_ENABLED */
-
 /* -- WASM execution ---------------------------------------------------- */
 
-/* Runs on a dedicated pthread so the management thread stays free to
- * service EVT_STOP_REQUEST / EVT_RESET_REQUEST while the guest runs. */
+/* Runs WASM code on a dedicated pthread */
 static void *wasm_exec_thread_entry(void *arg)
 {
     wendy_wasm_module_handle_t module = (wendy_wasm_module_handle_t)arg;
@@ -336,118 +332,134 @@ static bool start_loaded_wasm_module(void)
     return true;
 }
 
-/* ── WASM management thread (runs in pthread context for WAMR) ─────── */
-
-static void *wasm_main_thread(void *arg)
+static void wasm_app_stop(void)
 {
-    /* Initialize the WASM runtime — must be in pthread context */
-    wendy_wasm_config_t wasm_cfg = WENDY_WASM_CONFIG_DEFAULT();
-    wasm_cfg.output_cb  = wasm_output_cb;
-    wasm_cfg.output_ctx = NULL;
+    if (!s_current_module) return;
+    wendy_wasm_stop(s_current_module);
+    wait_for_wasm_inactive(5000);
+    reset_guest_resources();
+    wendy_wasm_unload(s_current_module);
+    mark_current_module_unloaded();
+}
 
-    esp_err_t err = wendy_wasm_init(&wasm_cfg);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "WASM runtime init failed");
-        return NULL;
+static esp_err_t wasm_app_start(uint8_t slot)
+{
+    static bool initialized;
+
+    wasm_app_stop();
+
+    ESP_LOGI(TAG, "loading WASM from flash slot %d...", slot);
+
+    if (initialized) {
+        wendy_wasm_reinit();
+    } else {
+        /* Initialize the WASM runtime — must be in pthread context */
+        wendy_wasm_config_t wasm_cfg = WENDY_WASM_CONFIG_DEFAULT();
+        wasm_cfg.output_cb  = wasm_output_cb;
+        wasm_cfg.output_ctx = NULL;
+
+        esp_err_t err = wendy_wasm_init(&wasm_cfg);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "WASM runtime init failed");
+            return err;
+        }
+
+        initialized = true;
     }
 
     /* Register HAL native functions with WAMR */
-    err = wendy_hal_export_init();
+    esp_err_t err = wendy_hal_export_init();
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "some HAL exports failed to register");
+        return err;
     }
 
-    /*
-     * Boot logic: try loading the most recently persisted slot (default A);
-     * otherwise, wait for an upload via USB/WiFi.
-     */
-    {
-        wendy_wasm_module_handle_t flash_module = NULL;
-        err = load_wasm_module_from_flash("wasm_a", &flash_module);
-        if (err == ESP_OK) {
-            ESP_LOGI(TAG, "found WASM binary in flash, auto-starting...");
-            s_current_module = flash_module;
-            s_current_module_flash_backed = true;
-            if (!start_loaded_wasm_module()) {
-                wendy_wasm_unload(s_current_module);
-                mark_current_module_unloaded();
-            }
-        } else {
-            ESP_LOGI(TAG, "no WASM binary in flash, waiting for upload...");
+    wendy_wasm_module_handle_t flash_module = NULL;
+    err = load_wasm_module_from_flash(partition_label_for(slot), &flash_module);
+    if (err == ESP_OK) {
+        s_current_module = flash_module;
+        s_current_module_flash_backed = true;
+        if (!start_loaded_wasm_module()) {
+            wendy_wasm_unload(s_current_module);
+            mark_current_module_unloaded();
+            return ESP_FAIL;
         }
+    } else {
+        ESP_LOGE(TAG, "failed to load WASM from flash: %s", esp_err_to_name(err));
+        return err;
     }
 
-    /* Main event loop */
-    for (;;) {
-        EventBits_t bits = xEventGroupWaitBits(
-            s_events,
-            EVT_UPLOAD_READY | EVT_RUN_REQUEST | EVT_STOP_REQUEST | EVT_RESET_REQUEST,
-            pdTRUE, pdFALSE, portMAX_DELAY);
+    return ESP_OK;
+}
 
-        if (bits & EVT_STOP_REQUEST) {
-            ESP_LOGI(TAG, "stopping WASM module...");
-            if (s_current_module) {
-                wendy_wasm_stop(s_current_module);
-                wait_for_wasm_inactive(5000);
-                reset_guest_resources();
-            }
-        }
-
-        if (bits & EVT_RESET_REQUEST) {
-            ESP_LOGI(TAG, "resetting device...");
-            if (s_current_module) {
-                wendy_wasm_stop(s_current_module);
-                wait_for_wasm_inactive(5000);
-                reset_guest_resources();
-                wendy_wasm_unload(s_current_module);
-                mark_current_module_unloaded();
-            }
-            esp_restart();
-        }
-
-        if ((bits & EVT_UPLOAD_READY) || (bits & EVT_RUN_REQUEST)) {
-            uint8_t load_slot = 0;
-            bool have_pending = false;
-            if (bits & EVT_UPLOAD_READY) {
-                have_pending = s_persist_load_pending;
-                load_slot = s_persist_load_slot;
-                s_persist_load_pending = false;
-            }
-            if (have_pending || (bits & EVT_RUN_REQUEST)) {
-                ESP_LOGI(TAG, "loading WASM from flash slot %d...", load_slot);
-
-                if (s_current_module) {
-                    wendy_wasm_stop(s_current_module);
-                    wait_for_wasm_inactive(5000);
-                    reset_guest_resources();
-                    wendy_wasm_unload(s_current_module);
-                    mark_current_module_unloaded();
-                }
-
-                /* Reinitialize WAMR runtime to clear internal state,
-                 * then re-register HAL native symbols */
-                wendy_wasm_reinit();
-                wendy_hal_export_init();
-
-                wendy_wasm_module_handle_t flash_module = NULL;
-                esp_err_t lerr = load_wasm_module_from_flash(
-                    partition_label_for(load_slot), &flash_module);
-                if (lerr == ESP_OK) {
-                    s_current_module = flash_module;
-                    s_current_module_flash_backed = true;
-                    if (!start_loaded_wasm_module()) {
-                        wendy_wasm_unload(s_current_module);
-                        mark_current_module_unloaded();
-                    }
-                } else {
-                    ESP_LOGE(TAG, "failed to load WASM from flash: %s",
-                             esp_err_to_name(lerr));
-                }
-            }
+static void wasm_app_auto_start(struct wcom_operation *op)
+{
+    if (wasm_app_auto_start_enabled) {
+        wasm_app_auto_start_enabled = false;
+        esp_err_t err = wasm_app_start(0);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "auto-start WASM app failed: %s", esp_err_to_name(err));
         }
     }
+}
 
-    return NULL;
+/* ── App delegate (wendy_com protocol callbacks) ───────────────────── */
+
+static WendyComResult com_push_begin(size_t size)
+{
+    wasm_app_auto_start_enabled = false;
+    esp_err_t e = wasm_persist_begin(0, (uint32_t)size);
+    return e == ESP_OK ? WendyComResult_WENDY_COM_RESULT_OK
+                       : WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
+}
+
+static WendyComResult com_push_data(size_t offset, const uint8_t *data, size_t size)
+{
+    wasm_app_auto_start_enabled = false;
+    esp_err_t e = wasm_persist_chunk((uint32_t)offset, data, (uint32_t)size);
+    return e == ESP_OK ? WendyComResult_WENDY_COM_RESULT_OK
+                       : WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
+}
+
+static WendyComResult com_push_end(void)
+{
+    wasm_app_auto_start_enabled = false;
+    esp_err_t e = wasm_persist_end(0);
+    return e == ESP_OK ? WendyComResult_WENDY_COM_RESULT_OK
+                       : WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
+}
+
+static void com_push_abort(void)
+{
+    wasm_persist_abort(0);
+}
+
+static WendyComResult com_app_start(void)
+{
+    wasm_app_auto_start_enabled = false;
+    uint8_t slot = 0;
+    if (s_persist_load_pending) {
+        slot = s_persist_load_slot;
+        s_persist_load_pending = false;
+    }
+    esp_err_t e = wasm_app_start(slot);
+    return e == ESP_OK ? WendyComResult_WENDY_COM_RESULT_OK
+                       : WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
+}
+
+static WendyComResult com_app_stop(void)
+{
+    wasm_app_auto_start_enabled = false;
+    wasm_app_stop();
+    return WendyComResult_WENDY_COM_RESULT_OK;
+}
+
+static WendyComResult com_reboot(void)
+{
+    wasm_app_auto_start_enabled = false;
+    wasm_app_stop();
+    esp_restart();
+    return WendyComResult_WENDY_COM_RESULT_OK;
 }
 
 /* ── HAL initialization ─────────────────────────────────────────────── */
@@ -479,14 +491,24 @@ void app_main(void)
     ESP_LOGI(TAG, "  Target: %s", CONFIG_IDF_TARGET);
     ESP_LOGI(TAG, "========================================");
 
+    esp_vfs_eventfd_config_t cfg = ESP_VFS_EVENTD_CONFIG_DEFAULT();
+    esp_err_t err = esp_vfs_eventfd_register(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_vfs_eventfd_register: %s (continuing)",
+                    esp_err_to_name(err));
+    }
+
     /* NVS */
-    esp_err_t err = nvs_flash_init();
+    err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();
         nvs_flash_init();
     }
 
     s_events = xEventGroupCreate();
+
+    /* Load configuration from the wendy-conf partition */
+    wendy_conf_init();
 
     /* Pre-allocate the WAMR memory pool while RAM is still plentiful,
      * before WiFi and BLE claim large chunks. */
@@ -535,19 +557,22 @@ void app_main(void)
     }
 #endif
 
+    /* Initialize main com infrastructure */
+    static const struct wcom_app_delegate app_delegate = {
+        .on_app_push_begin = com_push_begin,
+        .on_app_push_data  = com_push_data,
+        .on_app_push_end   = com_push_end,
+        .on_app_push_abort = com_push_abort,
+        .on_app_start      = com_app_start,
+        .on_app_stop       = com_app_stop,
+        .on_reboot         = com_reboot,
+    };
+    wcom_set_app_delegate(&app_delegate);
+    wcom_start();
+
     /* Initialize WiFi transport (if enabled) */
 #if CONFIG_WENDY_WIFI_ENABLED
-    wendy_wifi_callbacks_t wifi_cbs = {
-        .on_upload_begin  = wasm_persist_begin,
-        .on_upload_chunk  = wasm_persist_chunk,
-        .on_upload_end    = wasm_persist_end,
-        .on_upload_abort  = wasm_persist_abort,
-        .on_run           = wifi_on_run,
-        .on_stop          = wifi_on_stop,
-        .on_reset         = wifi_on_reset,
-    };
-    err = wendy_wifi_init(&wifi_cbs);
-
+    err = wendy_wifi_init();
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "WiFi connected");
 #if CONFIG_WENDY_BLE_PROV
@@ -655,24 +680,12 @@ void app_main(void)
     }
 #endif /* CONFIG_WENDY_WIFI_ENABLED */
 
-    /*
-     * Spawn the WASM management thread.
-     * WAMR internally uses pthread_self() for thread-env tracking,
-     * so all WAMR API calls must happen from pthread context —
-     * not from the FreeRTOS app_main task.
-     */
-    pthread_t wasm_main;
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, WENDY_WASM_THREAD_STACK_SIZE);
-
-    int ret = pthread_create(&wasm_main, &attr, wasm_main_thread, NULL);
-    pthread_attr_destroy(&attr);
-    if (ret != 0) {
-        ESP_LOGE(TAG, "failed to create WASM main thread");
-        return;
-    }
-    pthread_detach(wasm_main);
+    // Start the wasm app, but we do that from the wcom thread,
+    // in order to have all commands executed by the same thread.
+    static struct wcom_operation op = {
+        .func = wasm_app_auto_start,
+    };
+    wcom_exec(&op);
 
     /* app_main returns; FreeRTOS scheduler keeps running */
 }

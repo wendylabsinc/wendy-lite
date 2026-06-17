@@ -842,16 +842,6 @@ static int wendynet_ensure_started_locked(void)
         }
     }
     if (s_wakeup_fd < 0) {
-        static bool s_eventfd_registered = false;
-        if (!s_eventfd_registered) {
-            esp_vfs_eventfd_config_t cfg = ESP_VFS_EVENTD_CONFIG_DEFAULT();
-            esp_err_t err = esp_vfs_eventfd_register(&cfg);
-            if (err != ESP_OK) {
-                ESP_LOGW(TAG, "esp_vfs_eventfd_register: %s (continuing)",
-                         esp_err_to_name(err));
-            }
-            s_eventfd_registered = true;
-        }
         s_wakeup_fd = eventfd(0, 0);
         if (s_wakeup_fd < 0) {
             ESP_LOGE(TAG, "eventfd() failed");
