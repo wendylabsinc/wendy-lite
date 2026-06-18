@@ -151,8 +151,29 @@ static void stack_chk_fail_wrapper(wasm_exec_env_t exec_env)
                                "stack smashing detected");
 }
 
+static int posix_memalign_wrapper(wasm_exec_env_t exec_env,
+                                   void **memptr, int32_t align, int32_t size)
+{
+    /* 'memptr' is auto-translated by WAMR: it's a native ptr to a uint32_t
+     * slot in WASM linear memory where we store the allocated WASM app addr.
+     * Over-allocate by (align-1) to guarantee alignment. */
+    if (align < (int32_t)sizeof(void *) || (align & (align - 1)) != 0)
+        return 22; /* EINVAL */
+    wasm_module_inst_t inst = wasm_runtime_get_module_inst(exec_env);
+    void *native_ptr = NULL;
+    uint32_t wasm_addr = wasm_runtime_module_malloc(
+        inst, (uint32_t)size + (uint32_t)(align - 1), &native_ptr);
+    if (wasm_addr == 0 || !native_ptr)
+        return 12; /* ENOMEM */
+    uintptr_t raw     = (uintptr_t)native_ptr;
+    uintptr_t aligned = (raw + (uintptr_t)(align - 1)) & ~(uintptr_t)(align - 1);
+    *(uint32_t *)memptr = wasm_addr + (uint32_t)(aligned - raw);
+    return 0;
+}
+
 static NativeSymbol s_env_symbols[] = {
-    { "__stack_chk_fail", (void *)stack_chk_fail_wrapper, "()", NULL },
+    { "__stack_chk_fail", (void *)stack_chk_fail_wrapper,  "()",     NULL },
+    { "posix_memalign",   (void *)posix_memalign_wrapper,  "(*ii)i", NULL },
 };
 
 /* ── Public API ─────────────────────────────────────────────────────── */

@@ -25,7 +25,7 @@ menu "Wendy MCU Firmware Configuration"
     menu "WASM Runtime"
         config WENDY_WASM_STACK_SIZE
             int "WASM stack size (bytes)"
-            default 32768
+            default 16384
             help
                 Stack size for the WASM runtime execution environment.
 
@@ -37,12 +37,12 @@ menu "Wendy MCU Firmware Configuration"
 
         config WENDY_WASM_POOL_SIZE
             int "WAMR memory pool size (bytes)"
-            default 180224
+            default 163840
             help
-                Total pre-allocated pool for the WAMR runtime. This is
-                grabbed early in boot before WiFi/BLE consume RAM.
-                Must fit linear memory + heap + stack + WAMR overhead.
-                ESP32-C6: 176 KB (294 KB total, ~114 KB left for WiFi/BLE).
+                Total pre-allocated pool for the WAMR runtime. Grabbed early in boot
+                before WiFi/BLE consume RAM. With CWendyLite apps (~5 KB binary),
+                160 KB is sufficient. With full WendyLite Swift apps (~200 KB binary),
+                300+ KB is needed but may starve WiFi/BLE.
 
         config WENDY_WASM_USE_PSRAM
             bool "Allocate WASM heap from PSRAM"

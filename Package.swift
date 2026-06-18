@@ -5,6 +5,7 @@ let package = Package(
     name: "WendyLite",
     products: [
         .library(name: "WendyLite", targets: ["WendyLite"]),
+        .library(name: "CWendyLite", targets: ["CWendyLite"]),
     ],
     targets: [
         .target(
