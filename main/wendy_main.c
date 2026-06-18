@@ -55,8 +55,9 @@ static const char *TAG = "wendy_main";
 #define EVT_STOP_REQUEST      BIT1
 #define EVT_RESET_REQUEST     BIT2
 #endif
-#define EVT_PROV_WIFI_CREDS   BIT3
-#define EVT_PROV_CLEAR_CREDS  BIT4
+#define EVT_BLE_UP            BIT3
+#define EVT_PROV_WIFI_CREDS   BIT4
+#define EVT_PROV_CLEAR_CREDS  BIT5
 
 static EventGroupHandle_t s_events;
 
@@ -254,6 +255,11 @@ static void wasm_persist_abort(uint8_t slot)
 #if CONFIG_WENDY_BLE_PROV
 static char s_ble_prov_ssid[33];
 static char s_ble_prov_pass[65];
+
+static void on_ble_up(void)
+{
+    xEventGroupSetBits(s_events, EVT_BLE_UP);
+}
 
 static void on_ble_wifi_creds(const char *ssid, const char *password)
 {
@@ -509,6 +515,11 @@ void app_main(void)
 
     /* Load configuration from the wendy-conf partition */
     wendy_conf_init();
+    char device_name[CONFIG_WENDY_DEVICE_NAME_BUF_SIZE];
+    wendy_conf_copy_span(device_name, sizeof(device_name), wendy_conf_get_device_name());
+    if (device_name[0]) {
+        ESP_LOGI(TAG, "device name: %s", device_name);
+    }
 
     /* Pre-allocate the WAMR memory pool while RAM is still plentiful,
      * before WiFi and BLE claim large chunks. */
@@ -547,13 +558,28 @@ void app_main(void)
 
     /* Initialize BLE provisioning and discovery (if enabled) */
 #if CONFIG_WENDY_BLE_PROV
+    ESP_LOGI(TAG, "Starting BLE...");
     wendy_ble_prov_callbacks_t ble_prov_cbs = {
+        .on_ble_up      = on_ble_up,
         .on_wifi_creds  = on_ble_wifi_creds,
         .on_clear_creds = on_ble_clear_creds,
     };
-    err = wendy_ble_prov_init(&ble_prov_cbs);
+    err = wendy_ble_prov_init(device_name[0] ? device_name : NULL, &ble_prov_cbs);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "BLE provisioning init failed");
+    }
+
+    // Wait for BLE stack to come up
+    xEventGroupWaitBits(
+        s_events,
+        EVT_BLE_UP,
+        pdTRUE, pdFALSE, portMAX_DELAY);
+
+    ESP_LOGI(TAG, "BLE stack is up");
+
+    if (!device_name[0]) {
+        strlcpy(device_name, wendy_ble_prov_get_device_name(), sizeof(device_name));
+        ESP_LOGI(TAG, "device name: %s", device_name);
     }
 #endif
 
@@ -572,7 +598,7 @@ void app_main(void)
 
     /* Initialize WiFi transport (if enabled) */
 #if CONFIG_WENDY_WIFI_ENABLED
-    err = wendy_wifi_init();
+    err = wendy_wifi_init(device_name);
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "WiFi connected");
 #if CONFIG_WENDY_BLE_PROV

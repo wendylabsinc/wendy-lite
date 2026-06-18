@@ -184,3 +184,15 @@ struct wendy_conf_span wendy_conf_get_chain_of_trust(void)
 {
     return s_chain_der;
 }
+
+void wendy_conf_copy_span(char *dest, size_t dest_size, struct wendy_conf_span src)
+{
+    if (src.size == 0 || !src.data) {
+        if (dest_size > 0)
+            dest[0] = '\0';
+        return;
+    }
+    size_t copy_size = src.size < dest_size - 1 ? src.size : dest_size - 1;
+    memcpy(dest, src.data, copy_size);
+    dest[copy_size] = '\0';
+}

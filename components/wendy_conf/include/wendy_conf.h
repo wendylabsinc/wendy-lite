@@ -40,3 +40,5 @@ struct wendy_conf_span wendy_conf_get_cloud_host(void);
 struct wendy_conf_span wendy_conf_get_private_key(void);
 struct wendy_conf_span wendy_conf_get_certificate(void);
 struct wendy_conf_span wendy_conf_get_chain_of_trust(void);
+
+void wendy_conf_copy_span(char *dest, size_t dest_size, struct wendy_conf_span src);

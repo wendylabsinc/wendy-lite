@@ -1,5 +1,6 @@
 #include "wendy_ble_prov.h"
 
+#include <stdatomic.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -70,12 +71,14 @@ static int s_status_val_len = 1;
 /* Device name (built at init) */
 static char s_device_name[32];
 
-/* True once build_device_name() has populated s_device_name from a real
- * controller address. Until then s_device_name holds a placeholder
- * (e.g. "Wendy-INIT") and external readers should treat the name as
- * not yet available. volatile because it's written by the NimBLE host
- * task and read by other init paths (mDNS hostname pickup, etc.). */
-static volatile bool s_device_name_resolved = false;
+/* True if the caller didn't supply an explicit name; name will be generated from MAC address */
+static bool s_generate_mac_derived_device_name = false;
+
+/* True while s_device_name holds a placeholder (e.g. "wendy-init").
+ * Cleared once the real name is set — either from the caller or derived
+ * from the BT MAC in build_device_name(). atomic_bool because it's written
+ * by the NimBLE host task and read by other init paths. */
+static atomic_bool s_temp_device_name = false;
 
 /* Handle for status characteristic (for notifications) */
 static uint16_t s_status_chr_val_handle;
@@ -302,15 +305,15 @@ static void build_device_name(void)
     if (rc != 0) {
         /* Fallback: use a fixed suffix */
         snprintf(s_device_name, sizeof(s_device_name),
-                 "%s-0000", CONFIG_WENDY_BLE_PROV_DEVICE_PREFIX);
+                 "%s-0000", CONFIG_WENDY_DEVICE_NAME_DEFAULT_PREFIX);
         return;
     }
 
     /* Use last 2 bytes of MAC for suffix */
     snprintf(s_device_name, sizeof(s_device_name),
-             "%s-%02X%02X", CONFIG_WENDY_BLE_PROV_DEVICE_PREFIX,
+             "%s-%02x%02x", CONFIG_WENDY_DEVICE_NAME_DEFAULT_PREFIX,
              addr[1], addr[0]);
-    s_device_name_resolved = true;
+    s_temp_device_name = false;
 }
 
 /* ── NimBLE host sync callback ─────────────────────────────────────── */
@@ -319,12 +322,17 @@ static void prov_on_sync(void)
 {
     ble_hs_util_ensure_addr(0);
 
-    /* Now that the host is synced we can read the real BT address */
-    build_device_name();
+    if (s_generate_mac_derived_device_name) {
+        build_device_name();
+    }
     ble_svc_gap_device_name_set(s_device_name);
 
     ESP_LOGI(TAG, "BLE host synced, starting advertising");
     start_advertising();
+
+    if (s_callbacks.on_ble_up) {
+        s_callbacks.on_ble_up();
+    }
 }
 
 static void ble_host_task(void *param)
@@ -335,12 +343,21 @@ static void ble_host_task(void *param)
 
 /* ── Public API ─────────────────────────────────────────────────────── */
 
-esp_err_t wendy_ble_prov_init(const wendy_ble_prov_callbacks_t *callbacks)
+esp_err_t wendy_ble_prov_init(const char *device_name, const wendy_ble_prov_callbacks_t *callbacks)
 {
     if (s_nimble_ready) return ESP_OK;
 
     if (callbacks) {
         s_callbacks = *callbacks;
+    }
+
+    if (device_name) {
+        strlcpy(s_device_name, device_name, sizeof(s_device_name));
+    } else {
+        s_generate_mac_derived_device_name = true;
+        s_temp_device_name = true;
+        snprintf(s_device_name, sizeof(s_device_name),
+                 "%s-init", CONFIG_WENDY_DEVICE_NAME_DEFAULT_PREFIX);
     }
 
     /* Initialize NimBLE */
@@ -380,10 +397,6 @@ esp_err_t wendy_ble_prov_init(const wendy_ble_prov_callbacks_t *callbacks)
     }
 #endif
 
-    /* Build device name — will use fallback until host syncs and we
-     * get the real address in prov_on_sync, but we set GAP name here */
-    snprintf(s_device_name, sizeof(s_device_name),
-             "%s-INIT", CONFIG_WENDY_BLE_PROV_DEVICE_PREFIX);
     ble_svc_gap_device_name_set(s_device_name);
 
     /* Start the NimBLE host task */
@@ -432,13 +445,14 @@ bool wendy_ble_prov_nimble_ready(void)
 
 const char *wendy_ble_prov_get_device_name(void)
 {
-    return s_device_name_resolved ? s_device_name : NULL;
+    return s_temp_device_name ? NULL : s_device_name;
 }
 
 #else /* BLE prov not enabled */
 
-esp_err_t wendy_ble_prov_init(const wendy_ble_prov_callbacks_t *callbacks)
+esp_err_t wendy_ble_prov_init(const char *device_name, const wendy_ble_prov_callbacks_t *callbacks)
 {
+    (void)device_name;
     (void)callbacks;
     return ESP_ERR_NOT_SUPPORTED;
 }

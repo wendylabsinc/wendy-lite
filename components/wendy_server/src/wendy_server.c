@@ -14,6 +14,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 
@@ -50,6 +51,7 @@ extern const uint8_t default_key_der_start[]  asm("_binary_default_key_der_start
 extern const uint8_t default_key_der_end[]    asm("_binary_default_key_der_end");
 
 static struct wendy_server_link _links[WENDY_SERVER_MAX_LINKS];
+static char *_device_name;
 
 
 //--- internal functions ---//
@@ -178,13 +180,24 @@ static void _server_task(void *arg)
     ESP_LOGI(TAG, "listening on port %d", WENDY_SERVER_PORT);
     if (trusted) {
         ESP_LOGI(TAG, "full mTLS enabled: only authenticated clients will be accepted");
+    } else {
+        ESP_LOGI(TAG, "mTLS disabled: any client will be accepted");
     }
 
-    mdns_txt_item_t txt_item = {
-        .key = "mtls",
-        .value = "true"
+    mdns_txt_item_t txt_items[] = {
+        {
+            .key = "name",
+            .value = _device_name
+        },
+        {
+            .key = "mtls",
+            .value = trusted ? "true" : "false"
+        }
     };
-    esp_err_t mdns_err = mdns_service_add(NULL, "_wendy-lite", "_tcp", WENDY_SERVER_PORT, &txt_item, trusted ? 1 : 0);
+
+    esp_err_t mdns_err = mdns_service_add(_device_name, "_wendy-lite", "_tcp", WENDY_SERVER_PORT, txt_items, sizeof(txt_items) / sizeof(txt_items[0]));
+    free(_device_name);
+    _device_name = NULL;
     if (mdns_err != ESP_OK) {
         ESP_LOGE(TAG, "mDNS service add failed: %s", esp_err_to_name(mdns_err));
     } else {
@@ -282,7 +295,8 @@ static void _server_task(void *arg)
 
 //--- public functions ---//
 
-void wendy_server_start(void)
+void wendy_server_start(const char *device_name)
 {
+    _device_name = device_name ? strdup(device_name) : NULL;
     xTaskCreate(_server_task, "wendy_server", WENDY_SERVER_TASK_STACK, NULL, WENDY_SERVER_TASK_PRIO, NULL);
 }

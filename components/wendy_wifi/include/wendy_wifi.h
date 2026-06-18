@@ -21,7 +21,7 @@ extern "C" {
  *
  * On success, registers mDNS service and starts UDP listener.
  */
-esp_err_t wendy_wifi_init(void);
+esp_err_t wendy_wifi_init(const char *device_name);
 
 /**
  * Connect to WiFi with given credentials. Persists to NVS on success,
