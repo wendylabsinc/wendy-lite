@@ -1,7 +1,3 @@
-// Temp EKU workaround
-#define MBEDTLS_ALLOW_PRIVATE_ACCESS // allow access to mbedtls private struct fields (needed by _strip_server_eku)
-#define WENDY_SERVER_SKIP_EKU_CHECK  1
-
 #include "wendy_server.h"
 #include "wendy_conf.h"
 #include "wendy_com_link.h"
@@ -142,18 +138,6 @@ static void _add_link_exec(struct wcom_operation *op)
     free(aop);
 }
 
-#if WENDY_SERVER_SKIP_EKU_CHECK
-#include "esp_tls_private.h"
-
-static void _strip_server_eku(esp_tls_t *tls)
-{
-    // Clear the EKU extension bit so mbedtls_x509_crt_check_extended_key_usage
-    // treats the cert as having no EKU restriction (absent = no restriction).
-    tls->servercert.ext_types &= ~MBEDTLS_X509_EXT_EXTENDED_KEY_USAGE;
-    ESP_LOGW(TAG, "EKU check bypassed (temp workaround)");
-}
-#endif
-
 static void _server_task(void *arg)
 {
     struct wendy_conf_span key = wendy_conf_get_private_key();
@@ -263,10 +247,6 @@ static void _server_task(void *arg)
             esp_tls_server_session_delete(tls);
             continue;
         }
-
-#if WENDY_SERVER_SKIP_EKU_CHECK
-        _strip_server_eku(tls);
-#endif
 
         // Register the verify callback before the handshake so it fires for every
         // certificate in the peer's chain (leaf at depth 0, intermediates at depth 1+).
