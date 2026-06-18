@@ -1,0 +1,29 @@
+menu "WasmKit Runtime"
+
+config WENDY_WASM_STACK_SIZE
+    int "WASM execution stack size"
+    default 16384
+    help
+        Stack size allocated for the WASM module execution environment.
+
+config WENDY_WASM_HEAP_SIZE
+    int "WASM heap size"
+    default 32768
+    help
+        Heap size available to the WASM module.
+
+config WENDY_WASM_POOL_SIZE
+    int "WasmKit memory pool size"
+    default 163840
+    help
+        Total memory pool pre-allocated for the WasmKit runtime, in bytes.
+        This is reserved before WiFi/BLE init to guarantee contiguous SRAM.
+
+config WENDY_WASM_USE_PSRAM
+    bool "Use PSRAM for WasmKit pool"
+    default n
+    depends on SPIRAM
+    help
+        Allocate the WasmKit memory pool from PSRAM instead of internal SRAM.
+
+endmenu

@@ -1,7 +1,10 @@
 cmake_minimum_required(VERSION 3.29)
 
-# WAMR component declares cmake_minimum_required(VERSION 3.5) which
-# CMake 4.x rejects. Allow it via the compatibility policy.
+# jo/wasmkit-runtime branch: WAMR replaced by WasmKit Embedded Swift.
+# The WAMR managed component (espressif__wasm-micro-runtime) is no longer
+# pulled in.  The CMAKE_POLICY_VERSION_MINIMUM workaround can be removed
+# once the last WAMR reference is gone; keep it for now so other sub-CMakes
+# that still declare 3.5 don't break.
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
 set(EXTRA_COMPONENT_DIRS

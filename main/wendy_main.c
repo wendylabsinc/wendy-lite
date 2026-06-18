@@ -487,7 +487,7 @@ void app_main(void)
              CONFIG_WENDY_FIRMWARE_VERSION_MAJOR,
              CONFIG_WENDY_FIRMWARE_VERSION_MINOR,
              CONFIG_WENDY_FIRMWARE_VERSION_PATCH);
-    ESP_LOGI(TAG, "  WASM Runtime: WAMR (C)");
+    ESP_LOGI(TAG, "  WASM Runtime: WasmKit (Embedded Swift)");
     ESP_LOGI(TAG, "  Target: %s", CONFIG_IDF_TARGET);
     ESP_LOGI(TAG, "========================================");
 
@@ -510,8 +510,9 @@ void app_main(void)
     /* Load configuration from the wendy-conf partition */
     wendy_conf_init();
 
-    /* Pre-allocate the WAMR memory pool while RAM is still plentiful,
-     * before WiFi and BLE claim large chunks. */
+    /* Pre-allocate the WasmKit pool hint while RAM is still plentiful.
+     * WasmKit manages its own memory; this call is a no-op in the WasmKit
+     * backend but preserved for API compatibility. */
     err = wendy_wasm_prealloc_pool(CONFIG_WENDY_WASM_POOL_SIZE);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "WAMR pool pre-allocation failed");

@@ -3,26 +3,11 @@
 #   - sdkconfig.defaults.esp32c6   (single-chip board)
 #   - sdkconfig.defaults.esp32p4   (FireBeetle 2 ESP32-P4 + on-board C6)
 
-# WAMR configuration (interpreter/AOT/loader knobs are picked per-target -
-# tiny C6 builds prefer classic + mini loader; the P4 with PSRAM uses fast.)
+# WasmKit Embedded Swift runtime configuration.
+# (WAMR and its managed component are no longer used on this branch.)
 CONFIG_WENDY_WASM_STACK_SIZE=16384
 CONFIG_WENDY_WASM_HEAP_SIZE=32768
 CONFIG_WENDY_WASM_POOL_SIZE=163840
-
-# Bytecode/interpreter-only runtime: trim optional WAMR subsystems.
-# CONFIG_WAMR_ENABLE_AOT is not set
-# CONFIG_WAMR_ENABLE_APP_FRAMEWORK is not set
-
-# Disable WAMR pthread (causes assert in FreeRTOS tasks)
-# CONFIG_WAMR_ENABLE_LIB_PTHREAD is not set
-# CONFIG_WAMR_ENABLE_SHARED_MEMORY is not set
-
-# Disable WAMR built-in WASI (we provide our own shim)
-# CONFIG_WAMR_ENABLE_LIBC_WASI is not set
-# CONFIG_WAMR_ENABLE_MEMORY_PROFILING is not set
-
-# Swift async executables need WAMR ref-types support for their funcref table.
-CONFIG_WAMR_ENABLE_REF_TYPES=y
 
 # Wendy HAL defaults
 CONFIG_WENDY_HAL_GPIO=y

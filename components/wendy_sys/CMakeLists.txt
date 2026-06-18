@@ -1,4 +1,4 @@
-set(requires wasm-micro-runtime esp_timer wendy_callback wendy_wasm)
+set(requires wendy_wasmkit esp_timer wendy_callback wendy_wasm)
 
 idf_component_register(
     SRCS "src/wendy_sys.c"

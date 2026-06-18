@@ -81,6 +81,16 @@ int wendy_callback_wait_and_dispatch(void *exec_env, void *module_inst, uint32_t
 void wendy_callback_reset(void);
 
 /**
+ * Dequeue one event without dispatching it.  Used by the WasmKit backend so
+ * the Swift layer can dispatch events through the WasmKit call path rather
+ * than via WAMR's exec_env.
+ * @param event  Output: the dequeued event (only valid when true is returned)
+ * @param timeout_ticks  FreeRTOS ticks to wait; pass 0 for non-blocking
+ * @return true if an event was dequeued, false if the queue was empty
+ */
+bool wendy_callback_dequeue(wendy_callback_event_t *event, uint32_t timeout_ticks);
+
+/**
  * Shut down the callback subsystem.
  */
 void wendy_callback_deinit(void);

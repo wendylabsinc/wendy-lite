@@ -139,6 +139,25 @@ static NativeSymbol s_spi_symbols[] = {
     { "spi_transfer", (void *)spi_transfer_wrapper, "(iiii)i",   NULL },
 };
 
+/* ── Public WasmKit-callable wrappers ─────────────────────────────────── */
+
+int wendy_spi_guest_open(int host, int mosi, int miso, int sclk, int cs, int clock_hz) {
+    return spi_open_wrapper(NULL, host, mosi, miso, sclk, cs, clock_hz);
+}
+int wendy_spi_guest_close(int dev_id) { return spi_close_wrapper(NULL, dev_id); }
+int wendy_spi_guest_transfer(int dev_id, int32_t len,
+                              const uint8_t *tx_buf, uint8_t *rx_buf)
+{
+    if (dev_id < 0 || dev_id >= MAX_SPI_DEVS || !s_spi_devs[dev_id].opened) { return -1; }
+    if (len <= 0 || len > 4096) { return -1; }
+    spi_transaction_t trans = {
+        .length    = (size_t)len * 8,
+        .tx_buffer = tx_buf,
+        .rx_buffer = rx_buf,
+    };
+    return (spi_device_transmit(s_spi_devs[dev_id].handle, &trans) == ESP_OK) ? 0 : -1;
+}
+
 int wendy_spi_export_init(void)
 {
     memset(s_spi_devs, 0, sizeof(s_spi_devs));

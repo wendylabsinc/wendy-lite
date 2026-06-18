@@ -150,6 +150,21 @@ static NativeSymbol s_storage_symbols[] = {
     { "storage_exists", (void *)storage_exists_wrapper, "(*~)i",   NULL },
 };
 
+/* ── Public WasmKit-callable wrappers ─────────────────────────────────── */
+
+int wendy_storage_guest_get(const char *key, int key_len, char *val, int32_t val_len) {
+    return storage_get_wrapper(NULL, key, key_len, val, (int)val_len);
+}
+int wendy_storage_guest_set(const char *key, int key_len, const char *val, int32_t val_len) {
+    return storage_set_wrapper(NULL, key, key_len, val, (int)val_len);
+}
+int wendy_storage_guest_delete(const char *key, int key_len) {
+    return storage_delete_wrapper(NULL, key, key_len);
+}
+int wendy_storage_guest_exists(const char *key, int key_len) {
+    return storage_exists_wrapper(NULL, key, key_len);
+}
+
 int wendy_storage_export_init(void)
 {
     if (!s_initialized) {

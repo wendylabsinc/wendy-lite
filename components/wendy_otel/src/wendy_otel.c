@@ -203,6 +203,24 @@ static NativeSymbol s_otel_symbols[] = {
     { "otel_span_end",                  (void *)otel_span_end_wrapper,                  "(i)i",      NULL },
 };
 
+/* ── Public WasmKit-callable wrappers ─────────────────────────────────── */
+
+int wendy_otel_guest_log(int32_t level, const char *msg, int32_t len) {
+    return otel_log_wrapper(NULL, level, msg, (int)len);
+}
+int wendy_otel_guest_counter_add(const char *name, int32_t name_len, double delta) {
+    return otel_metric_counter_add_wrapper(NULL, name, (int)name_len, (int64_t)delta);
+}
+int wendy_otel_guest_span_start(const char *name, int32_t name_len) {
+    return otel_span_start_wrapper(NULL, name, (int)name_len);
+}
+int wendy_otel_guest_span_set_status(int32_t span_id, int32_t status) {
+    return otel_span_set_status_wrapper(NULL, (int)span_id, (int)status);
+}
+int wendy_otel_guest_span_end(int32_t span_id) {
+    return otel_span_end_wrapper(NULL, (int)span_id);
+}
+
 int wendy_otel_export_init(void)
 {
     memset(s_metrics, 0, sizeof(s_metrics));

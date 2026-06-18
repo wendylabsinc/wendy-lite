@@ -147,6 +147,24 @@ static NativeSymbol s_uart_symbols[] = {
     { "uart_set_on_receive", (void *)uart_set_on_receive_wrapper, "(ii)i",   NULL },
 };
 
+/* ── Public WasmKit-callable wrappers ─────────────────────────────────── */
+
+int wendy_uart_guest_open(int port, int tx, int rx, int baud) {
+    return uart_open_wrapper(NULL, port, tx, rx, baud);
+}
+int wendy_uart_guest_close(int port) { return uart_close_wrapper(NULL, port); }
+int wendy_uart_guest_write(int port, const uint8_t *data, int len) {
+    return uart_write_wrapper(NULL, port, (const char *)data, len);
+}
+int wendy_uart_guest_read(int port, uint8_t *buf, int len) {
+    return uart_read_wrapper(NULL, port, (char *)buf, len);
+}
+int wendy_uart_guest_available(int port) { return uart_available_wrapper(NULL, port); }
+int wendy_uart_guest_flush(int port) { return uart_flush_wrapper(NULL, port); }
+int wendy_uart_guest_set_on_receive(int port, uint32_t handler_id) {
+    return uart_set_on_receive_wrapper(NULL, port, (int)handler_id);
+}
+
 int wendy_uart_export_init(void)
 {
     memset(s_uart, 0, sizeof(s_uart));

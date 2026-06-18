@@ -1,0 +1,8 @@
+// Module map that makes ESP-IDF / Wendy HAL C headers importable from Swift.
+// Compiled into the WasmKit Embedded Swift compilation unit via
+//   -Xcc -fmodule-map-file=<this file>
+
+module WendyC {
+    header "WendyCBridge.h"
+    export *
+}

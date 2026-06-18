@@ -20,11 +20,11 @@ if(CONFIG_WENDY_HAL_RMT)
     list(APPEND srcs "src/wendy_hal_export_rmt.c")
 endif()
 
-# All subsystem components are listed unconditionally here.
-# The C code guards actual usage with #if CONFIG_WENDY_<X>.
+# jo/wasmkit-runtime: wasm-micro-runtime removed; wendy_hal_export_init() is a
+# no-op on this branch — host functions are registered by wendy_wasmkit instead.
 set(requires
     wendy_hal
-    wasm-micro-runtime
+    wendy_wasmkit          # provides stub wasm_export.h
     wendy_callback
     wendy_sys
     wendy_storage

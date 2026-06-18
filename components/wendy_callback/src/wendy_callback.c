@@ -199,6 +199,14 @@ int wendy_callback_wait_and_dispatch(void *exec_env_ptr, void *module_inst_ptr, 
     return count;
 }
 
+bool wendy_callback_dequeue(wendy_callback_event_t *event, uint32_t timeout_ticks)
+{
+    if (!s_queue || !event) {
+        return false;
+    }
+    return xQueueReceive(s_queue, event, (TickType_t)timeout_ticks) == pdTRUE;
+}
+
 void wendy_callback_reset(void)
 {
     if (s_queue) {
