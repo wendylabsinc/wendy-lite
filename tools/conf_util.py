@@ -74,35 +74,21 @@ def _split_der_sequence(data: bytes) -> list[bytes]:
 
 
 def _dump_cert(der: bytes, label: str) -> None:
+    with tempfile.NamedTemporaryFile(suffix=".der", delete=False) as fh:
+        fh.write(der)
+        tmp = fh.name
     try:
-        from cryptography import x509
-        from cryptography.hazmat.primitives import hashes
-    except ImportError:
-        sys.exit("pip install cryptography  — needed to decode DER certificates")
-
-    cert = x509.load_der_x509_certificate(der)
-    fp   = cert.fingerprint(hashes.SHA256()).hex(":")
+        r = subprocess.run(
+            ["openssl", "x509", "-text", "-noout", "-fingerprint", "-sha256",
+             "-inform", "DER", "-in", tmp],
+            capture_output=True, text=True,
+        )
+    finally:
+        os.unlink(tmp)
 
     print(f"\n  {label}:")
-    print(f"    subject:     {cert.subject.rfc4514_string()}")
-    print(f"    issuer:      {cert.issuer.rfc4514_string()}")
-    print(f"    serial:      {cert.serial_number:#x}")
-    print(f"    not_before:  {cert.not_valid_before_utc.isoformat()}")
-    print(f"    not_after:   {cert.not_valid_after_utc.isoformat()}")
-    pub = cert.public_key()
-    from cryptography.hazmat.primitives.asymmetric import ec, rsa
-    if isinstance(pub, ec.EllipticCurvePublicKey):
-        print(f"    public_key:  EC {pub.curve.name} ({pub.key_size} bit)")
-    elif isinstance(pub, rsa.RSAPublicKey):
-        print(f"    public_key:  RSA {pub.key_size} bit")
-    else:
-        print(f"    public_key:  {type(pub).__name__}")
-    try:
-        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
-        print(f"    san:         {', '.join(str(n) for n in san.value)}")
-    except x509.ExtensionNotFound:
-        pass
-    print(f"    sha256:      {fp}")
+    for line in (r.stdout + r.stderr).splitlines():
+        print(f"    {line}")
 
 
 def _dump_key(der: bytes) -> None:
