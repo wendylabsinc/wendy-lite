@@ -16,12 +16,30 @@
 //   mem.withUnsafeBufferPointer(offset: UInt(ptr), count: Int(len)) { raw in ... }
 //   mem.withUnsafeMutableBufferPointer(offset: UInt(ptr), count: Int(len)) { raw in ... }
 
+import WasmKit
+import WasmTypes
 import WendyC
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+// WasmKit stores i32 as UInt32; HAL functions use Int32 (C `int`).
+// These extensions keep call-site code readable.
+
+extension Value {
+    // Create from a C int32 result (sign-preserving bit reinterpretation)
+    @inline(__always)
+    static func int32(_ v: Int32) -> Value { .i32(UInt32(bitPattern: v)) }
+    @inline(__always)
+    static func int64(_ v: Int64) -> Value { .i64(UInt64(bitPattern: v)) }
+}
+
+extension UInt32 {
+    // Reinterpret WASM i32 as C int when passing to HAL functions
+    @inline(__always) var cInt: Int32 { Int32(bitPattern: self) }
+}
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
 func buildWendyImports(store: Store, into imports: inout Imports) {
-    guard let store = Optional(store) else { return }
 
     // ── Built-ins ─────────────────────────────────────────────────────────────
     registerPrint(store: store, into: &imports)
@@ -91,14 +109,14 @@ private func dispatchCallbacks(instance: Instance, timeout: UInt32 = 0) -> Int32
     var evt = wendy_callback_event_t(handler_id: 0, arg0: 0, arg1: 0, arg2: 0)
 
     // Wait for the first event (blocking), then drain the rest.
-    let ticks: UInt32 = timeout > 0 ? UInt32(pdMS_TO_TICKS(timeout)) : 0
+    let ticks: UInt32 = timeout > 0 ? UInt32(wendy_ms_to_ticks(timeout)) : 0
     if wendy_callback_dequeue(&evt, ticks) {
         if !gTerminateRequested {
             _ = try? handleFn.invoke([
-                .i32(Int32(bitPattern: evt.handler_id)),
-                .i32(Int32(bitPattern: evt.arg0)),
-                .i32(Int32(bitPattern: evt.arg1)),
-                .i32(Int32(bitPattern: evt.arg2)),
+                .i32(evt.handler_id),
+                .i32(evt.arg0),
+                .i32(evt.arg1),
+                .i32(evt.arg2),
             ])
             count += 1
         }
@@ -107,10 +125,10 @@ private func dispatchCallbacks(instance: Instance, timeout: UInt32 = 0) -> Int32
     // Drain remaining events without waiting
     while !gTerminateRequested && wendy_callback_dequeue(&evt, 0) {
         _ = try? handleFn.invoke([
-            .i32(Int32(bitPattern: evt.handler_id)),
-            .i32(Int32(bitPattern: evt.arg0)),
-            .i32(Int32(bitPattern: evt.arg1)),
-            .i32(Int32(bitPattern: evt.arg2)),
+            .i32(evt.handler_id),
+            .i32(evt.arg0),
+            .i32(evt.arg1),
+            .i32(evt.arg2),
         ])
         count += 1
     }
@@ -129,14 +147,14 @@ private func registerPrint(store: Store, into imports: inout Imports) {
             let len     = Int(args[1].i32)
             guard len > 0,
                   let mem = caller.instance?.exports[memory: "memory"] else {
-                return [.i32(-1)]
+                return [.int32(-1)]
             }
             mem.withUnsafeBufferPointer(offset: wasmPtr, count: len) { raw in
                 wendy_wasmkit_handle_print(
                     raw.baseAddress?.assumingMemoryBound(to: CChar.self),
                     Int32(len))
             }
-            return [.i32(Int32(len))]
+            return [.int32(Int32(len))]
         }
     )
 }
@@ -146,7 +164,7 @@ private func registerPrint(store: Store, into imports: inout Imports) {
 private func registerEnv(store: Store, into imports: inout Imports) {
     imports.define(module: "env", name: "__stack_chk_fail",
         Function(store: store, parameters: [], results: []) { _, _ in
-            esp_log_write(ESP_LOG_ERROR, "wasmkit", "__stack_chk_fail: stack smashing detected\n")
+            wendy_log(ESP_LOG_ERROR, "wasmkit", "__stack_chk_fail: stack smashing detected\n")
             return []
         }
     )
@@ -158,7 +176,7 @@ private func registerEnv(store: Store, into imports: inout Imports) {
     // For now: return ENOMEM; guest apps should use stack allocation instead.
     imports.define(module: "env", name: "posix_memalign",
         Function(store: store, parameters: [.i32, .i32, .i32], results: [.i32]) { _, _ in
-            return [.i32(12)] // ENOMEM — override with a proper allocator if needed
+            return [.int32(12)] // ENOMEM — override with a proper allocator if needed
         }
     )
 }
@@ -169,7 +187,7 @@ private func registerEnv(store: Store, into imports: inout Imports) {
 private func registerGPIO(store: Store, into imports: inout Imports) {
     imports.define(module: "wendy", name: "gpio_configure",
         Function(store: store, parameters: [.i32, .i32, .i32], results: [.i32]) { _, args in
-            return [.i32(wendy_hal_gpio_configure(
+            return [.int32(wendy_hal_gpio_configure(
                 args[0].i32,
                 wendy_gpio_mode_t(UInt32(args[1].i32)),
                 wendy_gpio_pull_t(UInt32(args[2].i32))))]
@@ -177,32 +195,32 @@ private func registerGPIO(store: Store, into imports: inout Imports) {
     )
     imports.define(module: "wendy", name: "gpio_read",
         Function(store: store, parameters: [.i32], results: [.i32]) { _, args in
-            return [.i32(wendy_hal_gpio_read(args[0].i32))]
+            return [.int32(wendy_hal_gpio_read(args[0].i32))]
         }
     )
     imports.define(module: "wendy", name: "gpio_write",
         Function(store: store, parameters: [.i32, .i32], results: [.i32]) { _, args in
-            return [.i32(wendy_hal_gpio_write(args[0].i32, args[1].i32))]
+            return [.int32(wendy_hal_gpio_write(args[0].i32, args[1].i32))]
         }
     )
     imports.define(module: "wendy", name: "gpio_set_pwm",
         Function(store: store, parameters: [.i32, .i32, .i32], results: [.i32]) { _, args in
-            return [.i32(wendy_hal_gpio_set_pwm(args[0].i32, UInt32(args[1].i32), UInt8(args[2].i32)))]
+            return [.int32(wendy_hal_gpio_set_pwm(args[0].i32, UInt32(args[1].i32), UInt8(args[2].i32)))]
         }
     )
     imports.define(module: "wendy", name: "gpio_analog_read",
         Function(store: store, parameters: [.i32], results: [.i32]) { _, args in
-            return [.i32(wendy_hal_gpio_analog_read(args[0].i32))]
+            return [.int32(wendy_hal_gpio_analog_read(args[0].i32))]
         }
     )
     imports.define(module: "wendy", name: "gpio_set_interrupt",
         Function(store: store, parameters: [.i32, .i32, .i32], results: [.i32]) { _, args in
-            return [.i32(wendy_hal_gpio_set_interrupt(args[0].i32, args[1].i32, UInt32(args[2].i32)))]
+            return [.int32(wendy_hal_gpio_set_interrupt(args[0].i32, args[1].i32, UInt32(args[2].i32)))]
         }
     )
     imports.define(module: "wendy", name: "gpio_clear_interrupt",
         Function(store: store, parameters: [.i32], results: [.i32]) { _, args in
-            return [.i32(wendy_hal_gpio_clear_interrupt(args[0].i32))]
+            return [.int32(wendy_hal_gpio_clear_interrupt(args[0].i32))]
         }
     )
 }
@@ -214,7 +232,7 @@ private func registerGPIO(store: Store, into imports: inout Imports) {
 private func registerI2C(store: Store, into imports: inout Imports) {
     imports.define(module: "wendy", name: "i2c_init",
         Function(store: store, parameters: [.i32, .i32, .i32, .i32], results: [.i32]) { _, args in
-            return [.i32(wendy_hal_i2c_init(args[0].i32, args[1].i32, args[2].i32, UInt32(args[3].i32)))]
+            return [.int32(wendy_hal_i2c_init(args[0].i32, args[1].i32, args[2].i32, UInt32(args[3].i32)))]
         }
     )
     // i2c_scan(bus, addrs_ptr, max) -> count
@@ -222,13 +240,13 @@ private func registerI2C(store: Store, into imports: inout Imports) {
         Function(store: store, parameters: [.i32, .i32, .i32], results: [.i32]) { caller, args in
             let wasmPtr = UInt(bitPattern: Int(args[1].i32))
             let max     = Int(args[2].i32)
-            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.i32(-1)] }
+            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
             return mem.withUnsafeMutableBufferPointer(offset: wasmPtr, count: max) { raw in
                 let result = wendy_hal_i2c_scan(
                     args[0].i32,
                     raw.baseAddress?.assumingMemoryBound(to: UInt8.self),
                     Int32(max))
-                return [Value.i32(result)]
+                return [Value.int32(result)]
             }
         }
     )
@@ -237,13 +255,13 @@ private func registerI2C(store: Store, into imports: inout Imports) {
         Function(store: store, parameters: [.i32, .i32, .i32, .i32], results: [.i32]) { caller, args in
             let wasmPtr = UInt(bitPattern: Int(args[2].i32))
             let len     = Int(args[3].i32)
-            guard len > 0, let mem = caller.instance?.exports[memory: "memory"] else { return [.i32(-1)] }
+            guard len > 0, let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
             return mem.withUnsafeBufferPointer(offset: wasmPtr, count: len) { raw in
                 let result = wendy_hal_i2c_write(
                     args[0].i32, UInt8(args[1].i32),
                     raw.baseAddress?.assumingMemoryBound(to: UInt8.self),
                     Int32(len))
-                return [Value.i32(result)]
+                return [Value.int32(result)]
             }
         }
     )
@@ -252,13 +270,13 @@ private func registerI2C(store: Store, into imports: inout Imports) {
         Function(store: store, parameters: [.i32, .i32, .i32, .i32], results: [.i32]) { caller, args in
             let wasmPtr = UInt(bitPattern: Int(args[2].i32))
             let len     = Int(args[3].i32)
-            guard len > 0, let mem = caller.instance?.exports[memory: "memory"] else { return [.i32(-1)] }
+            guard len > 0, let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
             return mem.withUnsafeMutableBufferPointer(offset: wasmPtr, count: len) { raw in
                 let result = wendy_hal_i2c_read(
                     args[0].i32, UInt8(args[1].i32),
                     raw.baseAddress?.assumingMemoryBound(to: UInt8.self),
                     Int32(len))
-                return [Value.i32(result)]
+                return [Value.int32(result)]
             }
         }
     )
@@ -269,14 +287,14 @@ private func registerI2C(store: Store, into imports: inout Imports) {
             let wrLen = Int(args[3].i32)
             let rdPtr = UInt(bitPattern: Int(args[4].i32))
             let rdLen = Int(args[5].i32)
-            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.i32(-1)] }
+            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
             return mem.withUnsafeBufferPointer(offset: wrPtr, count: wrLen) { wrRaw in
                 return mem.withUnsafeMutableBufferPointer(offset: rdPtr, count: rdLen) { rdRaw in
                     let result = wendy_hal_i2c_write_read(
                         args[0].i32, UInt8(args[1].i32),
                         wrRaw.baseAddress?.assumingMemoryBound(to: UInt8.self), Int32(wrLen),
                         rdRaw.baseAddress?.assumingMemoryBound(to: UInt8.self), Int32(rdLen))
-                    return [Value.i32(result)]
+                    return [Value.int32(result)]
                 }
             }
         }
@@ -290,17 +308,17 @@ private func registerI2C(store: Store, into imports: inout Imports) {
 private func registerNeoPixel(store: Store, into imports: inout Imports) {
     imports.define(module: "wendy", name: "neopixel_init",
         Function(store: store, parameters: [.i32, .i32], results: [.i32]) { _, args in
-            return [.i32(wendy_hal_neopixel_init(args[0].i32, args[1].i32))]
+            return [.int32(wendy_hal_neopixel_init(args[0].i32, args[1].i32))]
         }
     )
     imports.define(module: "wendy", name: "neopixel_set",
         Function(store: store, parameters: [.i32, .i32, .i32, .i32], results: [.i32]) { _, args in
-            return [.i32(wendy_hal_neopixel_set(args[0].i32, args[1].i32, args[2].i32, args[3].i32))]
+            return [.int32(wendy_hal_neopixel_set(args[0].i32, args[1].i32, args[2].i32, args[3].i32))]
         }
     )
     imports.define(module: "wendy", name: "neopixel_clear",
         Function(store: store, parameters: [], results: [.i32]) { _, _ in
-            return [.i32(wendy_hal_neopixel_clear())]
+            return [.int32(wendy_hal_neopixel_clear())]
         }
     )
 }
@@ -325,19 +343,19 @@ private func registerTimer(store: Store, into imports: inout Imports) {
         Function(store: store, parameters: [.i32, .i32], results: [.i32]) { _, args in
             let ms        = UInt32(args[0].i32)
             let handlerId = UInt32(args[1].i32)
-            return [.i32(wendyTimer_scheduleTimeout(ms: ms, handlerId: handlerId))]
+            return [.int32(wendyTimer_scheduleTimeout(ms: ms, handlerId: handlerId))]
         }
     )
     imports.define(module: "wendy", name: "timer_set_interval",
         Function(store: store, parameters: [.i32, .i32], results: [.i32]) { _, args in
             let ms        = UInt32(args[0].i32)
             let handlerId = UInt32(args[1].i32)
-            return [.i32(wendyTimer_scheduleInterval(ms: ms, handlerId: handlerId))]
+            return [.int32(wendyTimer_scheduleInterval(ms: ms, handlerId: handlerId))]
         }
     )
     imports.define(module: "wendy", name: "timer_cancel",
         Function(store: store, parameters: [.i32], results: [.i32]) { _, args in
-            return [.i32(wendy_hal_timer_cancel(args[0].i32))]
+            return [.int32(wendy_hal_timer_cancel(args[0].i32))]
         }
     )
 }
@@ -370,7 +388,7 @@ private func wendyTimer_scheduleInterval(ms: UInt32, handlerId: UInt32) -> Int32
 private func registerRMT(store: Store, into imports: inout Imports) {
     imports.define(module: "wendy", name: "rmt_configure",
         Function(store: store, parameters: [.i32, .i32], results: [.i32]) { _, args in
-            return [.i32(wendy_hal_rmt_configure(args[0].i32, args[1].i32))]
+            return [.int32(wendy_hal_rmt_configure(args[0].i32, args[1].i32))]
         }
     )
     // rmt_transmit(channel, buf_ptr, len) -> i32
@@ -379,19 +397,19 @@ private func registerRMT(store: Store, into imports: inout Imports) {
             let channelId = args[0].i32
             let wasmPtr   = UInt(bitPattern: Int(args[1].i32))
             let len       = Int(args[2].i32)
-            guard len > 0, let mem = caller.instance?.exports[memory: "memory"] else { return [.i32(-1)] }
+            guard len > 0, let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
             return mem.withUnsafeBufferPointer(offset: wasmPtr, count: len) { raw in
                 let result = wendy_hal_rmt_transmit(
                     channelId,
                     raw.baseAddress?.assumingMemoryBound(to: UInt8.self),
                     Int32(len))
-                return [Value.i32(result)]
+                return [Value.int32(result)]
             }
         }
     )
     imports.define(module: "wendy", name: "rmt_release",
         Function(store: store, parameters: [.i32], results: [.i32]) { _, args in
-            return [.i32(wendy_hal_rmt_release(args[0].i32))]
+            return [.int32(wendy_hal_rmt_release(args[0].i32))]
         }
     )
 }
@@ -417,7 +435,7 @@ private func registerSys(store: Store, into imports: inout Imports) {
         Function(store: store, parameters: [.i32, .i32], results: [.i32]) { caller, args in
             let wasmPtr = UInt(bitPattern: Int(args[0].i32))
             let len     = Int(args[1].i32)
-            guard len > 0, let mem = caller.instance?.exports[memory: "memory"] else { return [.i32(-1)] }
+            guard len > 0, let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
             return mem.withUnsafeMutableBufferPointer(offset: wasmPtr, count: len) { raw in
                 let written = snprintf(
                     raw.baseAddress?.assumingMemoryBound(to: CChar.self),
@@ -426,7 +444,7 @@ private func registerSys(store: Store, into imports: inout Imports) {
                     Int32(CONFIG_WENDY_FIRMWARE_VERSION_MAJOR),
                     Int32(CONFIG_WENDY_FIRMWARE_VERSION_MINOR),
                     Int32(CONFIG_WENDY_FIRMWARE_VERSION_PATCH))
-                return [Value.i32(written < Int32(len) ? written : Int32(len) - 1)]
+                return [Value.int32(written < Int32(len) ? written : Int32(len) - 1)]
             }
         }
     )
@@ -435,7 +453,7 @@ private func registerSys(store: Store, into imports: inout Imports) {
         Function(store: store, parameters: [.i32, .i32], results: [.i32]) { caller, args in
             let wasmPtr = UInt(bitPattern: Int(args[0].i32))
             let len     = Int(args[1].i32)
-            guard len >= 12, let mem = caller.instance?.exports[memory: "memory"] else { return [.i32(-1)] }
+            guard len >= 12, let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
             return mem.withUnsafeMutableBufferPointer(offset: wasmPtr, count: len) { raw in
                 var mac = (UInt8(0), UInt8(0), UInt8(0), UInt8(0), UInt8(0), UInt8(0))
                 withUnsafeMutableBytes(of: &mac) { macPtr in
@@ -446,13 +464,13 @@ private func registerSys(store: Store, into imports: inout Imports) {
                     raw.baseAddress?.assumingMemoryBound(to: CChar.self), len,
                     "%02x%02x%02x%02x%02x%02x",
                     mac.0, mac.1, mac.2, mac.3, mac.4, mac.5)
-                return [Value.i32(written < Int32(len) ? written : Int32(len) - 1)]
+                return [Value.int32(written < Int32(len) ? written : Int32(len) - 1)]
             }
         }
     )
     imports.define(module: "wendy", name: "sys_sleep_ms",
         Function(store: store, parameters: [.i32], results: []) { _, args in
-            let ticks = pdMS_TO_TICKS(UInt32(args[0].i32))
+            let ticks = wendy_ms_to_ticks(UInt32(args[0].i32))
             vTaskDelay(ticks > 0 ? ticks : 1)
             return []
         }
@@ -475,10 +493,10 @@ private func registerSys(store: Store, into imports: inout Imports) {
             if let inst = caller.instance {
                 count = dispatchCallbacks(instance: inst, timeout: timeoutMs)
             } else if timeoutMs > 0 {
-                vTaskDelay(pdMS_TO_TICKS(timeoutMs))
+                vTaskDelay(wendy_ms_to_ticks(timeoutMs))
             }
             vTaskDelay(1)
-            return [.i32(count)]
+            return [.int32(count)]
         }
     )
 }
@@ -493,12 +511,12 @@ private func registerStorage(store: Store, into imports: inout Imports) {
         Function(store: store, parameters: [.i32, .i32, .i32, .i32], results: [.i32]) { caller, args in
             let keyPtr = UInt(bitPattern: Int(args[0].i32)); let keyLen = Int(args[1].i32)
             let valPtr = UInt(bitPattern: Int(args[2].i32)); let valLen = Int(args[3].i32)
-            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.i32(-1)] }
+            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
             return mem.withUnsafeBufferPointer(offset: keyPtr, count: keyLen) { keyRaw in
                 return mem.withUnsafeMutableBufferPointer(offset: valPtr, count: valLen) { valRaw in
                     let keyStr = keyRaw.baseAddress?.assumingMemoryBound(to: CChar.self)
                     let valBuf = valRaw.baseAddress?.assumingMemoryBound(to: CChar.self)
-                    return [Value.i32(wendy_storage_guest_get(keyStr, keyLen, valBuf, Int32(valLen)))]
+                    return [Value.int32(wendy_storage_guest_get(keyStr, keyLen, valBuf, Int32(valLen)))]
                 }
             }
         }
@@ -508,12 +526,12 @@ private func registerStorage(store: Store, into imports: inout Imports) {
         Function(store: store, parameters: [.i32, .i32, .i32, .i32], results: [.i32]) { caller, args in
             let keyPtr = UInt(bitPattern: Int(args[0].i32)); let keyLen = Int(args[1].i32)
             let valPtr = UInt(bitPattern: Int(args[2].i32)); let valLen = Int(args[3].i32)
-            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.i32(-1)] }
+            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
             return mem.withUnsafeBufferPointer(offset: keyPtr, count: keyLen) { keyRaw in
                 return mem.withUnsafeBufferPointer(offset: valPtr, count: valLen) { valRaw in
                     let keyStr = keyRaw.baseAddress?.assumingMemoryBound(to: CChar.self)
                     let valStr = valRaw.baseAddress?.assumingMemoryBound(to: CChar.self)
-                    return [Value.i32(wendy_storage_guest_set(keyStr, keyLen, valStr, Int32(valLen)))]
+                    return [Value.int32(wendy_storage_guest_set(keyStr, keyLen, valStr, Int32(valLen)))]
                 }
             }
         }
@@ -522,10 +540,10 @@ private func registerStorage(store: Store, into imports: inout Imports) {
     imports.define(module: "wendy", name: "storage_delete",
         Function(store: store, parameters: [.i32, .i32], results: [.i32]) { caller, args in
             let keyPtr = UInt(bitPattern: Int(args[0].i32)); let keyLen = Int(args[1].i32)
-            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.i32(-1)] }
+            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
             return mem.withUnsafeBufferPointer(offset: keyPtr, count: keyLen) { keyRaw in
                 let keyStr = keyRaw.baseAddress?.assumingMemoryBound(to: CChar.self)
-                return [Value.i32(wendy_storage_guest_delete(keyStr, keyLen))]
+                return [Value.int32(wendy_storage_guest_delete(keyStr, keyLen))]
             }
         }
     )
@@ -533,10 +551,10 @@ private func registerStorage(store: Store, into imports: inout Imports) {
     imports.define(module: "wendy", name: "storage_exists",
         Function(store: store, parameters: [.i32, .i32], results: [.i32]) { caller, args in
             let keyPtr = UInt(bitPattern: Int(args[0].i32)); let keyLen = Int(args[1].i32)
-            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.i32(-1)] }
+            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
             return mem.withUnsafeBufferPointer(offset: keyPtr, count: keyLen) { keyRaw in
                 let keyStr = keyRaw.baseAddress?.assumingMemoryBound(to: CChar.self)
-                return [Value.i32(wendy_storage_guest_exists(keyStr, keyLen))]
+                return [Value.int32(wendy_storage_guest_exists(keyStr, keyLen))]
             }
         }
     )
@@ -549,12 +567,12 @@ private func registerStorage(store: Store, into imports: inout Imports) {
 private func registerUART(store: Store, into imports: inout Imports) {
     imports.define(module: "wendy", name: "uart_open",
         Function(store: store, parameters: [.i32, .i32, .i32, .i32], results: [.i32]) { _, args in
-            return [.i32(wendy_uart_guest_open(args[0].i32, args[1].i32, args[2].i32, args[3].i32))]
+            return [.int32(wendy_uart_guest_open(args[0].i32, args[1].i32, args[2].i32, args[3].i32))]
         }
     )
     imports.define(module: "wendy", name: "uart_close",
         Function(store: store, parameters: [.i32], results: [.i32]) { _, args in
-            return [.i32(wendy_uart_guest_close(args[0].i32))]
+            return [.int32(wendy_uart_guest_close(args[0].i32))]
         }
     )
     imports.define(module: "wendy", name: "uart_write",
@@ -562,9 +580,9 @@ private func registerUART(store: Store, into imports: inout Imports) {
             let port    = args[0].i32
             let wasmPtr = UInt(bitPattern: Int(args[1].i32))
             let len     = Int(args[2].i32)
-            guard len > 0, let mem = caller.instance?.exports[memory: "memory"] else { return [.i32(-1)] }
+            guard len > 0, let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
             return mem.withUnsafeBufferPointer(offset: wasmPtr, count: len) { raw in
-                return [Value.i32(wendy_uart_guest_write(port,
+                return [Value.int32(wendy_uart_guest_write(port,
                     raw.baseAddress?.assumingMemoryBound(to: UInt8.self), Int32(len)))]
             }
         }
@@ -574,26 +592,26 @@ private func registerUART(store: Store, into imports: inout Imports) {
             let port    = args[0].i32
             let wasmPtr = UInt(bitPattern: Int(args[1].i32))
             let len     = Int(args[2].i32)
-            guard len > 0, let mem = caller.instance?.exports[memory: "memory"] else { return [.i32(-1)] }
+            guard len > 0, let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
             return mem.withUnsafeMutableBufferPointer(offset: wasmPtr, count: len) { raw in
-                return [Value.i32(wendy_uart_guest_read(port,
+                return [Value.int32(wendy_uart_guest_read(port,
                     raw.baseAddress?.assumingMemoryBound(to: UInt8.self), Int32(len)))]
             }
         }
     )
     imports.define(module: "wendy", name: "uart_available",
         Function(store: store, parameters: [.i32], results: [.i32]) { _, args in
-            return [.i32(wendy_uart_guest_available(args[0].i32))]
+            return [.int32(wendy_uart_guest_available(args[0].i32))]
         }
     )
     imports.define(module: "wendy", name: "uart_flush",
         Function(store: store, parameters: [.i32], results: [.i32]) { _, args in
-            return [.i32(wendy_uart_guest_flush(args[0].i32))]
+            return [.int32(wendy_uart_guest_flush(args[0].i32))]
         }
     )
     imports.define(module: "wendy", name: "uart_set_on_receive",
         Function(store: store, parameters: [.i32, .i32], results: [.i32]) { _, args in
-            return [.i32(wendy_uart_guest_set_on_receive(args[0].i32, UInt32(args[1].i32)))]
+            return [.int32(wendy_uart_guest_set_on_receive(args[0].i32, UInt32(args[1].i32)))]
         }
     )
 }
@@ -605,13 +623,13 @@ private func registerUART(store: Store, into imports: inout Imports) {
 private func registerSPI(store: Store, into imports: inout Imports) {
     imports.define(module: "wendy", name: "spi_open",
         Function(store: store, parameters: [.i32, .i32, .i32, .i32, .i32, .i32], results: [.i32]) { _, args in
-            return [.i32(wendy_spi_guest_open(args[0].i32, args[1].i32, args[2].i32,
+            return [.int32(wendy_spi_guest_open(args[0].i32, args[1].i32, args[2].i32,
                                                args[3].i32, args[4].i32, args[5].i32))]
         }
     )
     imports.define(module: "wendy", name: "spi_close",
         Function(store: store, parameters: [.i32], results: [.i32]) { _, args in
-            return [.i32(wendy_spi_guest_close(args[0].i32))]
+            return [.int32(wendy_spi_guest_close(args[0].i32))]
         }
     )
     // spi_transfer(handle, len, tx_ptr, rx_ptr) -> i32
@@ -621,10 +639,10 @@ private func registerSPI(store: Store, into imports: inout Imports) {
             let len     = Int(args[1].i32)
             let txPtr   = UInt(bitPattern: Int(args[2].i32))
             let rxPtr   = UInt(bitPattern: Int(args[3].i32))
-            guard len > 0, let mem = caller.instance?.exports[memory: "memory"] else { return [.i32(-1)] }
+            guard len > 0, let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
             return mem.withUnsafeBufferPointer(offset: txPtr, count: len) { txRaw in
                 return mem.withUnsafeMutableBufferPointer(offset: rxPtr, count: len) { rxRaw in
-                    return [Value.i32(wendy_spi_guest_transfer(
+                    return [Value.int32(wendy_spi_guest_transfer(
                         handle, Int32(len),
                         txRaw.baseAddress?.assumingMemoryBound(to: UInt8.self),
                         rxRaw.baseAddress?.assumingMemoryBound(to: UInt8.self)))]
@@ -645,9 +663,9 @@ private func registerOTel(store: Store, into imports: inout Imports) {
             let level   = args[0].i32
             let wasmPtr = UInt(bitPattern: Int(args[1].i32))
             let len     = Int(args[2].i32)
-            guard len > 0, let mem = caller.instance?.exports[memory: "memory"] else { return [.i32(-1)] }
+            guard len > 0, let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
             return mem.withUnsafeBufferPointer(offset: wasmPtr, count: len) { raw in
-                return [Value.i32(wendy_otel_guest_log(level,
+                return [Value.int32(wendy_otel_guest_log(level,
                     raw.baseAddress?.assumingMemoryBound(to: CChar.self), Int32(len)))]
             }
         }
@@ -658,9 +676,9 @@ private func registerOTel(store: Store, into imports: inout Imports) {
             let namePtr = UInt(bitPattern: Int(args[0].i32))
             let nameLen = Int(args[1].i32)
             let delta   = args[2].f64
-            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.i32(-1)] }
+            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
             return mem.withUnsafeBufferPointer(offset: namePtr, count: nameLen) { raw in
-                return [Value.i32(wendy_otel_guest_counter_add(
+                return [Value.int32(wendy_otel_guest_counter_add(
                     raw.baseAddress?.assumingMemoryBound(to: CChar.self), Int32(nameLen), delta))]
             }
         }
@@ -670,21 +688,21 @@ private func registerOTel(store: Store, into imports: inout Imports) {
         Function(store: store, parameters: [.i32, .i32], results: [.i32]) { caller, args in
             let namePtr = UInt(bitPattern: Int(args[0].i32))
             let nameLen = Int(args[1].i32)
-            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.i32(-1)] }
+            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
             return mem.withUnsafeBufferPointer(offset: namePtr, count: nameLen) { raw in
-                return [Value.i32(wendy_otel_guest_span_start(
+                return [Value.int32(wendy_otel_guest_span_start(
                     raw.baseAddress?.assumingMemoryBound(to: CChar.self), Int32(nameLen)))]
             }
         }
     )
     imports.define(module: "wendy", name: "otel_span_set_status",
         Function(store: store, parameters: [.i32, .i32], results: [.i32]) { _, args in
-            return [.i32(wendy_otel_guest_span_set_status(args[0].i32, args[1].i32))]
+            return [.int32(wendy_otel_guest_span_set_status(args[0].i32, args[1].i32))]
         }
     )
     imports.define(module: "wendy", name: "otel_span_end",
         Function(store: store, parameters: [.i32], results: [.i32]) { _, args in
-            return [.i32(wendy_otel_guest_span_end(args[0].i32))]
+            return [.int32(wendy_otel_guest_span_end(args[0].i32))]
         }
     )
 }
@@ -700,7 +718,7 @@ private func registerWASI(store: Store, into imports: inout Imports) {
 
     imports.define(module: wasiModule, name: "fd_write",
         Function(store: store, parameters: [.i32, .i32, .i32, .i32], results: [.i32]) { caller, args in
-            return [.i32(wendy_wasi_fd_write(caller, args[0].i32, args[1].i32, args[2].i32, args[3].i32))]
+            return [.int32(wendy_wasi_fd_write(caller, args[0].i32, args[1].i32, args[2].i32, args[3].i32))]
         }
     )
     imports.define(module: wasiModule, name: "proc_exit",
@@ -713,32 +731,32 @@ private func registerWASI(store: Store, into imports: inout Imports) {
     )
     imports.define(module: wasiModule, name: "clock_time_get",
         Function(store: store, parameters: [.i32, .i64, .i32], results: [.i32]) { caller, args in
-            return [.i32(wendy_wasi_clock_time_get(caller, args[0].i32, args[1].i64, args[2].i32))]
+            return [.int32(wendy_wasi_clock_time_get(caller, args[0].i32, args[1].i64, args[2].i32))]
         }
     )
     imports.define(module: wasiModule, name: "environ_sizes_get",
         Function(store: store, parameters: [.i32, .i32], results: [.i32]) { caller, args in
-            return [.i32(wendy_wasi_environ_sizes_get(caller, args[0].i32, args[1].i32))]
+            return [.int32(wendy_wasi_environ_sizes_get(caller, args[0].i32, args[1].i32))]
         }
     )
     imports.define(module: wasiModule, name: "environ_get",
         Function(store: store, parameters: [.i32, .i32], results: [.i32]) { caller, args in
-            return [.i32(wendy_wasi_environ_get(caller, args[0].i32, args[1].i32))]
+            return [.int32(wendy_wasi_environ_get(caller, args[0].i32, args[1].i32))]
         }
     )
     imports.define(module: wasiModule, name: "args_sizes_get",
         Function(store: store, parameters: [.i32, .i32], results: [.i32]) { caller, args in
-            return [.i32(wendy_wasi_args_sizes_get(caller, args[0].i32, args[1].i32))]
+            return [.int32(wendy_wasi_args_sizes_get(caller, args[0].i32, args[1].i32))]
         }
     )
     imports.define(module: wasiModule, name: "args_get",
         Function(store: store, parameters: [.i32, .i32], results: [.i32]) { caller, args in
-            return [.i32(wendy_wasi_args_get(caller, args[0].i32, args[1].i32))]
+            return [.int32(wendy_wasi_args_get(caller, args[0].i32, args[1].i32))]
         }
     )
     imports.define(module: wasiModule, name: "sched_yield",
         Function(store: store, parameters: [], results: [.i32]) { _, _ in
-            vTaskDelay(1); return [.i32(0)]
+            vTaskDelay(1); return [.int32(0)]
         }
     )
     // Other WASI stubs return ENOSYS
@@ -747,7 +765,7 @@ private func registerWASI(store: Store, into imports: inout Imports) {
                  "random_get"] {
         imports.define(module: wasiModule, name: name,
             Function(store: store, parameters: [], results: [.i32]) { _, _ in
-                return [.i32(52)] // WASI ENOSYS
+                return [.int32(52)] // WASI ENOSYS
             }
         )
     }
@@ -766,7 +784,7 @@ private func wendy_wasi_args_get(_ caller: borrowing Caller, _ argv: Int32, _ ar
 
 #if CONFIG_WENDY_BLE
 private func registerBLE(store: Store, into imports: inout Imports) {
-    let noopI: Function.Implementation = { _, _ in return [.i32(-1)] }
+    let noopI: Function.Implementation = { _, _ in return [.int32(-1)] }
     let noop:  Function.Implementation = { _, _ in return [] }
     for (name, params, results, impl) in [
         ("ble_init",            [ValueType]([]),                   [ValueType]([.i32]), noopI),
@@ -786,7 +804,7 @@ private func registerBLE(store: Store, into imports: inout Imports) {
 
 #if CONFIG_WENDY_NET
 private func registerNet(store: Store, into imports: inout Imports) {
-    let noopI: Function.Implementation = { _, _ in return [.i32(-1)] }
+    let noopI: Function.Implementation = { _, _ in return [.int32(-1)] }
     for (name, params) in [
         ("net_socket",  [ValueType]([.i32, .i32, .i32])),
         ("net_connect", [.i32, .i32, .i32, .i32]),
@@ -807,7 +825,7 @@ private func registerNet(store: Store, into imports: inout Imports) {
 
 #if CONFIG_WENDY_APP_USB
 private func registerAppUSB(store: Store, into imports: inout Imports) {
-    let noopI: Function.Implementation = { _, _ in return [.i32(0)] }
+    let noopI: Function.Implementation = { _, _ in return [.int32(0)] }
     for name in ["usb_cdc_write", "usb_cdc_read"] {
         imports.define(module: "wendy", name: name,
             Function(store: store, parameters: [.i32, .i32], results: [.i32], body: noopI))

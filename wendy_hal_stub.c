@@ -1,0 +1,1 @@
+/* no HAL modules enabled */

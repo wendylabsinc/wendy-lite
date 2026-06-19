@@ -59,6 +59,30 @@ CONFIG_MBEDTLS_DYNAMIC_FREE_PEER_CERT=y
 CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
 CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=8192
 
+# mbedTLS flash footprint cuts.
+#
+# Default cert (and all Wendy-issued provisioning certs) are ECDSA/P-256.
+# RSA key-exchange cipher suites therefore add ~30 KB of dead crypto code.
+# If you need to accept RSA client certificates, re-enable these three.
+# CONFIG_MBEDTLS_KEY_EXCHANGE_RSA is not set
+# CONFIG_MBEDTLS_KEY_EXCHANGE_ECDHE_RSA is not set
+# CONFIG_MBEDTLS_KEY_EXCHANGE_ECDH_RSA is not set
+
+# ALPN is not used by the wcom binary protocol.
+# CONFIG_MBEDTLS_SSL_ALPN is not set
+
+# TLS renegotiation is deprecated and a known attack surface.
+# CONFIG_MBEDTLS_SSL_RENEGOTIATION is not set
+
+# PEM write is only needed for generating PEM output; we only ever parse.
+# CONFIG_MBEDTLS_PEM_WRITE_C is not set
+
+# CA bundle: the full bundle (~67 KB rodata, 200+ root CAs) is only needed
+# if WASM apps make outbound HTTPS connections to arbitrary hosts. Switch to
+# the common subset (~15 KB) unless your WASM workloads require obscure CAs.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
+# CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL is not set
+
 # App-facing BLE host functions disabled by default
 # CONFIG_WENDY_BLE is not set
 
@@ -82,6 +106,11 @@ CONFIG_COMPILER_OPTIMIZATION_ASSERTION_LEVEL=1
 
 # Disable stack overflow canary (saves RAM per task)
 CONFIG_FREERTOS_CHECK_STACKOVERFLOW_NONE=y
+
+# Log level WARN: eliminates all ESP_LOGI format strings from flash rodata
+# (~85 KB+ across components). Set to INFO for debugging, WARN for production.
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+# CONFIG_LOG_DEFAULT_LEVEL_INFO is not set
 
 # Tune NimBLE buffer pools (sized for max 2 connections). These apply
 # regardless of whether the controller is native or remote.

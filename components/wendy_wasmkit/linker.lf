@@ -1,0 +1,12 @@
+[sections:swift_modhash]
+entries:
+    .swift_modhash+
+
+[scheme:swift_sections]
+entries:
+    swift_modhash -> flash_rodata
+
+[mapping:wendy_wasmkit_swift]
+archive: libwendy_wasmkit_swift.a
+entries:
+    * (swift_sections)

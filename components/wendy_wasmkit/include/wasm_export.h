@@ -89,6 +89,11 @@ static inline void wasm_runtime_clear_exception(wasm_module_inst_t module_inst)
     (void)module_inst;
 }
 
+static inline void wasm_runtime_set_exception(wasm_module_inst_t module_inst, const char *msg)
+{
+    (void)module_inst; (void)msg;
+}
+
 static inline void wasm_runtime_terminate(wasm_module_inst_t module_inst)
 {
     (void)module_inst;

@@ -4,6 +4,8 @@
 // All public entry points use @_cdecl so they are callable from C with the
 // exact names declared in wendy_wasm.h.
 
+import WasmKit
+import WasmTypes
 import WendyC
 
 // ── Global runtime state ──────────────────────────────────────────────────────
@@ -62,14 +64,15 @@ private func makeHandle(_ m: WasmModule) -> wendy_wasm_module_handle_t? {
 
 private func unwrapHandle(_ handle: wendy_wasm_module_handle_t?) -> UnsafeMutablePointer<WasmModule>? {
     guard let handle else { return nil }
-    return UnsafeMutablePointer<WasmModule>(OpaquePointer(handle))
+    return unsafeBitCast(handle, to: UnsafeMutablePointer<WasmModule>.self)
 }
 
 // ── Termination flag ──────────────────────────────────────────────────────────
 
 // Set by wendy_wasm_stop(); host functions check this to avoid calling back
-// into a module that is being torn down.
-private var gTerminateRequested: Bool = false
+// into a module that is being torn down.  `internal` (not `private`) so that
+// WendyImports.swift (same module, different file) can read it.
+var gTerminateRequested: Bool = false
 
 // ── C API implementation ──────────────────────────────────────────────────────
 
@@ -79,14 +82,14 @@ public func wendy_wasm_prealloc_pool(_ poolSize: UInt32) -> Int32 {
     // This is a no-op in the WasmKit backend; we just record the requested size
     // so it can be used as a hint later.
     gConfig.poolSize = poolSize
-    esp_log_write(ESP_LOG_INFO, "wasmkit", "pool prealloc noted (%u bytes); WasmKit manages memory internally\n", poolSize)
+    wendy_log(ESP_LOG_INFO, "wasmkit", "pool prealloc noted; WasmKit manages memory internally")
     return ESP_OK
 }
 
 @_cdecl("wendy_wasm_init")
 public func wendy_wasm_init(_ config: UnsafePointer<wendy_wasm_config_t>?) -> Int32 {
     guard gEngine == nil else {
-        esp_log_write(ESP_LOG_WARN, "wasmkit", "already initialized\n")
+        wendy_log(ESP_LOG_WARN, "wasmkit", "already initialized\n")
         return ESP_OK
     }
     guard let config else { return ESP_ERR_INVALID_ARG }
@@ -102,8 +105,7 @@ public func wendy_wasm_init(_ config: UnsafePointer<wendy_wasm_config_t>?) -> In
     gEngine = Engine(configuration: engineConfig)
     gStore  = Store(engine: gEngine!)
 
-    esp_log_write(ESP_LOG_INFO, "wasmkit", "WasmKit runtime initialized (stack=%u heap=%u)\n",
-                  gConfig.stackSize, gConfig.heapSize)
+    wendy_log(ESP_LOG_INFO, "wasmkit", "WasmKit runtime initialized")
     return ESP_OK
 }
 
@@ -122,7 +124,7 @@ public func wendy_wasm_load(
     do throws(WasmKitError) {
         parsedModule = try parseWasm(bytes: bytes)
     } catch {
-        esp_log_write(ESP_LOG_ERROR, "wasmkit", "WASM parse failed\n")
+        wendy_log(ESP_LOG_ERROR, "wasmkit", "WASM parse failed\n")
         return ESP_FAIL
     }
 
@@ -132,13 +134,13 @@ public func wendy_wasm_load(
         buildWendyImports(store: store, into: &imports)
         instance = try parsedModule.instantiate(store: store, imports: imports)
     } catch {
-        esp_log_write(ESP_LOG_ERROR, "wasmkit", "WASM instantiation failed\n")
+        wendy_log(ESP_LOG_ERROR, "wasmkit", "WASM instantiation failed\n")
         return ESP_FAIL
     }
 
     let mod = WasmModule(module: parsedModule, instance: instance)
     out.pointee = makeHandle(mod)
-    esp_log_write(ESP_LOG_INFO, "wasmkit", "WASM module loaded (%u bytes)\n", wasmLen)
+    wendy_log(ESP_LOG_INFO, "wasmkit", "WASM module loaded")
     return ESP_OK
 }
 
@@ -150,13 +152,19 @@ public func wendy_wasm_load_from_partition(
     guard gEngine != nil else { return ESP_ERR_INVALID_STATE }
     guard let label = partitionLabel, let out else { return ESP_ERR_INVALID_ARG }
 
-    // Find partition
-    var part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, UInt8(0x80), label)
+    // Find partition (0x80 = ESPHTTPD subtype used by wasm_a, 0x81 = FAT fallback)
+    var part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA,
+        ESP_PARTITION_SUBTYPE_DATA_ESPHTTPD,
+        label)
     if part == nil {
-        part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, UInt8(0x81), label)
+        part = esp_partition_find_first(
+            ESP_PARTITION_TYPE_DATA,
+            ESP_PARTITION_SUBTYPE_DATA_FAT,
+            label)
     }
     guard let part else {
-        esp_log_write(ESP_LOG_ERROR, "wasmkit", "partition not found\n")
+        wendy_log(ESP_LOG_ERROR, "wasmkit", "partition not found\n")
         return ESP_ERR_NOT_FOUND
     }
 
@@ -164,7 +172,7 @@ public func wendy_wasm_load_from_partition(
     var wasmLen: UInt32 = 0
     let err = esp_partition_read(part, 0, &wasmLen, 4)
     guard err == ESP_OK, wasmLen > 0, wasmLen <= part.pointee.size - 4 else {
-        esp_log_write(ESP_LOG_ERROR, "wasmkit", "invalid WASM in partition\n")
+        wendy_log(ESP_LOG_ERROR, "wasmkit", "invalid WASM in partition\n")
         return ESP_ERR_INVALID_SIZE
     }
 
@@ -186,13 +194,13 @@ public func wendy_wasm_run(_ handle: wendy_wasm_module_handle_t?) -> Int32 {
 
     gTerminateRequested = false
     ptr.pointee.state = WENDY_WASM_STATE_RUNNING
-    esp_log_write(ESP_LOG_INFO, "wasmkit", "executing WASM module...\n")
+    wendy_log(ESP_LOG_INFO, "wasmkit", "executing WASM module...\n")
 
     // Look for _start (then main) export
     let instance = ptr.pointee.instance
     guard let startFn = instance.exports[function: "_start"]
         ?? instance.exports[function: "main"] else {
-        esp_log_write(ESP_LOG_ERROR, "wasmkit", "no _start or main function found\n")
+        wendy_log(ESP_LOG_ERROR, "wasmkit", "no _start or main function found\n")
         ptr.pointee.state = WENDY_WASM_STATE_ERROR
         return ESP_ERR_NOT_FOUND
     }
@@ -200,13 +208,13 @@ public func wendy_wasm_run(_ handle: wendy_wasm_module_handle_t?) -> Int32 {
     do throws(Trap) {
         _ = try startFn.invoke()
     } catch {
-        esp_log_write(ESP_LOG_ERROR, "wasmkit", "WASM execution trapped\n")
+        wendy_log(ESP_LOG_ERROR, "wasmkit", "WASM execution trapped\n")
         ptr.pointee.state = WENDY_WASM_STATE_ERROR
         return ESP_FAIL
     }
 
     ptr.pointee.state = WENDY_WASM_STATE_STOPPED
-    esp_log_write(ESP_LOG_INFO, "wasmkit", "WASM module finished\n")
+    wendy_log(ESP_LOG_INFO, "wasmkit", "WASM module finished\n")
     return ESP_OK
 }
 
@@ -273,7 +281,7 @@ public func wendy_wasm_get_current_module_inst() -> UnsafeMutableRawPointer? { n
 public func wendy_wasm_deinit() {
     gStore  = nil
     gEngine = nil
-    esp_log_write(ESP_LOG_INFO, "wasmkit", "WasmKit runtime destroyed\n")
+    wendy_log(ESP_LOG_INFO, "wasmkit", "WasmKit runtime destroyed\n")
 }
 
 @_cdecl("wendy_wasm_reinit")
@@ -281,6 +289,6 @@ public func wendy_wasm_reinit() -> Int32 {
     wendy_wasm_deinit()
     // Re-init is not meaningful without a config; the caller should call
     // wendy_wasm_init() again.  Return OK to avoid a crash in wendy_main.c.
-    esp_log_write(ESP_LOG_WARN, "wasmkit", "reinit called — call wendy_wasm_init() to reinitialise\n")
+    wendy_log(ESP_LOG_WARN, "wasmkit", "reinit called — call wendy_wasm_init() to reinitialise\n")
     return ESP_OK
 }

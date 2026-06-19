@@ -61,6 +61,20 @@
 // Output callback fired by wendy_print
 extern void wendy_wasmkit_handle_print(const char *buf, int len);
 
+// FreeRTOS pdMS_TO_TICKS is a macro; expose as a C function so Swift can call it.
+static inline uint32_t wendy_ms_to_ticks(uint32_t ms) {
+    return (uint32_t)pdMS_TO_TICKS(ms);
+}
+
+// esp_log_write is variadic and unavailable in Embedded Swift.
+// Use this non-variadic wrapper instead.
+static inline void wendy_log(esp_log_level_t level, const char *tag, const char *msg) {
+    esp_log_write(level, tag, "%s", msg);
+}
+
+// Output callback setter (defined in WasmKitBridge.c)
+extern void wendy_wasmkit_set_output_cb(wendy_wasm_output_cb_t cb, void *ctx);
+
 // ESP-IDF functions used directly from Swift (not in headers above)
 #include "esp_timer.h"
 #include "esp_system.h"
