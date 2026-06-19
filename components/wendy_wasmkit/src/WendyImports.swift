@@ -12,7 +12,7 @@
 //
 // For functions that accept memory pointers the host function receives raw
 // WASM offsets.  We validate/translate them via:
-//   guard let mem = caller.instance?.exports[memory: "memory"] else { ... }
+//   guard let mem = caller.instance?.exports.find(memory: "memory") else { ... }
 //   mem.withUnsafeBufferPointer(offset: UInt(ptr), count: Int(len)) { raw in ... }
 //   mem.withUnsafeMutableBufferPointer(offset: UInt(ptr), count: Int(len)) { raw in ... }
 
@@ -98,7 +98,7 @@ func buildWendyImports(store: Store, into imports: inout Imports) {
 // callbacks dispatched to the guest's wendy_handle_callback export.
 
 private func dispatchCallbacks(instance: Instance, timeout: UInt32 = 0) -> Int32 {
-    guard let handleFn = instance.exports[function: "wendy_handle_callback"] else {
+    guard let handleFn = instance.exports.find(function: "wendy_handle_callback") else {
         // Guest didn't export the callback handler; drain the queue silently.
         var evt = wendy_callback_event_t(handler_id: 0, arg0: 0, arg1: 0, arg2: 0)
         while wendy_callback_dequeue(&evt, 0) {}
@@ -146,7 +146,7 @@ private func registerPrint(store: Store, into imports: inout Imports) {
             let wasmPtr = UInt(bitPattern: Int(args[0].i32))
             let len     = Int(args[1].i32)
             guard len > 0,
-                  let mem = caller.instance?.exports[memory: "memory"] else {
+                  let mem = caller.instance?.exports.find(memory: "memory") else {
                 return [.int32(-1)]
             }
             mem.withUnsafeBufferPointer(offset: wasmPtr, count: len) { raw in
@@ -240,7 +240,7 @@ private func registerI2C(store: Store, into imports: inout Imports) {
         Function(store: store, parameters: [.i32, .i32, .i32], results: [.i32]) { caller, args in
             let wasmPtr = UInt(bitPattern: Int(args[1].i32))
             let max     = Int(args[2].i32)
-            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
+            guard let mem = caller.instance?.exports.find(memory: "memory") else { return [.int32(-1)] }
             return mem.withUnsafeMutableBufferPointer(offset: wasmPtr, count: max) { raw in
                 let result = wendy_hal_i2c_scan(
                     args[0].i32,
@@ -255,7 +255,7 @@ private func registerI2C(store: Store, into imports: inout Imports) {
         Function(store: store, parameters: [.i32, .i32, .i32, .i32], results: [.i32]) { caller, args in
             let wasmPtr = UInt(bitPattern: Int(args[2].i32))
             let len     = Int(args[3].i32)
-            guard len > 0, let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
+            guard len > 0, let mem = caller.instance?.exports.find(memory: "memory") else { return [.int32(-1)] }
             return mem.withUnsafeBufferPointer(offset: wasmPtr, count: len) { raw in
                 let result = wendy_hal_i2c_write(
                     args[0].i32, UInt8(args[1].i32),
@@ -270,7 +270,7 @@ private func registerI2C(store: Store, into imports: inout Imports) {
         Function(store: store, parameters: [.i32, .i32, .i32, .i32], results: [.i32]) { caller, args in
             let wasmPtr = UInt(bitPattern: Int(args[2].i32))
             let len     = Int(args[3].i32)
-            guard len > 0, let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
+            guard len > 0, let mem = caller.instance?.exports.find(memory: "memory") else { return [.int32(-1)] }
             return mem.withUnsafeMutableBufferPointer(offset: wasmPtr, count: len) { raw in
                 let result = wendy_hal_i2c_read(
                     args[0].i32, UInt8(args[1].i32),
@@ -287,7 +287,7 @@ private func registerI2C(store: Store, into imports: inout Imports) {
             let wrLen = Int(args[3].i32)
             let rdPtr = UInt(bitPattern: Int(args[4].i32))
             let rdLen = Int(args[5].i32)
-            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
+            guard let mem = caller.instance?.exports.find(memory: "memory") else { return [.int32(-1)] }
             return mem.withUnsafeBufferPointer(offset: wrPtr, count: wrLen) { wrRaw in
                 return mem.withUnsafeMutableBufferPointer(offset: rdPtr, count: rdLen) { rdRaw in
                     let result = wendy_hal_i2c_write_read(
@@ -397,7 +397,7 @@ private func registerRMT(store: Store, into imports: inout Imports) {
             let channelId = args[0].i32
             let wasmPtr   = UInt(bitPattern: Int(args[1].i32))
             let len       = Int(args[2].i32)
-            guard len > 0, let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
+            guard len > 0, let mem = caller.instance?.exports.find(memory: "memory") else { return [.int32(-1)] }
             return mem.withUnsafeBufferPointer(offset: wasmPtr, count: len) { raw in
                 let result = wendy_hal_rmt_transmit(
                     channelId,
@@ -435,7 +435,7 @@ private func registerSys(store: Store, into imports: inout Imports) {
         Function(store: store, parameters: [.i32, .i32], results: [.i32]) { caller, args in
             let wasmPtr = UInt(bitPattern: Int(args[0].i32))
             let len     = Int(args[1].i32)
-            guard len > 0, let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
+            guard len > 0, let mem = caller.instance?.exports.find(memory: "memory") else { return [.int32(-1)] }
             return mem.withUnsafeMutableBufferPointer(offset: wasmPtr, count: len) { raw in
                 let written = snprintf(
                     raw.baseAddress?.assumingMemoryBound(to: CChar.self),
@@ -453,7 +453,7 @@ private func registerSys(store: Store, into imports: inout Imports) {
         Function(store: store, parameters: [.i32, .i32], results: [.i32]) { caller, args in
             let wasmPtr = UInt(bitPattern: Int(args[0].i32))
             let len     = Int(args[1].i32)
-            guard len >= 12, let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
+            guard len >= 12, let mem = caller.instance?.exports.find(memory: "memory") else { return [.int32(-1)] }
             return mem.withUnsafeMutableBufferPointer(offset: wasmPtr, count: len) { raw in
                 var mac = (UInt8(0), UInt8(0), UInt8(0), UInt8(0), UInt8(0), UInt8(0))
                 withUnsafeMutableBytes(of: &mac) { macPtr in
@@ -511,7 +511,7 @@ private func registerStorage(store: Store, into imports: inout Imports) {
         Function(store: store, parameters: [.i32, .i32, .i32, .i32], results: [.i32]) { caller, args in
             let keyPtr = UInt(bitPattern: Int(args[0].i32)); let keyLen = Int(args[1].i32)
             let valPtr = UInt(bitPattern: Int(args[2].i32)); let valLen = Int(args[3].i32)
-            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
+            guard let mem = caller.instance?.exports.find(memory: "memory") else { return [.int32(-1)] }
             return mem.withUnsafeBufferPointer(offset: keyPtr, count: keyLen) { keyRaw in
                 return mem.withUnsafeMutableBufferPointer(offset: valPtr, count: valLen) { valRaw in
                     let keyStr = keyRaw.baseAddress?.assumingMemoryBound(to: CChar.self)
@@ -526,7 +526,7 @@ private func registerStorage(store: Store, into imports: inout Imports) {
         Function(store: store, parameters: [.i32, .i32, .i32, .i32], results: [.i32]) { caller, args in
             let keyPtr = UInt(bitPattern: Int(args[0].i32)); let keyLen = Int(args[1].i32)
             let valPtr = UInt(bitPattern: Int(args[2].i32)); let valLen = Int(args[3].i32)
-            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
+            guard let mem = caller.instance?.exports.find(memory: "memory") else { return [.int32(-1)] }
             return mem.withUnsafeBufferPointer(offset: keyPtr, count: keyLen) { keyRaw in
                 return mem.withUnsafeBufferPointer(offset: valPtr, count: valLen) { valRaw in
                     let keyStr = keyRaw.baseAddress?.assumingMemoryBound(to: CChar.self)
@@ -540,7 +540,7 @@ private func registerStorage(store: Store, into imports: inout Imports) {
     imports.define(module: "wendy", name: "storage_delete",
         Function(store: store, parameters: [.i32, .i32], results: [.i32]) { caller, args in
             let keyPtr = UInt(bitPattern: Int(args[0].i32)); let keyLen = Int(args[1].i32)
-            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
+            guard let mem = caller.instance?.exports.find(memory: "memory") else { return [.int32(-1)] }
             return mem.withUnsafeBufferPointer(offset: keyPtr, count: keyLen) { keyRaw in
                 let keyStr = keyRaw.baseAddress?.assumingMemoryBound(to: CChar.self)
                 return [Value.int32(wendy_storage_guest_delete(keyStr, keyLen))]
@@ -551,7 +551,7 @@ private func registerStorage(store: Store, into imports: inout Imports) {
     imports.define(module: "wendy", name: "storage_exists",
         Function(store: store, parameters: [.i32, .i32], results: [.i32]) { caller, args in
             let keyPtr = UInt(bitPattern: Int(args[0].i32)); let keyLen = Int(args[1].i32)
-            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
+            guard let mem = caller.instance?.exports.find(memory: "memory") else { return [.int32(-1)] }
             return mem.withUnsafeBufferPointer(offset: keyPtr, count: keyLen) { keyRaw in
                 let keyStr = keyRaw.baseAddress?.assumingMemoryBound(to: CChar.self)
                 return [Value.int32(wendy_storage_guest_exists(keyStr, keyLen))]
@@ -580,7 +580,7 @@ private func registerUART(store: Store, into imports: inout Imports) {
             let port    = args[0].i32
             let wasmPtr = UInt(bitPattern: Int(args[1].i32))
             let len     = Int(args[2].i32)
-            guard len > 0, let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
+            guard len > 0, let mem = caller.instance?.exports.find(memory: "memory") else { return [.int32(-1)] }
             return mem.withUnsafeBufferPointer(offset: wasmPtr, count: len) { raw in
                 return [Value.int32(wendy_uart_guest_write(port,
                     raw.baseAddress?.assumingMemoryBound(to: UInt8.self), Int32(len)))]
@@ -592,7 +592,7 @@ private func registerUART(store: Store, into imports: inout Imports) {
             let port    = args[0].i32
             let wasmPtr = UInt(bitPattern: Int(args[1].i32))
             let len     = Int(args[2].i32)
-            guard len > 0, let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
+            guard len > 0, let mem = caller.instance?.exports.find(memory: "memory") else { return [.int32(-1)] }
             return mem.withUnsafeMutableBufferPointer(offset: wasmPtr, count: len) { raw in
                 return [Value.int32(wendy_uart_guest_read(port,
                     raw.baseAddress?.assumingMemoryBound(to: UInt8.self), Int32(len)))]
@@ -639,7 +639,7 @@ private func registerSPI(store: Store, into imports: inout Imports) {
             let len     = Int(args[1].i32)
             let txPtr   = UInt(bitPattern: Int(args[2].i32))
             let rxPtr   = UInt(bitPattern: Int(args[3].i32))
-            guard len > 0, let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
+            guard len > 0, let mem = caller.instance?.exports.find(memory: "memory") else { return [.int32(-1)] }
             return mem.withUnsafeBufferPointer(offset: txPtr, count: len) { txRaw in
                 return mem.withUnsafeMutableBufferPointer(offset: rxPtr, count: len) { rxRaw in
                     return [Value.int32(wendy_spi_guest_transfer(
@@ -663,7 +663,7 @@ private func registerOTel(store: Store, into imports: inout Imports) {
             let level   = args[0].i32
             let wasmPtr = UInt(bitPattern: Int(args[1].i32))
             let len     = Int(args[2].i32)
-            guard len > 0, let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
+            guard len > 0, let mem = caller.instance?.exports.find(memory: "memory") else { return [.int32(-1)] }
             return mem.withUnsafeBufferPointer(offset: wasmPtr, count: len) { raw in
                 return [Value.int32(wendy_otel_guest_log(level,
                     raw.baseAddress?.assumingMemoryBound(to: CChar.self), Int32(len)))]
@@ -676,7 +676,7 @@ private func registerOTel(store: Store, into imports: inout Imports) {
             let namePtr = UInt(bitPattern: Int(args[0].i32))
             let nameLen = Int(args[1].i32)
             let delta   = args[2].f64
-            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
+            guard let mem = caller.instance?.exports.find(memory: "memory") else { return [.int32(-1)] }
             return mem.withUnsafeBufferPointer(offset: namePtr, count: nameLen) { raw in
                 return [Value.int32(wendy_otel_guest_counter_add(
                     raw.baseAddress?.assumingMemoryBound(to: CChar.self), Int32(nameLen), delta))]
@@ -688,7 +688,7 @@ private func registerOTel(store: Store, into imports: inout Imports) {
         Function(store: store, parameters: [.i32, .i32], results: [.i32]) { caller, args in
             let namePtr = UInt(bitPattern: Int(args[0].i32))
             let nameLen = Int(args[1].i32)
-            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.int32(-1)] }
+            guard let mem = caller.instance?.exports.find(memory: "memory") else { return [.int32(-1)] }
             return mem.withUnsafeBufferPointer(offset: namePtr, count: nameLen) { raw in
                 return [Value.int32(wendy_otel_guest_span_start(
                     raw.baseAddress?.assumingMemoryBound(to: CChar.self), Int32(nameLen)))]

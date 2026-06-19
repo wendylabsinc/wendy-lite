@@ -198,8 +198,8 @@ public func wendy_wasm_run(_ handle: wendy_wasm_module_handle_t?) -> Int32 {
 
     // Look for _start (then main) export
     let instance = ptr.pointee.instance
-    guard let startFn = instance.exports[function: "_start"]
-        ?? instance.exports[function: "main"] else {
+    guard let startFn = instance.exports.find(function: "_start")
+        ?? instance.exports.find(function: "main") else {
         wendy_log(ESP_LOG_ERROR, "wasmkit", "no _start or main function found\n")
         ptr.pointee.state = WENDY_WASM_STATE_ERROR
         return ESP_ERR_NOT_FOUND
