@@ -352,8 +352,12 @@ static esp_err_t wasm_app_start(uint8_t slot)
 
     if (initialized) {
         wendy_wasm_reinit();
-    } else {
-        /* Initialize the WASM runtime — must be in pthread context */
+    }
+
+    /* Initialize (or re-initialize) the WASM runtime.
+     * wendy_wasm_reinit() tears down the engine; we must always call init
+     * afterwards regardless of whether this is the first start or a restart. */
+    {
         wendy_wasm_config_t wasm_cfg = WENDY_WASM_CONFIG_DEFAULT();
         wasm_cfg.output_cb  = wasm_output_cb;
         wasm_cfg.output_ctx = NULL;
@@ -363,9 +367,9 @@ static esp_err_t wasm_app_start(uint8_t slot)
             ESP_LOGE(TAG, "WASM runtime init failed");
             return err;
         }
-
-        initialized = true;
     }
+
+    initialized = true;
 
     /* Register HAL native functions with WAMR */
     esp_err_t err = wendy_hal_export_init();

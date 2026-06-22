@@ -101,7 +101,10 @@ public func wendy_wasm_init(_ config: UnsafePointer<wendy_wasm_config_t>?) -> In
     // Store output callback
     wendy_wasmkit_set_output_cb(config.pointee.output_cb, config.pointee.output_ctx)
 
-    let engineConfig = EngineConfiguration()
+    // Default EngineConfiguration uses 512 KB for the WASM value stack, which
+    // exceeds available heap on the ESP32-C6. Override with the configured size.
+    var engineConfig = EngineConfiguration()
+    engineConfig.stackSize = Int(gConfig.stackSize)
     gEngine = Engine(configuration: engineConfig)
     gStore  = Store(engine: gEngine!)
 
@@ -128,13 +131,22 @@ public func wendy_wasm_load(
         return ESP_FAIL
     }
 
+    wendy_log_heap()
+
     let instance: Instance
     do throws(WasmKitError) {
         var imports = Imports()
         buildWendyImports(store: store, into: &imports)
         instance = try parsedModule.instantiate(store: store, imports: imports)
-    } catch {
+    } catch let e {
         wendy_log(ESP_LOG_ERROR, "wasmkit", "WASM instantiation failed\n")
+        switch e.kind {
+        case .message(let m):
+            wendy_log(ESP_LOG_ERROR, "wasmkit", m.text)
+        case .parserError:
+            wendy_log(ESP_LOG_ERROR, "wasmkit", "parser error\n")
+        }
+        wendy_log_heap()
         return ESP_FAIL
     }
 

@@ -64,7 +64,6 @@ idf_component_register(
         wendy_uart
         wendy_spi
         wendy_otel
-        wendy_wasi_shim
         wendy_ble
         wendy_net
         wendy_app_usb
@@ -272,7 +271,6 @@ set(SWIFT_IDF_INCLUDES
     "${CMAKE_CURRENT_LIST_DIR}/../wendy_uart/include"
     "${CMAKE_CURRENT_LIST_DIR}/../wendy_spi/include"
     "${CMAKE_CURRENT_LIST_DIR}/../wendy_otel/include"
-    "${CMAKE_CURRENT_LIST_DIR}/../wendy_wasi_shim/include"
     "${CMAKE_CURRENT_LIST_DIR}/../wendy_ble/include"
     "${CMAKE_CURRENT_LIST_DIR}/../wendy_net/include"
     "${CMAKE_CURRENT_LIST_DIR}/../wendy_app_usb/include"
@@ -324,6 +322,33 @@ endforeach()
 # Stage 4: WendyWasmKit   (imports WasmKit — our runtime & imports bridge)
 # Stage 5: archive all .o into libwendy_wasmkit_swift.a
 
+# Translate Kconfig feature flags into Swift -D defines so that #if CONFIG_WENDY_*
+# conditional compilation blocks in WendyImports.swift are evaluated correctly.
+# Swift #if only reads -D flags passed to swiftc, not -Xcc -D (which only reach
+# the embedded Clang frontend for C imports).
+set(SWIFT_KCONFIG_DEFS "")
+foreach(_cfg
+    CONFIG_WENDY_HAL_GPIO
+    CONFIG_WENDY_HAL_I2C
+    CONFIG_WENDY_HAL_TIMER
+    CONFIG_WENDY_HAL_NEOPIXEL
+    CONFIG_WENDY_HAL_RMT
+    CONFIG_WENDY_CALLBACK
+    CONFIG_WENDY_SYS
+    CONFIG_WENDY_STORAGE
+    CONFIG_WENDY_UART
+    CONFIG_WENDY_SPI
+    CONFIG_WENDY_OTEL
+    CONFIG_WENDY_WASI_SHIM
+    CONFIG_WENDY_BLE
+    CONFIG_WENDY_NET
+    CONFIG_WENDY_APP_USB
+)
+    if(${_cfg})
+        list(APPEND SWIFT_KCONFIG_DEFS -D ${_cfg})
+    endif()
+endforeach()
+
 set(SWIFT_BASE_FLAGS
     -enable-experimental-feature Embedded
     -wmo
@@ -340,6 +365,8 @@ set(SWIFT_BASE_FLAGS
     # Required so `package` access level symbols (used throughout WasmKit) are
     # accessible across files within the same Swift package.
     -package-name WasmKit
+    # Kconfig feature flags forwarded as Swift compiler defines (see above).
+    ${SWIFT_KCONFIG_DEFS}
     # The toolchain's stdlib headers (newlib) and GCC intrinsics must be passed
     # as -isystem so that #include_next in Swift's built-in Clang headers (e.g.
     # inttypes.h) can find the next copy in the system include search path.
@@ -536,8 +563,8 @@ add_custom_command(
         "${CWASM_C}"
         "${TRAPGUARD_C}"
         "${BRIDGE_C}"
-    # Append Unicode objects to the archive (using ar -q to add without replace)
-    COMMAND sh -c "for f in '${SWIFT_OBJ_DIR}/unicode_objs'/*.o '${SWIFT_OBJ_DIR}/unicode_objs'/*.cpp.o; do [ -f \"\$f\" ] && '${CMAKE_AR}' q '${SWIFT_STATIC_LIB}' \"\$f\"; done; true"
+    # Append Unicode objects to the archive (*.cpp.o only — *.o would double-add them)
+    COMMAND sh -c "for f in '${SWIFT_OBJ_DIR}/unicode_objs'/*.cpp.o; do [ -f \"\$f\" ] && '${CMAKE_AR}' q '${SWIFT_STATIC_LIB}' \"\$f\"; done; true"
     DEPENDS "${WASMTYPES_OBJ}" "${WASMPARSER_OBJ}" "${WASMKIT_OBJ}" "${WENDY_OBJ}"
             "${CWASM_C}" "${TRAPGUARD_C}" "${BRIDGE_C}"
     COMMENT "Archiving WasmKit Embedded Swift library (with Unicode data tables)"
@@ -575,8 +602,30 @@ endif()
 
 # INTERFACE because idf_component_register(SRCS "") creates an INTERFACE target.
 # Unicode tables are now bundled inside SWIFT_STATIC_LIB (see archive step above).
+# The Swift archive (WendyWasmKit.o) directly calls HAL C functions (e.g.
+# wendy_hal_gpio_configure) at link time.  Because the Swift archive appears AFTER
+# the HAL component libraries in the link order, GNU ld cannot resolve these forward
+# references unless we wrap the relevant archives in --start-group / --end-group.
+set(_HAL_LIB        "${CMAKE_BINARY_DIR}/esp-idf/wendy_hal/libwendy_hal.a")
+set(_LED_STRIP_LIB  "${CMAKE_BINARY_DIR}/esp-idf/espressif__led_strip/libespressif__led_strip.a")
+set(_CALLBACK_LIB   "${CMAKE_BINARY_DIR}/esp-idf/wendy_callback/libwendy_callback.a")
+set(_SYS_LIB        "${CMAKE_BINARY_DIR}/esp-idf/wendy_sys/libwendy_sys.a")
+set(_STORAGE_LIB    "${CMAKE_BINARY_DIR}/esp-idf/wendy_storage/libwendy_storage.a")
+set(_UART_LIB       "${CMAKE_BINARY_DIR}/esp-idf/wendy_uart/libwendy_uart.a")
+set(_SPI_LIB        "${CMAKE_BINARY_DIR}/esp-idf/wendy_spi/libwendy_spi.a")
+set(_OTEL_LIB       "${CMAKE_BINARY_DIR}/esp-idf/wendy_otel/libwendy_otel.a")
 target_link_libraries(${COMPONENT_LIB} INTERFACE
-    "${SWIFT_STATIC_LIB}"
+    -Wl,--start-group
+        "${SWIFT_STATIC_LIB}"
+        "${_HAL_LIB}"
+        "${_LED_STRIP_LIB}"
+        "${_CALLBACK_LIB}"
+        "${_SYS_LIB}"
+        "${_STORAGE_LIB}"
+        "${_UART_LIB}"
+        "${_SPI_LIB}"
+        "${_OTEL_LIB}"
+    -Wl,--end-group
 )
 
 # The Swift/RISC-V LLVM backend can produce an empty .got.plt section due to
