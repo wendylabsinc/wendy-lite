@@ -24,19 +24,45 @@ if(NOT DEFINED WASMKIT_ROOT)
         ABSOLUTE)
 endif()
 
-if(NOT EXISTS "${WASMKIT_ROOT}/Sources/WasmKit/Engine.swift")
-    message(FATAL_ERROR
-        "WasmKit not found at '${WASMKIT_ROOT}'. "
-        "Clone https://github.com/swiftwasm/WasmKit (branch jo/embedded-runtime-v2) "
-        "there, or set -DWASMKIT_ROOT=/path/to/WasmKit.")
-endif()
-
 # ── Locate Swift compiler ─────────────────────────────────────────────────────
 
 if(DEFINED ENV{SWIFT_TOOLCHAIN_BIN})
     set(SWIFTC "$ENV{SWIFT_TOOLCHAIN_BIN}/swiftc")
 else()
-    find_program(SWIFTC swiftc REQUIRED)
+    find_program(SWIFTC swiftc)
+endif()
+
+# ── Guard: stub build when dependencies are missing ───────────────────────────
+#
+# The full WasmKit + Embedded Swift runtime only builds on esp32c6 with both
+# WasmKit sources and a Swift toolchain present.  For every other target, or
+# when the toolchain / WasmKit are not available (e.g. CI without Swift),
+# register a minimal C stub so the rest of the firmware links without WASM.
+
+if(NOT IDF_TARGET STREQUAL "esp32c6"
+        OR NOT EXISTS "${WASMKIT_ROOT}/Sources/WasmKit/Engine.swift"
+        OR NOT SWIFTC)
+
+    if(NOT IDF_TARGET STREQUAL "esp32c6")
+        message(STATUS
+            "wendy_wasmkit: target '${IDF_TARGET}' is not esp32c6 — using no-op stubs")
+    elseif(NOT EXISTS "${WASMKIT_ROOT}/Sources/WasmKit/Engine.swift")
+        message(WARNING
+            "wendy_wasmkit: WasmKit not found at '${WASMKIT_ROOT}'. "
+            "Clone https://github.com/swiftwasm/WasmKit (branch jo/embedded-runtime-v2) "
+            "or set -DWASMKIT_ROOT=/path/to/WasmKit. Using no-op stubs.")
+    else()
+        message(WARNING
+            "wendy_wasmkit: Swift compiler not found. "
+            "Set SWIFT_TOOLCHAIN_BIN or add swiftc to PATH. Using no-op stubs.")
+    endif()
+
+    idf_component_register(
+        SRCS "src/wendy_wasm_stub.c"
+        INCLUDE_DIRS "include"
+        PRIV_REQUIRES log esp_common
+    )
+    return()
 endif()
 
 message(STATUS "wendy_wasmkit: using Swift compiler at '${SWIFTC}'")
