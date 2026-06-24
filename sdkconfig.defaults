@@ -61,9 +61,6 @@ CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=2
 
-# BLE provisioning and discovery
-CONFIG_WENDY_BLE_PROV=y
-
 # Cloud provisioning (device certificates via BLE)
 CONFIG_WENDY_CLOUD_PROV=y
 
