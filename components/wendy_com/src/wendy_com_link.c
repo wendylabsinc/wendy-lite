@@ -1,5 +1,6 @@
 
 #include "wendy_com_link.h"
+#include "wendy_com_uart.h"
 #include "esp_log.h"
 #include "esp_tls.h"
 #include "esp_vfs_eventfd.h"
@@ -20,14 +21,28 @@
 #define WCOM_TASK_STACK     8192
 #define WCOM_TASK_PRIO      5
 
+#define WENDY_COM_LINK_ERR_UNKNOWN    -1
+#define WENDY_COM_LINK_ERR_WANT_READ  -2
+#define WENDY_COM_LINK_ERR_WANT_WRITE -3
+
 
 //--- types ---//
+
+enum link_type {
+    LINK_TYPE_NONE = 0,
+    LINK_TYPE_TLS,
+    LINK_TYPE_UART,
+};
 
 struct wcom_link {
     int id;
     enum wcom_link_state state;
-    esp_tls_t *tls;
-    int sockfd;
+    enum link_type type;
+    union {
+        esp_tls_t *tls;
+        wendy_com_uart_t *uart;
+    };
+    int fd;
     struct wcom_tx_chunk *tx_chunk_first;
     struct wcom_tx_chunk *tx_chunk_last;
     size_t tx_chunk_offset;            // bytes already sent from tx_chunk_first
@@ -53,6 +68,40 @@ static struct wcom_state_change_handler *_state_change_handler_last;
 
 
 //--- internal functions ---//
+
+static ssize_t _link_read(struct wcom_link *ch, void *buf, size_t len)
+{
+    ssize_t n;
+    if (ch->type == LINK_TYPE_TLS) {
+        n = esp_tls_conn_read(ch->tls, buf, len);
+        if (n == MBEDTLS_ERR_SSL_WANT_READ)  return WENDY_COM_LINK_ERR_WANT_READ;
+        if (n == MBEDTLS_ERR_SSL_WANT_WRITE) return WENDY_COM_LINK_ERR_WANT_WRITE;
+        if (n < 0)                           return WENDY_COM_LINK_ERR_UNKNOWN;
+    } else {
+        n = wendy_com_uart_read(ch->uart, buf, len);
+        if (n == WENDY_COM_UART_ERR_WANT_READ)  return WENDY_COM_LINK_ERR_WANT_READ;
+        if (n == WENDY_COM_UART_ERR_WANT_WRITE) return WENDY_COM_LINK_ERR_WANT_WRITE;
+        if (n < 0)                              return WENDY_COM_LINK_ERR_UNKNOWN;
+    }
+    return n;
+}
+
+static ssize_t _link_write(struct wcom_link *ch, const void *data, size_t len)
+{
+    ssize_t n;
+    if (ch->type == LINK_TYPE_TLS) {
+        n = esp_tls_conn_write(ch->tls, data, len);
+        if (n == MBEDTLS_ERR_SSL_WANT_READ)  return WENDY_COM_LINK_ERR_WANT_READ;
+        if (n == MBEDTLS_ERR_SSL_WANT_WRITE) return WENDY_COM_LINK_ERR_WANT_WRITE;
+        if (n < 0)                           return WENDY_COM_LINK_ERR_UNKNOWN;
+    } else {
+        n = wendy_com_uart_write(ch->uart, data, len);
+        if (n == WENDY_COM_UART_ERR_WANT_READ)  return WENDY_COM_LINK_ERR_WANT_READ;
+        if (n == WENDY_COM_UART_ERR_WANT_WRITE) return WENDY_COM_LINK_ERR_WANT_WRITE;
+        if (n < 0)                              return WENDY_COM_LINK_ERR_UNKNOWN;
+    }
+    return n;
+}
 
 static struct wcom_link *_get_link(int link_id)
 {
@@ -110,7 +159,7 @@ static void _link_do_rx(struct wcom_link *ch)
         size_t remaining = chunk->size - ch->rx_chunk_offset;
         assert(remaining > 0);
 
-        ssize_t n = esp_tls_conn_read(ch->tls, buf, remaining);
+        ssize_t n = _link_read(ch, buf, remaining);
         if (n > 0) {
             ch->rx_need_write = false;
             ch->rx_tls_readable = true; // assume more TLS data may be read even if socket is not readable
@@ -123,10 +172,10 @@ static void _link_do_rx(struct wcom_link *ch)
                 if (chunk->done_handler)
                     chunk->done_handler(ch->id, chunk, true);
             }
-        } else if (n == MBEDTLS_ERR_SSL_WANT_WRITE) {
+        } else if (n == WENDY_COM_LINK_ERR_WANT_WRITE) {
             ch->rx_need_write = true;
             break;
-        } else if (n == MBEDTLS_ERR_SSL_WANT_READ) {
+        } else if (n == WENDY_COM_LINK_ERR_WANT_READ) {
             ch->rx_need_write = false;
             ch->rx_tls_readable = false; // TLS buffer drained; wait for real socket data
             break;
@@ -155,7 +204,7 @@ static void _link_do_tx(struct wcom_link *ch)
         size_t remaining = chunk->size - ch->tx_chunk_offset;
         assert(remaining > 0);
 
-        ssize_t n = esp_tls_conn_write(ch->tls, data, remaining);
+        ssize_t n = _link_write(ch, data, remaining);
         if (n > 0) {
             ch->tx_need_read = false;
             ch->tx_chunk_offset += (size_t)n;
@@ -167,10 +216,10 @@ static void _link_do_tx(struct wcom_link *ch)
                 if (chunk->done_handler)
                     chunk->done_handler(ch->id, chunk, true);
             }
-        } else if (n == MBEDTLS_ERR_SSL_WANT_READ) {
+        } else if (n == WENDY_COM_LINK_ERR_WANT_READ) {
             ch->tx_need_read = true;
             break;
-        } else if (n == MBEDTLS_ERR_SSL_WANT_WRITE) {
+        } else if (n == WENDY_COM_LINK_ERR_WANT_WRITE) {
             ch->tx_need_read = false;
             break;
         } else {
@@ -202,26 +251,26 @@ static void _main(void *arg)
 
         for (int i = 0; i < WCOM_LINK_COUNT; i++) {
             struct wcom_link *ch = &_links[i];
-            if (ch->state != WCOM_LINK_STATE_CONNECTED || ch->sockfd < 0)
+            if (ch->state != WCOM_LINK_STATE_CONNECTED || ch->fd < 0)
                 continue;
 
-            if (ch->sockfd > maxfd)
-                maxfd = ch->sockfd;
+            if (ch->fd > maxfd)
+                maxfd = ch->fd;
 
             // RX: only poll when chunks are queued; if last read stalled on WANT_WRITE, wait for writable
             if (ch->rx_chunk_first) {
                 if (ch->rx_need_write)
-                    FD_SET(ch->sockfd, &wfds);
+                    FD_SET(ch->fd, &wfds);
                 else
-                    FD_SET(ch->sockfd, &rfds);
+                    FD_SET(ch->fd, &rfds);
             }
 
             // TX: if data queued, wait for writable; if last write stalled on WANT_READ, wait for readable
             if (ch->tx_chunk_first) {
                 if (ch->tx_need_read)
-                    FD_SET(ch->sockfd, &rfds);
+                    FD_SET(ch->fd, &rfds);
                 else
-                    FD_SET(ch->sockfd, &wfds);
+                    FD_SET(ch->fd, &wfds);
             }
         }
 
@@ -265,11 +314,11 @@ static void _main(void *arg)
 
         for (int i = 0; i < WCOM_LINK_COUNT; i++) {
             struct wcom_link *ch = &_links[i];
-            if (ch->state != WCOM_LINK_STATE_CONNECTED || ch->sockfd < 0)
+            if (ch->state != WCOM_LINK_STATE_CONNECTED || ch->fd < 0)
                 continue;
 
-            bool readable = FD_ISSET(ch->sockfd, &rfds) || ch->rx_tls_readable;
-            bool writable = FD_ISSET(ch->sockfd, &wfds);
+            bool readable = FD_ISSET(ch->fd, &rfds) || ch->rx_tls_readable;
+            bool writable = FD_ISSET(ch->fd, &wfds);
 
             // resume stalled read: was waiting for writable, socket is now writable
             if (writable && ch->rx_need_write)
@@ -404,7 +453,7 @@ void wcom_close(int link_id)
  * (except after a long time).
  * Returns -1 if the link couldn't be added (e.g. max links reached).
  */
-int wcom_add_link(esp_tls_t *tls)
+int wcom_add_tls_link(esp_tls_t *tls)
 {
     assert(xTaskGetCurrentTaskHandle() == _main_task);
 
@@ -416,10 +465,11 @@ int wcom_add_link(esp_tls_t *tls)
                 _link_id_generator = 1;
             ch->id = _link_id_generator * WCOM_LINK_COUNT + i;
             ch->state = WCOM_LINK_STATE_CONNECTED;
+            ch->type = LINK_TYPE_TLS;
             ch->tls = tls;
-            esp_tls_get_conn_sockfd(tls, &ch->sockfd);
-            int flags = fcntl(ch->sockfd, F_GETFL, 0);
-            fcntl(ch->sockfd, F_SETFL, flags | O_NONBLOCK);
+            esp_tls_get_conn_sockfd(tls, &ch->fd);
+            int flags = fcntl(ch->fd, F_GETFL, 0);
+            fcntl(ch->fd, F_SETFL, flags | O_NONBLOCK);
             ch->tx_chunk_first = NULL;
             ch->tx_chunk_last = NULL;
             ch->tx_chunk_offset = 0;
@@ -427,6 +477,39 @@ int wcom_add_link(esp_tls_t *tls)
             ch->rx_chunk_last = NULL;
             ch->rx_chunk_offset = 0;
             ch->rx_need_write = false;
+            ch->tx_need_read = false;
+            _fire_state_change_handlers(ch->id, ch->state);
+            return ch->id;
+        }
+    }
+    return -1;
+}
+
+int wcom_add_uart_link(wendy_com_uart_t *uart)
+{
+    assert(xTaskGetCurrentTaskHandle() == _main_task);
+
+    for (int i = 0; i < WCOM_LINK_COUNT; i++) {
+        struct wcom_link *ch = &_links[i];
+        if (ch->state == WCOM_LINK_STATE_UNDEFINED) {
+            _link_id_generator++;
+            if (_link_id_generator >= (INT_MAX / WCOM_LINK_COUNT))
+                _link_id_generator = 1;
+            ch->id = _link_id_generator * WCOM_LINK_COUNT + i;
+            ch->state = WCOM_LINK_STATE_CONNECTED;
+            ch->type = LINK_TYPE_UART;
+            ch->uart = uart;
+            ch->fd = wendy_com_uart_get_fd(uart);
+            int flags = fcntl(ch->fd, F_GETFL, 0);
+            fcntl(ch->fd, F_SETFL, flags | O_NONBLOCK);
+            ch->tx_chunk_first = NULL;
+            ch->tx_chunk_last = NULL;
+            ch->tx_chunk_offset = 0;
+            ch->rx_chunk_first = NULL;
+            ch->rx_chunk_last = NULL;
+            ch->rx_chunk_offset = 0;
+            ch->rx_need_write = false;
+            ch->rx_tls_readable = false;
             ch->tx_need_read = false;
             _fire_state_change_handlers(ch->id, ch->state);
             return ch->id;
@@ -448,8 +531,10 @@ void wcom_remove_link(int link_id)
         _clear_tx_queue(ch);
         _fire_state_change_handlers(link_id, WCOM_LINK_STATE_UNDEFINED);
         ch->id = 0;
+        ch->type = LINK_TYPE_NONE;
+        ch->uart = NULL;
         ch->tls = NULL;
-        ch->sockfd = -1;
+        ch->fd = -1;
         return;
     }
 }

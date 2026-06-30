@@ -121,7 +121,7 @@ static void _add_link_exec(struct wcom_operation *op)
         return;
     }
 
-    int link_id = wcom_add_link(aop->tls);
+    int link_id = wcom_add_tls_link(aop->tls);
     if (link_id < 0) {
         ESP_LOGE(TAG, "max links reached, rejecting connection");
         int fd = -1;

@@ -1,7 +1,7 @@
 #ifndef WENDY_COM_LINK_H
 #define WENDY_COM_LINK_H
 
-#include "esp_tls.h"
+#include "wendy_com_uart.h"
 #include "wendy_com_common.h"
 
 // literals
@@ -9,6 +9,8 @@
 #define WCOM_LINK_COUNT  4
 
 // types
+
+typedef struct esp_tls esp_tls_t;
 
 enum wcom_link_state {
     WCOM_LINK_STATE_UNDEFINED = 0,
@@ -58,7 +60,8 @@ void wcom_close(int link_id);
 
 // connection provider interface, ESP-IDF-specific
 
-int wcom_add_link(esp_tls_t *tls);
+int wcom_add_tls_link(esp_tls_t *tls);
+int wcom_add_uart_link(wendy_com_uart_t *uart);
 void wcom_remove_link(int link_id);
 
 #endif

@@ -9,13 +9,19 @@ import (
 	"console/liteclient"
 )
 
-func run(addr string) error {
+func run(target string) error {
 	client := liteclient.NewWendyLiteClient()
-	if err := client.ConnectInsecure(addr); err != nil {
+	var err error
+	if strings.HasPrefix(target, "/") {
+		err = client.ConnectToSerial(target)
+	} else {
+		err = client.ConnectInsecure(target)
+	}
+	if err != nil {
 		return err
 	}
 	defer client.Close()
-	fmt.Fprintf(os.Stderr, "connected to %s\n", addr)
+	fmt.Fprintf(os.Stderr, "connected to %s\n", target)
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
@@ -70,6 +76,16 @@ func run(addr string) error {
 			}
 			fmt.Println("app stopped")
 
+		case "identity":
+			identity, err := client.GetDeviceIdentity()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "identity:", err)
+				continue
+			}
+			fmt.Printf("id:           %s\n", identity.ID)
+			fmt.Printf("name:         %s\n", identity.Name)
+			fmt.Printf("display_name: %s\n", identity.DisplayName)
+
 		case "quit", "exit":
 			return nil
 
@@ -83,7 +99,7 @@ func run(addr string) error {
 
 func main() {
 	if len(os.Args) != 2 {
-		fmt.Fprintf(os.Stderr, "usage: %s host:port\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "usage: %s host:port|/dev/ttyXXX\n", os.Args[0])
 		os.Exit(1)
 	}
 	if err := run(os.Args[1]); err != nil {

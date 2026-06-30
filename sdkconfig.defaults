@@ -88,6 +88,9 @@ CONFIG_WENDY_WIFI_PASSWORD=""
 
 # Console over UART (compatible with Wokwi and most debug setups)
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+# Disable ROM secondary console so the wendy_usj buffered driver owns the USB
+# Serial/JTAG peripheral exclusively (no TX FIFO conflict with esp_rom_usb_serial_putc).
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
 # --- Memory optimizations ---
 

@@ -345,6 +345,16 @@ menu "Wendy MCU Firmware Configuration"
 
     endmenu
 
+    menu "USJ (USB Serial/JTAG)"
+        config WENDY_USJ
+            bool "Enable USB Serial/JTAG wire channel"
+            depends on SOC_USB_SERIAL_JTAG_SUPPORTED
+            default y if SOC_USB_SERIAL_JTAG_SUPPORTED
+            help
+                Installs the USB Serial/JTAG driver which is used to output
+                logs but also to take control via the WendyCom protocol.
+    endmenu
+
     menu "USB Communication"
         config WENDY_USB_CDC_ENABLED
             bool "Enable USB CDC protocol"
