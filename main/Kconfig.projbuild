@@ -12,6 +12,22 @@ menu "Wendy MCU Firmware Configuration"
         int "Firmware version patch"
         default 0
 
+    config WENDY_DEVICE_NAME_BUF_SIZE
+        int "Device name buffer size (bytes, including null terminator)"
+        default 64
+        help
+            Size of the buffer used to hold the device name (BLE advertising
+            name, mDNS hostname, etc.), including the null terminator.
+            We use 64 because this corresponds to the DNS name standard.
+
+    config WENDY_DEVICE_NAME_DEFAULT_PREFIX
+        string "Default device name prefix"
+        default "wendy"
+        help
+            Prefix used when no device name has been provisioned. The
+            actual name is formed as "<prefix>-XXXX" where XXXX is
+            derived from the last 2 bytes of the BT MAC address.
+
     config WENDY_P4_BOARD_NAME
         string "ESP32-P4 board name"
         default ""
@@ -178,13 +194,6 @@ menu "Wendy MCU Firmware Configuration"
                 that allows clients to write WiFi credentials.  Credentials
                 are stored in NVS and survive reboots.
 
-        config WENDY_BLE_PROV_DEVICE_PREFIX
-            string "BLE device name prefix"
-            depends on WENDY_BLE_PROV
-            default "Wendy"
-            help
-                The BLE advertising name will be "<prefix>-XXXX" where XXXX
-                is derived from the last 2 bytes of the BT MAC address.
     endmenu
 
     menu "Cloud Provisioning"

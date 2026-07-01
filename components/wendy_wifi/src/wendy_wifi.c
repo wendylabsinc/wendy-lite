@@ -25,10 +25,6 @@
 
 #include <ctype.h>
 
-#if CONFIG_WENDY_BLE_PROV
-#include "wendy_ble_prov.h"
-#endif
-
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
 
@@ -44,6 +40,7 @@ static EventGroupHandle_t s_wifi_events;
 static bool s_infra_initialized = false;
 static bool s_connected = false;
 static bool s_services_started = false;
+static char s_device_name[CONFIG_WENDY_DEVICE_NAME_BUF_SIZE];
 
 #define WIFI_CONNECTED_BIT  BIT0
 #define WIFI_FAIL_BIT       BIT1
@@ -190,31 +187,29 @@ static esp_err_t save_nvs_creds(const char *ssid, const char *password)
 
 static esp_err_t start_mdns_service(void)
 {
-    /* Mirror the BLE advertising name so a device shows the same
-     * Wendy-XXXX identity over BLE and mDNS. wendy_ble_prov is the
-     * single source of truth — it can read the controller's address
-     * whether the controller is native (C6) or remote-over-VHCI (P4),
-     * whereas esp_read_mac(ESP_MAC_BT) only works for native BT and
-     * silently returned zeros on the P4. */
-    char device_name[32];
-    char hostname[32];
-    const char *ble_name = NULL;
-#if CONFIG_WENDY_BLE_PROV
-    ble_name = wendy_ble_prov_get_device_name();
-#endif
-    if (ble_name && ble_name[0]) {
-        strlcpy(device_name, ble_name, sizeof(device_name));
-        size_t i = 0;
-        for (; i < sizeof(hostname) - 1 && ble_name[i]; i++) {
-            hostname[i] = (char)tolower((unsigned char)ble_name[i]);
+    char hostname[CONFIG_WENDY_DEVICE_NAME_BUF_SIZE];
+    size_t out = 0;
+    // On WendyOS, we prefix the hostname with "wendyos-".
+    // Here, we want to mimic this behavior, but want to use a different prefix.
+    // This prefix should not be longer than "wendyos-" in order to not
+    // overconstrain the hostname length. So we choose "wendylt-".
+    const char prefix[] = "wendylt-";
+    assert(sizeof(prefix) < sizeof(hostname));
+    memcpy(hostname + out, prefix, sizeof(prefix) - 1);
+    out += sizeof(prefix) - 1;
+    for (size_t in = 0; s_device_name[in] && out < sizeof(hostname) - 1; in++) {
+        unsigned char c = (unsigned char)s_device_name[in];
+        if (c >= 'A' && c <= 'Z') {
+            hostname[out++] = (char)(c + 32);
+        } else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+            hostname[out++] = (char)c;
+        } else if (c == '_' || c == '.') {
+            hostname[out++] = '-';
         }
-        hostname[i] = '\0';
-    } else {
-        /* BLE prov disabled or NimBLE host not yet synced — use a
-         * deterministic fallback. */
-        snprintf(device_name, sizeof(device_name), "Wendy-0000");
-        snprintf(hostname, sizeof(hostname), "wendy-0000");
+        /* drop everything else */
     }
+    hostname[out] = '\0';
+    ESP_LOGI(TAG, "mDNS hostname: '%s'", hostname);
 
     esp_err_t err = mdns_init();
     if (err != ESP_OK) {
@@ -254,7 +249,7 @@ static void start_services(void)
     }
 
     // Initialize the mTLS server accessible via the local network
-    wendy_server_start();
+    wendy_server_start(s_device_name);
 
     // Initialize the mTLS server accessible via the cloud
 #if CONFIG_WENDY_CLOUD_ENABLED
@@ -271,8 +266,10 @@ static void start_services(void)
 
 /* ── Public API ─────────────────────────────────────────────────────── */
 
-esp_err_t wendy_wifi_init(void)
+esp_err_t wendy_wifi_init(const char *device_name)
 {
+    strlcpy(s_device_name, device_name ? device_name : CONFIG_WENDY_DEVICE_NAME_DEFAULT_PREFIX "-0000", sizeof(s_device_name));
+
     esp_err_t err = wifi_infra_init();
     if (err != ESP_OK) return err;
 

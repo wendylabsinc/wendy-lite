@@ -2,6 +2,6 @@
 #ifndef WENDY_SERVER_H
 #define WENDY_SERVER_H
 
-void wendy_server_start(void);
+void wendy_server_start(const char *device_name);
 
 #endif

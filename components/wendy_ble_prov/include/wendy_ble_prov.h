@@ -21,6 +21,13 @@ typedef enum {
 
 typedef struct {
     /**
+     * Called when the BLE stack is up and advertising has started. If no
+     * device name was provided at init, the MAC-derived name is available
+     * at this point via wendy_ble_prov_get_device_name().
+     */
+    void (*on_ble_up)(void);
+
+    /**
      * Called (from BLE task context) when a client has written SSID +
      * password + command=0x01.  The main thread should call
      * wendy_wifi_try_connect() — NOT the BLE task.
@@ -37,9 +44,12 @@ typedef struct {
 
 /**
  * Initialize BLE provisioning: starts NimBLE, registers GATT services,
- * and begins advertising as "Wendy-XXXX".
+ * and begins advertising as "wendy-XXXX".
+ *
+ * @param device_name  Name to use for BLE advertising. If NULL, a default
+ *                     name is generated as "<prefix>-XXYY" from the BT MAC.
  */
-esp_err_t wendy_ble_prov_init(const wendy_ble_prov_callbacks_t *callbacks);
+esp_err_t wendy_ble_prov_init(const char *device_name, const wendy_ble_prov_callbacks_t *callbacks);
 
 /**
  * Update the status characteristic and optionally the IP address.
@@ -57,12 +67,12 @@ void wendy_ble_prov_set_status(wendy_ble_prov_status_t status, const char *ip_ad
 bool wendy_ble_prov_nimble_ready(void);
 
 /**
- * Returns the advertising device name (e.g. "Wendy-EC3A") once the
+ * Returns the advertising device name (e.g. "wendy-ec3a") once the
  * NimBLE host has synced with the controller and a real address is
  * available; returns NULL before that. Callers should treat the
  * NULL case as "not yet known" and fall back to a generic name.
  *
- * This is the canonical Wendy-XXXX identity. wendy_wifi uses it for
+ * This is the canonical wendy-XXXX identity. wendy_wifi uses it for
  * mDNS so the BLE name and the LAN-side service name always match,
  * even when the BT controller is remote (e.g. ESP-Hosted on the P4).
  */
