@@ -11,6 +11,7 @@
 #include "freertos/task.h"
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
+#include "driver/usb_serial_jtag_select.h"
 #include "esp_log.h"
 
 #include "wendy_com.h"
@@ -21,8 +22,8 @@
 #define TAG              "wendy_usj"
 #define TX_BUF_SIZE      1024
 #define RX_BUF_SIZE      3000
-#define LOG_BUF_SIZE      512
-#define TX_TIMEOUT_MS    1000
+#define LOG_BUF_SIZE      256
+#define TX_TIMEOUT_MS     500
 #define POLL_INTERVAL_MS 1000
 #define ESC              0x1B
 
@@ -38,6 +39,7 @@ static atomic_int s_mode;
 
 static int s_com_link_id = -1;
 static wendy_com_uart_t s_com_uart;
+static atomic_bool s_host_disconnected;
 
 
 static void _handle_esc_command(uint8_t cmd);
@@ -161,7 +163,7 @@ static void _task_main(void *arg)
                 esc_pending = false;
                 mode = atomic_load(&s_mode);
             } else if (mode == USJ_MODE_ECHO) {
-                usb_serial_jtag_write_bytes(&b, 1, pdMS_TO_TICKS(TX_TIMEOUT_MS));
+                usb_serial_jtag_write_bytes(&b, 1, pdMS_TO_TICKS(1000));
             }
         }
     }
@@ -174,11 +176,17 @@ static int _log_printf(const char *fmt, va_list args)
     int ret = s_orig_vprintf(fmt, copy);
     va_end(copy);
 
-    if (atomic_load(&s_mode) == USJ_MODE_CONSOLE) {
-        char buf[LOG_BUF_SIZE];
-        int len = vsnprintf(buf, sizeof(buf), fmt, args);
-        if (len > 0)
-            usb_serial_jtag_write_bytes(buf, (size_t)len, pdMS_TO_TICKS(TX_TIMEOUT_MS));
+    char buf[LOG_BUF_SIZE];
+    int len = vsnprintf(buf, sizeof(buf), fmt, args);
+    if (len >= (int)sizeof(buf)) {
+        char *buf = malloc(len + 1);
+        if (buf) {
+            vsnprintf(buf, len + 1, fmt, args);
+            wendy_usj_write(buf, (size_t)len);
+            free(buf);
+        }
+    } else if (len > 0) {
+        wendy_usj_write(buf, (size_t)len);
     }
     return ret;
 }
@@ -210,10 +218,18 @@ esp_err_t wendy_usj_init(void)
     return ESP_OK;
 }
 
-esp_err_t wendy_usj_write(const void *data, size_t len)
+void wendy_usj_write(const void *data, size_t len)
 {
     if (atomic_load(&s_mode) != USJ_MODE_CONSOLE)
-        return ESP_OK;
-    int n = usb_serial_jtag_write_bytes(data, len, pdMS_TO_TICKS(TX_TIMEOUT_MS));
-    return (n == (int)len) ? ESP_OK : ESP_ERR_TIMEOUT;
+        return;
+    if (s_host_disconnected) {
+        if (usb_serial_jtag_write_ready() && usb_serial_jtag_write_bytes("...", 3, 1) == 3) {
+            s_host_disconnected = false;
+        }
+    } else {
+        int rv = usb_serial_jtag_write_bytes(data, len, pdMS_TO_TICKS(TX_TIMEOUT_MS));
+        if (rv == 0) {
+            s_host_disconnected = true;
+        }
+    }
 }
