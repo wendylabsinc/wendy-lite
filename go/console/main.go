@@ -77,7 +77,7 @@ func run(target string) error {
 			fmt.Println("app stopped")
 
 		case "identity":
-			identity, err := client.GetDeviceIdentity()
+			identity, err := client.GetDeviceIdentity(0)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "identity:", err)
 				continue
