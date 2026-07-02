@@ -3,3 +3,13 @@ dependencies:
     version: ">=5.1.0"
   espressif/mdns:
     version: "*"
+  wendy_cloud_prov:
+    override_path: "../wendy_cloud_prov"
+  wendy_com:
+    override_path: "../wendy_com"
+  wendy_server:
+    override_path: "../wendy_server"
+  wendy_cloud:
+    override_path: "../wendy_cloud"
+  wendy_conf:
+    override_path: "../wendy_conf"

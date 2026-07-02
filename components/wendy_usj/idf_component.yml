@@ -1,0 +1,5 @@
+dependencies:
+  wendy_com:
+    override_path: "../wendy_com"
+  nanopb:
+    override_path: "../nanopb"

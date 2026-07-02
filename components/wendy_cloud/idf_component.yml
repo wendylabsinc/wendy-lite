@@ -1,0 +1,3 @@
+dependencies:
+  wendy_conf:
+    override_path: "../wendy_conf"

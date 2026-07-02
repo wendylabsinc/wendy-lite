@@ -1,0 +1,9 @@
+dependencies:
+  espressif/wasm-micro-runtime:
+    version: "~2.4.0"
+  wendy_safety:
+    override_path: "../wendy_safety"
+  wendy_callback:
+    override_path: "../wendy_callback"
+  wendy_ble_prov:
+    override_path: "../wendy_ble_prov"
