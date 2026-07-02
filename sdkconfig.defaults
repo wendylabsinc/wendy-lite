@@ -28,44 +28,11 @@ CONFIG_WENDY_WASM_POOL_SIZE=0
 # Swift async executables need WAMR ref-types support for their funcref table.
 CONFIG_WAMR_ENABLE_REF_TYPES=y
 
-# Wendy HAL defaults
-CONFIG_WENDY_HAL_GPIO=y
-CONFIG_WENDY_HAL_I2C=y
-CONFIG_WENDY_HAL_TIMER=y
-CONFIG_WENDY_HAL_NEOPIXEL=y
-
-# Callback subsystem
-CONFIG_WENDY_CALLBACK=y
-
-# System functions
-CONFIG_WENDY_SYS=y
-
-# NVS storage
-CONFIG_WENDY_STORAGE=y
-
-# UART
-CONFIG_WENDY_UART=y
-
-# SPI
-CONFIG_WENDY_SPI=y
-
-# OpenTelemetry
-CONFIG_WENDY_OTEL=y
-
-# WASI shim
-CONFIG_WENDY_WASI_SHIM=y
-
 # BLE stack (NimBLE) - runs on the host MCU regardless of whether the
 # controller is native (C6) or remote-over-VHCI via esp_hosted (P4).
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=2
-
-# Cloud provisioning (device certificates via BLE)
-CONFIG_WENDY_CLOUD_PROV=y
-
-# Cloud mTLS connection
-CONFIG_WENDY_CLOUD_ENABLED=n
 
 # mbedTLS memory — dynamic buffers avoid a large upfront allocation at ssl_setup
 # time. Without this, mbedtls_ssl_setup fails with MBEDTLS_ERR_SSL_ALLOC_FAILED
@@ -75,16 +42,8 @@ CONFIG_MBEDTLS_DYNAMIC_FREE_PEER_CERT=y
 CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
 CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=8192
 
-# App-facing BLE host functions disabled by default
-# CONFIG_WENDY_BLE is not set
-
 # App-facing networking (sockets, DNS, TLS)
 CONFIG_WENDY_NET=y
-
-# WiFi transport for WASM download
-CONFIG_WENDY_WIFI_ENABLED=y
-CONFIG_WENDY_WIFI_SSID=""
-CONFIG_WENDY_WIFI_PASSWORD=""
 
 # Console over UART (compatible with Wokwi and most debug setups)
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y

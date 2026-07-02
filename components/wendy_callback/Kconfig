@@ -1,0 +1,9 @@
+menu "Wendy Callback Subsystem"
+    config WENDY_CALLBACK
+        bool "Enable callback dispatch system"
+        default y
+        help
+            Enable the FreeRTOS queue-based callback dispatch system.
+            Required for timer callbacks, GPIO interrupts, BLE events,
+            and other async operations from WASM.
+endmenu

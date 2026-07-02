@@ -1,0 +1,8 @@
+menu "Wendy WASI Shim"
+    config WENDY_WASI_SHIM
+        bool "Enable WASI Preview 1 shim"
+        default y
+        help
+            Minimal WASI Preview 1 implementation for compatibility
+            with wasm32-wasip1 binaries (Rust, etc.).
+endmenu

@@ -1,0 +1,18 @@
+menu "Wendy WiFi Communication"
+    config WENDY_WIFI_ENABLED
+        bool "Enable WiFi transport"
+        default y
+        help
+            Connect to WiFi and enable advertisement via mDNS.
+
+    config WENDY_WIFI_SSID
+        string "WiFi SSID"
+        depends on WENDY_WIFI_ENABLED
+        default ""
+
+    config WENDY_WIFI_PASSWORD
+        string "WiFi password"
+        depends on WENDY_WIFI_ENABLED
+        default ""
+
+endmenu
