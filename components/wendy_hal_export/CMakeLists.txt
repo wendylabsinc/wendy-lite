@@ -33,7 +33,6 @@ endif()
 # The C code guards actual usage with #if CONFIG_WENDY_<X>.
 set(requires
     wendy_hal
-    wasm-micro-runtime
     wendy_callback
     wendy_sys
     wendy_storage

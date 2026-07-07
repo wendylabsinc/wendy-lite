@@ -1,6 +1,8 @@
 dependencies:
   espressif/wasm-micro-runtime:
     version: "~2.4.0"
+    rules:
+      - if: "$CONFIG{WENDY_WASM} == True"
   wendy_safety:
     override_path: "../wendy_safety"
   wendy_callback:

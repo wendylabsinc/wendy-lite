@@ -12,5 +12,5 @@ endif()
 idf_component_register(
     SRCS ${srcs}
     INCLUDE_DIRS "include"
-    REQUIRES wasm-micro-runtime esp_partition spi_flash
+    REQUIRES esp_partition spi_flash
 )

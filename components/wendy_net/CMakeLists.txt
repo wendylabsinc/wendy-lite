@@ -1,4 +1,4 @@
-set(requires wasm-micro-runtime esp_wifi esp_netif lwip vfs wendy_safety wendy_callback)
+set(requires esp_wifi esp_netif lwip vfs wendy_safety wendy_callback)
 
 set(srcs "")
 

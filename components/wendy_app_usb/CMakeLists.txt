@@ -1,4 +1,4 @@
-set(requires wasm-micro-runtime)
+set(requires)
 
 # Pull in TinyUSB only when the feature is enabled AND the SoC has USB OTG.
 # (ESP32-S2/S3/P4 all have OTG; C6 does not.)
