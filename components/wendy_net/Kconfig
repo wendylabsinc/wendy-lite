@@ -2,6 +2,7 @@ menu "Wendy Networking (App-facing)"
     config WENDY_NET
         bool "Enable networking host functions"
         default n
+        depends on WENDY_WASM
         help
             WiFi control, BSD sockets, DNS, and TLS from WASM apps.
 

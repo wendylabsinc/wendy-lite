@@ -2,6 +2,7 @@ menu "Wendy OpenTelemetry"
     config WENDY_OTEL
         bool "Enable OpenTelemetry host functions"
         default y
+        depends on WENDY_WASM
         help
             In-memory logging, metrics, and tracing from WASM apps.
 endmenu

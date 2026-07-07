@@ -2,7 +2,7 @@ menu "Wendy BLE"
     config WENDY_BLE
         bool "Enable BLE host functions"
         default n
-        depends on BT_ENABLED && BT_NIMBLE_ENABLED
+        depends on WENDY_WASM && BT_ENABLED && BT_NIMBLE_ENABLED
         help
             BLE GAP and GATT functions using NimBLE.
 endmenu

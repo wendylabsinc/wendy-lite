@@ -3,6 +3,8 @@
 #   - sdkconfig.defaults.esp32c6   (single-chip board)
 #   - sdkconfig.defaults.esp32p4   (FireBeetle 2 ESP32-P4 + on-board C6)
 
+# WASM
+CONFIG_WENDY_WASM=y
 # WAMR configuration (interpreter/AOT/loader knobs are picked per-target -
 # tiny C6 builds prefer classic + mini loader; the P4 with PSRAM uses fast.)
 CONFIG_WENDY_WASM_STACK_SIZE=8192

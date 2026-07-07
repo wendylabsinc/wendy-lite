@@ -69,20 +69,26 @@ static EventGroupHandle_t s_events;
 
 /* ── WASM app state ─────────────────────────────────────────────────── */
 
+#if CONFIG_WENDY_WASM
 static wendy_wasm_module_handle_t s_current_module = NULL;
 static pthread_t s_wasm_exec_thread;
 static atomic_bool s_wasm_active = false;
 static atomic_bool s_wasm_flash_busy = false;
 static bool s_current_module_flash_backed = false;
+#endif
 static bool wasm_app_auto_start_enabled = true;
 
 /* ── Flash-write session (one upload at a time, USB or WiFi) ──────────── */
 
+#if CONFIG_WENDY_WASM
 static const esp_partition_t *s_persist_part = NULL;
 static uint8_t s_persist_slot = 0;
+#endif
 static bool s_persist_load_pending = false;
 static uint8_t s_persist_load_slot = 0;
 static char s_device_name[CONFIG_WENDY_DEVICE_NAME_BUF_SIZE];
+
+#if CONFIG_WENDY_WASM
 
 #define WENDY_WASM_THREAD_STACK_SIZE 8192
 
@@ -257,6 +263,8 @@ static void wasm_persist_abort(uint8_t slot)
     ESP_LOGW(TAG, "persist abort: slot=%d (size header invalidated)", s_persist_slot);
 }
 
+#endif /* CONFIG_WENDY_WASM */
+
 /* ── BLE provisioning state ─────────────────────────────────────────── */
 
 #if CONFIG_WENDY_BLE_PROV
@@ -283,6 +291,7 @@ static void on_ble_clear_creds(void)
 
 /* ── stdout redirect ────────────────────────────────────────────────── */
 
+#if CONFIG_WENDY_WASM
 static void wasm_output_cb(const char *data, uint32_t len, void *ctx)
 {
 #if CONFIG_WENDY_USB_CDC_ENABLED
@@ -291,6 +300,7 @@ static void wasm_output_cb(const char *data, uint32_t len, void *ctx)
     fwrite(data, 1, len, stdout);
     fflush(stdout);
 }
+#endif /* CONFIG_WENDY_WASM */
 
 /* ── USB protocol callbacks ─────────────────────────────────────────── */
 
@@ -301,6 +311,8 @@ static void on_reset(void){ xEventGroupSetBits(s_events, EVT_RESET_REQUEST); }
 #endif /* CONFIG_WENDY_USB_CDC_ENABLED */
 
 /* -- WASM execution ---------------------------------------------------- */
+
+#if CONFIG_WENDY_WASM
 
 /* Runs WASM code on a dedicated pthread */
 static void *wasm_exec_thread_entry(void *arg)
@@ -416,39 +428,56 @@ static void wasm_app_auto_start(struct wcom_operation *op)
     }
 }
 
+#endif /* CONFIG_WENDY_WASM */
+
 /* ── App delegate (wendy_com protocol callbacks) ───────────────────── */
 
 static WendyComResult com_push_begin(size_t size)
 {
+    #if defined CONFIG_WENDY_WASM
     wasm_app_auto_start_enabled = false;
     esp_err_t e = wasm_persist_begin(0, (uint32_t)size);
     return e == ESP_OK ? WendyComResult_WENDY_COM_RESULT_OK
                        : WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
+    #else
+    return WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
+    #endif
 }
 
 static WendyComResult com_push_data(size_t offset, const uint8_t *data, size_t size)
 {
+    #if defined CONFIG_WENDY_WASM
     wasm_app_auto_start_enabled = false;
     esp_err_t e = wasm_persist_chunk((uint32_t)offset, data, (uint32_t)size);
     return e == ESP_OK ? WendyComResult_WENDY_COM_RESULT_OK
                        : WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
+    #else
+    return WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
+    #endif
 }
 
 static WendyComResult com_push_end(void)
 {
+    #if defined CONFIG_WENDY_WASM
     wasm_app_auto_start_enabled = false;
     esp_err_t e = wasm_persist_end(0);
     return e == ESP_OK ? WendyComResult_WENDY_COM_RESULT_OK
                        : WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
+    #else
+    return WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
+    #endif
 }
 
 static void com_push_abort(void)
 {
+    #if defined CONFIG_WENDY_WASM
     wasm_persist_abort(0);
+    #endif
 }
 
 static WendyComResult com_app_start(void)
 {
+    #if defined CONFIG_WENDY_WASM
     wasm_app_auto_start_enabled = false;
     uint8_t slot = 0;
     if (s_persist_load_pending) {
@@ -458,19 +487,28 @@ static WendyComResult com_app_start(void)
     esp_err_t e = wasm_app_start(slot);
     return e == ESP_OK ? WendyComResult_WENDY_COM_RESULT_OK
                        : WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
+    #else
+    return WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
+    #endif
 }
 
 static WendyComResult com_app_stop(void)
 {
+    #if defined CONFIG_WENDY_WASM
     wasm_app_auto_start_enabled = false;
     wasm_app_stop();
     return WendyComResult_WENDY_COM_RESULT_OK;
+    #else
+    return WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
+    #endif
 }
 
 static WendyComResult com_reboot(void)
 {
+    #if defined CONFIG_WENDY_WASM
     wasm_app_auto_start_enabled = false;
     wasm_app_stop();
+    #endif
     esp_restart();
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
@@ -539,12 +577,14 @@ esp_err_t wendy_core_init(void)
         ESP_LOGI(TAG, "device name: %s", s_device_name);
     }
 
+#if CONFIG_WENDY_WASM
     /* Pre-allocate the WAMR memory pool while RAM is still plentiful,
      * before WiFi and BLE claim large chunks. */
     err = wendy_wasm_prealloc_pool(CONFIG_WENDY_WASM_POOL_SIZE);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "WAMR pool pre-allocation failed");
     }
+#endif
 
     /* Initialize hardware */
     init_hal();
@@ -732,12 +772,14 @@ esp_err_t wendy_core_init(void)
     }
 #endif /* CONFIG_WENDY_WIFI_ENABLED */
 
+#if CONFIG_WENDY_WASM
     // Start the wasm app, but we do that from the wcom thread,
     // in order to have all commands executed by the same thread.
     static struct wcom_operation op = {
         .func = wasm_app_auto_start,
     };
     wcom_exec(&op);
+#endif
 
     /* wendy_core_init returns; FreeRTOS scheduler keeps running */
     return ESP_OK;

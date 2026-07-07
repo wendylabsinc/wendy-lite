@@ -2,6 +2,7 @@ menu "Wendy Storage (NVS)"
     config WENDY_STORAGE
         bool "Enable NVS storage host functions"
         default y
+        depends on WENDY_WASM
         help
             NVS-backed key/value storage accessible from WASM apps.
 endmenu

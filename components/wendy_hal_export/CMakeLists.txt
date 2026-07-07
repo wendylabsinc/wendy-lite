@@ -1,23 +1,32 @@
-set(srcs "src/wendy_hal_export.c")
+set(srcs "")
 
-if(CONFIG_WENDY_HAL_GPIO)
-    list(APPEND srcs "src/wendy_hal_export_gpio.c")
+if(CONFIG_WENDY_WASM)
+    list(APPEND srcs "src/wendy_hal_export.c")
+
+    if(CONFIG_WENDY_HAL_GPIO)
+        list(APPEND srcs "src/wendy_hal_export_gpio.c")
+    endif()
+
+    if(CONFIG_WENDY_HAL_I2C)
+        list(APPEND srcs "src/wendy_hal_export_i2c.c")
+    endif()
+
+    if(CONFIG_WENDY_HAL_TIMER)
+        list(APPEND srcs "src/wendy_hal_export_timer.c")
+    endif()
+
+    if(CONFIG_WENDY_HAL_NEOPIXEL)
+        list(APPEND srcs "src/wendy_hal_export_neopixel.c")
+    endif()
+
+    if(CONFIG_WENDY_HAL_RMT)
+        list(APPEND srcs "src/wendy_hal_export_rmt.c")
+    endif()
 endif()
 
-if(CONFIG_WENDY_HAL_I2C)
-    list(APPEND srcs "src/wendy_hal_export_i2c.c")
-endif()
-
-if(CONFIG_WENDY_HAL_TIMER)
-    list(APPEND srcs "src/wendy_hal_export_timer.c")
-endif()
-
-if(CONFIG_WENDY_HAL_NEOPIXEL)
-    list(APPEND srcs "src/wendy_hal_export_neopixel.c")
-endif()
-
-if(CONFIG_WENDY_HAL_RMT)
-    list(APPEND srcs "src/wendy_hal_export_rmt.c")
+if(NOT srcs)
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/wendy_hal_export_stub.c" "/* WASM disabled */\n")
+    list(APPEND srcs "${CMAKE_CURRENT_BINARY_DIR}/wendy_hal_export_stub.c")
 endif()
 
 # All subsystem components are listed unconditionally here.

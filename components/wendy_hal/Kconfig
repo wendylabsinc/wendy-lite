@@ -2,10 +2,12 @@ menu "Wendy Hardware Abstraction Layer"
     config WENDY_HAL_GPIO
         bool "Enable GPIO HAL"
         default y
+        depends on WENDY_WASM
 
     config WENDY_HAL_I2C
         bool "Enable I2C HAL"
         default y
+        depends on WENDY_WASM
 
     config WENDY_HAL_I2C_PORT
         int "Default I2C port number"
@@ -31,14 +33,17 @@ menu "Wendy Hardware Abstraction Layer"
     config WENDY_HAL_TIMER
         bool "Enable Timer HAL"
         default y
+        depends on WENDY_WASM
 
     config WENDY_HAL_NEOPIXEL
         bool "Enable NeoPixel (WS2812) HAL"
         default y
+        depends on WENDY_WASM
 
     config WENDY_HAL_RMT
         bool "Enable RMT timing-buffer HAL"
         default y
+        depends on WENDY_WASM
         help
             Raw RMT peripheral access for precise timing waveforms
             (WS2812, IR, etc.) from WASM apps.
