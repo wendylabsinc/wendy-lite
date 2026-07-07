@@ -36,4 +36,10 @@ menu "Wendy Core"
             matching boards/<board>.cfg argfile). The top-level CMakeLists.txt
             aborts an esp32p4 build when this is empty, since P4 boards differ
             in flash size and partition layout. Unused on non-P4 targets.
+
+    config WENDY_CORE_WASM_APP_SUPPORT
+        bool "Enable WASM app support"
+        default n
+        help
+            Enable the ability to run WASM applications on the device.
 endmenu

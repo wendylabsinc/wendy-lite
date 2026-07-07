@@ -1,4 +1,14 @@
 menu "Wendy WASM Runtime"
+    config WENDY_WASM
+        bool "Enable the WASM runtime"
+        default y
+        help
+            Build the WAMR-based WASM runtime and the ability to run
+            WASM applications. When disabled, all modules exposing a
+            WASM API are disabled as well.
+
+    if WENDY_WASM
+
     config WENDY_WASM_STACK_SIZE
         int "WASM stack size (bytes)"
         default 32768
@@ -26,4 +36,6 @@ menu "Wendy WASM Runtime"
         help
             When PSRAM is available, allocate the WASM heap from
             external memory to preserve internal SRAM.
+
+    endif
 endmenu
