@@ -3,10 +3,16 @@ dependencies:
     override_path: "../wendy_conf"
   wendy_wasm:
     override_path: "../wendy_wasm"
+    rules:
+      - if: "$CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True"
   wendy_hal:
     override_path: "../wendy_hal"
+    rules:
+      - if: "$CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True"
   wendy_hal_export:
     override_path: "../wendy_hal_export"
+    rules:
+      - if: "$CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True"
   wendy_usb:
     override_path: "../wendy_usb"
   wendy_usj:
