@@ -4,6 +4,7 @@ idf_component_register(
         "src/wendy_com_agent.c"
         "src/wendy_com_cmd.c"
         "src/wendy_com_link.c"
+        "src/wendy_com_uart.c"
         "src/wendy_com_msg.pb.c"
     INCLUDE_DIRS
         "include"
@@ -11,3 +12,5 @@ idf_component_register(
         esp-tls mbedtls freertos vfs log
         nanopb
 )
+idf_component_get_property(nanopb_dir nanopb COMPONENT_DIR)
+target_include_directories(${COMPONENT_LIB} PUBLIC "${nanopb_dir}")

@@ -145,6 +145,7 @@ static void _process_command(struct _agent_link *link, const uint8_t *body, size
 
     WendyComResponse resp = { .request_id = cmd.request_id, .result = WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR };
 
+    ESP_LOGI(TAG, "ch%d received cmd id %d", link->link_id, cmd.request_id);
     switch (cmd.which_params) {
     case WendyComCommand_protocol_version_tag:
         resp.which_data = WendyComResponse_protocol_version_tag;
@@ -175,14 +176,25 @@ static void _process_command(struct _agent_link *link, const uint8_t *body, size
     case WendyComCommand_app_stop_tag:
         resp.result = wcom_cmd_app_stop(link->link_id);
         break;
+    case WendyComCommand_get_device_identity_tag:
+        resp.which_data = WendyComResponse_device_identity_tag;
+        resp.result = wcom_cmd_get_device_identity(&resp.data.device_identity);
+        break;
     default:
         ESP_LOGW(TAG, "ch%d unknown cmd (which_params=%d)", link->link_id, cmd.which_params);
         resp.result = WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
         break;
     }
 
-    void *buf = _get_buffer(link, WendyComResponse_size);
-    pb_ostream_t out_stream = pb_ostream_from_buffer(buf, WendyComResponse_size);
+    pb_ostream_t sizing = PB_OSTREAM_SIZING;
+    if (!pb_encode(&sizing, WendyComResponse_fields, &resp)) {
+        ESP_LOGE(TAG, "ch%d pb_encode sizing: %s", link->link_id, PB_GET_ERROR(&sizing));
+        wcom_close(link->link_id);
+        return;
+    }
+
+    void *buf = _get_buffer(link, sizing.bytes_written);
+    pb_ostream_t out_stream = pb_ostream_from_buffer(buf, sizing.bytes_written);
     if (!pb_encode(&out_stream, WendyComResponse_fields, &resp)) {
         ESP_LOGE(TAG, "ch%d pb_encode response: %s", link->link_id, PB_GET_ERROR(&out_stream));
         wcom_close(link->link_id);

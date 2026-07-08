@@ -13,6 +13,7 @@ struct wcom_app_delegate {
     WendyComResult (*on_app_start)(void);
     WendyComResult (*on_app_stop)(void);
     WendyComResult (*on_reboot)(void);
+    void (*on_get_device_identity)(const char **id, const char **name, const char **display_name);
 };
 
 struct wcom_operation {

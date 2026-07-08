@@ -1,8 +1,10 @@
+#include <string.h>
 #include "wendy_com_cmd.h"
 #include "wendy_com_msg.pb.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "wendy_com_common.h"
+#include <pb_encode.h>
 
 
 static const char *TAG = "wcom_cmd";
@@ -86,6 +88,28 @@ WendyComResult wcom_cmd_app_stop(int client_id)
     ESP_LOGI(TAG, "APP_STOP client=%d", client_id);
     if (_app_delegate && _app_delegate->on_app_stop)
         return _app_delegate->on_app_stop();
+    return WendyComResult_WENDY_COM_RESULT_OK;
+}
+
+static bool _encode_string(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
+{
+    const char *str = *arg;
+    return pb_encode_tag_for_field(stream, field) &&
+           pb_encode_string(stream, (const uint8_t *)str, strlen(str));
+}
+
+WendyComResult wcom_cmd_get_device_identity(WendyComDeviceIdentity *out)
+{
+    ESP_LOGI(TAG, "GET_DEVICE_IDENTITY");
+    const char *id = "???", *name = "???", *display_name = "???";
+    if (_app_delegate && _app_delegate->on_get_device_identity)
+        _app_delegate->on_get_device_identity(&id, &name, &display_name);
+    out->id.funcs.encode           = _encode_string;
+    out->id.arg                    = (void *)id;
+    out->name.funcs.encode         = _encode_string;
+    out->name.arg                  = (void *)name;
+    out->display_name.funcs.encode = _encode_string;
+    out->display_name.arg          = (void *)display_name;
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 
