@@ -39,6 +39,12 @@ PB_BIND(WendyComGetDeviceIdentityParams, WendyComGetDeviceIdentityParams, AUTO)
 PB_BIND(WendyComDeviceIdentity, WendyComDeviceIdentity, AUTO)
 
 
+PB_BIND(WendyComGetDeviceInfoParams, WendyComGetDeviceInfoParams, AUTO)
+
+
+PB_BIND(WendyComDeviceInfo, WendyComDeviceInfo, AUTO)
+
+
 PB_BIND(WendyComCommand, WendyComCommand, AUTO)
 
 

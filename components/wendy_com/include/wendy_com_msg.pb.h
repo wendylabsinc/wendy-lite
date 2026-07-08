@@ -81,6 +81,22 @@ typedef struct _WendyComDeviceIdentity {
     pb_callback_t display_name;
 } WendyComDeviceIdentity;
 
+typedef struct _WendyComGetDeviceInfoParams {
+    char dummy_field;
+} WendyComGetDeviceInfoParams;
+
+typedef struct _WendyComDeviceInfo {
+    pb_callback_t os; /* typically "wendy-lite" */
+    pb_callback_t os_version;
+    pb_callback_t cpu_architecture;
+    /* Board can be "esp32c6", but this doesn't mean that this field contains
+ the SoC name. Here "esp32c6" means "generic esp32c6 board". Should
+ probably be replaced by "esp32c6-generic" in the future. */
+    pb_callback_t board;
+    bool wasm_app_support;
+    bool native_app_support;
+} WendyComDeviceInfo;
+
 /* Top-level command message — the oneof variant identifies the command. */
 typedef struct _WendyComCommand {
     uint32_t request_id;
@@ -95,6 +111,7 @@ typedef struct _WendyComCommand {
         WendyComAppStartParams app_start;
         WendyComAppStopParams app_stop;
         WendyComGetDeviceIdentityParams get_device_identity;
+        WendyComGetDeviceInfoParams get_device_info;
     } params;
 } WendyComCommand;
 
@@ -106,6 +123,7 @@ typedef struct _WendyComResponse {
     union {
         WendyComProtocolVersion protocol_version;
         WendyComDeviceIdentity device_identity;
+        WendyComDeviceInfo device_info;
     } data;
 } WendyComResponse;
 
@@ -136,6 +154,8 @@ extern "C" {
 
 
 
+
+
 #define WendyComResponse_result_ENUMTYPE WendyComResult
 
 
@@ -151,6 +171,8 @@ extern "C" {
 #define WendyComAppStopParams_init_default       {0}
 #define WendyComGetDeviceIdentityParams_init_default {0}
 #define WendyComDeviceIdentity_init_default      {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define WendyComGetDeviceInfoParams_init_default {0}
+#define WendyComDeviceInfo_init_default          {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, 0, 0}
 #define WendyComCommand_init_default             {0, 0, {WendyComProtocolVersionParams_init_default}}
 #define WendyComResponse_init_default            {0, _WendyComResult_MIN, 0, {WendyComProtocolVersion_init_default}}
 #define WendyComProtocolVersion_init_zero        {0, 0}
@@ -164,6 +186,8 @@ extern "C" {
 #define WendyComAppStopParams_init_zero          {0}
 #define WendyComGetDeviceIdentityParams_init_zero {0}
 #define WendyComDeviceIdentity_init_zero         {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define WendyComGetDeviceInfoParams_init_zero    {0}
+#define WendyComDeviceInfo_init_zero             {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, 0, 0}
 #define WendyComCommand_init_zero                {0, 0, {WendyComProtocolVersionParams_init_zero}}
 #define WendyComResponse_init_zero               {0, _WendyComResult_MIN, 0, {WendyComProtocolVersion_init_zero}}
 
@@ -179,6 +203,12 @@ extern "C" {
 #define WendyComDeviceIdentity_id_tag            1
 #define WendyComDeviceIdentity_name_tag          2
 #define WendyComDeviceIdentity_display_name_tag  3
+#define WendyComDeviceInfo_os_tag                1
+#define WendyComDeviceInfo_os_version_tag        2
+#define WendyComDeviceInfo_cpu_architecture_tag  3
+#define WendyComDeviceInfo_board_tag             4
+#define WendyComDeviceInfo_wasm_app_support_tag  5
+#define WendyComDeviceInfo_native_app_support_tag 6
 #define WendyComCommand_request_id_tag           1
 #define WendyComCommand_protocol_version_tag     2
 #define WendyComCommand_ping_tag                 3
@@ -189,10 +219,12 @@ extern "C" {
 #define WendyComCommand_app_start_tag            8
 #define WendyComCommand_app_stop_tag             9
 #define WendyComCommand_get_device_identity_tag  10
+#define WendyComCommand_get_device_info_tag      11
 #define WendyComResponse_request_id_tag          1
 #define WendyComResponse_result_tag              2
 #define WendyComResponse_protocol_version_tag    3
 #define WendyComResponse_device_identity_tag     4
+#define WendyComResponse_device_info_tag         5
 
 /* Struct field encoding specification for nanopb */
 #define WendyComProtocolVersion_FIELDLIST(X, a) \
@@ -256,6 +288,21 @@ X(a, CALLBACK, SINGULAR, STRING,   display_name,      3)
 #define WendyComDeviceIdentity_CALLBACK pb_default_field_callback
 #define WendyComDeviceIdentity_DEFAULT NULL
 
+#define WendyComGetDeviceInfoParams_FIELDLIST(X, a) \
+
+#define WendyComGetDeviceInfoParams_CALLBACK NULL
+#define WendyComGetDeviceInfoParams_DEFAULT NULL
+
+#define WendyComDeviceInfo_FIELDLIST(X, a) \
+X(a, CALLBACK, SINGULAR, STRING,   os,                1) \
+X(a, CALLBACK, SINGULAR, STRING,   os_version,        2) \
+X(a, CALLBACK, SINGULAR, STRING,   cpu_architecture,   3) \
+X(a, CALLBACK, SINGULAR, STRING,   board,             4) \
+X(a, STATIC,   SINGULAR, BOOL,     wasm_app_support,   5) \
+X(a, STATIC,   SINGULAR, BOOL,     native_app_support,   6)
+#define WendyComDeviceInfo_CALLBACK pb_default_field_callback
+#define WendyComDeviceInfo_DEFAULT NULL
+
 #define WendyComCommand_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   request_id,        1) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,protocol_version,params.protocol_version),   2) \
@@ -266,7 +313,8 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (params,app_push_data,params.app_push_data), 
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,app_push_end,params.app_push_end),   7) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,app_start,params.app_start),   8) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,app_stop,params.app_stop),   9) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (params,get_device_identity,params.get_device_identity),  10)
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,get_device_identity,params.get_device_identity),  10) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,get_device_info,params.get_device_info),  11)
 #define WendyComCommand_CALLBACK NULL
 #define WendyComCommand_DEFAULT NULL
 #define WendyComCommand_params_protocol_version_MSGTYPE WendyComProtocolVersionParams
@@ -278,16 +326,19 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (params,get_device_identity,params.get_device
 #define WendyComCommand_params_app_start_MSGTYPE WendyComAppStartParams
 #define WendyComCommand_params_app_stop_MSGTYPE WendyComAppStopParams
 #define WendyComCommand_params_get_device_identity_MSGTYPE WendyComGetDeviceIdentityParams
+#define WendyComCommand_params_get_device_info_MSGTYPE WendyComGetDeviceInfoParams
 
 #define WendyComResponse_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   request_id,        1) \
 X(a, STATIC,   SINGULAR, UENUM,    result,            2) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,protocol_version,data.protocol_version),   3) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (data,device_identity,data.device_identity),   4)
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,device_identity,data.device_identity),   4) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,device_info,data.device_info),   5)
 #define WendyComResponse_CALLBACK NULL
 #define WendyComResponse_DEFAULT NULL
 #define WendyComResponse_data_protocol_version_MSGTYPE WendyComProtocolVersion
 #define WendyComResponse_data_device_identity_MSGTYPE WendyComDeviceIdentity
+#define WendyComResponse_data_device_info_MSGTYPE WendyComDeviceInfo
 
 extern const pb_msgdesc_t WendyComProtocolVersion_msg;
 extern const pb_msgdesc_t WendyComProtocolVersionParams_msg;
@@ -300,6 +351,8 @@ extern const pb_msgdesc_t WendyComAppStartParams_msg;
 extern const pb_msgdesc_t WendyComAppStopParams_msg;
 extern const pb_msgdesc_t WendyComGetDeviceIdentityParams_msg;
 extern const pb_msgdesc_t WendyComDeviceIdentity_msg;
+extern const pb_msgdesc_t WendyComGetDeviceInfoParams_msg;
+extern const pb_msgdesc_t WendyComDeviceInfo_msg;
 extern const pb_msgdesc_t WendyComCommand_msg;
 extern const pb_msgdesc_t WendyComResponse_msg;
 
@@ -315,12 +368,15 @@ extern const pb_msgdesc_t WendyComResponse_msg;
 #define WendyComAppStopParams_fields &WendyComAppStopParams_msg
 #define WendyComGetDeviceIdentityParams_fields &WendyComGetDeviceIdentityParams_msg
 #define WendyComDeviceIdentity_fields &WendyComDeviceIdentity_msg
+#define WendyComGetDeviceInfoParams_fields &WendyComGetDeviceInfoParams_msg
+#define WendyComDeviceInfo_fields &WendyComDeviceInfo_msg
 #define WendyComCommand_fields &WendyComCommand_msg
 #define WendyComResponse_fields &WendyComResponse_msg
 
 /* Maximum encoded size of messages (where known) */
 /* WendyComAppPushDataParams_size depends on runtime parameters */
 /* WendyComDeviceIdentity_size depends on runtime parameters */
+/* WendyComDeviceInfo_size depends on runtime parameters */
 /* WendyComCommand_size depends on runtime parameters */
 /* WendyComResponse_size depends on runtime parameters */
 #define WENDY_COM_MSG_PB_H_MAX_SIZE              WendyComProtocolVersion_size
@@ -329,6 +385,7 @@ extern const pb_msgdesc_t WendyComResponse_msg;
 #define WendyComAppStartParams_size              0
 #define WendyComAppStopParams_size               0
 #define WendyComGetDeviceIdentityParams_size     0
+#define WendyComGetDeviceInfoParams_size         0
 #define WendyComPingParams_size                  0
 #define WendyComProtocolVersionParams_size       12
 #define WendyComProtocolVersion_size             12

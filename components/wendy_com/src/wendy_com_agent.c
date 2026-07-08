@@ -181,6 +181,10 @@ static void _process_command(struct _agent_link *link, const uint8_t *body, size
         resp.which_data = WendyComResponse_device_identity_tag;
         resp.result = wcom_cmd_get_device_identity(&resp.data.device_identity);
         break;
+    case WendyComCommand_get_device_info_tag:
+        resp.which_data = WendyComResponse_device_info_tag;
+        resp.result = wcom_cmd_get_device_info(&resp.data.device_info);
+        break;
     default:
         ESP_LOGW(TAG, "ch%d unknown cmd (which_params=%d)", link->link_id, cmd.which_params);
         resp.result = WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;

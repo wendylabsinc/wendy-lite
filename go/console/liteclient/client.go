@@ -42,6 +42,15 @@ type DeviceIdentity struct {
 	DisplayName string
 }
 
+type DeviceInfo struct {
+	OS               string
+	OSVersion        string
+	CPUArchitecture  string
+	Board            string
+	WasmAppSupport   bool
+	NativeAppSupport bool
+}
+
 type AppType int
 
 const (
@@ -392,6 +401,34 @@ func (c *WendyLiteClient) GetDeviceIdentity(timeout time.Duration) (*DeviceIdent
 		return nil, fmt.Errorf("device returned no identity")
 	}
 	return &DeviceIdentity{ID: di.GetId(), Name: di.GetName(), DisplayName: di.GetDisplayName()}, nil
+}
+
+func (c *WendyLiteClient) GetDeviceInfo(timeout time.Duration) (*DeviceInfo, error) {
+	c.requestIdGen++
+	resp, err := c.sendCommand(&wendypb.WendyComCommand{
+		RequestId: c.requestIdGen,
+		Params: &wendypb.WendyComCommand_GetDeviceInfo{
+			GetDeviceInfo: &wendypb.WendyComGetDeviceInfoParams{},
+		},
+	}, timeout)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Result != wendypb.WendyComResult_WENDY_COM_RESULT_OK {
+		return nil, fmt.Errorf("device returned error %d", resp.Result)
+	}
+	di := resp.GetDeviceInfo()
+	if di == nil {
+		return nil, fmt.Errorf("device returned no info")
+	}
+	return &DeviceInfo{
+		OS:               di.GetOs(),
+		OSVersion:        di.GetOsVersion(),
+		CPUArchitecture:  di.GetCpuArchitecture(),
+		Board:            di.GetBoard(),
+		WasmAppSupport:   di.GetWasmAppSupport(),
+		NativeAppSupport: di.GetNativeAppSupport(),
+	}, nil
 }
 
 func (c *WendyLiteClient) sendCommand(cmd *wendypb.WendyComCommand, timeout time.Duration) (*wendypb.WendyComResponse, error) {

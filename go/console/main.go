@@ -100,12 +100,25 @@ func run(target string) error {
 			fmt.Printf("name:         %s\n", identity.Name)
 			fmt.Printf("display_name: %s\n", identity.DisplayName)
 
+		case "info":
+			info, err := client.GetDeviceInfo(0)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "info:", err)
+				continue
+			}
+			fmt.Printf("os:                 %s\n", info.OS)
+			fmt.Printf("os_version:         %s\n", info.OSVersion)
+			fmt.Printf("cpu_architecture:   %s\n", info.CPUArchitecture)
+			fmt.Printf("board:              %s\n", info.Board)
+			fmt.Printf("wasm_app_support:   %t\n", info.WasmAppSupport)
+			fmt.Printf("native_app_support: %t\n", info.NativeAppSupport)
+
 		case "quit", "exit":
 			return nil
 
 		default:
 			fmt.Fprintf(os.Stderr, "unknown command: %q\n", cmd)
-			fmt.Fprintln(os.Stderr, "commands: ping, reset, push, start, stop, quit")
+			fmt.Fprintln(os.Stderr, "commands: ping, reset, push, start, stop, identity, info, quit")
 		}
 	}
 	return scanner.Err()

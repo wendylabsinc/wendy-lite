@@ -114,6 +114,27 @@ WendyComResult wcom_cmd_get_device_identity(WendyComDeviceIdentity *out)
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 
+WendyComResult wcom_cmd_get_device_info(WendyComDeviceInfo *out)
+{
+    ESP_LOGI(TAG, "GET_DEVICE_INFO");
+    const char *os = "???", *os_version = "???", *cpu_architecture = "???", *board = "???";
+    bool wasm_app_support = false, native_app_support = false;
+    if (_app_delegate && _app_delegate->on_get_device_info)
+        _app_delegate->on_get_device_info(&os, &os_version, &cpu_architecture, &board,
+                                          &wasm_app_support, &native_app_support);
+    out->os.funcs.encode               = _encode_string;
+    out->os.arg                        = (void *)os;
+    out->os_version.funcs.encode       = _encode_string;
+    out->os_version.arg                = (void *)os_version;
+    out->cpu_architecture.funcs.encode = _encode_string;
+    out->cpu_architecture.arg          = (void *)cpu_architecture;
+    out->board.funcs.encode            = _encode_string;
+    out->board.arg                     = (void *)board;
+    out->wasm_app_support              = wasm_app_support;
+    out->native_app_support            = native_app_support;
+    return WendyComResult_WENDY_COM_RESULT_OK;
+}
+
 void wcom_cmd_client_disconnected(int client_id)
 {
     if (client_id == _pushing_client_id) {

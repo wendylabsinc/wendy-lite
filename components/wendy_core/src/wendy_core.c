@@ -617,6 +617,32 @@ static void com_get_device_identity(const char **id, const char **name, const ch
     *display_name = s_device_name;
 }
 
+#define _STRINGIFY(x) #x
+#define _TOSTRING(x) _STRINGIFY(x)
+
+static void com_get_device_info(const char **os, const char **os_version,
+                                const char **cpu_architecture, const char **board,
+                                bool *wasm_app_support, bool *native_app_support)
+{
+    *os = "wendy-lite";
+    *os_version = _TOSTRING(CONFIG_WENDY_FIRMWARE_VERSION_MAJOR) "."
+                  _TOSTRING(CONFIG_WENDY_FIRMWARE_VERSION_MINOR) "."
+                  _TOSTRING(CONFIG_WENDY_FIRMWARE_VERSION_PATCH);
+    *cpu_architecture = CONFIG_IDF_TARGET_ARCH;
+    /* "esp32c6" means "generic esp32c6 board", not the SoC name */
+    *board = CONFIG_IDF_TARGET;
+#if CONFIG_WENDY_WASM
+    /* WASM support also needs the slot-0 app partition in the partition table */
+    *wasm_app_support = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, 0x80,
+                                                 partition_label_for(0)) != NULL;
+#else
+    *wasm_app_support = false;
+#endif
+    /* native push is compiled in unconditionally but only works if the
+       partition table has an OTA update partition */
+    *native_app_support = esp_ota_get_next_update_partition(NULL) != NULL;
+}
+
 /* ── HAL initialization ─────────────────────────────────────────────── */
 
 static void init_hal(void)
@@ -755,6 +781,7 @@ esp_err_t wendy_core_init(void)
         .on_app_stop            = com_app_stop,
         .on_reboot              = com_reboot,
         .on_get_device_identity = com_get_device_identity,
+        .on_get_device_info     = com_get_device_info,
     };
     wcom_set_app_delegate(&app_delegate);
     wcom_start();

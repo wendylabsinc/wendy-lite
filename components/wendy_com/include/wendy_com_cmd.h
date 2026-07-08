@@ -15,6 +15,7 @@ WendyComResult wcom_cmd_app_push_end(int client_id);
 WendyComResult wcom_cmd_app_start(int client_id);
 WendyComResult wcom_cmd_app_stop(int client_id);
 WendyComResult wcom_cmd_get_device_identity(WendyComDeviceIdentity *out);
+WendyComResult wcom_cmd_get_device_info(WendyComDeviceInfo *out);
 
 void wcom_cmd_client_disconnected(int client_id);
 
