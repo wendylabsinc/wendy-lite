@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"console/liteclient"
@@ -50,17 +51,30 @@ func run(target string) error {
 			}
 			fmt.Println("resetting…")
 
-		case "data":
+		case "push":
 			arg = strings.TrimSpace(arg)
 			if arg == "" {
-				fmt.Fprintln(os.Stderr, "usage: data <file>")
+				fmt.Fprintln(os.Stderr, "usage: push <file.bin|file.wasm>")
 				continue
 			}
-			if err := client.PushApp(arg, nil); err != nil {
-				fmt.Fprintln(os.Stderr, "data:", err)
+			var appType liteclient.AppType
+			var appKind string
+			switch strings.ToLower(filepath.Ext(arg)) {
+			case ".bin":
+				appType = liteclient.AppTypeNative
+				appKind = "native"
+			case ".wasm":
+				appType = liteclient.AppTypeWasm
+				appKind = "wasm"
+			default:
+				fmt.Fprintf(os.Stderr, "push: unsupported file extension %q (want .bin or .wasm)\n", filepath.Ext(arg))
 				continue
 			}
-			fmt.Println("app data pushed")
+			if err := client.PushApp(arg, appType, nil); err != nil {
+				fmt.Fprintln(os.Stderr, "push:", err)
+				continue
+			}
+			fmt.Printf("%s app pushed\n", appKind)
 
 		case "start":
 			if err := client.StartApp(); err != nil {
@@ -91,7 +105,7 @@ func run(target string) error {
 
 		default:
 			fmt.Fprintf(os.Stderr, "unknown command: %q\n", cmd)
-			fmt.Fprintln(os.Stderr, "commands: ping, reset, data, start, stop, quit")
+			fmt.Fprintln(os.Stderr, "commands: ping, reset, push, start, stop, quit")
 		}
 	}
 	return scanner.Err()

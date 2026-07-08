@@ -37,16 +37,17 @@ WendyComResult wcom_cmd_reboot(void)
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 
-WendyComResult wcom_cmd_app_push_begin(int client_id, size_t size)
+WendyComResult wcom_cmd_app_push_begin(int client_id, size_t size, WendyComAppType app_type)
 {
-    ESP_LOGI(TAG, "APP_PUSH_BEGIN client=%d size=%zu", client_id, size);
+    ESP_LOGI(TAG, "APP_PUSH_BEGIN client=%d size=%zu type=%s", client_id, size,
+             app_type == WendyComAppType_WENDY_COM_APP_TYPE_NATIVE ? "native" : "wasm");
     if (_pushing_client_id != 0) {
         ESP_LOGW(TAG, "APP_PUSH_BEGIN from client=%d while client=%d is pushing", client_id, _pushing_client_id);
         return WendyComResult_WENDY_COM_RESULT_BUSY;
     }
     _pushing_client_id = client_id;
     if (_app_delegate && _app_delegate->on_app_push_begin)
-        return _app_delegate->on_app_push_begin(size);
+        return _app_delegate->on_app_push_begin(size, app_type);
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 

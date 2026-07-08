@@ -9,7 +9,7 @@
 WendyComResult wcom_cmd_protocol_version(const WendyComProtocolVersionParams *in, WendyComProtocolVersion *out);
 WendyComResult wcom_cmd_ping(void);
 WendyComResult wcom_cmd_reboot(void);
-WendyComResult wcom_cmd_app_push_begin(int client_id, size_t size);
+WendyComResult wcom_cmd_app_push_begin(int client_id, size_t size, WendyComAppType app_type);
 WendyComResult wcom_cmd_app_push_data(int client_id, size_t offset, const uint8_t *data, size_t size);
 WendyComResult wcom_cmd_app_push_end(int client_id);
 WendyComResult wcom_cmd_app_start(int client_id);

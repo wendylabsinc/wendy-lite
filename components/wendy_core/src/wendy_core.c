@@ -2,6 +2,7 @@
 #include <string.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <inttypes.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -11,6 +12,7 @@
 #include "esp_mac.h"
 #include "esp_system.h"
 #include "esp_partition.h"
+#include "esp_ota_ops.h"
 #include "esp_vfs_eventfd.h"
 #include "nvs_flash.h"
 
@@ -167,8 +169,11 @@ static const char *partition_label_for(uint8_t slot)
     return (slot == 0) ? "wasm_a" : "wasm_b";
 }
 
+#endif /* CONFIG_WENDY_WASM */
+
 static esp_err_t wasm_persist_begin(uint8_t slot, uint32_t total_len)
 {
+#if CONFIG_WENDY_WASM
     if (s_persist_part) {
         ESP_LOGE(TAG, "persist session already active");
         return ESP_ERR_INVALID_STATE;
@@ -231,19 +236,32 @@ static esp_err_t wasm_persist_begin(uint8_t slot, uint32_t total_len)
              slot, (unsigned long)total_len,
              (unsigned long)erase_len, (unsigned long)part->size);
     return ESP_OK;
+#else
+    (void)slot;
+    (void)total_len;
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
 }
 
 static esp_err_t wasm_persist_chunk(uint32_t offset, const uint8_t *data, uint32_t len)
 {
+#if CONFIG_WENDY_WASM
     if (!s_persist_part) {
         return ESP_ERR_INVALID_STATE;
     }
     return esp_partition_write(s_persist_part,
                                sizeof(uint32_t) + offset, data, len);
+#else
+    (void)offset;
+    (void)data;
+    (void)len;
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
 }
 
 static esp_err_t wasm_persist_end(uint8_t slot)
 {
+#if CONFIG_WENDY_WASM
     if (!s_persist_part || slot != s_persist_slot) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -252,21 +270,25 @@ static esp_err_t wasm_persist_end(uint8_t slot)
     s_persist_load_pending = true;
     ESP_LOGI(TAG, "persist end: slot=%d", slot);
     return ESP_OK;
+#else
+    (void)slot;
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
 }
 
 static void wasm_persist_abort(uint8_t slot)
 {
-    if (!s_persist_part) return;
     (void)slot;
+#if CONFIG_WENDY_WASM
+    if (!s_persist_part) return;
     /* Zero the size header so load_from_partition rejects the slot.
      * 1->0 bit transitions are always legal on NOR flash, no erase needed. */
     uint32_t zero = 0;
     esp_partition_write(s_persist_part, 0, &zero, sizeof(zero));
     s_persist_part = NULL;
     ESP_LOGW(TAG, "persist abort: slot=%d (size header invalidated)", s_persist_slot);
+#endif
 }
-
-#endif /* CONFIG_WENDY_WASM */
 
 /* ── BLE provisioning state ─────────────────────────────────────────── */
 
@@ -433,49 +455,121 @@ static void wasm_app_auto_start(struct wcom_operation *op)
 
 #endif /* CONFIG_WENDY_WASM */
 
+/* ── Native app push (firmware OTA) ────────────────────────────────────
+ *
+ * A native push writes the incoming image to the next OTA app partition
+ * and switches the boot partition on completion; the new firmware runs
+ * after the next reboot.
+ */
+
+static bool s_native_push = false;
+static const esp_partition_t *s_ota_partition = NULL;
+static esp_ota_handle_t s_ota_handle = 0;
+
+static WendyComResult native_push_begin(size_t size)
+{
+    s_ota_partition = esp_ota_get_next_update_partition(NULL);
+    if (s_ota_partition == NULL) {
+        ESP_LOGW(TAG, "no OTA update partition available");
+        return WendyComResult_WENDY_COM_RESULT_BAD_APP_TYPE;
+    }
+    if (size > s_ota_partition->size) {
+        ESP_LOGW(TAG, "app size %zu exceeds OTA partition size %" PRIu32, size, s_ota_partition->size);
+        s_ota_partition = NULL;
+        return WendyComResult_WENDY_COM_RESULT_BAD_APP_SIZE;
+    }
+    esp_err_t err = esp_ota_begin(s_ota_partition, size, &s_ota_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(err));
+        s_ota_partition = NULL;
+        return WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
+    }
+    s_native_push = true;
+    return WendyComResult_WENDY_COM_RESULT_OK;
+}
+
+static WendyComResult native_push_data(const uint8_t *data, size_t size)
+{
+    esp_err_t err = esp_ota_write(s_ota_handle, data, size);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_write failed: %s", esp_err_to_name(err));
+        return WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
+    }
+    return WendyComResult_WENDY_COM_RESULT_OK;
+}
+
+static WendyComResult native_push_end(void)
+{
+    s_native_push = false;
+    esp_err_t err = esp_ota_end(s_ota_handle);
+    s_ota_handle = 0;
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_end failed: %s", esp_err_to_name(err));
+        s_ota_partition = NULL;
+        return WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
+    }
+    err = esp_ota_set_boot_partition(s_ota_partition);
+    s_ota_partition = NULL;
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(err));
+        return WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
+    }
+    return WendyComResult_WENDY_COM_RESULT_OK;
+}
+
+static void native_push_abort(void)
+{
+    s_native_push = false;
+    esp_ota_abort(s_ota_handle);
+    s_ota_handle = 0;
+    s_ota_partition = NULL;
+}
+
 /* ── App delegate (wendy_com protocol callbacks) ───────────────────── */
 
-static WendyComResult com_push_begin(size_t size)
+static WendyComResult com_push_begin(size_t size, WendyComAppType app_type)
 {
-    #if defined CONFIG_WENDY_WASM
+    if (app_type == WendyComAppType_WENDY_COM_APP_TYPE_NATIVE)
+        return native_push_begin(size);
     wasm_app_auto_start_enabled = false;
     esp_err_t e = wasm_persist_begin(0, (uint32_t)size);
+    if (e == ESP_ERR_NOT_SUPPORTED)
+        return WendyComResult_WENDY_COM_RESULT_BAD_APP_TYPE;
+    if (e == ESP_ERR_NOT_FOUND)
+        return WendyComResult_WENDY_COM_RESULT_BAD_APP_TYPE;
+    if (e == ESP_ERR_INVALID_SIZE)
+        return WendyComResult_WENDY_COM_RESULT_BAD_APP_SIZE;
     return e == ESP_OK ? WendyComResult_WENDY_COM_RESULT_OK
                        : WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
-    #else
-    return WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
-    #endif
 }
 
 static WendyComResult com_push_data(size_t offset, const uint8_t *data, size_t size)
 {
-    #if defined CONFIG_WENDY_WASM
+    if (s_native_push)
+        return native_push_data(data, size);
     wasm_app_auto_start_enabled = false;
     esp_err_t e = wasm_persist_chunk((uint32_t)offset, data, (uint32_t)size);
     return e == ESP_OK ? WendyComResult_WENDY_COM_RESULT_OK
                        : WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
-    #else
-    return WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
-    #endif
 }
 
 static WendyComResult com_push_end(void)
 {
-    #if defined CONFIG_WENDY_WASM
+    if (s_native_push)
+        return native_push_end();
     wasm_app_auto_start_enabled = false;
     esp_err_t e = wasm_persist_end(0);
     return e == ESP_OK ? WendyComResult_WENDY_COM_RESULT_OK
                        : WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
-    #else
-    return WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
-    #endif
 }
 
 static void com_push_abort(void)
 {
-    #if defined CONFIG_WENDY_WASM
+    if (s_native_push) {
+        native_push_abort();
+        return;
+    }
     wasm_persist_abort(0);
-    #endif
 }
 
 static WendyComResult com_app_start(void)

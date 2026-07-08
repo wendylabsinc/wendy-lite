@@ -158,7 +158,8 @@ static void _process_command(struct _agent_link *link, const uint8_t *body, size
         resp.result = wcom_cmd_reboot();
         break;
     case WendyComCommand_app_push_begin_tag:
-        resp.result = wcom_cmd_app_push_begin(link->link_id, cmd.params.app_push_begin.size);
+        resp.result = wcom_cmd_app_push_begin(link->link_id, cmd.params.app_push_begin.size,
+                                              cmd.params.app_push_begin.app_type);
         break;
     case WendyComCommand_app_push_data_tag:
         if (data_span.data)

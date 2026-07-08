@@ -1,0 +1,9 @@
+# Name,     Type, SubType, Offset,   Size,     Flags
+# 4 MB flash layout with OTA
+nvs,        data, nvs,     0x9000,   0x6000,
+phy_init,   data, phy,     0xf000,   0x1000,
+ota_0,      app,  ota_0,   0x10000,  0x1E0000,
+ota_1,      app,  ota_1,   0x1F0000, 0x1E0000,
+otadata,    data, ota,     0x3D0000, 0x2000,
+wendy_conf, data, 0x40,    0x3D2000, 0x4000,
+storage,    data, spiffs,  0x3D6000, 0x2A000,

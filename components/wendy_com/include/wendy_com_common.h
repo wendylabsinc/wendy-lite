@@ -6,7 +6,7 @@
 #include "wendy_com_msg.pb.h"
 
 struct wcom_app_delegate {
-    WendyComResult (*on_app_push_begin)(size_t size);
+    WendyComResult (*on_app_push_begin)(size_t size, WendyComAppType app_type);
     WendyComResult (*on_app_push_data)(size_t offset, const uint8_t *data, size_t size);
     WendyComResult (*on_app_push_end)(void);
     void (*on_app_push_abort)(void);

@@ -42,6 +42,13 @@ type DeviceIdentity struct {
 	DisplayName string
 }
 
+type AppType int
+
+const (
+	AppTypeWasm AppType = iota
+	AppTypeNative
+)
+
 type WendyLiteClient struct {
 	conn                io.ReadWriteCloser
 	isSerial            bool
@@ -238,7 +245,17 @@ func (c *WendyLiteClient) ResetTargetDevice() error {
 	return nil
 }
 
-func (c *WendyLiteClient) PushApp(path string, onProgress func(written, total uint32)) error {
+func (c *WendyLiteClient) PushApp(path string, appType AppType, onProgress func(written, total uint32)) error {
+	var pbAppType wendypb.WendyComAppType
+	switch appType {
+	case AppTypeWasm:
+		pbAppType = wendypb.WendyComAppType_WENDY_COM_APP_TYPE_WASM
+	case AppTypeNative:
+		pbAppType = wendypb.WendyComAppType_WENDY_COM_APP_TYPE_NATIVE
+	default:
+		return fmt.Errorf("unknown app type %d", appType)
+	}
+
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open: %w", err)
@@ -250,7 +267,7 @@ func (c *WendyLiteClient) PushApp(path string, onProgress func(written, total ui
 		return fmt.Errorf("stat: %w", err)
 	}
 	if info.Size() > math.MaxUint32 {
-		return fmt.Errorf("WASM file too large: %d bytes exceeds 4 GiB limit", info.Size())
+		return fmt.Errorf("app file too large: %d bytes exceeds 4 GiB limit", info.Size())
 	}
 	size := uint32(info.Size())
 
@@ -258,7 +275,7 @@ func (c *WendyLiteClient) PushApp(path string, onProgress func(written, total ui
 	resp, err := c.sendCommand(&wendypb.WendyComCommand{
 		RequestId: c.requestIdGen,
 		Params: &wendypb.WendyComCommand_AppPushBegin{
-			AppPushBegin: &wendypb.WendyComAppPushBeginParams{Size: size},
+			AppPushBegin: &wendypb.WendyComAppPushBeginParams{Size: size, AppType: pbAppType},
 		},
 	}, 0)
 	if err != nil {

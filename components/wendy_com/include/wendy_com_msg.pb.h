@@ -10,12 +10,20 @@
 #endif
 
 /* Enum definitions */
+/* Type of app pushed by WENDY_COM_CMD_APP_PUSH_BEGIN — wasm when omitted. */
+typedef enum _WendyComAppType {
+    WendyComAppType_WENDY_COM_APP_TYPE_WASM = 0,
+    WendyComAppType_WENDY_COM_APP_TYPE_NATIVE = 1
+} WendyComAppType;
+
 typedef enum _WendyComResult {
     WendyComResult_WENDY_COM_RESULT_OK = 0,
     WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR = 1,
     WendyComResult_WENDY_COM_RESULT_BAD_PROTOCOL_VERSION = 2,
     WendyComResult_WENDY_COM_RESULT_BAD_STATE = 3,
-    WendyComResult_WENDY_COM_RESULT_BUSY = 4
+    WendyComResult_WENDY_COM_RESULT_BUSY = 4,
+    WendyComResult_WENDY_COM_RESULT_BAD_APP_TYPE = 5,
+    WendyComResult_WENDY_COM_RESULT_BAD_APP_SIZE = 6
 } WendyComResult;
 
 /* Struct definitions */
@@ -42,6 +50,7 @@ typedef struct _WendyComRebootParams {
 /* Params for WENDY_COM_CMD_APP_PUSH_BEGIN */
 typedef struct _WendyComAppPushBeginParams {
     uint32_t size;
+    WendyComAppType app_type;
 } WendyComAppPushBeginParams;
 
 /* Params for WENDY_COM_CMD_APP_PUSH_DATA */
@@ -106,14 +115,19 @@ extern "C" {
 #endif
 
 /* Helper constants for enums */
+#define _WendyComAppType_MIN WendyComAppType_WENDY_COM_APP_TYPE_WASM
+#define _WendyComAppType_MAX WendyComAppType_WENDY_COM_APP_TYPE_NATIVE
+#define _WendyComAppType_ARRAYSIZE ((WendyComAppType)(WendyComAppType_WENDY_COM_APP_TYPE_NATIVE+1))
+
 #define _WendyComResult_MIN WendyComResult_WENDY_COM_RESULT_OK
-#define _WendyComResult_MAX WendyComResult_WENDY_COM_RESULT_BUSY
-#define _WendyComResult_ARRAYSIZE ((WendyComResult)(WendyComResult_WENDY_COM_RESULT_BUSY+1))
+#define _WendyComResult_MAX WendyComResult_WENDY_COM_RESULT_BAD_APP_SIZE
+#define _WendyComResult_ARRAYSIZE ((WendyComResult)(WendyComResult_WENDY_COM_RESULT_BAD_APP_SIZE+1))
 
 
 
 
 
+#define WendyComAppPushBeginParams_app_type_ENUMTYPE WendyComAppType
 
 
 
@@ -130,7 +144,7 @@ extern "C" {
 #define WendyComProtocolVersionParams_init_default {0, 0}
 #define WendyComPingParams_init_default          {0}
 #define WendyComRebootParams_init_default        {0}
-#define WendyComAppPushBeginParams_init_default  {0}
+#define WendyComAppPushBeginParams_init_default  {0, _WendyComAppType_MIN}
 #define WendyComAppPushDataParams_init_default   {0, {{NULL}, NULL}}
 #define WendyComAppPushEndParams_init_default    {0}
 #define WendyComAppStartParams_init_default      {0}
@@ -143,7 +157,7 @@ extern "C" {
 #define WendyComProtocolVersionParams_init_zero  {0, 0}
 #define WendyComPingParams_init_zero             {0}
 #define WendyComRebootParams_init_zero           {0}
-#define WendyComAppPushBeginParams_init_zero     {0}
+#define WendyComAppPushBeginParams_init_zero     {0, _WendyComAppType_MIN}
 #define WendyComAppPushDataParams_init_zero      {0, {{NULL}, NULL}}
 #define WendyComAppPushEndParams_init_zero       {0}
 #define WendyComAppStartParams_init_zero         {0}
@@ -159,6 +173,7 @@ extern "C" {
 #define WendyComProtocolVersionParams_major_tag  1
 #define WendyComProtocolVersionParams_minor_tag  2
 #define WendyComAppPushBeginParams_size_tag      1
+#define WendyComAppPushBeginParams_app_type_tag  2
 #define WendyComAppPushDataParams_offset_tag     1
 #define WendyComAppPushDataParams_data_tag       2
 #define WendyComDeviceIdentity_id_tag            1
@@ -203,7 +218,8 @@ X(a, STATIC,   SINGULAR, UINT32,   minor,             2)
 #define WendyComRebootParams_DEFAULT NULL
 
 #define WendyComAppPushBeginParams_FIELDLIST(X, a) \
-X(a, STATIC,   SINGULAR, UINT32,   size,              1)
+X(a, STATIC,   SINGULAR, UINT32,   size,              1) \
+X(a, STATIC,   SINGULAR, UENUM,    app_type,          2)
 #define WendyComAppPushBeginParams_CALLBACK NULL
 #define WendyComAppPushBeginParams_DEFAULT NULL
 
@@ -308,7 +324,7 @@ extern const pb_msgdesc_t WendyComResponse_msg;
 /* WendyComCommand_size depends on runtime parameters */
 /* WendyComResponse_size depends on runtime parameters */
 #define WENDY_COM_MSG_PB_H_MAX_SIZE              WendyComProtocolVersion_size
-#define WendyComAppPushBeginParams_size          6
+#define WendyComAppPushBeginParams_size          8
 #define WendyComAppPushEndParams_size            0
 #define WendyComAppStartParams_size              0
 #define WendyComAppStopParams_size               0
