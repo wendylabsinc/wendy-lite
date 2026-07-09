@@ -39,6 +39,8 @@
 #include "wendy_usb.h"
 #endif
 
+#include "wendy_stdio.h"
+
 #if CONFIG_WENDY_USJ
 #include "wendy_usj.h"
 #endif
@@ -663,6 +665,10 @@ static void init_hal(void)
 
 esp_err_t wendy_core_init(void)
 {
+    esp_err_t stdio_err = wendy_stdio_init();
+    if (stdio_err != ESP_OK)
+        ESP_LOGW(TAG, "wendy_stdio_init: %s (continuing)", esp_err_to_name(stdio_err));
+
 #if CONFIG_WENDY_USJ
     wendy_usj_init();
     vTaskDelay(pdMS_TO_TICKS(1000));

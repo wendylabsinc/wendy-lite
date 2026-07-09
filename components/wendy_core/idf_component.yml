@@ -1,6 +1,8 @@
 dependencies:
   wendy_conf:
     override_path: "../wendy_conf"
+  wendy_stdio:
+    override_path: "../wendy_stdio"
   wendy_wasm:
     override_path: "../wendy_wasm"
     rules:
