@@ -22,11 +22,11 @@ import (
 
 const (
 	headerMagic        = 0xA5
-	headerVersion      = 0x01
+	headerVersion      = 0x02
 	headerSize         = 8
 	chunkSize          = 4096
 	chunkSizeForSerial = 768
-	versionMajor       = 1
+	versionMajor       = 2
 	versionMinor       = 0
 	esc                = 0x1B
 )
@@ -76,11 +76,11 @@ func (c *WendyLiteClient) ConnectInsecure(address string) error {
 	}
 	c.conn = conn
 	c.isSerial = false
-	err = c.exchangeProtocolVersions()
+	err = c.handshake()
 	if err != nil {
 		conn.Close()
 		c.conn = nil
-		return fmt.Errorf("get protocol version: %w", err)
+		return fmt.Errorf("handshake: %w", err)
 	}
 	return nil
 }
@@ -120,11 +120,11 @@ func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert t
 	}
 	c.conn = conn
 	c.isSerial = false
-	err = c.exchangeProtocolVersions()
+	err = c.handshake()
 	if err != nil {
 		conn.Close()
 		c.conn = nil
-		return fmt.Errorf("get protocol version: %w", err)
+		return fmt.Errorf("handshake: %w", err)
 	}
 	return nil
 }
@@ -146,10 +146,10 @@ func (c *WendyLiteClient) ConnectToSerial(device string) error {
 	}
 	c.conn = port
 	c.isSerial = true
-	if err := c.exchangeProtocolVersions(); err != nil {
+	if err := c.handshake(); err != nil {
 		port.Close()
 		c.conn = nil
-		return fmt.Errorf("get protocol version: %w", err)
+		return fmt.Errorf("handshake: %w", err)
 	}
 	return nil
 }
@@ -431,8 +431,8 @@ func (c *WendyLiteClient) GetDeviceInfo(timeout time.Duration) (*DeviceInfo, err
 	}, nil
 }
 
-func (c *WendyLiteClient) sendCommand(cmd *wendypb.WendyComCommand, timeout time.Duration) (*wendypb.WendyComResponse, error) {
-	body, err := proto.Marshal(cmd)
+func (c *WendyLiteClient) sendMessage(req *wendypb.WendyComMessage, timeout time.Duration) (*wendypb.WendyComMessage, error) {
+	body, err := proto.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal: %w", err)
 	}
@@ -455,9 +455,23 @@ func (c *WendyLiteClient) sendCommand(cmd *wendypb.WendyComCommand, timeout time
 	if err != nil {
 		return nil, err
 	}
-	resp := &wendypb.WendyComResponse{}
-	if err := proto.Unmarshal(raw, resp); err != nil {
+	reply := &wendypb.WendyComMessage{}
+	if err := proto.Unmarshal(raw, reply); err != nil {
 		return nil, fmt.Errorf("unmarshal: %w", err)
+	}
+	return reply, nil
+}
+
+func (c *WendyLiteClient) sendCommand(cmd *wendypb.WendyComCommand, timeout time.Duration) (*wendypb.WendyComResponse, error) {
+	reply, err := c.sendMessage(&wendypb.WendyComMessage{
+		Msg: &wendypb.WendyComMessage_Command{Command: cmd},
+	}, timeout)
+	if err != nil {
+		return nil, err
+	}
+	resp := reply.GetResponse()
+	if resp == nil {
+		return nil, fmt.Errorf("unexpected message type from device")
 	}
 	if cmd.RequestId != resp.RequestId {
 		return nil, fmt.Errorf("unexpected response: request ID mismatch")
@@ -472,6 +486,9 @@ func (c *WendyLiteClient) readResponse(timeout time.Duration) ([]byte, error) {
 	}
 	if header[0] != headerMagic {
 		return nil, fmt.Errorf("unexpected magic byte: 0x%02X", header[0])
+	}
+	if header[1] != headerVersion {
+		return nil, fmt.Errorf("unexpected protocol version: 0x%02X", header[1])
 	}
 	bodyLen := binary.BigEndian.Uint16(header[6:8])
 	if bodyLen == 0 {
@@ -530,21 +547,36 @@ func (c *WendyLiteClient) readFull(buf []byte, timeout time.Duration) error {
 	return nil
 }
 
-func (c *WendyLiteClient) exchangeProtocolVersions() error {
-	resp, err := c.sendCommand(&wendypb.WendyComCommand{
-		Params: &wendypb.WendyComCommand_ProtocolVersion{
-			ProtocolVersion: &wendypb.WendyComProtocolVersionParams{
-				Major: versionMajor,
-				Minor: versionMinor,
+func (c *WendyLiteClient) handshake() error {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Errorf("handshake id: %w", err)
+	}
+	id := binary.BigEndian.Uint32(b[:])
+	reply, err := c.sendMessage(&wendypb.WendyComMessage{
+		Msg: &wendypb.WendyComMessage_Handshake{
+			Handshake: &wendypb.WendyComHandshake{
+				HandshakeId: id,
+				Version: &wendypb.WendyComProtocolVersion{
+					Major: versionMajor,
+					Minor: versionMinor,
+				},
 			},
 		},
 	}, 3*time.Second)
 	if err != nil {
-		return err
+		return fmt.Errorf("device may not support protocol v%d: %w", versionMajor, err)
 	}
-	if resp.Result != wendypb.WendyComResult_WENDY_COM_RESULT_OK {
-		return fmt.Errorf("device returned error %d", resp.Result)
+	hs := reply.GetHandshake()
+	switch {
+	case hs == nil:
+		return fmt.Errorf("unexpected reply message type")
+	case hs.GetHandshakeId() != id:
+		return fmt.Errorf("handshake ID mismatch")
+	case hs.GetVersion().GetMajor() != versionMajor:
+		return fmt.Errorf("unsupported device protocol version %d.%d",
+			hs.GetVersion().GetMajor(), hs.GetVersion().GetMinor())
 	}
-	c.peerProtocolVersion = protocolVersion{Major: resp.GetProtocolVersion().GetMajor(), Minor: resp.GetProtocolVersion().GetMinor()}
+	c.peerProtocolVersion = protocolVersion{Major: hs.GetVersion().GetMajor(), Minor: hs.GetVersion().GetMinor()}
 	return nil
 }

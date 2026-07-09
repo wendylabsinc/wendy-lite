@@ -9,7 +9,7 @@
 PB_BIND(WendyComProtocolVersion, WendyComProtocolVersion, AUTO)
 
 
-PB_BIND(WendyComProtocolVersionParams, WendyComProtocolVersionParams, AUTO)
+PB_BIND(WendyComHandshake, WendyComHandshake, AUTO)
 
 
 PB_BIND(WendyComPingParams, WendyComPingParams, AUTO)
@@ -49,6 +49,12 @@ PB_BIND(WendyComCommand, WendyComCommand, AUTO)
 
 
 PB_BIND(WendyComResponse, WendyComResponse, AUTO)
+
+
+PB_BIND(WendyComEvent, WendyComEvent, AUTO)
+
+
+PB_BIND(WendyComMessage, WendyComMessage, AUTO)
 
 
 
