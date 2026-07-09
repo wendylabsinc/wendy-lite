@@ -10,10 +10,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net"
 	"os"
+	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	wendypb "github.com/wendylabsinc/wendy/go/proto/gen/litepb"
@@ -59,11 +63,25 @@ const (
 	AppTypeNative
 )
 
+// subscription is one waiter registered with the read loop. The read loop
+// delivers the first message matching filter to ch; the channel has capacity 1
+// so delivery never blocks a one-shot consumer.
+type subscription struct {
+	filter func(*wendypb.WendyComMessage) bool
+	ch     chan *wendypb.WendyComMessage
+}
+
 type WendyLiteClient struct {
 	conn                io.ReadWriteCloser
 	isSerial            bool
-	requestIdGen        uint32
+	requestIdGen        atomic.Uint32
 	peerProtocolVersion protocolVersion
+
+	writeMu sync.Mutex // serializes writeMessage across command goroutines
+
+	mu      sync.Mutex // guards subs and readErr
+	subs    []*subscription
+	readErr error // set once the read loop dies; refuses new subscriptions
 }
 
 func NewWendyLiteClient() *WendyLiteClient {
@@ -83,6 +101,7 @@ func (c *WendyLiteClient) ConnectInsecure(address string) error {
 		c.conn = nil
 		return fmt.Errorf("handshake: %w", err)
 	}
+	go c.readLoop()
 	return nil
 }
 
@@ -127,6 +146,7 @@ func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert t
 		c.conn = nil
 		return fmt.Errorf("handshake: %w", err)
 	}
+	go c.readLoop()
 	return nil
 }
 
@@ -152,6 +172,7 @@ func (c *WendyLiteClient) ConnectToSerial(device string) error {
 		c.conn = nil
 		return fmt.Errorf("handshake: %w", err)
 	}
+	go c.readLoop()
 	return nil
 }
 
@@ -222,9 +243,8 @@ func (c *WendyLiteClient) Close() error {
 }
 
 func (c *WendyLiteClient) Ping() error {
-	c.requestIdGen++
 	resp, err := c.sendCommand(&wendypb.WendyComCommand{
-		RequestId: c.requestIdGen,
+		RequestId: c.requestIdGen.Add(1),
 		Params: &wendypb.WendyComCommand_Ping{
 			Ping: &wendypb.WendyComPingParams{},
 		},
@@ -239,11 +259,10 @@ func (c *WendyLiteClient) Ping() error {
 }
 
 func (c *WendyLiteClient) ResetTargetDevice() error {
-	c.requestIdGen++
 	// The device reboots on receipt, so no ack is expected.
 	return c.writeMessage(&wendypb.WendyComMessage{
 		Msg: &wendypb.WendyComMessage_Command{Command: &wendypb.WendyComCommand{
-			RequestId: c.requestIdGen,
+			RequestId: c.requestIdGen.Add(1),
 			Params: &wendypb.WendyComCommand_Reboot{
 				Reboot: &wendypb.WendyComRebootParams{},
 			},
@@ -277,9 +296,8 @@ func (c *WendyLiteClient) PushApp(path string, appType AppType, onProgress func(
 	}
 	size := uint32(info.Size())
 
-	c.requestIdGen++
 	resp, err := c.sendCommand(&wendypb.WendyComCommand{
-		RequestId: c.requestIdGen,
+		RequestId: c.requestIdGen.Add(1),
 		Params: &wendypb.WendyComCommand_AppPushBegin{
 			AppPushBegin: &wendypb.WendyComAppPushBeginParams{Size: size, AppType: pbAppType},
 		},
@@ -300,9 +318,8 @@ func (c *WendyLiteClient) PushApp(path string, appType AppType, onProgress func(
 	for {
 		n, err := f.Read(buf)
 		if n > 0 {
-			c.requestIdGen++
 			resp, serr := c.sendCommand(&wendypb.WendyComCommand{
-				RequestId: c.requestIdGen,
+				RequestId: c.requestIdGen.Add(1),
 				Params: &wendypb.WendyComCommand_AppPushData{
 					AppPushData: &wendypb.WendyComAppPushDataParams{
 						Offset: offset,
@@ -329,9 +346,8 @@ func (c *WendyLiteClient) PushApp(path string, appType AppType, onProgress func(
 		}
 	}
 
-	c.requestIdGen++
 	resp, err = c.sendCommand(&wendypb.WendyComCommand{
-		RequestId: c.requestIdGen,
+		RequestId: c.requestIdGen.Add(1),
 		Params: &wendypb.WendyComCommand_AppPushEnd{
 			AppPushEnd: &wendypb.WendyComAppPushEndParams{},
 		},
@@ -346,9 +362,8 @@ func (c *WendyLiteClient) PushApp(path string, appType AppType, onProgress func(
 }
 
 func (c *WendyLiteClient) StopApp() error {
-	c.requestIdGen++
 	resp, err := c.sendCommand(&wendypb.WendyComCommand{
-		RequestId: c.requestIdGen,
+		RequestId: c.requestIdGen.Add(1),
 		Params: &wendypb.WendyComCommand_AppStop{
 			AppStop: &wendypb.WendyComAppStopParams{},
 		},
@@ -363,9 +378,8 @@ func (c *WendyLiteClient) StopApp() error {
 }
 
 func (c *WendyLiteClient) StartApp() error {
-	c.requestIdGen++
 	resp, err := c.sendCommand(&wendypb.WendyComCommand{
-		RequestId: c.requestIdGen,
+		RequestId: c.requestIdGen.Add(1),
 		Params: &wendypb.WendyComCommand_AppStart{
 			AppStart: &wendypb.WendyComAppStartParams{},
 		},
@@ -380,9 +394,8 @@ func (c *WendyLiteClient) StartApp() error {
 }
 
 func (c *WendyLiteClient) GetDeviceIdentity(timeout time.Duration) (*DeviceIdentity, error) {
-	c.requestIdGen++
 	resp, err := c.sendCommand(&wendypb.WendyComCommand{
-		RequestId: c.requestIdGen,
+		RequestId: c.requestIdGen.Add(1),
 		Params: &wendypb.WendyComCommand_GetDeviceIdentity{
 			GetDeviceIdentity: &wendypb.WendyComGetDeviceIdentityParams{},
 		},
@@ -401,9 +414,8 @@ func (c *WendyLiteClient) GetDeviceIdentity(timeout time.Duration) (*DeviceIdent
 }
 
 func (c *WendyLiteClient) GetDeviceInfo(timeout time.Duration) (*DeviceInfo, error) {
-	c.requestIdGen++
 	resp, err := c.sendCommand(&wendypb.WendyComCommand{
-		RequestId: c.requestIdGen,
+		RequestId: c.requestIdGen.Add(1),
 		Params: &wendypb.WendyComCommand_GetDeviceInfo{
 			GetDeviceInfo: &wendypb.WendyComGetDeviceInfoParams{},
 		},
@@ -460,6 +472,9 @@ func (c *WendyLiteClient) writeMessage(req *wendypb.WendyComMessage) error {
 	if c.isSerial {
 		msg = bytes.ReplaceAll(msg, []byte{esc}, []byte{esc, '_'})
 	}
+	// Commands may now be sent from multiple goroutines; keep frames whole.
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	for len(msg) > 0 {
 		n, err := c.conn.Write(msg)
 		if err != nil {
@@ -470,12 +485,14 @@ func (c *WendyLiteClient) writeMessage(req *wendypb.WendyComMessage) error {
 	return nil
 }
 
-// roundTrip sends a message and reads the peer's reply message.
+// roundTrip sends a message and synchronously reads the peer's reply message.
+// Only valid before readLoop is started (i.e. during the handshake); once the
+// read loop owns the connection, use sendCommand/subscribe instead.
 func (c *WendyLiteClient) roundTrip(req *wendypb.WendyComMessage, timeout time.Duration) (*wendypb.WendyComMessage, error) {
 	if err := c.writeMessage(req); err != nil {
 		return nil, err
 	}
-	raw, err := c.readResponse(timeout)
+	raw, err := c.readRawMessage(timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -486,24 +503,105 @@ func (c *WendyLiteClient) roundTrip(req *wendypb.WendyComMessage, timeout time.D
 	return reply, nil
 }
 
+// subscribe registers a waiter with the read loop. Messages matching filter
+// are delivered to the returned subscription's channel until unsubscribe.
+func (c *WendyLiteClient) subscribe(filter func(*wendypb.WendyComMessage) bool) (*subscription, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.readErr != nil {
+		return nil, fmt.Errorf("connection lost: %w", c.readErr)
+	}
+	s := &subscription{filter: filter, ch: make(chan *wendypb.WendyComMessage, 1)}
+	c.subs = append(c.subs, s)
+	return s, nil
+}
+
+func (c *WendyLiteClient) unsubscribe(s *subscription) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.subs = slices.DeleteFunc(c.subs, func(x *subscription) bool { return x == s })
+}
+
+// readLoop receives every message from the device and hands it to the first
+// subscriber whose filter matches. It runs from the end of the handshake
+// until the connection dies.
+func (c *WendyLiteClient) readLoop() {
+	for {
+		raw, err := c.readRawMessage(0)
+		if err != nil {
+			c.failAll(err)
+			return
+		}
+		msg := &wendypb.WendyComMessage{}
+		if err := proto.Unmarshal(raw, msg); err != nil {
+			c.failAll(fmt.Errorf("unmarshal: %w", err))
+			return
+		}
+		c.dispatch(msg)
+	}
+}
+
+func (c *WendyLiteClient) dispatch(msg *wendypb.WendyComMessage) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, s := range c.subs {
+		if s.filter(msg) {
+			s.ch <- msg
+			return
+		}
+	}
+	log.Printf("wendycom: unhandled message from device: %v", msg)
+}
+
+// failAll marks the connection dead and wakes every pending subscriber by
+// closing its channel.
+func (c *WendyLiteClient) failAll(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.readErr = err
+	for _, s := range c.subs {
+		close(s.ch)
+	}
+	c.subs = nil
+}
+
+// sendCommand subscribes for the matching response, sends the command, and
+// waits for the response or the timeout. A timeout <= 0 means no deadline.
 func (c *WendyLiteClient) sendCommand(cmd *wendypb.WendyComCommand, timeout time.Duration) (*wendypb.WendyComResponse, error) {
-	reply, err := c.roundTrip(&wendypb.WendyComMessage{
-		Msg: &wendypb.WendyComMessage_Command{Command: cmd},
-	}, timeout)
+	// Subscribe before sending so a fast reply can't slip past us.
+	sub, err := c.subscribe(func(m *wendypb.WendyComMessage) bool {
+		r := m.GetResponse()
+		return r != nil && r.RequestId == cmd.RequestId
+	})
 	if err != nil {
 		return nil, err
 	}
-	resp := reply.GetResponse()
-	if resp == nil {
-		return nil, fmt.Errorf("unexpected message type from device")
+	defer c.unsubscribe(sub)
+
+	if err := c.writeMessage(&wendypb.WendyComMessage{
+		Msg: &wendypb.WendyComMessage_Command{Command: cmd},
+	}); err != nil {
+		return nil, err
 	}
-	if cmd.RequestId != resp.RequestId {
-		return nil, fmt.Errorf("unexpected response: request ID mismatch")
+
+	var timer <-chan time.Time
+	if timeout > 0 {
+		timer = time.After(timeout)
 	}
-	return resp, nil
+	select {
+	case msg, ok := <-sub.ch:
+		if !ok {
+			return nil, fmt.Errorf("connection lost: %w", c.readErr)
+		}
+		return msg.GetResponse(), nil
+	case <-timer:
+		return nil, fmt.Errorf("timeout waiting for response to request %d", cmd.RequestId)
+	}
 }
 
-func (c *WendyLiteClient) readResponse(timeout time.Duration) ([]byte, error) {
+// readRawMessage reads one framed message of any kind (response, event, handshake)
+// and returns its raw body. A timeout <= 0 means no deadline.
+func (c *WendyLiteClient) readRawMessage(timeout time.Duration) ([]byte, error) {
 	header := make([]byte, headerSize)
 	if err := c.readFull(header, timeout); err != nil {
 		return nil, fmt.Errorf("reading header: %w", err)
