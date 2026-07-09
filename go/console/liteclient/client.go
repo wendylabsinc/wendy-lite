@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -231,27 +232,23 @@ func (c *WendyLiteClient) Ping() error {
 	if err != nil {
 		return err
 	}
-	if resp.Result != wendypb.WendyComResult_WENDY_COM_RESULT_OK {
-		return fmt.Errorf("device returned error %d", resp.Result)
+	if err := resultToError(resp.Result); err != nil {
+		return fmt.Errorf("device returned error: %w", err)
 	}
 	return nil
 }
 
 func (c *WendyLiteClient) ResetTargetDevice() error {
 	c.requestIdGen++
-	resp, err := c.sendCommand(&wendypb.WendyComCommand{
-		RequestId: c.requestIdGen,
-		Params: &wendypb.WendyComCommand_Reboot{
-			Reboot: &wendypb.WendyComRebootParams{},
-		},
-	}, 0)
-	if err != nil {
-		return err
-	}
-	if resp.Result != wendypb.WendyComResult_WENDY_COM_RESULT_OK {
-		return fmt.Errorf("device returned error %d", resp.Result)
-	}
-	return nil
+	// The device reboots on receipt, so no ack is expected.
+	return c.writeMessage(&wendypb.WendyComMessage{
+		Msg: &wendypb.WendyComMessage_Command{Command: &wendypb.WendyComCommand{
+			RequestId: c.requestIdGen,
+			Params: &wendypb.WendyComCommand_Reboot{
+				Reboot: &wendypb.WendyComRebootParams{},
+			},
+		}},
+	})
 }
 
 func (c *WendyLiteClient) PushApp(path string, appType AppType, onProgress func(written, total uint32)) error {
@@ -290,8 +287,8 @@ func (c *WendyLiteClient) PushApp(path string, appType AppType, onProgress func(
 	if err != nil {
 		return fmt.Errorf("push begin: %w", err)
 	}
-	if resp.Result != wendypb.WendyComResult_WENDY_COM_RESULT_OK {
-		return fmt.Errorf("push begin: device returned error %d", resp.Result)
+	if err := resultToError(resp.Result); err != nil {
+		return fmt.Errorf("push begin: device returned error: %w", err)
 	}
 
 	chunk := chunkSize
@@ -316,8 +313,8 @@ func (c *WendyLiteClient) PushApp(path string, appType AppType, onProgress func(
 			if serr != nil {
 				return fmt.Errorf("push data at offset %d: %w", offset, serr)
 			}
-			if resp.Result != wendypb.WendyComResult_WENDY_COM_RESULT_OK {
-				return fmt.Errorf("push data at offset %d: device returned error %d", offset, resp.Result)
+			if err := resultToError(resp.Result); err != nil {
+				return fmt.Errorf("push data at offset %d: device returned error: %w", offset, err)
 			}
 			offset += uint32(n)
 			if onProgress != nil {
@@ -342,8 +339,8 @@ func (c *WendyLiteClient) PushApp(path string, appType AppType, onProgress func(
 	if err != nil {
 		return fmt.Errorf("push end: %w", err)
 	}
-	if resp.Result != wendypb.WendyComResult_WENDY_COM_RESULT_OK {
-		return fmt.Errorf("push end: device returned error %d", resp.Result)
+	if err := resultToError(resp.Result); err != nil {
+		return fmt.Errorf("push end: device returned error: %w", err)
 	}
 	return nil
 }
@@ -359,8 +356,8 @@ func (c *WendyLiteClient) StopApp() error {
 	if err != nil {
 		return err
 	}
-	if resp.Result != wendypb.WendyComResult_WENDY_COM_RESULT_OK {
-		return fmt.Errorf("device returned error %d", resp.Result)
+	if err := resultToError(resp.Result); err != nil {
+		return fmt.Errorf("device returned error: %w", err)
 	}
 	return nil
 }
@@ -376,8 +373,8 @@ func (c *WendyLiteClient) StartApp() error {
 	if err != nil {
 		return err
 	}
-	if resp.Result != wendypb.WendyComResult_WENDY_COM_RESULT_OK {
-		return fmt.Errorf("device returned error %d", resp.Result)
+	if err := resultToError(resp.Result); err != nil {
+		return fmt.Errorf("device returned error: %w", err)
 	}
 	return nil
 }
@@ -393,8 +390,8 @@ func (c *WendyLiteClient) GetDeviceIdentity(timeout time.Duration) (*DeviceIdent
 	if err != nil {
 		return nil, err
 	}
-	if resp.Result != wendypb.WendyComResult_WENDY_COM_RESULT_OK {
-		return nil, fmt.Errorf("device returned error %d", resp.Result)
+	if err := resultToError(resp.Result); err != nil {
+		return nil, fmt.Errorf("device returned error: %w", err)
 	}
 	di := resp.GetDeviceIdentity()
 	if di == nil {
@@ -414,8 +411,8 @@ func (c *WendyLiteClient) GetDeviceInfo(timeout time.Duration) (*DeviceInfo, err
 	if err != nil {
 		return nil, err
 	}
-	if resp.Result != wendypb.WendyComResult_WENDY_COM_RESULT_OK {
-		return nil, fmt.Errorf("device returned error %d", resp.Result)
+	if err := resultToError(resp.Result); err != nil {
+		return nil, fmt.Errorf("device returned error: %w", err)
 	}
 	di := resp.GetDeviceInfo()
 	if di == nil {
@@ -431,10 +428,29 @@ func (c *WendyLiteClient) GetDeviceInfo(timeout time.Duration) (*DeviceInfo, err
 	}, nil
 }
 
-func (c *WendyLiteClient) sendMessage(req *wendypb.WendyComMessage, timeout time.Duration) (*wendypb.WendyComMessage, error) {
+func resultToError(result wendypb.WendyComResult) error {
+	switch result {
+	case wendypb.WendyComResult_WENDY_COM_RESULT_OK:
+		return nil
+	case wendypb.WendyComResult_WENDY_COM_RESULT_BAD_PROTOCOL_VERSION:
+		return errors.New("bad protocol version")
+	case wendypb.WendyComResult_WENDY_COM_RESULT_BAD_STATE:
+		return errors.New("bad state")
+	case wendypb.WendyComResult_WENDY_COM_RESULT_BUSY:
+		return errors.New("device busy")
+	case wendypb.WendyComResult_WENDY_COM_RESULT_BAD_APP_TYPE:
+		return errors.New("bad app type")
+	case wendypb.WendyComResult_WENDY_COM_RESULT_BAD_APP_SIZE:
+		return errors.New("bad app size")
+	default: // includes WENDY_COM_RESULT_UNKNOWN_ERROR
+		return fmt.Errorf("error %d", int32(result))
+	}
+}
+
+func (c *WendyLiteClient) writeMessage(req *wendypb.WendyComMessage) error {
 	body, err := proto.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("marshal: %w", err)
+		return fmt.Errorf("marshal: %w", err)
 	}
 	msg := make([]byte, headerSize+len(body))
 	msg[0] = headerMagic
@@ -447,9 +463,17 @@ func (c *WendyLiteClient) sendMessage(req *wendypb.WendyComMessage, timeout time
 	for len(msg) > 0 {
 		n, err := c.conn.Write(msg)
 		if err != nil {
-			return nil, fmt.Errorf("send: %w", err)
+			return fmt.Errorf("send: %w", err)
 		}
 		msg = msg[n:]
+	}
+	return nil
+}
+
+// roundTrip sends a message and reads the peer's reply message.
+func (c *WendyLiteClient) roundTrip(req *wendypb.WendyComMessage, timeout time.Duration) (*wendypb.WendyComMessage, error) {
+	if err := c.writeMessage(req); err != nil {
+		return nil, err
 	}
 	raw, err := c.readResponse(timeout)
 	if err != nil {
@@ -463,7 +487,7 @@ func (c *WendyLiteClient) sendMessage(req *wendypb.WendyComMessage, timeout time
 }
 
 func (c *WendyLiteClient) sendCommand(cmd *wendypb.WendyComCommand, timeout time.Duration) (*wendypb.WendyComResponse, error) {
-	reply, err := c.sendMessage(&wendypb.WendyComMessage{
+	reply, err := c.roundTrip(&wendypb.WendyComMessage{
 		Msg: &wendypb.WendyComMessage_Command{Command: cmd},
 	}, timeout)
 	if err != nil {
@@ -553,7 +577,7 @@ func (c *WendyLiteClient) handshake() error {
 		return fmt.Errorf("handshake id: %w", err)
 	}
 	id := binary.BigEndian.Uint32(b[:])
-	reply, err := c.sendMessage(&wendypb.WendyComMessage{
+	reply, err := c.roundTrip(&wendypb.WendyComMessage{
 		Msg: &wendypb.WendyComMessage_Handshake{
 			Handshake: &wendypb.WendyComHandshake{
 				HandshakeId: id,
