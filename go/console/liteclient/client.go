@@ -58,14 +58,27 @@ type DeviceInfo struct {
 
 type AppType int
 
+// ConsoleChunk is one piece of console output streamed by the device.
+type ConsoleChunk struct {
+	Gap    bool // data was lost before this chunk
+	Stderr bool
+	Data   []byte
+}
+
 const (
 	AppTypeWasm AppType = iota
 	AppTypeNative
+
+	// consoleLease is the attachment duration requested in rolling mode;
+	// consoleRenew re-arms it well before it expires.
+	consoleLease = 20 * time.Second
+	consoleRenew = 10 * time.Second
 )
 
 // subscription is one waiter registered with the read loop. The read loop
-// delivers the first message matching filter to ch; the channel has capacity 1
-// so delivery never blocks a one-shot consumer.
+// delivers every message matching filter to ch. The channel capacity is a
+// throughput smoother, not a correctness mechanism: dispatch blocks on a full
+// channel, so a subscriber must keep draining until unsubscribed.
 type subscription struct {
 	filter func(*wendypb.WendyComMessage) bool
 	ch     chan *wendypb.WendyComMessage
@@ -75,6 +88,7 @@ type WendyLiteClient struct {
 	conn                io.ReadWriteCloser
 	isSerial            bool
 	requestIdGen        atomic.Uint32
+	eventIdGen          atomic.Uint32
 	peerProtocolVersion protocolVersion
 
 	writeMu sync.Mutex // serializes writeMessage across command goroutines
@@ -440,6 +454,128 @@ func (c *WendyLiteClient) GetDeviceInfo(timeout time.Duration) (*DeviceInfo, err
 	}, nil
 }
 
+// ConsoleAttach asks the device to stream its console output and returns the
+// chunk channel plus an idempotent detach function. The channel is closed on
+// detach and on connection loss. detach stops local delivery, then tells the
+// device to stop streaming and returns its result.
+//
+// With rollingMode the attachment is a lease: it is requested for
+// consoleLease and silently renewed every consoleRenew, so the device
+// detaches by itself within consoleLease if this client dies without
+// detaching. Without rollingMode the device stays attached until detach.
+func (c *WendyLiteClient) ConsoleAttach(rollingMode bool) (<-chan ConsoleChunk, func() error, error) {
+	eventID := c.eventIdGen.Add(1)
+
+	// Subscribe before attaching so no chunk is lost.
+	sub, err := c.subscribe(func(m *wendypb.WendyComMessage) bool {
+		e := m.GetEvent()
+		return e != nil && e.GetEventId() == eventID && e.GetConsoleData() != nil
+	}, 16)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var lease time.Duration
+	if rollingMode {
+		lease = consoleLease
+	}
+	if err := c.sendConsoleAttach(eventID, lease); err != nil {
+		c.unsubscribe(sub)
+		return nil, nil, err
+	}
+
+	out := make(chan ConsoleChunk)
+	done := make(chan struct{})  // closed by detach
+	ended := make(chan struct{}) // closed once sub.ch is closed (detach or connection loss)
+	go func() {
+		for msg := range sub.ch {
+			cd := msg.GetEvent().GetConsoleData()
+			chunk := ConsoleChunk{
+				Gap:    cd.GetGap(),
+				Stderr: cd.GetIo() == wendypb.WendyComConsoleIo_WENDY_COM_CONSOLE_IO_STANDARD_ERROR,
+				Data:   cd.GetData(),
+			}
+			// Keep draining sub.ch after detach: a dispatch blocked on a full
+			// sub.ch holds the client mutex, and detach's unsubscribe needs
+			// that mutex — discarding here breaks the cycle.
+			select {
+			case out <- chunk:
+			case <-done:
+			}
+		}
+		close(ended)
+		close(out)
+	}()
+
+	var renewer sync.WaitGroup
+	if rollingMode {
+		renewer.Add(1)
+		go func() {
+			defer renewer.Done()
+			ticker := time.NewTicker(consoleRenew)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					// A failed renewal is not fatal: the next tick retries,
+					// and a lost connection ends the loop via ended.
+					_ = c.sendConsoleAttach(eventID, consoleLease)
+				case <-ended:
+					return
+				}
+			}
+		}()
+	}
+
+	var once sync.Once
+	var detachErr error
+	detach := func() error {
+		once.Do(func() {
+			close(done)
+			c.unsubscribe(sub)
+			renewer.Wait() // no renewal may land after the detach command
+			detachErr = c.sendConsoleDetach(eventID)
+		})
+		return detachErr
+	}
+	return out, detach, nil
+}
+
+func (c *WendyLiteClient) sendConsoleAttach(eventID uint32, duration time.Duration) error {
+	resp, err := c.sendCommand(&wendypb.WendyComCommand{
+		RequestId: c.requestIdGen.Add(1),
+		Params: &wendypb.WendyComCommand_ConsoleAttach{
+			ConsoleAttach: &wendypb.WendyComConsoleAttachParams{
+				EventId:  eventID,
+				Duration: uint32(duration / time.Millisecond),
+			},
+		},
+	}, 0)
+	if err != nil {
+		return err
+	}
+	if err := resultToError(resp.Result); err != nil {
+		return fmt.Errorf("device returned error: %w", err)
+	}
+	return nil
+}
+
+func (c *WendyLiteClient) sendConsoleDetach(eventID uint32) error {
+	resp, err := c.sendCommand(&wendypb.WendyComCommand{
+		RequestId: c.requestIdGen.Add(1),
+		Params: &wendypb.WendyComCommand_ConsoleDetach{
+			ConsoleDetach: &wendypb.WendyComConsoleDetachParams{EventId: eventID},
+		},
+	}, 0)
+	if err != nil {
+		return err
+	}
+	if err := resultToError(resp.Result); err != nil {
+		return fmt.Errorf("device returned error: %w", err)
+	}
+	return nil
+}
+
 func resultToError(result wendypb.WendyComResult) error {
 	switch result {
 	case wendypb.WendyComResult_WENDY_COM_RESULT_OK:
@@ -505,21 +641,30 @@ func (c *WendyLiteClient) roundTrip(req *wendypb.WendyComMessage, timeout time.D
 
 // subscribe registers a waiter with the read loop. Messages matching filter
 // are delivered to the returned subscription's channel until unsubscribe.
-func (c *WendyLiteClient) subscribe(filter func(*wendypb.WendyComMessage) bool) (*subscription, error) {
+// Subscribers are notified in reverse order of subscription: the most recent
+// subscriber receives messages first.
+func (c *WendyLiteClient) subscribe(filter func(*wendypb.WendyComMessage) bool, capacity int) (*subscription, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.readErr != nil {
 		return nil, fmt.Errorf("connection lost: %w", c.readErr)
 	}
-	s := &subscription{filter: filter, ch: make(chan *wendypb.WendyComMessage, 1)}
+	s := &subscription{filter: filter, ch: make(chan *wendypb.WendyComMessage, capacity)}
 	c.subs = append(c.subs, s)
 	return s, nil
 }
 
+// unsubscribe removes the subscriber and closes its channel. If failAll already tore the
+// subscription down (connection lost), the channel is already closed and must
+// not be closed again — hence close only when the subscriber was actually removed here.
 func (c *WendyLiteClient) unsubscribe(s *subscription) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	n := len(c.subs)
 	c.subs = slices.DeleteFunc(c.subs, func(x *subscription) bool { return x == s })
+	if len(c.subs) < n {
+		close(s.ch)
+	}
 }
 
 // readLoop receives every message from the device and hands it to the first
@@ -544,11 +689,16 @@ func (c *WendyLiteClient) readLoop() {
 func (c *WendyLiteClient) dispatch(msg *wendypb.WendyComMessage) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, s := range c.subs {
-		if s.filter(msg) {
+	for i := len(c.subs) - 1; i >= 0; i-- {
+		if s := c.subs[i]; s.filter(msg) {
 			s.ch <- msg
 			return
 		}
+	}
+	// Events may legitimately trail their subscription (e.g. console chunks
+	// after detach); logging them would dump raw payloads to stderr.
+	if msg.GetEvent() != nil {
+		return
 	}
 	log.Printf("wendycom: unhandled message from device: %v", msg)
 }
@@ -572,7 +722,7 @@ func (c *WendyLiteClient) sendCommand(cmd *wendypb.WendyComCommand, timeout time
 	sub, err := c.subscribe(func(m *wendypb.WendyComMessage) bool {
 		r := m.GetResponse()
 		return r != nil && r.RequestId == cmd.RequestId
-	})
+	}, 1)
 	if err != nil {
 		return nil, err
 	}

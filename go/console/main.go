@@ -113,15 +113,68 @@ func run(target string) error {
 			fmt.Printf("wasm_app_support:   %t\n", info.WasmAppSupport)
 			fmt.Printf("native_app_support: %t\n", info.NativeAppSupport)
 
+		case "console":
+			switch strings.TrimSpace(arg) {
+			case "":
+				runConsole(client, scanner, false)
+			case "--rolling":
+				runConsole(client, scanner, true)
+			default:
+				fmt.Fprintln(os.Stderr, "usage: console [--rolling]")
+			}
+
 		case "quit", "exit":
 			return nil
 
 		default:
 			fmt.Fprintf(os.Stderr, "unknown command: %q\n", cmd)
-			fmt.Fprintln(os.Stderr, "commands: ping, reset, push, start, stop, identity, info, quit")
+			fmt.Fprintln(os.Stderr, "commands: ping, reset, push, start, stop, identity, info, console, quit")
 		}
 	}
 	return scanner.Err()
+}
+
+// runConsole streams the device's console output until the user presses
+// Enter. It never returns before the Enter-watcher goroutine's Scan has
+// completed: the REPL reuses scanner, and two concurrent Scan calls on one
+// bufio.Scanner are invalid.
+func runConsole(client *liteclient.WendyLiteClient, scanner *bufio.Scanner, rolling bool) {
+	ch, detach, err := client.ConsoleAttach(rolling)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "console attach:", err)
+		return
+	}
+	fmt.Fprintln(os.Stderr, "streaming console output — press Enter to stop")
+
+	enter := make(chan struct{})
+	go func() {
+		scanner.Scan()
+		close(enter)
+	}()
+
+	for {
+		select {
+		case chunk, ok := <-ch:
+			if !ok {
+				fmt.Fprintln(os.Stderr, "connection lost — press Enter")
+				<-enter
+				return
+			}
+			w := os.Stdout
+			if chunk.Stderr {
+				w = os.Stderr
+			}
+			if chunk.Gap {
+				fmt.Fprint(w, "[…output lost…]")
+			}
+			w.Write(chunk.Data)
+		case <-enter:
+			if err := detach(); err != nil {
+				fmt.Fprintln(os.Stderr, "console detach:", err)
+			}
+			return
+		}
+	}
 }
 
 func main() {

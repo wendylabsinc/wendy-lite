@@ -42,6 +42,21 @@ PB_BIND(WendyComDeviceIdentity, WendyComDeviceIdentity, AUTO)
 PB_BIND(WendyComGetDeviceInfoParams, WendyComGetDeviceInfoParams, AUTO)
 
 
+PB_BIND(WendyComConsoleAttachParams, WendyComConsoleAttachParams, AUTO)
+
+
+PB_BIND(WendyComConsoleDetachParams, WendyComConsoleDetachParams, AUTO)
+
+
+PB_BIND(WendyComConsoleBegin, WendyComConsoleBegin, AUTO)
+
+
+PB_BIND(WendyComConsoleData, WendyComConsoleData, AUTO)
+
+
+PB_BIND(WendyComConsoleEnd, WendyComConsoleEnd, AUTO)
+
+
 PB_BIND(WendyComDeviceInfo, WendyComDeviceInfo, AUTO)
 
 
@@ -55,6 +70,8 @@ PB_BIND(WendyComEvent, WendyComEvent, AUTO)
 
 
 PB_BIND(WendyComMessage, WendyComMessage, AUTO)
+
+
 
 
 

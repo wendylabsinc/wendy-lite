@@ -1,6 +1,22 @@
 #ifndef WENDY_COM_AGENT_H
 #define WENDY_COM_AGENT_H
 
+#include <stdint.h>
+
+// Framing of every message exchanged with the host (big-endian body_size).
+
+#define WCOM_AGENT_MSG_MAGIC 0xA5
+#define WCOM_AGENT_MSG_VERSION 2
+
+struct wcom_agent_msg_header {
+    uint8_t magic;
+    uint8_t version;
+    uint8_t category;
+    uint8_t channel;
+    uint16_t reserved;
+    uint16_t body_size;
+};
+
 void wcom_agent_init(void);
 
 #endif

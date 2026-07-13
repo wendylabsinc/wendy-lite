@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "wendy_com_common.h"
+#include "wendy_com_stdio_pump.h"
 #include <pb_encode.h>
 
 
@@ -124,6 +125,19 @@ WendyComResult wcom_cmd_get_device_info(WendyComDeviceInfo *out)
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 
+WendyComResult wcom_cmd_console_attach(int client_id, uint32_t event_id, uint32_t duration_ms)
+{
+    ESP_LOGI(TAG, "CONSOLE_ATTACH client=%d event_id=%u duration=%ums",
+             client_id, (unsigned)event_id, (unsigned)duration_ms);
+    return wcom_stdio_pump_attach(client_id, event_id, duration_ms);
+}
+
+WendyComResult wcom_cmd_console_detach(int client_id, uint32_t event_id)
+{
+    ESP_LOGI(TAG, "CONSOLE_DETACH client=%d event_id=%u", client_id, (unsigned)event_id);
+    return wcom_stdio_pump_detach(client_id, event_id);
+}
+
 void wcom_cmd_client_disconnected(int client_id)
 {
     if (client_id == _pushing_client_id) {
@@ -132,6 +146,7 @@ void wcom_cmd_client_disconnected(int client_id)
         if (_app_delegate && _app_delegate->on_app_push_abort)
             _app_delegate->on_app_push_abort();
     }
+    wcom_stdio_pump_client_disconnected(client_id);
 }
 
 void wcom_cmd_set_app_delegate(const struct wcom_app_delegate *delegate)

@@ -1,3 +1,4 @@
 # nanopb field options — string sizes must be bounded for static allocation on MCU
 
 WendyComAppPushDataParams.data   type:FT_CALLBACK
+WendyComConsoleData.data         type:FT_CALLBACK

@@ -9,26 +9,14 @@
 #include <pb_encode.h>
 
 
-#define _AGENT_MSG_MAGIC 0xA5
-#define _AGENT_MSG_VERSION 2
-
 #define _PROTOCOL_VERSION_MAJOR 2
 #define _PROTOCOL_VERSION_MINOR 0
 
 
-struct _agent_msg_header {
-    uint8_t magic;
-    uint8_t version;
-    uint8_t category;
-    uint8_t channel;
-    uint16_t reserved;
-    uint16_t body_size;
-};
-
 struct _agent_link {
     int link_id;
     bool handshake_done;
-    struct _agent_msg_header header;
+    struct wcom_agent_msg_header header;
     struct wcom_rx_chunk rx_chunk;
     struct wcom_tx_chunk tx_chunks[2];
     char static_buf[256];
@@ -110,8 +98,8 @@ static void _done_sending_msg(int link_id, const struct wcom_tx_chunk *chunk, bo
 
 static void _start_sending_msg(struct _agent_link *link, void *body, size_t size)
 {
-    link->header.magic = _AGENT_MSG_MAGIC;
-    link->header.version = _AGENT_MSG_VERSION;
+    link->header.magic = WCOM_AGENT_MSG_MAGIC;
+    link->header.version = WCOM_AGENT_MSG_VERSION;
     link->header.category = 0;
     link->header.reserved = 0;
     link->header.body_size = htons(size);
@@ -216,6 +204,15 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
         resp->which_data = WendyComResponse_device_info_tag;
         resp->result = wcom_cmd_get_device_info(&resp->data.device_info);
         break;
+    case WendyComCommand_console_attach_tag:
+        resp->result = wcom_cmd_console_attach(link->link_id,
+                                               cmd->params.console_attach.event_id,
+                                               cmd->params.console_attach.duration);
+        break;
+    case WendyComCommand_console_detach_tag:
+        resp->result = wcom_cmd_console_detach(link->link_id,
+                                               cmd->params.console_detach.event_id);
+        break;
     default:
         ESP_LOGW(TAG, "ch%d unknown cmd (which_params=%d)", link->link_id, cmd->which_params);
         resp->result = WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
@@ -300,8 +297,8 @@ static void _done_recv_header(int link_id, const struct wcom_rx_chunk *chunk, bo
     if (link_id != link->link_id)
         return;
 
-    if (link->header.magic != _AGENT_MSG_MAGIC ||
-        link->header.version != _AGENT_MSG_VERSION ||
+    if (link->header.magic != WCOM_AGENT_MSG_MAGIC ||
+        link->header.version != WCOM_AGENT_MSG_VERSION ||
         link->header.category != 0) {
         ESP_LOGE(TAG, "invalid message header received on link %d", link->link_id);
         wcom_close(link_id);
