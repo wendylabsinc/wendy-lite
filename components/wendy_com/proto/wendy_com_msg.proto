@@ -58,6 +58,7 @@ message WendyComGetDeviceInfoParams {}
 message WendyComConsoleAttachParams {
     uint32 event_id = 1;
     uint32 duration = 2;   // milliseconds; 0 = no deadline (attach forever)
+    bool   blocking = 3;   // writers block when the capture buffer is full, instead of overwriting oldest data
 }
 
 // Params for WENDY_COM_CMD_CONSOLE_DETACH — stop streaming console output.

@@ -1,6 +1,7 @@
 #ifndef WENDY_COM_STDIO_PUMP_H
 #define WENDY_COM_STDIO_PUMP_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include "wendy_com_msg.pb.h"
 
@@ -13,9 +14,11 @@
  * console_data events carrying event_id. Re-attaching with the same
  * client_id/event_id just extends the deadline; a different attachment
  * replaces the current one. duration_ms bounds the attachment lifetime
- * (0 = forever).
+ * (0 = forever). blocking_mode selects the stdio capture mode (see
+ * wcom_stdio_set_blocking()) and is applied on every attach; detaching
+ * always restores non-blocking mode.
  */
-WendyComResult wcom_stdio_pump_attach(int client_id, uint32_t event_id, uint32_t duration_ms);
+WendyComResult wcom_stdio_pump_attach(int client_id, uint32_t event_id, uint32_t duration_ms, bool blocking_mode);
 
 /**
  * Detach the current attachment; fails if client_id/event_id don't match it.

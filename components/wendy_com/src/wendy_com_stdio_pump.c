@@ -80,6 +80,7 @@ static bool _encode_bytes(pb_ostream_t *stream, const pb_field_t *field, void * 
 static void _detach(void)
 {
     wcom_stdio_set_data_handler(NULL, NULL);
+    wcom_stdio_set_blocking(false); // writers must never stay blocked with nobody draining
     _state.attached = false;
     _free_body_if_unused();
 }
@@ -175,12 +176,13 @@ static void _pump(void)
     wcom_send(_state.link_id, &_event_slot.tx_chunks[0]);
 }
 
-WendyComResult wcom_stdio_pump_attach(int client_id, uint32_t event_id, uint32_t duration_ms)
+WendyComResult wcom_stdio_pump_attach(int client_id, uint32_t event_id, uint32_t duration_ms, bool blocking_mode)
 {
     int64_t deadline_us = duration_ms > 0 ?
         esp_timer_get_time() + (int64_t)duration_ms * 1000 : INT64_MAX; // 0 = forever
     if (_state.attached && _state.link_id == client_id && _state.event_id == event_id) {
         _state.deadline_us = deadline_us;
+        wcom_stdio_set_blocking(blocking_mode);
         _schedule_pump();
         return WendyComResult_WENDY_COM_RESULT_OK;
     }
@@ -190,6 +192,7 @@ WendyComResult wcom_stdio_pump_attach(int client_id, uint32_t event_id, uint32_t
     _state.link_id = client_id;
     _state.event_id = event_id;
     _state.deadline_us = deadline_us;
+    wcom_stdio_set_blocking(blocking_mode);
     wcom_stdio_set_data_handler(_data_handler, NULL);
     /* Deferred first drain: the kick op runs after the attach response is
        queued (so the response frame precedes the first event frame) and

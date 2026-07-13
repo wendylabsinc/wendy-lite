@@ -125,11 +125,11 @@ WendyComResult wcom_cmd_get_device_info(WendyComDeviceInfo *out)
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 
-WendyComResult wcom_cmd_console_attach(int client_id, uint32_t event_id, uint32_t duration_ms)
+WendyComResult wcom_cmd_console_attach(int client_id, uint32_t event_id, uint32_t duration_ms, bool blocking)
 {
-    ESP_LOGI(TAG, "CONSOLE_ATTACH client=%d event_id=%u duration=%ums",
-             client_id, (unsigned)event_id, (unsigned)duration_ms);
-    return wcom_stdio_pump_attach(client_id, event_id, duration_ms);
+    ESP_LOGI(TAG, "CONSOLE_ATTACH client=%d event_id=%u duration=%ums blocking=%d",
+             client_id, (unsigned)event_id, (unsigned)duration_ms, (int)blocking);
+    return wcom_stdio_pump_attach(client_id, event_id, duration_ms, blocking);
 }
 
 WendyComResult wcom_cmd_console_detach(int client_id, uint32_t event_id)

@@ -207,7 +207,8 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
     case WendyComCommand_console_attach_tag:
         resp->result = wcom_cmd_console_attach(link->link_id,
                                                cmd->params.console_attach.event_id,
-                                               cmd->params.console_attach.duration);
+                                               cmd->params.console_attach.duration,
+                                               cmd->params.console_attach.blocking);
         break;
     case WendyComCommand_console_detach_tag:
         resp->result = wcom_cmd_console_detach(link->link_id,

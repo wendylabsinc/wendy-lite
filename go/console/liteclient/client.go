@@ -463,7 +463,12 @@ func (c *WendyLiteClient) GetDeviceInfo(timeout time.Duration) (*DeviceInfo, err
 // consoleLease and silently renewed every consoleRenew, so the device
 // detaches by itself within consoleLease if this client dies without
 // detaching. Without rollingMode the device stays attached until detach.
-func (c *WendyLiteClient) ConsoleAttach(rollingMode bool) (<-chan ConsoleChunk, func() error, error) {
+//
+// With blockingMode the device captures losslessly: writers on the device
+// block when the capture buffer is full, until it is drained. Without
+// blockingMode the oldest buffered data is dropped instead and the loss is
+// reported as a gap.
+func (c *WendyLiteClient) ConsoleAttach(rollingMode bool, blockingMode bool) (<-chan ConsoleChunk, func() error, error) {
 	eventID := c.eventIdGen.Add(1)
 
 	// Subscribe before attaching so no chunk is lost.
@@ -479,7 +484,7 @@ func (c *WendyLiteClient) ConsoleAttach(rollingMode bool) (<-chan ConsoleChunk, 
 	if rollingMode {
 		lease = consoleLease
 	}
-	if err := c.sendConsoleAttach(eventID, lease); err != nil {
+	if err := c.sendConsoleAttach(eventID, lease, blockingMode); err != nil {
 		c.unsubscribe(sub)
 		return nil, nil, err
 	}
@@ -519,7 +524,7 @@ func (c *WendyLiteClient) ConsoleAttach(rollingMode bool) (<-chan ConsoleChunk, 
 				case <-ticker.C:
 					// A failed renewal is not fatal: the next tick retries,
 					// and a lost connection ends the loop via ended.
-					_ = c.sendConsoleAttach(eventID, consoleLease)
+					_ = c.sendConsoleAttach(eventID, consoleLease, blockingMode)
 				case <-ended:
 					return
 				}
@@ -541,13 +546,14 @@ func (c *WendyLiteClient) ConsoleAttach(rollingMode bool) (<-chan ConsoleChunk, 
 	return out, detach, nil
 }
 
-func (c *WendyLiteClient) sendConsoleAttach(eventID uint32, duration time.Duration) error {
+func (c *WendyLiteClient) sendConsoleAttach(eventID uint32, duration time.Duration, blocking bool) error {
 	resp, err := c.sendCommand(&wendypb.WendyComCommand{
 		RequestId: c.requestIdGen.Add(1),
 		Params: &wendypb.WendyComCommand_ConsoleAttach{
 			ConsoleAttach: &wendypb.WendyComConsoleAttachParams{
 				EventId:  eventID,
 				Duration: uint32(duration / time.Millisecond),
+				Blocking: blocking,
 			},
 		},
 	}, 0)
@@ -654,9 +660,10 @@ func (c *WendyLiteClient) subscribe(filter func(*wendypb.WendyComMessage) bool, 
 	return s, nil
 }
 
-// unsubscribe removes the subscriber and closes its channel. If failAll already tore the
-// subscription down (connection lost), the channel is already closed and must
-// not be closed again — hence close only when the subscriber was actually removed here.
+// unsubscribe removes the subscriber and closes its channel. If failAll has
+// already torn the subscription down (connection lost), the channel is already
+// closed and must not be closed again — hence the channel is only closed here
+// if the subscriber was actually removed.
 func (c *WendyLiteClient) unsubscribe(s *subscription) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

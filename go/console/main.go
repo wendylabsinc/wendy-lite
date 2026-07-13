@@ -114,14 +114,22 @@ func run(target string) error {
 			fmt.Printf("native_app_support: %t\n", info.NativeAppSupport)
 
 		case "console":
-			switch strings.TrimSpace(arg) {
-			case "":
-				runConsole(client, scanner, false)
-			case "--rolling":
-				runConsole(client, scanner, true)
-			default:
-				fmt.Fprintln(os.Stderr, "usage: console [--rolling]")
+			rolling, blocking, ok := false, true, true
+			for _, flag := range strings.Fields(arg) {
+				switch flag {
+				case "--rolling":
+					rolling = true
+				case "--noblocking":
+					blocking = false
+				default:
+					ok = false
+				}
 			}
+			if !ok {
+				fmt.Fprintln(os.Stderr, "usage: console [--rolling] [--noblocking]")
+				continue
+			}
+			runConsole(client, scanner, rolling, blocking)
 
 		case "quit", "exit":
 			return nil
@@ -138,8 +146,8 @@ func run(target string) error {
 // Enter. It never returns before the Enter-watcher goroutine's Scan has
 // completed: the REPL reuses scanner, and two concurrent Scan calls on one
 // bufio.Scanner are invalid.
-func runConsole(client *liteclient.WendyLiteClient, scanner *bufio.Scanner, rolling bool) {
-	ch, detach, err := client.ConsoleAttach(rolling)
+func runConsole(client *liteclient.WendyLiteClient, scanner *bufio.Scanner, rolling bool, blocking bool) {
+	ch, detach, err := client.ConsoleAttach(rolling, blocking)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "console attach:", err)
 		return

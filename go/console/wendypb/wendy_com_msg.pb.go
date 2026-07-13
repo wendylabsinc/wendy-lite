@@ -714,6 +714,7 @@ type WendyComConsoleAttachParams struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	EventId       uint32                 `protobuf:"varint,1,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
 	Duration      uint32                 `protobuf:"varint,2,opt,name=duration,proto3" json:"duration,omitempty"` // milliseconds; 0 = no deadline (attach forever)
+	Blocking      bool                   `protobuf:"varint,3,opt,name=blocking,proto3" json:"blocking,omitempty"` // writers block when the capture buffer is full, instead of overwriting oldest data
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -760,6 +761,13 @@ func (x *WendyComConsoleAttachParams) GetDuration() uint32 {
 		return x.Duration
 	}
 	return 0
+}
+
+func (x *WendyComConsoleAttachParams) GetBlocking() bool {
+	if x != nil {
+		return x.Blocking
+	}
+	return false
 }
 
 // Params for WENDY_COM_CMD_CONSOLE_DETACH — stop streaming console output.
@@ -1615,10 +1623,11 @@ const file_wendy_com_msg_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12!\n" +
 	"\fdisplay_name\x18\x03 \x01(\tR\vdisplayName\"\x1d\n" +
-	"\x1bWendyComGetDeviceInfoParams\"T\n" +
+	"\x1bWendyComGetDeviceInfoParams\"p\n" +
 	"\x1bWendyComConsoleAttachParams\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\rR\aeventId\x12\x1a\n" +
-	"\bduration\x18\x02 \x01(\rR\bduration\"8\n" +
+	"\bduration\x18\x02 \x01(\rR\bduration\x12\x1a\n" +
+	"\bblocking\x18\x03 \x01(\bR\bblocking\"8\n" +
 	"\x1bWendyComConsoleDetachParams\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\rR\aeventId\"\x16\n" +
 	"\x14WendyComConsoleBegin\"_\n" +

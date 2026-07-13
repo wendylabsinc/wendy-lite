@@ -103,6 +103,7 @@ typedef struct _WendyComGetDeviceInfoParams {
 typedef struct _WendyComConsoleAttachParams {
     uint32_t event_id;
     uint32_t duration; /* milliseconds; 0 = no deadline (attach forever) */
+    bool blocking; /* writers block when the capture buffer is full, instead of overwriting oldest data */
 } WendyComConsoleAttachParams;
 
 /* Params for WENDY_COM_CMD_CONSOLE_DETACH — stop streaming console output. */
@@ -251,7 +252,7 @@ extern "C" {
 #define WendyComGetDeviceIdentityParams_init_default {0}
 #define WendyComDeviceIdentity_init_default      {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define WendyComGetDeviceInfoParams_init_default {0}
-#define WendyComConsoleAttachParams_init_default {0, 0}
+#define WendyComConsoleAttachParams_init_default {0, 0, 0}
 #define WendyComConsoleDetachParams_init_default {0}
 #define WendyComConsoleBegin_init_default        {0}
 #define WendyComConsoleData_init_default         {_WendyComConsoleIo_MIN, 0, {{NULL}, NULL}}
@@ -273,7 +274,7 @@ extern "C" {
 #define WendyComGetDeviceIdentityParams_init_zero {0}
 #define WendyComDeviceIdentity_init_zero         {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define WendyComGetDeviceInfoParams_init_zero    {0}
-#define WendyComConsoleAttachParams_init_zero    {0, 0}
+#define WendyComConsoleAttachParams_init_zero    {0, 0, 0}
 #define WendyComConsoleDetachParams_init_zero    {0}
 #define WendyComConsoleBegin_init_zero           {0}
 #define WendyComConsoleData_init_zero            {_WendyComConsoleIo_MIN, 0, {{NULL}, NULL}}
@@ -298,6 +299,7 @@ extern "C" {
 #define WendyComDeviceIdentity_display_name_tag  3
 #define WendyComConsoleAttachParams_event_id_tag 1
 #define WendyComConsoleAttachParams_duration_tag 2
+#define WendyComConsoleAttachParams_blocking_tag 3
 #define WendyComConsoleDetachParams_event_id_tag 1
 #define WendyComConsoleData_io_tag               1
 #define WendyComConsoleData_gap_tag              2
@@ -403,7 +405,8 @@ X(a, CALLBACK, SINGULAR, STRING,   display_name,      3)
 
 #define WendyComConsoleAttachParams_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   event_id,          1) \
-X(a, STATIC,   SINGULAR, UINT32,   duration,          2)
+X(a, STATIC,   SINGULAR, UINT32,   duration,          2) \
+X(a, STATIC,   SINGULAR, BOOL,     blocking,          3)
 #define WendyComConsoleAttachParams_CALLBACK NULL
 #define WendyComConsoleAttachParams_DEFAULT NULL
 
@@ -560,7 +563,7 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComAppPushEndParams_size            0
 #define WendyComAppStartParams_size              0
 #define WendyComAppStopParams_size               0
-#define WendyComConsoleAttachParams_size         12
+#define WendyComConsoleAttachParams_size         14
 #define WendyComConsoleBegin_size                0
 #define WendyComConsoleDetachParams_size         6
 #define WendyComConsoleEnd_size                  0
