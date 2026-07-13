@@ -430,6 +430,8 @@ void wcom_send(int link_id, struct wcom_tx_chunk *chunk)
     else
         ch->tx_chunk_first = chunk;
 
+    while (chunk->next)
+        chunk = chunk->next;
     ch->tx_chunk_last = chunk;
 }
 
