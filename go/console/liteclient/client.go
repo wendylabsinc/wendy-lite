@@ -87,6 +87,7 @@ type subscription struct {
 type WendyLiteClient struct {
 	conn                io.ReadWriteCloser
 	isSerial            bool
+	serialLock          *serialLock
 	requestIdGen        atomic.Uint32
 	eventIdGen          atomic.Uint32
 	peerProtocolVersion protocolVersion
@@ -165,6 +166,10 @@ func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert t
 }
 
 func (c *WendyLiteClient) ConnectToSerial(device string) error {
+	lock, err := acquireSerialLock(device)
+	if err != nil {
+		return err
+	}
 	mode := &serial.Mode{
 		BaudRate: 115200,
 		DataBits: 8,
@@ -173,17 +178,22 @@ func (c *WendyLiteClient) ConnectToSerial(device string) error {
 	}
 	port, err := serial.Open(device, mode)
 	if err != nil {
+		lock.release()
 		return fmt.Errorf("open serial: %w", err)
 	}
 	if err := serialHandshake(port); err != nil {
 		port.Close()
+		lock.release()
 		return err
 	}
 	c.conn = port
 	c.isSerial = true
+	c.serialLock = lock
 	if err := c.handshake(); err != nil {
 		port.Close()
+		lock.release()
 		c.conn = nil
+		c.serialLock = nil
 		return fmt.Errorf("handshake: %w", err)
 	}
 	go c.readLoop()
@@ -253,7 +263,10 @@ func (c *WendyLiteClient) Close() error {
 			_ = port.Drain()
 		}
 	}
-	return c.conn.Close()
+	err := c.conn.Close()
+	c.serialLock.release()
+	c.serialLock = nil
+	return err
 }
 
 func (c *WendyLiteClient) Ping() error {
