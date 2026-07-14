@@ -1,5 +1,6 @@
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -19,6 +20,7 @@
 #include "wendy_com.h"
 #include "wendy_com_uart.h"
 #include "wendy_com_link.h"
+#include "wendy_com_stdio.h"
 #include "wendy_stdio.h"
 #include "wendy_usj.h"
 
@@ -181,6 +183,21 @@ static void _out_data_handler(const void *data, size_t size)
     wendy_usj_write(data, size);
 }
 
+static vprintf_like_t s_prev_com_log_vprintf;
+
+static int _com_thread_log_vprintf(const char *format, va_list args)
+{
+    int rv = 0;
+    if (s_prev_com_log_vprintf) {
+        va_list args2;
+        va_copy(args2, args);
+        rv = s_prev_com_log_vprintf(format, args2);
+        va_end(args2);
+    }
+    wendy_usj_vprintf(format, args);
+    return rv;
+}
+
 esp_err_t wendy_usj_init(void)
 {
     usb_serial_jtag_driver_config_t cfg = {
@@ -199,6 +216,7 @@ esp_err_t wendy_usj_init(void)
     s_com_uart.fd = -1;
     atomic_store(&s_mode, USJ_MODE_CONSOLE);
     s_prev_out_handler = wendy_stdio_set_out_data_handler(_out_data_handler);
+    s_prev_com_log_vprintf = wcom_set_com_thread_log_vprintf(_com_thread_log_vprintf);
 
     BaseType_t ret = xTaskCreate(_task_main, "wendy_usj", 4096, NULL,
                                  tskIDLE_PRIORITY + 1, NULL);
@@ -222,4 +240,34 @@ void wendy_usj_write(const void *data, size_t len)
             s_host_disconnected = true;
         }
     }
+}
+
+void wendy_usj_vprintf(const char *fmt, va_list args)
+{
+    char buf[128];
+    va_list args2;
+    va_copy(args2, args);
+    int n = vsnprintf(buf, sizeof(buf), fmt, args);
+    if (n >= (int)sizeof(buf)) {
+        char *heap_buf = malloc(n + 1);
+        if (heap_buf) {
+            n = vsnprintf(heap_buf, n + 1, fmt, args2);
+            if (n > 0)
+                wendy_usj_write(heap_buf, n);
+            free(heap_buf);
+        } else {
+            wendy_usj_write(buf, sizeof(buf) - 1);
+        }
+    } else if (n > 0) {
+        wendy_usj_write(buf, n);
+    }
+    va_end(args2);
+}
+
+void wendy_usj_printf(const char *fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    wendy_usj_vprintf(fmt, args);
+    va_end(args);
 }

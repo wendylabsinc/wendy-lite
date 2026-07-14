@@ -2,10 +2,13 @@
 #include "wendy_com_stdio.h"
 #include "wendy_com_link.h"
 #include "wendy_stdio.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include <stdatomic.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 #include <stdint.h>
 
@@ -14,6 +17,11 @@
 
 #define WCOM_STDIO_BUF_SIZE   4096
 #define WCOM_STDIO_SEM_MAX    64
+
+
+//--- prototypes ---//
+
+static int _default_com_thread_log_vprintf(const char *format, va_list args);
 
 
 //--- globals ---//
@@ -32,6 +40,8 @@ static atomic_bool _notify_in_flight;   // _notify_op is queued and not yet exec
 static wcom_stdio_data_handler_t _handler;
 static void *_handler_ctx;
 static wendy_stdio_out_data_handler_t _chained_handler;
+static vprintf_like_t _chained_log_vprintf;
+static vprintf_like_t _com_thread_log_vprintf = _default_com_thread_log_vprintf;
 
 
 //--- internal functions ---//
@@ -70,6 +80,42 @@ static void _copy_in(const uint8_t *data, size_t size)
     _count += size;
 }
 
+static void _write_overwriting(const uint8_t *data, size_t size);
+
+static int _default_com_thread_log_vprintf(const char *format, va_list args)
+{
+    char msg[256];
+    int len = vsnprintf(msg, sizeof(msg), format, args);
+    if (len <= 0)
+        return len;
+    size_t size = (size_t)len < sizeof(msg) ? (size_t)len : sizeof(msg) - 1;
+    xSemaphoreTake(_mutex, portMAX_DELAY);
+    // No _notify_locked(): notifying from here would let a data handler that
+    // logs on failure (e.g. the stdio pump) re-trigger itself endlessly. The
+    // data is picked up with the next regular stdout traffic.
+    _write_overwriting((const uint8_t *)msg, size);
+    xSemaphoreGive(_mutex);
+    return len;
+}
+
+static void _com_thread_log_printf(const char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    _com_thread_log_vprintf(format, args);
+    va_end(args);
+}
+
+// ESP_LOGx must not reach the console from the com thread (see the
+// comment in _on_out_data); drop such messages. Com-thread code that
+// wants to log uses the WCOM_LOGx macros instead.
+static int _log_vprintf(const char *format, va_list args)
+{
+    if (wcom_is_com_thread())
+        return _com_thread_log_vprintf(format, args);
+    return _chained_log_vprintf(format, args);
+}
+
 static void _write_overwriting(const uint8_t *data, size_t size)
 {
     if (size >= WCOM_STDIO_BUF_SIZE) {
@@ -95,11 +141,21 @@ static void _on_out_data(const void *vdata, size_t size)
     const uint8_t *data = vdata;
     size_t remaining = size;
 
+    // In blocking mode the com thread must never write to the console: it is
+    // the only task that frees space here (by reading), so waiting for space
+    // would be waiting on itself. Exempting it from blocking would not help:
+    // a task already blocked here still holds the newlib lock of the FILE it
+    // wrote through, so a com-thread write to the same FILE would deadlock on
+    // that lock before even reaching this handler. The constraint has to be
+    // honored by the com thread's code; it cannot be enforced here.
+    if(wcom_is_com_thread()) {
+        _com_thread_log_printf("WARNING: com thread writing to stdio/stderr is forbidden\n");
+    }
+
     xSemaphoreTake(_mutex, portMAX_DELAY);
+
     while (remaining > 0) {
-        // The com thread must never block here: it is the only task that
-        // frees space by reading, so it would wait on itself.
-        if (!_blocking || xTaskGetCurrentTaskHandle() == _reader_task) {
+        if (!_blocking) {
             _write_overwriting(data, remaining);
             remaining = 0;
             _notify_locked();
@@ -140,6 +196,7 @@ void wcom_stdio_init(void)
     _mutex = xSemaphoreCreateMutex();
     _space_sem = xSemaphoreCreateCounting(WCOM_STDIO_SEM_MAX, 0);
     _chained_handler = wendy_stdio_set_out_data_handler(_on_out_data);
+    _chained_log_vprintf = esp_log_set_vprintf(_log_vprintf);
 }
 
 void wcom_stdio_set_blocking(bool blocking)
@@ -164,6 +221,13 @@ void wcom_stdio_set_data_handler(wcom_stdio_data_handler_t handler, void *ctx)
     xSemaphoreGive(_mutex);
 }
 
+vprintf_like_t wcom_set_com_thread_log_vprintf(vprintf_like_t func)
+{
+    vprintf_like_t prev = _com_thread_log_vprintf;
+    _com_thread_log_vprintf = func ? func : _default_com_thread_log_vprintf;
+    return prev;
+}
+
 size_t wcom_stdio_read(void *vbuf, size_t size, bool *gap)
 {
     uint8_t *buf = vbuf;
@@ -186,9 +250,10 @@ size_t wcom_stdio_read(void *vbuf, size_t size, bool *gap)
         if (_writers_waiting > 0)
             xSemaphoreGive(_space_sem);
     }
-    // Re-arm exactly when the reader has seen the buffer empty, so the next
-    // incoming data fires the handler again.
-    if (_count == 0)
+    // Re-arm only on an empty read: the contract promises the handler is
+    // invoked again once new data arrives after the reader has seen the
+    // buffer empty, and never before.
+    if (n == 0)
         _armed = true;
     xSemaphoreGive(_mutex);
     return n;

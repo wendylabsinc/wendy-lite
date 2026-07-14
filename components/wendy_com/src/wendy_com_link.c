@@ -367,6 +367,11 @@ void wcom_core_exec(struct wcom_operation *op)
     }
 }
 
+bool wcom_is_com_thread(void)
+{
+    return xTaskGetCurrentTaskHandle() == _main_task;
+}
+
 void wcom_add_state_change_handler(struct wcom_state_change_handler *handler)
 {
     assert(xTaskGetCurrentTaskHandle() == _main_task);

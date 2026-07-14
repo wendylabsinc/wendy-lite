@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include "esp_log.h"
 
 // types
 
@@ -43,5 +44,14 @@ void wcom_stdio_set_data_handler(wcom_stdio_data_handler_t handler, void *ctx);
  * from the com thread.
  */
 size_t wcom_stdio_read(void *buf, size_t size, bool *gap);
+
+/**
+ * Install the handler that receives log output produced on the com thread.
+ * In fact, this log output cannot go through the normal stdio path, because
+ * it must never block. 
+ * Pass NULL to restore the default handler.
+ * Returns the previous handler.
+ */
+vprintf_like_t wcom_set_com_thread_log_vprintf(vprintf_like_t func);
 
 #endif
