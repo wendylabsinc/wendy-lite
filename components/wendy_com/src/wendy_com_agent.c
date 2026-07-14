@@ -174,7 +174,9 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
         resp->result = wcom_cmd_ping();
         break;
     case WendyComCommand_reboot_tag:
-        resp->result = wcom_cmd_reboot();
+        resp->result = wcom_cmd_reboot(
+            cmd->params.reboot.has_app_auto_start ? cmd->params.reboot.app_auto_start : true,
+            cmd->params.reboot.app_auto_start_delay);
         break;
     case WendyComCommand_app_push_begin_tag:
         resp->result = wcom_cmd_app_push_begin(link->link_id, cmd->params.app_push_begin.size,

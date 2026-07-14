@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"console/liteclient"
 )
@@ -45,7 +47,26 @@ func run(target string) error {
 			fmt.Println("pong")
 
 		case "reset":
-			if err := client.ResetTargetDevice(); err != nil {
+			autoStart, delay, ok := true, time.Duration(0), true
+			for _, flag := range strings.Fields(arg) {
+				switch {
+				case flag == "--noautostart":
+					autoStart = false
+				case strings.HasPrefix(flag, "--delay="):
+					ms, err := strconv.ParseUint(strings.TrimPrefix(flag, "--delay="), 10, 32)
+					if err != nil {
+						ok = false
+					}
+					delay = time.Duration(ms) * time.Millisecond
+				default:
+					ok = false
+				}
+			}
+			if !ok {
+				fmt.Fprintln(os.Stderr, "usage: reset [--noautostart] [--delay=<ms>]")
+				continue
+			}
+			if err := client.ResetTargetDevice(autoStart, delay); err != nil {
 				fmt.Fprintln(os.Stderr, "reset:", err)
 				continue
 			}

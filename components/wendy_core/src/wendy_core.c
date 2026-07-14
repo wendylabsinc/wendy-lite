@@ -10,6 +10,7 @@
 
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_attr.h"
 #include "esp_system.h"
 #include "esp_partition.h"
 #include "esp_ota_ops.h"
@@ -71,8 +72,43 @@ static const char *TAG = "wendy_core";
 #define EVT_BLE_UP            BIT3
 #define EVT_PROV_WIFI_CREDS   BIT4
 #define EVT_PROV_CLEAR_CREDS  BIT5
+#define EVT_APP_START_REQUEST BIT6
 
 static EventGroupHandle_t s_events;
+
+/* ── Reboot boot-params ─────────────────────────────────────────────────
+ *
+ * Written by the REBOOT command right before esp_restart() and consumed by
+ * the next boot. They live in LP SRAM, which survives a software reset but
+ * not a hardware one, and are one-shot: the magic is invalidated at every
+ * boot so any other reboot path (guest sys_reboot(), panic, WDT, ...) comes
+ * up with defaults.
+ */
+
+#define REBOOT_PARAMS_MAGIC 0xB007C0DEu
+
+typedef struct {
+    uint32_t magic;
+    uint32_t app_auto_start_delay_ms;
+    bool     app_auto_start;
+} reboot_params_t;
+
+static RTC_NOINIT_ATTR reboot_params_t s_reboot_params;
+
+/* Captured once at boot; consumed at the end of wendy_core_init(). */
+static bool     s_boot_app_auto_start = true;
+static uint32_t s_boot_app_auto_start_delay_ms = 0;
+
+static void capture_boot_params(void)
+{
+    if (esp_reset_reason() == ESP_RST_SW && s_reboot_params.magic == REBOOT_PARAMS_MAGIC) {
+        s_boot_app_auto_start          = s_reboot_params.app_auto_start;
+        s_boot_app_auto_start_delay_ms = s_reboot_params.app_auto_start_delay_ms;
+        ESP_LOGI(TAG, "reboot params: app_auto_start=%d delay=%" PRIu32 "ms",
+                 (int)s_boot_app_auto_start, s_boot_app_auto_start_delay_ms);
+    }
+    s_reboot_params.magic = 0;
+}
 
 /* ── WASM app state ─────────────────────────────────────────────────── */
 
@@ -83,7 +119,7 @@ static atomic_bool s_wasm_active = false;
 static atomic_bool s_wasm_flash_busy = false;
 static bool s_current_module_flash_backed = false;
 #endif
-static bool wasm_app_auto_start_enabled = true;
+static bool s_app_auto_start_enabled = true;
 
 /* ── Flash-write session (one upload at a time, USB or WiFi) ──────────── */
 
@@ -444,18 +480,26 @@ static esp_err_t wasm_app_start(uint8_t slot)
     return ESP_OK;
 }
 
-static void wasm_app_auto_start(struct wcom_operation *op)
+#endif /* CONFIG_WENDY_WASM */
+
+static void apply_app_auto_start(struct wcom_operation *op)
 {
-    if (wasm_app_auto_start_enabled) {
-        wasm_app_auto_start_enabled = false;
+    if (s_app_auto_start_enabled) {
+        s_app_auto_start_enabled = false;
+#if CONFIG_WENDY_WASM
         esp_err_t err = wasm_app_start(0);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "auto-start WASM app failed: %s", esp_err_to_name(err));
         }
+#endif
     }
 }
 
-#endif /* CONFIG_WENDY_WASM */
+static void cancel_app_auto_start(void)
+{
+    s_app_auto_start_enabled = false;
+    xEventGroupSetBits(s_events, EVT_APP_START_REQUEST);
+}
 
 /* ── Native app push (firmware OTA) ────────────────────────────────────
  *
@@ -533,7 +577,7 @@ static WendyComResult com_push_begin(size_t size, WendyComAppType app_type)
 {
     if (app_type == WendyComAppType_WENDY_COM_APP_TYPE_NATIVE)
         return native_push_begin(size);
-    wasm_app_auto_start_enabled = false;
+    cancel_app_auto_start();
     esp_err_t e = wasm_persist_begin(0, (uint32_t)size);
     if (e == ESP_ERR_NOT_SUPPORTED)
         return WendyComResult_WENDY_COM_RESULT_BAD_APP_TYPE;
@@ -549,7 +593,7 @@ static WendyComResult com_push_data(size_t offset, const uint8_t *data, size_t s
 {
     if (s_native_push)
         return native_push_data(data, size);
-    wasm_app_auto_start_enabled = false;
+    cancel_app_auto_start();
     esp_err_t e = wasm_persist_chunk((uint32_t)offset, data, (uint32_t)size);
     return e == ESP_OK ? WendyComResult_WENDY_COM_RESULT_OK
                        : WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
@@ -559,7 +603,7 @@ static WendyComResult com_push_end(void)
 {
     if (s_native_push)
         return native_push_end();
-    wasm_app_auto_start_enabled = false;
+    cancel_app_auto_start();
     esp_err_t e = wasm_persist_end(0);
     return e == ESP_OK ? WendyComResult_WENDY_COM_RESULT_OK
                        : WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
@@ -576,8 +620,8 @@ static void com_push_abort(void)
 
 static WendyComResult com_app_start(void)
 {
-    #if defined CONFIG_WENDY_WASM
-    wasm_app_auto_start_enabled = false;
+    cancel_app_auto_start();
+#if defined CONFIG_WENDY_WASM
     uint8_t slot = 0;
     if (s_persist_load_pending) {
         slot = s_persist_load_slot;
@@ -586,15 +630,15 @@ static WendyComResult com_app_start(void)
     esp_err_t e = wasm_app_start(slot);
     return e == ESP_OK ? WendyComResult_WENDY_COM_RESULT_OK
                        : WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
-    #else
-    return WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
-    #endif
+#else
+    return WendyComResult_WENDY_COM_RESULT_OK;
+#endif
 }
 
 static WendyComResult com_app_stop(void)
 {
+    cancel_app_auto_start();
     #if defined CONFIG_WENDY_WASM
-    wasm_app_auto_start_enabled = false;
     wasm_app_stop();
     return WendyComResult_WENDY_COM_RESULT_OK;
     #else
@@ -602,12 +646,18 @@ static WendyComResult com_app_stop(void)
     #endif
 }
 
-static WendyComResult com_reboot(void)
+static WendyComResult com_reboot(bool app_auto_start, uint32_t app_auto_start_delay_ms)
 {
+    cancel_app_auto_start();
     #if defined CONFIG_WENDY_WASM
-    wasm_app_auto_start_enabled = false;
     wasm_app_stop();
     #endif
+    uint32_t delay = app_auto_start_delay_ms;
+    if (delay > 120000)
+        delay = 120000;
+    s_reboot_params.app_auto_start          = app_auto_start;
+    s_reboot_params.app_auto_start_delay_ms = delay;
+    s_reboot_params.magic                   = REBOOT_PARAMS_MAGIC;
     esp_restart();
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
@@ -665,6 +715,8 @@ static void init_hal(void)
 
 esp_err_t wendy_core_init(void)
 {
+    capture_boot_params();
+
     esp_err_t stdio_err = wendy_stdio_init();
     if (stdio_err != ESP_OK)
         ESP_LOGW(TAG, "wendy_stdio_init: %s (continuing)", esp_err_to_name(stdio_err));
@@ -902,15 +954,28 @@ esp_err_t wendy_core_init(void)
     }
 #endif /* CONFIG_WENDY_WIFI_ENABLED */
 
-#if CONFIG_WENDY_WASM
-    // Start the wasm app, but we do that from the wcom thread,
-    // in order to have all commands executed by the same thread.
-    static struct wcom_operation op = {
-        .func = wasm_app_auto_start,
-    };
-    wcom_exec(&op);
-#endif
+    /* ── App start gate: honor the reboot params ─────────────────────── */
 
-    /* wendy_core_init returns; FreeRTOS scheduler keeps running */
+    if (s_boot_app_auto_start && s_boot_app_auto_start_delay_ms > 0) {
+        /* /portTICK_PERIOD_MS instead of pdMS_TO_TICKS: the latter overflows
+         * 32 bits for large ms values at a 1000 Hz tick. */
+        TickType_t ticks = s_boot_app_auto_start_delay_ms / portTICK_PERIOD_MS;
+        if (ticks >= portMAX_DELAY)
+            ticks = portMAX_DELAY - 1;
+        ESP_LOGI(TAG, "delaying app auto start by %" PRIu32 "ms",
+                 s_boot_app_auto_start_delay_ms);
+        xEventGroupWaitBits(s_events, EVT_APP_START_REQUEST, pdTRUE, pdFALSE, ticks);
+    }
+
+    if (s_boot_app_auto_start) {
+        // Start the wasm app, but we do that from the wcom thread,
+        // in order to have all commands executed by the same thread.
+        // No-op if an AppStart command already started it.
+        static struct wcom_operation op = {
+            .func = apply_app_auto_start,
+        };
+        wcom_exec(&op);
+    }
+
     return ESP_OK;
 }

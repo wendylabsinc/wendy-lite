@@ -55,8 +55,14 @@ typedef struct _WendyComPingParams {
     char dummy_field;
 } WendyComPingParams;
 
+/* Params for WENDY_COM_CMD_REBOOT. app_auto_start defaults to true when
+ absent. Settings survive exactly one software reboot; a hardware boot
+ resets to defaults. The delay is measured from the end of device init;
+ an AppStart command received during the delay starts the app immediately. */
 typedef struct _WendyComRebootParams {
-    char dummy_field;
+    bool has_app_auto_start;
+    bool app_auto_start; /* absent => true */
+    uint32_t app_auto_start_delay; /* milliseconds */
 } WendyComRebootParams;
 
 /* Params for WENDY_COM_CMD_APP_PUSH_BEGIN */
@@ -243,7 +249,7 @@ extern "C" {
 #define WendyComProtocolVersion_init_default     {0, 0}
 #define WendyComHandshake_init_default           {0, false, WendyComProtocolVersion_init_default}
 #define WendyComPingParams_init_default          {0}
-#define WendyComRebootParams_init_default        {0}
+#define WendyComRebootParams_init_default        {false, 0, 0}
 #define WendyComAppPushBeginParams_init_default  {0, _WendyComAppType_MIN}
 #define WendyComAppPushDataParams_init_default   {0, {{NULL}, NULL}}
 #define WendyComAppPushEndParams_init_default    {0}
@@ -265,7 +271,7 @@ extern "C" {
 #define WendyComProtocolVersion_init_zero        {0, 0}
 #define WendyComHandshake_init_zero              {0, false, WendyComProtocolVersion_init_zero}
 #define WendyComPingParams_init_zero             {0}
-#define WendyComRebootParams_init_zero           {0}
+#define WendyComRebootParams_init_zero           {false, 0, 0}
 #define WendyComAppPushBeginParams_init_zero     {0, _WendyComAppType_MIN}
 #define WendyComAppPushDataParams_init_zero      {0, {{NULL}, NULL}}
 #define WendyComAppPushEndParams_init_zero       {0}
@@ -290,6 +296,8 @@ extern "C" {
 #define WendyComProtocolVersion_minor_tag        2
 #define WendyComHandshake_handshake_id_tag       1
 #define WendyComHandshake_version_tag            2
+#define WendyComRebootParams_app_auto_start_tag  1
+#define WendyComRebootParams_app_auto_start_delay_tag 2
 #define WendyComAppPushBeginParams_size_tag      1
 #define WendyComAppPushBeginParams_app_type_tag  2
 #define WendyComAppPushDataParams_offset_tag     1
@@ -355,7 +363,8 @@ X(a, STATIC,   OPTIONAL, MESSAGE,  version,           2)
 #define WendyComPingParams_DEFAULT NULL
 
 #define WendyComRebootParams_FIELDLIST(X, a) \
-
+X(a, STATIC,   OPTIONAL, BOOL,     app_auto_start,    1) \
+X(a, STATIC,   SINGULAR, UINT32,   app_auto_start_delay,   2)
 #define WendyComRebootParams_CALLBACK NULL
 #define WendyComRebootParams_DEFAULT NULL
 
@@ -572,7 +581,7 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComHandshake_size                   20
 #define WendyComPingParams_size                  0
 #define WendyComProtocolVersion_size             12
-#define WendyComRebootParams_size                0
+#define WendyComRebootParams_size                8
 
 #ifdef __cplusplus
 } /* extern "C" */

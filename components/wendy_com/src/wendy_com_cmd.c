@@ -1,4 +1,5 @@
 #include <string.h>
+#include <inttypes.h>
 #include "wendy_com_cmd.h"
 #include "wendy_com_msg.pb.h"
 #include "esp_log.h"
@@ -19,11 +20,12 @@ WendyComResult wcom_cmd_ping(void)
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 
-WendyComResult wcom_cmd_reboot(void)
+WendyComResult wcom_cmd_reboot(bool app_auto_start, uint32_t app_auto_start_delay_ms)
 {
-    ESP_LOGI(TAG, "REBOOT");
+    ESP_LOGI(TAG, "REBOOT auto_start=%d delay=%" PRIu32 "ms",
+             (int)app_auto_start, app_auto_start_delay_ms);
     if (_app_delegate && _app_delegate->on_reboot)
-        return _app_delegate->on_reboot();
+        return _app_delegate->on_reboot(app_auto_start, app_auto_start_delay_ms);
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 

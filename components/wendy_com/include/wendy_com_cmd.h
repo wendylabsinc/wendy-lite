@@ -7,7 +7,7 @@
 #include "wendy_com_common.h"
 
 WendyComResult wcom_cmd_ping(void);
-WendyComResult wcom_cmd_reboot(void);
+WendyComResult wcom_cmd_reboot(bool app_auto_start, uint32_t app_auto_start_delay_ms);
 WendyComResult wcom_cmd_app_push_begin(int client_id, size_t size, WendyComAppType app_type);
 WendyComResult wcom_cmd_app_push_data(int client_id, size_t offset, const uint8_t *data, size_t size);
 WendyComResult wcom_cmd_app_push_end(int client_id);
