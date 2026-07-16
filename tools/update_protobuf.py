@@ -51,12 +51,24 @@ PROTO_TARGETS = [
     ),
 ]
 
-# (proto path, Go output directory, Go package path)  — all relative to repo root
+# (proto paths, Go output directory, Go package path, gRPC service stubs)
+# — paths relative to repo root; protos in one entry must live in the same
+# directory and are compiled together (so imports between them resolve)
 GO_TARGETS = [
     (
-        "components/wendy_com/proto/wendy_com_msg.proto",
+        ["components/wendy_com/proto/wendy_com_msg.proto"],
         "go/console/wendypb",
         "wendy-console/wendypb",
+        False,
+    ),
+    (
+        [
+            "go/proto/wendy_com_tunnel_msg.proto",
+            "go/proto/wendy_com_tunnel_service.proto",
+        ],
+        "go/tunnelpb",
+        "github.com/wendylabsinc/wendy/go/proto/gen/tunnelpb",
+        True,
     ),
 ]
 
@@ -163,11 +175,11 @@ def generate(buf, version, proto_rel, out_h_rel, out_c_rel, root):
         print(f"    → {out_c_rel}")
 
 
-def generate_go(proto_rel, out_dir_rel, go_package, root):
-    """Run protoc with protoc-gen-go to produce a .pb.go file."""
-    proto_abs = os.path.join(root, proto_rel)
-    proto_dir  = os.path.dirname(proto_abs)
-    out_dir    = os.path.join(root, out_dir_rel)
+def generate_go(proto_rels, out_dir_rel, go_package, grpc, root):
+    """Run protoc with protoc-gen-go (and protoc-gen-go-grpc for services)."""
+    proto_names = [os.path.basename(p) for p in proto_rels]
+    proto_dir   = os.path.dirname(os.path.join(root, proto_rels[0]))
+    out_dir     = os.path.join(root, out_dir_rel)
     os.makedirs(out_dir, exist_ok=True)
 
     # protoc-gen-go is typically installed in $(go env GOPATH)/bin
@@ -183,26 +195,35 @@ def generate_go(proto_rel, out_dir_rel, go_package, root):
         f"--proto_path={proto_dir}",
         f"--go_out={out_dir}",
         "--go_opt=paths=source_relative",
-        f"--go_opt=M{os.path.basename(proto_abs)}={go_package}",
-        os.path.basename(proto_abs),
     ]
+    cmd += [f"--go_opt=M{name}={go_package}" for name in proto_names]
+    if grpc:
+        cmd += [
+            f"--go-grpc_out={out_dir}",
+            "--go-grpc_opt=paths=source_relative",
+        ]
+        cmd += [f"--go-grpc_opt=M{name}={go_package}" for name in proto_names]
+    cmd += proto_names
 
-    proto_base = os.path.splitext(os.path.basename(proto_abs))[0]
-    print(f"  Generating Go code from {proto_base}.proto …")
-    r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    print(f"  Generating Go code from {', '.join(proto_names)} …")
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=proto_dir)
 
     if r.returncode != 0:
         output = (r.stderr or "") + (r.stdout or "")
         if "protoc-gen-go" in output:
             print(
-                "\nHint: protoc-gen-go is not installed.\n"
-                "  go install google.golang.org/protobuf/cmd/protoc-gen-go@latest",
+                "\nHint: protoc-gen-go / protoc-gen-go-grpc is not installed.\n"
+                "  go install google.golang.org/protobuf/cmd/protoc-gen-go@latest\n"
+                "  go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest",
                 file=sys.stderr,
             )
         sys.exit(f"Go generation failed:\n{output}")
 
-    out_file = os.path.join(out_dir_rel, proto_base + ".pb.go")
-    print(f"    → {out_file}")
+    for name in proto_names:
+        base = os.path.splitext(name)[0]
+        print(f"    → {os.path.join(out_dir_rel, base + '.pb.go')}")
+        if grpc and os.path.exists(os.path.join(out_dir, base + "_grpc.pb.go")):
+            print(f"    → {os.path.join(out_dir_rel, base + '_grpc.pb.go')}")
 
 
 # ---------------------------------------------------------------------------
@@ -232,8 +253,8 @@ def main():
         generate(buf, args.version, proto, out_h, out_c, root)
 
     print("\n--- Go code generation ---")
-    for proto, out_dir, go_package in GO_TARGETS:
-        generate_go(proto, out_dir, go_package, root)
+    for protos, out_dir, go_package, grpc in GO_TARGETS:
+        generate_go(protos, out_dir, go_package, grpc, root)
 
     print("\nDone. Commit the generated files under components/ and go/.")
 

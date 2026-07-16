@@ -15,9 +15,17 @@ import (
 func run(target string) error {
 	client := liteclient.NewWendyLiteClient()
 	var err error
-	if strings.HasPrefix(target, "/") {
+	switch {
+	case strings.HasPrefix(target, "/"):
 		err = client.ConnectToSerial(target)
-	} else {
+	case strings.HasPrefix(target, "cloud://"):
+		var addr string
+		var assetID uint32
+		addr, assetID, err = parseCloudTarget(target)
+		if err == nil {
+			err = client.ConnectViaCloudInsecure(addr, assetID)
+		}
+	default:
 		err = client.ConnectInsecure(target)
 	}
 	if err != nil {
@@ -206,9 +214,28 @@ func runConsole(client *liteclient.WendyLiteClient, scanner *bufio.Scanner, roll
 	}
 }
 
+// parseCloudTarget splits cloud://host:port[/asset-id] into the tinycloud
+// gRPC address and the target asset id (default 23).
+func parseCloudTarget(target string) (string, uint32, error) {
+	rest := strings.TrimPrefix(target, "cloud://")
+	addr, assetPart, hasAsset := strings.Cut(rest, "/")
+	if addr == "" {
+		return "", 0, fmt.Errorf("usage: cloud://host:port[/asset-id]")
+	}
+	assetID := uint64(23)
+	if hasAsset && assetPart != "" {
+		var err error
+		assetID, err = strconv.ParseUint(assetPart, 10, 32)
+		if err != nil {
+			return "", 0, fmt.Errorf("bad asset id %q: %w", assetPart, err)
+		}
+	}
+	return addr, uint32(assetID), nil
+}
+
 func main() {
 	if len(os.Args) != 2 {
-		fmt.Fprintf(os.Stderr, "usage: %s host:port|/dev/ttyXXX\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "usage: %s host:port|/dev/ttyXXX|cloud://host:port[/asset-id]\n", os.Args[0])
 		os.Exit(1)
 	}
 	if err := run(os.Args[1]); err != nil {
