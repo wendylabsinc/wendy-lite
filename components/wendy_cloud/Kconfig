@@ -1,25 +1,36 @@
-menu "Wendy Cloud Connection"
-    config WENDY_CLOUD_ENABLED
+menu "Wendy Cloud"
+    config WENDY_CLOUD
         bool "Enable cloud mTLS connection"
         default n
-        depends on WENDY_CLOUD_PROV && ESP_TLS_USING_MBEDTLS
+        depends on ESP_TLS_USING_MBEDTLS
         help
             Open a persistent mTLS socket to the cloud endpoint using
             credentials provisioned by wendy_cloud_prov.
 
     config WENDY_CLOUD_TASK_STACK_SIZE
         int "Cloud task stack size (bytes)"
-        depends on WENDY_CLOUD_ENABLED
+        depends on WENDY_CLOUD
         default 8192
 
     config WENDY_CLOUD_TASK_PRIORITY
         int "Cloud task priority"
-        depends on WENDY_CLOUD_ENABLED
+        depends on WENDY_CLOUD
         default 5
         range 1 24
 
     config WENDY_CLOUD_RECONNECT_DELAY_MS
         int "Reconnect delay (ms)"
-        depends on WENDY_CLOUD_ENABLED
+        depends on WENDY_CLOUD
         default 5000
+
+    config WENDY_CLOUD_SKIP_SERVER_VERIFICATION
+        bool "Skip cloud server certificate verification (dev only)"
+        depends on WENDY_CLOUD
+        default n
+        select ESP_TLS_INSECURE
+        select ESP_TLS_SKIP_SERVER_CERT_VERIFY
+        help
+            The dev tinycloud server uses a self-signed certificate. Skip
+            server certificate verification on the cloud connection; the
+            device still presents its mTLS client certificate.
 endmenu

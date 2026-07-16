@@ -19,7 +19,7 @@
 #include "wendy_server.h"
 #include "wendy_conf.h"
 
-#if CONFIG_WENDY_CLOUD_ENABLED
+#if CONFIG_WENDY_CLOUD
 #include "wendy_cloud.h"
 #endif
 
@@ -252,7 +252,7 @@ static void start_services(void)
     wendy_server_start(s_device_name);
 
     // Initialize the mTLS server accessible via the cloud
-#if CONFIG_WENDY_CLOUD_ENABLED
+#if CONFIG_WENDY_CLOUD
     {
         esp_err_t err = wendy_cloud_start();
         if (err != ESP_OK) {

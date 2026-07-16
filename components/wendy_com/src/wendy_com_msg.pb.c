@@ -69,6 +69,15 @@ PB_BIND(WendyComResponse, WendyComResponse, AUTO)
 PB_BIND(WendyComEvent, WendyComEvent, AUTO)
 
 
+PB_BIND(WendyComOpenChannel, WendyComOpenChannel, AUTO)
+
+
+PB_BIND(WendyComCloseChannel, WendyComCloseChannel, AUTO)
+
+
+PB_BIND(WendyComService, WendyComService, AUTO)
+
+
 PB_BIND(WendyComMessage, WendyComMessage, AUTO)
 
 

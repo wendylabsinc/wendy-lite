@@ -1,6 +1,6 @@
 set(srcs "")
 
-if(CONFIG_WENDY_CLOUD_ENABLED)
+if(CONFIG_WENDY_CLOUD)
     list(APPEND srcs "src/wendy_cloud.c")
 endif()
 
@@ -12,5 +12,5 @@ endif()
 idf_component_register(
     SRCS ${srcs}
     INCLUDE_DIRS "include"
-    REQUIRES esp-tls freertos wendy_conf
+    REQUIRES esp-tls freertos wendy_conf wendy_com
 )

@@ -189,12 +189,34 @@ typedef struct _WendyComEvent {
     } data;
 } WendyComEvent;
 
+/* Channel management, sent host -> device. The channel these messages
+ operate on is the one carried by the channel byte of the frame header —
+ OpenChannel arrives on the channel being opened, CloseChannel on the one
+ being closed — so the bodies are empty presence markers. Devices that
+ don't track channels may ignore these messages. */
+typedef struct _WendyComOpenChannel {
+    char dummy_field;
+} WendyComOpenChannel;
+
+typedef struct _WendyComCloseChannel {
+    char dummy_field;
+} WendyComCloseChannel;
+
+typedef struct _WendyComService {
+    pb_size_t which_cmd;
+    union {
+        WendyComOpenChannel open_channel;
+        WendyComCloseChannel close_channel;
+    } cmd;
+} WendyComService;
+
 /* Base wrapper — every frame body, in either direction, is exactly one of
  these. */
 typedef struct _WendyComMessage {
     pb_size_t which_msg;
     union {
         WendyComHandshake handshake;
+        WendyComService service;
         WendyComCommand command;
         WendyComResponse response;
         WendyComEvent event;
@@ -245,6 +267,9 @@ extern "C" {
 
 
 
+
+
+
 /* Initializer values for message structs */
 #define WendyComProtocolVersion_init_default     {0, 0}
 #define WendyComHandshake_init_default           {0, false, WendyComProtocolVersion_init_default}
@@ -267,6 +292,9 @@ extern "C" {
 #define WendyComCommand_init_default             {0, 0, {WendyComPingParams_init_default}}
 #define WendyComResponse_init_default            {0, _WendyComResult_MIN, 0, {WendyComDeviceIdentity_init_default}}
 #define WendyComEvent_init_default               {0, 0, {WendyComConsoleBegin_init_default}}
+#define WendyComOpenChannel_init_default         {0}
+#define WendyComCloseChannel_init_default        {0}
+#define WendyComService_init_default             {0, {WendyComOpenChannel_init_default}}
 #define WendyComMessage_init_default             {0, {WendyComHandshake_init_default}}
 #define WendyComProtocolVersion_init_zero        {0, 0}
 #define WendyComHandshake_init_zero              {0, false, WendyComProtocolVersion_init_zero}
@@ -289,6 +317,9 @@ extern "C" {
 #define WendyComCommand_init_zero                {0, 0, {WendyComPingParams_init_zero}}
 #define WendyComResponse_init_zero               {0, _WendyComResult_MIN, 0, {WendyComDeviceIdentity_init_zero}}
 #define WendyComEvent_init_zero                  {0, 0, {WendyComConsoleBegin_init_zero}}
+#define WendyComOpenChannel_init_zero            {0}
+#define WendyComCloseChannel_init_zero           {0}
+#define WendyComService_init_zero                {0, {WendyComOpenChannel_init_zero}}
 #define WendyComMessage_init_zero                {0, {WendyComHandshake_init_zero}}
 
 /* Field tags (for use in manual encoding/decoding) */
@@ -338,10 +369,13 @@ extern "C" {
 #define WendyComEvent_console_begin_tag          2
 #define WendyComEvent_console_data_tag           3
 #define WendyComEvent_console_end_tag            4
+#define WendyComService_open_channel_tag         1
+#define WendyComService_close_channel_tag        2
 #define WendyComMessage_handshake_tag            1
-#define WendyComMessage_command_tag              2
-#define WendyComMessage_response_tag             3
-#define WendyComMessage_event_tag                4
+#define WendyComMessage_service_tag              2
+#define WendyComMessage_command_tag              3
+#define WendyComMessage_response_tag             4
+#define WendyComMessage_event_tag                5
 
 /* Struct field encoding specification for nanopb */
 #define WendyComProtocolVersion_FIELDLIST(X, a) \
@@ -499,14 +533,34 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (data,console_end,data.console_end),   4)
 #define WendyComEvent_data_console_data_MSGTYPE WendyComConsoleData
 #define WendyComEvent_data_console_end_MSGTYPE WendyComConsoleEnd
 
+#define WendyComOpenChannel_FIELDLIST(X, a) \
+
+#define WendyComOpenChannel_CALLBACK NULL
+#define WendyComOpenChannel_DEFAULT NULL
+
+#define WendyComCloseChannel_FIELDLIST(X, a) \
+
+#define WendyComCloseChannel_CALLBACK NULL
+#define WendyComCloseChannel_DEFAULT NULL
+
+#define WendyComService_FIELDLIST(X, a) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (cmd,open_channel,cmd.open_channel),   1) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (cmd,close_channel,cmd.close_channel),   2)
+#define WendyComService_CALLBACK NULL
+#define WendyComService_DEFAULT NULL
+#define WendyComService_cmd_open_channel_MSGTYPE WendyComOpenChannel
+#define WendyComService_cmd_close_channel_MSGTYPE WendyComCloseChannel
+
 #define WendyComMessage_FIELDLIST(X, a) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (msg,handshake,msg.handshake),   1) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (msg,command,msg.command),   2) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (msg,response,msg.response),   3) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (msg,event,msg.event),   4)
+X(a, STATIC,   ONEOF,    MESSAGE,  (msg,service,msg.service),   2) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (msg,command,msg.command),   3) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (msg,response,msg.response),   4) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (msg,event,msg.event),   5)
 #define WendyComMessage_CALLBACK NULL
 #define WendyComMessage_DEFAULT NULL
 #define WendyComMessage_msg_handshake_MSGTYPE WendyComHandshake
+#define WendyComMessage_msg_service_MSGTYPE WendyComService
 #define WendyComMessage_msg_command_MSGTYPE WendyComCommand
 #define WendyComMessage_msg_response_MSGTYPE WendyComResponse
 #define WendyComMessage_msg_event_MSGTYPE WendyComEvent
@@ -532,6 +586,9 @@ extern const pb_msgdesc_t WendyComDeviceInfo_msg;
 extern const pb_msgdesc_t WendyComCommand_msg;
 extern const pb_msgdesc_t WendyComResponse_msg;
 extern const pb_msgdesc_t WendyComEvent_msg;
+extern const pb_msgdesc_t WendyComOpenChannel_msg;
+extern const pb_msgdesc_t WendyComCloseChannel_msg;
+extern const pb_msgdesc_t WendyComService_msg;
 extern const pb_msgdesc_t WendyComMessage_msg;
 
 /* Defines for backwards compatibility with code written before nanopb-0.4.0 */
@@ -556,6 +613,9 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComCommand_fields &WendyComCommand_msg
 #define WendyComResponse_fields &WendyComResponse_msg
 #define WendyComEvent_fields &WendyComEvent_msg
+#define WendyComOpenChannel_fields &WendyComOpenChannel_msg
+#define WendyComCloseChannel_fields &WendyComCloseChannel_msg
+#define WendyComService_fields &WendyComService_msg
 #define WendyComMessage_fields &WendyComMessage_msg
 
 /* Maximum encoded size of messages (where known) */
@@ -572,6 +632,7 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComAppPushEndParams_size            0
 #define WendyComAppStartParams_size              0
 #define WendyComAppStopParams_size               0
+#define WendyComCloseChannel_size                0
 #define WendyComConsoleAttachParams_size         14
 #define WendyComConsoleBegin_size                0
 #define WendyComConsoleDetachParams_size         6
@@ -579,9 +640,11 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComGetDeviceIdentityParams_size     0
 #define WendyComGetDeviceInfoParams_size         0
 #define WendyComHandshake_size                   20
+#define WendyComOpenChannel_size                 0
 #define WendyComPingParams_size                  0
 #define WendyComProtocolVersion_size             12
 #define WendyComRebootParams_size                8
+#define WendyComService_size                     2
 
 #ifdef __cplusplus
 } /* extern "C" */

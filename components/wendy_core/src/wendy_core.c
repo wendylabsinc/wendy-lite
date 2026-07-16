@@ -803,7 +803,7 @@ esp_err_t wendy_core_init(void)
         .on_wifi_creds  = on_ble_wifi_creds,
         .on_clear_creds = on_ble_clear_creds,
     };
-    err = wendy_ble_prov_init(s_device_name[0] ? device_name : NULL, &ble_prov_cbs);
+    err = wendy_ble_prov_init(s_device_name[0] ? s_device_name : NULL, &ble_prov_cbs);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "BLE provisioning init failed");
     }
@@ -817,8 +817,8 @@ esp_err_t wendy_core_init(void)
     ESP_LOGI(TAG, "BLE stack is up");
 
     if (!s_device_name[0]) {
-        strlcpy(device_name, wendy_ble_prov_get_device_name(), sizeof(device_name));
-        ESP_LOGI(TAG, "device name: %s", device_name);
+        strlcpy(s_device_name, wendy_ble_prov_get_device_name(), sizeof(s_device_name));
+        ESP_LOGI(TAG, "device name: %s", s_device_name);
     }
 #endif
 

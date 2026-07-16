@@ -16,7 +16,7 @@ static const char *TAG = "wcom_stdio_pump";
 
 static struct {
     bool attached;
-    int link_id;
+    int client_id;
     uint32_t event_id;
     int64_t deadline_us;
 } _state;
@@ -141,13 +141,13 @@ static void _pump(void)
     // synchronously here
     size_t needed;
     if (!pb_get_encoded_size(&needed, WendyComMessage_fields, &out)) {
-        ESP_LOGE(TAG, "ch%d pb_get_encoded_size failed", _state.link_id);
+        ESP_LOGE(TAG, "client %d pb_get_encoded_size failed", _state.client_id);
         return;
     }
     if (needed > _event_slot.body_size) {
         void *body = realloc(_event_slot.body_data, needed);
         if (!body) {
-            ESP_LOGE(TAG, "ch%d realloc failed for event body of size %zu", _state.link_id, needed);
+            ESP_LOGE(TAG, "client %d realloc failed for event body of size %zu", _state.client_id, needed);
             return;
         }
         _event_slot.body_data = body;
@@ -155,14 +155,27 @@ static void _pump(void)
     }
     pb_ostream_t out_stream = pb_ostream_from_buffer(_event_slot.body_data, _event_slot.body_size);
     if (!pb_encode(&out_stream, WendyComMessage_fields, &out)) {
-        ESP_LOGE(TAG, "ch%d pb_encode event: %s", _state.link_id, PB_GET_ERROR(&out_stream));
+        ESP_LOGE(TAG, "client %d pb_encode event: %s", _state.client_id, PB_GET_ERROR(&out_stream));
         return;
     }
 
+    int channel = wcom_get_channel(_state.client_id);
+    if (channel < 0) {
+        ESP_LOGE(TAG, "client %d has no channel for event", _state.client_id);
+        return;
+    }
+
+    int link_id = wcom_get_link_id(_state.client_id);
+    if (link_id < 0) {
+        ESP_LOGE(TAG, "client %d has no link for event", _state.client_id);
+        return;
+    }
+    
     _event_slot.busy = true;
     _event_slot.header = (struct wcom_agent_msg_header){
         .magic = WCOM_AGENT_MSG_MAGIC,
         .version = WCOM_AGENT_MSG_VERSION,
+        .channel = channel,
         .body_size = htons(out_stream.bytes_written),
     };
     _event_slot.tx_chunks[0].data = &_event_slot.header;
@@ -173,14 +186,15 @@ static void _pump(void)
     _event_slot.tx_chunks[1].size = out_stream.bytes_written;
     _event_slot.tx_chunks[1].done_handler = _done_sending_event;
     _event_slot.tx_chunks[1].next = NULL;
-    wcom_send(_state.link_id, &_event_slot.tx_chunks[0]);
+    
+    wcom_send(link_id, &_event_slot.tx_chunks[0]);
 }
 
 WendyComResult wcom_stdio_pump_attach(int client_id, uint32_t event_id, uint32_t duration_ms, bool blocking_mode)
 {
     int64_t deadline_us = duration_ms > 0 ?
         esp_timer_get_time() + (int64_t)duration_ms * 1000 : INT64_MAX; // 0 = forever
-    if (_state.attached && _state.link_id == client_id && _state.event_id == event_id) {
+    if (_state.attached && _state.client_id == client_id && _state.event_id == event_id) {
         _state.deadline_us = deadline_us;
         wcom_stdio_set_blocking(blocking_mode);
         _schedule_pump();
@@ -189,7 +203,7 @@ WendyComResult wcom_stdio_pump_attach(int client_id, uint32_t event_id, uint32_t
     if (_state.attached)
         _detach();
     _state.attached = true;
-    _state.link_id = client_id;
+    _state.client_id = client_id;
     _state.event_id = event_id;
     _state.deadline_us = deadline_us;
     wcom_stdio_set_blocking(blocking_mode);
@@ -204,7 +218,7 @@ WendyComResult wcom_stdio_pump_attach(int client_id, uint32_t event_id, uint32_t
 
 WendyComResult wcom_stdio_pump_detach(int client_id, uint32_t event_id)
 {
-    if (!_state.attached || _state.link_id != client_id || _state.event_id != event_id)
+    if (!_state.attached || _state.client_id != client_id || _state.event_id != event_id)
         return WendyComResult_WENDY_COM_RESULT_BAD_STATE;
     _detach();
     return WendyComResult_WENDY_COM_RESULT_OK;
@@ -212,6 +226,6 @@ WendyComResult wcom_stdio_pump_detach(int client_id, uint32_t event_id)
 
 void wcom_stdio_pump_client_disconnected(int client_id)
 {
-    if (_state.attached && client_id == _state.link_id)
+    if (_state.attached && client_id == _state.client_id)
         _detach();
 }
