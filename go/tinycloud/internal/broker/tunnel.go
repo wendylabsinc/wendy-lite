@@ -3,6 +3,7 @@ package broker
 import (
 	"log"
 	"sync"
+	"time"
 
 	wendypb "github.com/wendylabsinc/wendy/go/proto/gen/litepb"
 	"github.com/wendylabsinc/wendy/go/proto/gen/tunnelpb"
@@ -10,6 +11,10 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
+
+// How long to wait for the device's ChannelState reply to OpenChannel before
+// giving up on the tunnel.
+const openAckTimeout = 10 * time.Second
 
 type tunnelServer struct {
 	tunnelpb.UnimplementedWendyComTunnelBrokerServiceServer
@@ -55,6 +60,17 @@ var (
 		Cmd: &wendypb.WendyComService_CloseChannel{CloseChannel: &wendypb.WendyComCloseChannel{}},
 	})
 )
+
+// channelState extracts the ChannelState report from a device frame body, or
+// returns nil if the body is anything else (including undecodable bytes —
+// those are relayed untouched, like any payload).
+func channelState(body []byte) *wendypb.WendyComChannelState {
+	var msg wendypb.WendyComMessage
+	if err := proto.Unmarshal(body, &msg); err != nil {
+		return nil
+	}
+	return msg.GetService().GetChannelState()
+}
 
 func (s *tunnelServer) WendyComTunnel(stream tunnelpb.WendyComTunnelBrokerService_WendyComTunnelServer) error {
 	first, err := stream.Recv()
@@ -102,6 +118,35 @@ func (s *tunnelServer) WendyComTunnel(stream tunnelpb.WendyComTunnelBrokerServic
 		return status.Error(codes.Unavailable, "device write failed")
 	}
 
+	// Hold client payloads back until the device confirms the channel: the
+	// recv goroutine is not started yet, so the stream applies backpressure.
+	ackTimer := time.NewTimer(openAckTimeout)
+	defer ackTimer.Stop()
+waitAck:
+	for {
+		select {
+		case body := <-t.fromDevice:
+			st := channelState(body)
+			if st == nil {
+				log.Printf("device %d: dropping frame on channel %d received before open ack", dev.assetID, ch)
+				continue
+			}
+			if st.GetOpen() != nil {
+				break waitAck
+			}
+			if e := st.GetError(); e != nil {
+				return status.Errorf(codes.ResourceExhausted, "device rejected channel open: %s", e.GetReason())
+			}
+			return status.Error(codes.Aborted, "unexpected channel state from device")
+		case <-ackTimer.C:
+			return status.Error(codes.Unavailable, "timeout waiting for device to open channel")
+		case <-t.done:
+			return status.Error(codes.Unavailable, "device disconnected")
+		case <-stream.Context().Done():
+			return nil // client went away
+		}
+	}
+
 	recvC := make(chan recvResult)
 	go func() {
 		for {
@@ -136,6 +181,18 @@ func (s *tunnelServer) WendyComTunnel(stream tunnelpb.WendyComTunnelBrokerServic
 				return status.Error(codes.Unavailable, "device write failed")
 			}
 		case body := <-t.fromDevice:
+			// ChannelState reports are consumed here — channels are the
+			// broker's business, the gRPC client never sees them.
+			if st := channelState(body); st != nil {
+				if st.GetClose() != nil {
+					log.Printf("device %d: channel %d closed by device", dev.assetID, ch)
+					return nil
+				}
+				if e := st.GetError(); e != nil {
+					return status.Errorf(codes.Aborted, "device channel error: %s", e.GetReason())
+				}
+				continue
+			}
 			err := stream.Send(&tunnelpb.WendyComTunnelMessage{
 				Msg: &tunnelpb.WendyComTunnelMessage_Payload{
 					Payload: &tunnelpb.WendyComTunnelPayload{Bytes: body},

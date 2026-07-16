@@ -75,10 +75,24 @@ PB_BIND(WendyComOpenChannel, WendyComOpenChannel, AUTO)
 PB_BIND(WendyComCloseChannel, WendyComCloseChannel, AUTO)
 
 
+PB_BIND(WendyComChannelOpen, WendyComChannelOpen, AUTO)
+
+
+PB_BIND(WendyComChannelClose, WendyComChannelClose, AUTO)
+
+
+PB_BIND(WendyComChannelError, WendyComChannelError, AUTO)
+
+
+PB_BIND(WendyComChannelState, WendyComChannelState, AUTO)
+
+
 PB_BIND(WendyComService, WendyComService, AUTO)
 
 
 PB_BIND(WendyComMessage, WendyComMessage, AUTO)
+
+
 
 
 

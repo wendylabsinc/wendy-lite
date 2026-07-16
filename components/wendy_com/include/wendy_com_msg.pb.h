@@ -32,6 +32,11 @@ typedef enum _WendyComResult {
     WendyComResult_WENDY_COM_RESULT_BAD_APP_SIZE = 6
 } WendyComResult;
 
+typedef enum _WendyComChannelErrorReason {
+    WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_NOT_OPEN = 0, /* command received on a channel that is not open */
+    WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_REJECTED = 1 /* service message not allowed (open/close refused) */
+} WendyComChannelErrorReason;
+
 /* Struct definitions */
 /* Protocol version, exchanged in the handshake. The major number must match
  on both sides; minor is informational. */
@@ -189,11 +194,12 @@ typedef struct _WendyComEvent {
     } data;
 } WendyComEvent;
 
-/* Channel management, sent host -> device. The channel these messages
- operate on is the one carried by the channel byte of the frame header —
- OpenChannel arrives on the channel being opened, CloseChannel on the one
- being closed — so the bodies are empty presence markers. Devices that
- don't track channels may ignore these messages. */
+/* Channel management. The channel these messages operate on is the one
+ carried by the channel byte of the frame header — OpenChannel arrives on
+ the channel being opened, CloseChannel on the one being closed — so the
+ bodies are empty presence markers. OpenChannel and CloseChannel are sent
+ host -> device; ChannelState is sent device -> host. Devices that don't
+ track channels may ignore these messages. */
 typedef struct _WendyComOpenChannel {
     char dummy_field;
 } WendyComOpenChannel;
@@ -202,11 +208,35 @@ typedef struct _WendyComCloseChannel {
     char dummy_field;
 } WendyComCloseChannel;
 
+/* Reports the state of the channel carried by the frame's channel byte,
+ sent device -> host. */
+typedef struct _WendyComChannelOpen {
+    char dummy_field;
+} WendyComChannelOpen;
+
+typedef struct _WendyComChannelClose {
+    char dummy_field;
+} WendyComChannelClose;
+
+typedef struct _WendyComChannelError {
+    WendyComChannelErrorReason reason;
+} WendyComChannelError;
+
+typedef struct _WendyComChannelState {
+    pb_size_t which_state;
+    union {
+        WendyComChannelOpen open;
+        WendyComChannelClose close;
+        WendyComChannelError error;
+    } state;
+} WendyComChannelState;
+
 typedef struct _WendyComService {
     pb_size_t which_cmd;
     union {
         WendyComOpenChannel open_channel;
         WendyComCloseChannel close_channel;
+        WendyComChannelState channel_state;
     } cmd;
 } WendyComService;
 
@@ -241,6 +271,10 @@ extern "C" {
 #define _WendyComResult_MAX WendyComResult_WENDY_COM_RESULT_BAD_APP_SIZE
 #define _WendyComResult_ARRAYSIZE ((WendyComResult)(WendyComResult_WENDY_COM_RESULT_BAD_APP_SIZE+1))
 
+#define _WendyComChannelErrorReason_MIN WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_NOT_OPEN
+#define _WendyComChannelErrorReason_MAX WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_REJECTED
+#define _WendyComChannelErrorReason_ARRAYSIZE ((WendyComChannelErrorReason)(WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_REJECTED+1))
+
 
 
 
@@ -265,6 +299,11 @@ extern "C" {
 #define WendyComResponse_result_ENUMTYPE WendyComResult
 
 
+
+
+
+
+#define WendyComChannelError_reason_ENUMTYPE WendyComChannelErrorReason
 
 
 
@@ -294,6 +333,10 @@ extern "C" {
 #define WendyComEvent_init_default               {0, 0, {WendyComConsoleBegin_init_default}}
 #define WendyComOpenChannel_init_default         {0}
 #define WendyComCloseChannel_init_default        {0}
+#define WendyComChannelOpen_init_default         {0}
+#define WendyComChannelClose_init_default        {0}
+#define WendyComChannelError_init_default        {_WendyComChannelErrorReason_MIN}
+#define WendyComChannelState_init_default        {0, {WendyComChannelOpen_init_default}}
 #define WendyComService_init_default             {0, {WendyComOpenChannel_init_default}}
 #define WendyComMessage_init_default             {0, {WendyComHandshake_init_default}}
 #define WendyComProtocolVersion_init_zero        {0, 0}
@@ -319,6 +362,10 @@ extern "C" {
 #define WendyComEvent_init_zero                  {0, 0, {WendyComConsoleBegin_init_zero}}
 #define WendyComOpenChannel_init_zero            {0}
 #define WendyComCloseChannel_init_zero           {0}
+#define WendyComChannelOpen_init_zero            {0}
+#define WendyComChannelClose_init_zero           {0}
+#define WendyComChannelError_init_zero           {_WendyComChannelErrorReason_MIN}
+#define WendyComChannelState_init_zero           {0, {WendyComChannelOpen_init_zero}}
 #define WendyComService_init_zero                {0, {WendyComOpenChannel_init_zero}}
 #define WendyComMessage_init_zero                {0, {WendyComHandshake_init_zero}}
 
@@ -369,8 +416,13 @@ extern "C" {
 #define WendyComEvent_console_begin_tag          2
 #define WendyComEvent_console_data_tag           3
 #define WendyComEvent_console_end_tag            4
+#define WendyComChannelError_reason_tag          1
+#define WendyComChannelState_open_tag            1
+#define WendyComChannelState_close_tag           2
+#define WendyComChannelState_error_tag           3
 #define WendyComService_open_channel_tag         1
 #define WendyComService_close_channel_tag        2
+#define WendyComService_channel_state_tag        3
 #define WendyComMessage_handshake_tag            1
 #define WendyComMessage_service_tag              2
 #define WendyComMessage_command_tag              3
@@ -543,13 +595,40 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (data,console_end,data.console_end),   4)
 #define WendyComCloseChannel_CALLBACK NULL
 #define WendyComCloseChannel_DEFAULT NULL
 
+#define WendyComChannelOpen_FIELDLIST(X, a) \
+
+#define WendyComChannelOpen_CALLBACK NULL
+#define WendyComChannelOpen_DEFAULT NULL
+
+#define WendyComChannelClose_FIELDLIST(X, a) \
+
+#define WendyComChannelClose_CALLBACK NULL
+#define WendyComChannelClose_DEFAULT NULL
+
+#define WendyComChannelError_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UENUM,    reason,            1)
+#define WendyComChannelError_CALLBACK NULL
+#define WendyComChannelError_DEFAULT NULL
+
+#define WendyComChannelState_FIELDLIST(X, a) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (state,open,state.open),   1) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (state,close,state.close),   2) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (state,error,state.error),   3)
+#define WendyComChannelState_CALLBACK NULL
+#define WendyComChannelState_DEFAULT NULL
+#define WendyComChannelState_state_open_MSGTYPE WendyComChannelOpen
+#define WendyComChannelState_state_close_MSGTYPE WendyComChannelClose
+#define WendyComChannelState_state_error_MSGTYPE WendyComChannelError
+
 #define WendyComService_FIELDLIST(X, a) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (cmd,open_channel,cmd.open_channel),   1) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (cmd,close_channel,cmd.close_channel),   2)
+X(a, STATIC,   ONEOF,    MESSAGE,  (cmd,close_channel,cmd.close_channel),   2) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (cmd,channel_state,cmd.channel_state),   3)
 #define WendyComService_CALLBACK NULL
 #define WendyComService_DEFAULT NULL
 #define WendyComService_cmd_open_channel_MSGTYPE WendyComOpenChannel
 #define WendyComService_cmd_close_channel_MSGTYPE WendyComCloseChannel
+#define WendyComService_cmd_channel_state_MSGTYPE WendyComChannelState
 
 #define WendyComMessage_FIELDLIST(X, a) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (msg,handshake,msg.handshake),   1) \
@@ -588,6 +667,10 @@ extern const pb_msgdesc_t WendyComResponse_msg;
 extern const pb_msgdesc_t WendyComEvent_msg;
 extern const pb_msgdesc_t WendyComOpenChannel_msg;
 extern const pb_msgdesc_t WendyComCloseChannel_msg;
+extern const pb_msgdesc_t WendyComChannelOpen_msg;
+extern const pb_msgdesc_t WendyComChannelClose_msg;
+extern const pb_msgdesc_t WendyComChannelError_msg;
+extern const pb_msgdesc_t WendyComChannelState_msg;
 extern const pb_msgdesc_t WendyComService_msg;
 extern const pb_msgdesc_t WendyComMessage_msg;
 
@@ -615,6 +698,10 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComEvent_fields &WendyComEvent_msg
 #define WendyComOpenChannel_fields &WendyComOpenChannel_msg
 #define WendyComCloseChannel_fields &WendyComCloseChannel_msg
+#define WendyComChannelOpen_fields &WendyComChannelOpen_msg
+#define WendyComChannelClose_fields &WendyComChannelClose_msg
+#define WendyComChannelError_fields &WendyComChannelError_msg
+#define WendyComChannelState_fields &WendyComChannelState_msg
 #define WendyComService_fields &WendyComService_msg
 #define WendyComMessage_fields &WendyComMessage_msg
 
@@ -632,6 +719,10 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComAppPushEndParams_size            0
 #define WendyComAppStartParams_size              0
 #define WendyComAppStopParams_size               0
+#define WendyComChannelClose_size                0
+#define WendyComChannelError_size                2
+#define WendyComChannelOpen_size                 0
+#define WendyComChannelState_size                4
 #define WendyComCloseChannel_size                0
 #define WendyComConsoleAttachParams_size         14
 #define WendyComConsoleBegin_size                0
@@ -644,7 +735,7 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComPingParams_size                  0
 #define WendyComProtocolVersion_size             12
 #define WendyComRebootParams_size                8
-#define WendyComService_size                     2
+#define WendyComService_size                     6
 
 #ifdef __cplusplus
 } /* extern "C" */

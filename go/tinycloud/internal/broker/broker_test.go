@@ -102,7 +102,43 @@ func decodeService(t *testing.T, body []byte) *wendypb.WendyComService {
 	return svc
 }
 
-func openTunnel(t *testing.T, env *testEnv, ctx context.Context) (tunnelpb.WendyComTunnelBrokerService_WendyComTunnelClient, uint8) {
+func channelStateBody(t *testing.T, state *wendypb.WendyComChannelState) []byte {
+	t.Helper()
+	body, err := proto.Marshal(&wendypb.WendyComMessage{
+		Msg: &wendypb.WendyComMessage_Service{
+			Service: &wendypb.WendyComService{
+				Cmd: &wendypb.WendyComService_ChannelState{ChannelState: state},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func openAckBody(t *testing.T) []byte {
+	return channelStateBody(t, &wendypb.WendyComChannelState{
+		State: &wendypb.WendyComChannelState_Open{Open: &wendypb.WendyComChannelOpen{}},
+	})
+}
+
+func closeStateBody(t *testing.T) []byte {
+	return channelStateBody(t, &wendypb.WendyComChannelState{
+		State: &wendypb.WendyComChannelState_Close{Close: &wendypb.WendyComChannelClose{}},
+	})
+}
+
+func errorStateBody(t *testing.T, reason wendypb.WendyComChannelErrorReason) []byte {
+	return channelStateBody(t, &wendypb.WendyComChannelState{
+		State: &wendypb.WendyComChannelState_Error{Error: &wendypb.WendyComChannelError{Reason: reason}},
+	})
+}
+
+// sendTunnelOpen starts a stream, sends the tunnel Open, and returns the
+// stream plus the channel on which the device received OpenChannel. It does
+// NOT send the device's ChannelState reply — the broker is still gating.
+func sendTunnelOpen(t *testing.T, env *testEnv, ctx context.Context) (tunnelpb.WendyComTunnelBrokerService_WendyComTunnelClient, uint8) {
 	t.Helper()
 	stream, err := env.client.WendyComTunnel(ctx)
 	if err != nil {
@@ -124,6 +160,24 @@ func openTunnel(t *testing.T, env *testEnv, ctx context.Context) (tunnelpb.Wendy
 		t.Fatal("expected OpenChannel as first frame")
 	}
 	return stream, h.Channel
+}
+
+func openTunnel(t *testing.T, env *testEnv, ctx context.Context) (tunnelpb.WendyComTunnelBrokerService_WendyComTunnelClient, uint8) {
+	t.Helper()
+	stream, ch := sendTunnelOpen(t, env, ctx)
+	writeFrame(t, env.device, ch, openAckBody(t)) // device confirms the channel
+	return stream, ch
+}
+
+// drainCloseChannel reads the CloseChannel frame the broker sends on
+// teardown. The test pipe is unbuffered, so the broker's handler cannot
+// finish (and end the gRPC stream) until the fake device reads this frame.
+func drainCloseChannel(t *testing.T, env *testEnv, ch uint8) {
+	t.Helper()
+	h, body := readFrame(t, env.device)
+	if h.Channel != ch || decodeService(t, body).GetCloseChannel() == nil {
+		t.Fatalf("expected CloseChannel on channel %d, got channel %d", ch, h.Channel)
+	}
 }
 
 func payloadMsg(b []byte) *tunnelpb.WendyComTunnelMessage {
@@ -244,6 +298,49 @@ func TestFirstMessageMustBeOpen(t *testing.T) {
 	}
 	if _, err = stream.Recv(); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("expected InvalidArgument, got %v", err)
+	}
+}
+
+func TestOpenRejectedFailsTunnel(t *testing.T) {
+	env := newTestEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, ch := sendTunnelOpen(t, env, ctx)
+	writeFrame(t, env.device, ch, errorStateBody(t,
+		wendypb.WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_REJECTED))
+	drainCloseChannel(t, env, ch)
+	if _, err := stream.Recv(); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("expected ResourceExhausted, got %v", err)
+	}
+}
+
+func TestDeviceClosesChannel(t *testing.T) {
+	env := newTestEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, ch := openTunnel(t, env, ctx)
+	writeFrame(t, env.device, ch, closeStateBody(t))
+	drainCloseChannel(t, env, ch)
+	// The close report is consumed by the broker (never forwarded); the
+	// stream ends cleanly.
+	if _, err := stream.Recv(); err != io.EOF {
+		t.Fatalf("expected EOF, got %v", err)
+	}
+}
+
+func TestNotOpenErrorAbortsTunnel(t *testing.T) {
+	env := newTestEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, ch := openTunnel(t, env, ctx)
+	writeFrame(t, env.device, ch, errorStateBody(t,
+		wendypb.WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_NOT_OPEN))
+	drainCloseChannel(t, env, ch)
+	if _, err := stream.Recv(); status.Code(err) != codes.Aborted {
+		t.Fatalf("expected Aborted, got %v", err)
 	}
 }
 

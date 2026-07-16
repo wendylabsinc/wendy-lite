@@ -232,14 +232,28 @@ static struct _agent_channel *_find_channel(struct _agent_link *link, uint32_t c
     return NULL;
 }
 
+// Reply to the message just received with a ChannelState report. The reply
+// goes out on link->rx_channel — the channel the message arrived on, which is
+// the channel the report is about.
+static void _send_channel_state(struct _agent_link *link, pb_size_t which_state,
+                                WendyComChannelErrorReason reason)
+{
+    WendyComMessage out = WendyComMessage_init_zero;
+    out.which_msg = WendyComMessage_service_tag;
+    out.msg.service.which_cmd = WendyComService_channel_state_tag;
+    out.msg.service.cmd.channel_state.which_state = which_state;
+    if (which_state == WendyComChannelState_error_tag)
+        out.msg.service.cmd.channel_state.state.error.reason = reason;
+    _send_message(link, &out);
+}
+
 static void _open_channel(struct _agent_link *link, uint8_t channel)
 {
-    if (channel == 0) {
-        ESP_LOGW(TAG, "link %d open channel 0 ignored (implicitly open)", link->link_id);
-        return;
-    }
     if (_find_channel(link, channel)) {
+        // includes channel 0, which is pre-opened at link connect
         ESP_LOGW(TAG, "link %d channel %u already open", link->link_id, channel);
+        _send_channel_state(link, WendyComChannelState_error_tag,
+                            WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_REJECTED);
         return;
     }
     int link_index = link - _links;
@@ -249,24 +263,29 @@ static void _open_channel(struct _agent_link *link, uint8_t channel)
             link->channels[i].client_id = _generate_client_id(link_index, i);
             ESP_LOGI(TAG, "link %d channel %u open (client %d)",
                      link->link_id, channel, link->channels[i].client_id);
+            _send_channel_state(link, WendyComChannelState_open_tag, 0);
             return;
         }
     }
-    // No response can be sent (service messages have none); commands on this
-    // channel will simply be ignored.
     ESP_LOGE(TAG, "link %d cannot open channel %u: all %d channels in use",
              link->link_id, channel, _CHANNELS_PER_LINK_COUNT);
+    _send_channel_state(link, WendyComChannelState_error_tag,
+                        WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_REJECTED);
 }
 
 static void _close_channel(struct _agent_link *link, uint8_t channel)
 {
     if (channel == 0) {
-        ESP_LOGW(TAG, "link %d close channel 0 ignored (never closed)", link->link_id);
+        ESP_LOGW(TAG, "link %d close channel 0 rejected (never closed)", link->link_id);
+        _send_channel_state(link, WendyComChannelState_error_tag,
+                            WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_REJECTED);
         return;
     }
     struct _agent_channel *entry = _find_channel(link, channel);
     if (!entry) {
-        ESP_LOGW(TAG, "link %d close of unopened channel %u ignored", link->link_id, channel);
+        ESP_LOGW(TAG, "link %d close of unopened channel %u rejected", link->link_id, channel);
+        _send_channel_state(link, WendyComChannelState_error_tag,
+                            WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_REJECTED);
         return;
     }
     ESP_LOGI(TAG, "link %d channel %u closed (client %d)",
@@ -274,12 +293,14 @@ static void _close_channel(struct _agent_link *link, uint8_t channel)
     wcom_cmd_client_disconnected(entry->client_id);
     entry->client_id = 0;
     entry->channel = -1;
+    _send_channel_state(link, WendyComChannelState_close_tag, 0);
 }
 
 /* Channel management is link-level, not session-level: the cloud broker
    opens the first tunnel channel before that tunnel's handshake reaches us,
-   so service messages are accepted even before the handshake. They get no
-   response, so the caller ends by re-arming the header read itself. */
+   so service messages are accepted even before the handshake. Every service
+   message is answered with a ChannelState report, whose completion re-arms
+   the header read. */
 static void _process_service_message(struct _agent_link *link, const WendyComService *svc)
 {
     switch (svc->which_cmd) {
@@ -290,23 +311,22 @@ static void _process_service_message(struct _agent_link *link, const WendyComSer
         _close_channel(link, link->rx_channel);
         break;
     default:
-        ESP_LOGW(TAG, "link %d unknown service msg (which_cmd=%d)",
+        ESP_LOGW(TAG, "link %d disallowed service msg rejected (which_cmd=%d)",
                  link->link_id, svc->which_cmd);
+        _send_channel_state(link, WendyComChannelState_error_tag,
+                            WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_REJECTED);
         break;
     }
-    // Service messages get no response, so _done_sending_msg won't re-arm
-    // the read for us — do it here or the link stalls.
-    _start_recv_header(link);
 }
 
 static void _process_command(struct _agent_link *link, const WendyComCommand *cmd, const struct _span *data_span)
 {
     struct _agent_channel *channel = _find_channel(link, link->rx_channel);
     if (!channel) {
-        ESP_LOGW(TAG, "link %d ignoring cmd id %d on unopened channel %u",
+        ESP_LOGW(TAG, "link %d cmd id %d on unopened channel %u",
                  link->link_id, cmd->request_id, link->rx_channel);
-        // No response is sent, so re-arm the read here.
-        _start_recv_header(link);
+        _send_channel_state(link, WendyComChannelState_error_tag,
+                            WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_NOT_OPEN);
         return;
     }
     int client_id = channel->client_id;
