@@ -11,6 +11,10 @@
 
 static const char *TAG = "wcom_cmd";
 static const struct wcom_app_delegate *_app_delegate;
+
+/* At most one push (app or conf) may be in progress at a time. */
+enum _push_kind { PUSH_NONE, PUSH_APP, PUSH_CONF };
+static enum _push_kind _push_kind = PUSH_NONE;
 static int _pushing_client_id = 0;
 
 
@@ -33,10 +37,11 @@ WendyComResult wcom_cmd_app_push_begin(int client_id, size_t size, WendyComAppTy
 {
     ESP_LOGI(TAG, "APP_PUSH_BEGIN client=%d size=%zu type=%s", client_id, size,
              app_type == WendyComAppType_WENDY_COM_APP_TYPE_NATIVE ? "native" : "wasm");
-    if (_pushing_client_id != 0) {
+    if (_push_kind != PUSH_NONE) {
         ESP_LOGW(TAG, "APP_PUSH_BEGIN from client=%d while client=%d is pushing", client_id, _pushing_client_id);
         return WendyComResult_WENDY_COM_RESULT_BUSY;
     }
+    _push_kind = PUSH_APP;
     _pushing_client_id = client_id;
     if (_app_delegate && _app_delegate->on_app_push_begin)
         return _app_delegate->on_app_push_begin(size, app_type);
@@ -46,7 +51,7 @@ WendyComResult wcom_cmd_app_push_begin(int client_id, size_t size, WendyComAppTy
 WendyComResult wcom_cmd_app_push_data(int client_id, size_t offset, const uint8_t *data, size_t size)
 {
     ESP_LOGI(TAG, "APP_PUSH_DATA client=%d offset=%zu size=%zu", client_id, offset, size);
-    if (client_id != _pushing_client_id) {
+    if (_push_kind != PUSH_APP || client_id != _pushing_client_id) {
         ESP_LOGW(TAG, "APP_PUSH_DATA from unexpected client=%d (expected=%d)", client_id, _pushing_client_id);
         return WendyComResult_WENDY_COM_RESULT_BUSY;
     }
@@ -58,13 +63,55 @@ WendyComResult wcom_cmd_app_push_data(int client_id, size_t offset, const uint8_
 WendyComResult wcom_cmd_app_push_end(int client_id)
 {
     ESP_LOGI(TAG, "APP_PUSH_END client=%d", client_id);
-    if (client_id != _pushing_client_id) {
+    if (_push_kind != PUSH_APP || client_id != _pushing_client_id) {
         ESP_LOGW(TAG, "APP_PUSH_END from unexpected client=%d (expected=%d)", client_id, _pushing_client_id);
         return WendyComResult_WENDY_COM_RESULT_BUSY;
     }
+    _push_kind = PUSH_NONE;
     _pushing_client_id = 0;
     if (_app_delegate && _app_delegate->on_app_push_end)
         return _app_delegate->on_app_push_end();
+    return WendyComResult_WENDY_COM_RESULT_OK;
+}
+
+WendyComResult wcom_cmd_conf_push_begin(int client_id, size_t size, WendyComConfPushMode mode)
+{
+    ESP_LOGI(TAG, "CONF_PUSH_BEGIN client=%d size=%zu mode=%s", client_id, size,
+             mode == WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE ? "update" : "replace");
+    if (_push_kind != PUSH_NONE) {
+        ESP_LOGW(TAG, "CONF_PUSH_BEGIN from client=%d while client=%d is pushing", client_id, _pushing_client_id);
+        return WendyComResult_WENDY_COM_RESULT_BUSY;
+    }
+    _push_kind = PUSH_CONF;
+    _pushing_client_id = client_id;
+    if (_app_delegate && _app_delegate->on_conf_push_begin)
+        return _app_delegate->on_conf_push_begin(size, mode);
+    return WendyComResult_WENDY_COM_RESULT_OK;
+}
+
+WendyComResult wcom_cmd_conf_push_data(int client_id, size_t offset, const uint8_t *data, size_t size)
+{
+    ESP_LOGI(TAG, "CONF_PUSH_DATA client=%d offset=%zu size=%zu", client_id, offset, size);
+    if (_push_kind != PUSH_CONF || client_id != _pushing_client_id) {
+        ESP_LOGW(TAG, "CONF_PUSH_DATA from unexpected client=%d (expected=%d)", client_id, _pushing_client_id);
+        return WendyComResult_WENDY_COM_RESULT_BUSY;
+    }
+    if (_app_delegate && _app_delegate->on_conf_push_data)
+        return _app_delegate->on_conf_push_data(offset, data, size);
+    return WendyComResult_WENDY_COM_RESULT_OK;
+}
+
+WendyComResult wcom_cmd_conf_push_end(int client_id)
+{
+    ESP_LOGI(TAG, "CONF_PUSH_END client=%d", client_id);
+    if (_push_kind != PUSH_CONF || client_id != _pushing_client_id) {
+        ESP_LOGW(TAG, "CONF_PUSH_END from unexpected client=%d (expected=%d)", client_id, _pushing_client_id);
+        return WendyComResult_WENDY_COM_RESULT_BUSY;
+    }
+    _push_kind = PUSH_NONE;
+    _pushing_client_id = 0;
+    if (_app_delegate && _app_delegate->on_conf_push_end)
+        return _app_delegate->on_conf_push_end();
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 
@@ -142,11 +189,15 @@ WendyComResult wcom_cmd_console_detach(int client_id, uint32_t event_id)
 
 void wcom_cmd_client_disconnected(int client_id)
 {
-    if (client_id == _pushing_client_id) {
+    if (_push_kind != PUSH_NONE && client_id == _pushing_client_id) {
         ESP_LOGW(TAG, "client %d disconnected while pushing, aborting push", client_id);
+        enum _push_kind kind = _push_kind;
+        _push_kind = PUSH_NONE;
         _pushing_client_id = 0;
-        if (_app_delegate && _app_delegate->on_app_push_abort)
+        if (kind == PUSH_APP && _app_delegate && _app_delegate->on_app_push_abort)
             _app_delegate->on_app_push_abort();
+        else if (kind == PUSH_CONF && _app_delegate && _app_delegate->on_conf_push_abort)
+            _app_delegate->on_conf_push_abort();
     }
     wcom_stdio_pump_client_disconnected(client_id);
 }

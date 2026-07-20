@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -618,6 +619,67 @@ static void com_push_abort(void)
     wasm_persist_abort(0);
 }
 
+/* ── Conf push (wendy_conf partition) ──────────────────────────────────
+ *
+ * The conf is small, so the incoming blob is buffered in RAM and written
+ * to the wendy_conf partition in one go on completion.  The new
+ * configuration takes effect after reboot.
+ */
+
+static uint8_t *s_conf_push_buf = NULL;
+static size_t s_conf_push_size = 0;
+static enum wendy_conf_write_mode s_conf_push_mode;
+
+static WendyComResult com_conf_push_begin(size_t size, WendyComConfPushMode mode)
+{
+    if (size == 0 || size > wendy_conf_get_max_size()) {
+        ESP_LOGW(TAG, "conf size %zu exceeds max %zu", size, wendy_conf_get_max_size());
+        return WendyComResult_WENDY_COM_RESULT_BAD_CONF_SIZE;
+    }
+    free(s_conf_push_buf);
+    s_conf_push_buf = malloc(size);
+    if (!s_conf_push_buf) {
+        ESP_LOGE(TAG, "no memory for %zu bytes conf", size);
+        return WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
+    }
+    s_conf_push_size = size;
+    s_conf_push_mode = mode == WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE
+                     ? WENDY_CONF_WRITE_MODE_UPDATE : WENDY_CONF_WRITE_MODE_REPLACE;
+    return WendyComResult_WENDY_COM_RESULT_OK;
+}
+
+static WendyComResult com_conf_push_data(size_t offset, const uint8_t *data, size_t size)
+{
+    if (!s_conf_push_buf)
+        return WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+    if (offset > s_conf_push_size || size > s_conf_push_size - offset) {
+        ESP_LOGW(TAG, "conf chunk offset=%zu size=%zu beyond announced size %zu",
+                 offset, size, s_conf_push_size);
+        return WendyComResult_WENDY_COM_RESULT_BAD_CONF_SIZE;
+    }
+    memcpy(s_conf_push_buf + offset, data, size);
+    return WendyComResult_WENDY_COM_RESULT_OK;
+}
+
+static void com_conf_push_abort(void)
+{
+    free(s_conf_push_buf);
+    s_conf_push_buf = NULL;
+    s_conf_push_size = 0;
+}
+
+static WendyComResult com_conf_push_end(void)
+{
+    if (!s_conf_push_buf)
+        return WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+    esp_err_t e = wendy_conf_write(s_conf_push_buf, s_conf_push_size, s_conf_push_mode);
+    com_conf_push_abort();
+    if (e == ESP_ERR_INVALID_SIZE)
+        return WendyComResult_WENDY_COM_RESULT_BAD_CONF_SIZE;
+    return e == ESP_OK ? WendyComResult_WENDY_COM_RESULT_OK
+                       : WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
+}
+
 static WendyComResult com_app_start(void)
 {
     cancel_app_auto_start();
@@ -835,6 +897,10 @@ esp_err_t wendy_core_init(void)
         .on_app_push_data       = com_push_data,
         .on_app_push_end        = com_push_end,
         .on_app_push_abort      = com_push_abort,
+        .on_conf_push_begin     = com_conf_push_begin,
+        .on_conf_push_data      = com_conf_push_data,
+        .on_conf_push_end       = com_conf_push_end,
+        .on_conf_push_abort     = com_conf_push_abort,
         .on_app_start           = com_app_start,
         .on_app_stop            = com_app_stop,
         .on_reboot              = com_reboot,

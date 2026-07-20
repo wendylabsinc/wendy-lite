@@ -362,6 +362,20 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
     case WendyComCommand_app_push_end_tag:
         resp->result = wcom_cmd_app_push_end(client_id);
         break;
+    case WendyComCommand_conf_push_begin_tag:
+        resp->result = wcom_cmd_conf_push_begin(client_id, cmd->params.conf_push_begin.size,
+                                                cmd->params.conf_push_begin.mode);
+        break;
+    case WendyComCommand_conf_push_data_tag:
+        if (data_span->data)
+            resp->result = wcom_cmd_conf_push_data(client_id, cmd->params.conf_push_data.offset,
+                                                   data_span->data, data_span->size);
+        else
+            resp->result = WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
+        break;
+    case WendyComCommand_conf_push_end_tag:
+        resp->result = wcom_cmd_conf_push_end(client_id);
+        break;
     case WendyComCommand_app_start_tag:
         resp->result = wcom_cmd_app_start(client_id);
         break;
@@ -412,6 +426,25 @@ static void _process_message(struct _agent_link *link, const uint8_t *body, size
         ESP_LOGE(TAG, "link %d pb_decode: %s", link->link_id, PB_GET_ERROR(&stream));
         wcom_close(link->link_id);
         return;
+    }
+
+    /* Only one oneof member can be pre-set per decode, so a conf_push_data
+       command came out with its data callback reset and the bytes skipped.
+       Decode again with the conf_push_data path pre-set instead. */
+    if (req.which_msg == WendyComMessage_command_tag &&
+        req.msg.command.which_params == WendyComCommand_conf_push_data_tag) {
+        data_span = (struct _span){NULL, 0};
+        req = (WendyComMessage)WendyComMessage_init_zero;
+        req.which_msg = WendyComMessage_command_tag;
+        req.msg.command.which_params = WendyComCommand_conf_push_data_tag;
+        req.msg.command.params.conf_push_data.data.funcs.decode = _capture_span;
+        req.msg.command.params.conf_push_data.data.arg = &data_span;
+        stream = pb_istream_from_buffer(body, size);
+        if (!pb_decode_noinit(&stream, WendyComMessage_fields, &req)) {
+            ESP_LOGE(TAG, "link %d pb_decode: %s", link->link_id, PB_GET_ERROR(&stream));
+            wcom_close(link->link_id);
+            return;
+        }
     }
 
     switch (req.which_msg) {

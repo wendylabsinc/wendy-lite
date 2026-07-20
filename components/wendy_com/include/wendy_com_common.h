@@ -11,6 +11,10 @@ struct wcom_app_delegate {
     WendyComResult (*on_app_push_data)(size_t offset, const uint8_t *data, size_t size);
     WendyComResult (*on_app_push_end)(void);
     void (*on_app_push_abort)(void);
+    WendyComResult (*on_conf_push_begin)(size_t size, WendyComConfPushMode mode);
+    WendyComResult (*on_conf_push_data)(size_t offset, const uint8_t *data, size_t size);
+    WendyComResult (*on_conf_push_end)(void);
+    void (*on_conf_push_abort)(void);
     WendyComResult (*on_app_start)(void);
     WendyComResult (*on_app_stop)(void);
     WendyComResult (*on_reboot)(bool app_auto_start, uint32_t app_auto_start_delay_ms);

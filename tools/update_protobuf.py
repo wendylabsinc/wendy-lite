@@ -62,6 +62,12 @@ GO_TARGETS = [
         False,
     ),
     (
+        ["components/wendy_conf/proto/wendy_conf.proto"],
+        "go/console/wendypb",
+        "wendy-console/wendypb",
+        False,
+    ),
+    (
         [
             "go/proto/wendy_com_tunnel_msg.proto",
             "go/proto/wendy_com_tunnel_service.proto",

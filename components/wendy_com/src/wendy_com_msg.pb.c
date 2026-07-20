@@ -33,6 +33,15 @@ PB_BIND(WendyComAppStartParams, WendyComAppStartParams, AUTO)
 PB_BIND(WendyComAppStopParams, WendyComAppStopParams, AUTO)
 
 
+PB_BIND(WendyComConfPushBeginParams, WendyComConfPushBeginParams, AUTO)
+
+
+PB_BIND(WendyComConfPushDataParams, WendyComConfPushDataParams, AUTO)
+
+
+PB_BIND(WendyComConfPushEndParams, WendyComConfPushEndParams, AUTO)
+
+
 PB_BIND(WendyComGetDeviceIdentityParams, WendyComGetDeviceIdentityParams, AUTO)
 
 
@@ -91,6 +100,8 @@ PB_BIND(WendyComService, WendyComService, AUTO)
 
 
 PB_BIND(WendyComMessage, WendyComMessage, AUTO)
+
+
 
 
 
