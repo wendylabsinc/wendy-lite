@@ -3,7 +3,13 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "esp_err.h"
 #include "wendy_conf.pb.h"
+
+enum wendy_conf_write_mode {
+    WENDY_CONF_WRITE_MODE_REPLACE = 0,
+    WENDY_CONF_WRITE_MODE_UPDATE = 1,
+};
 
 /**
  * A view into a byte span within the wendy-conf partition.
@@ -15,7 +21,7 @@ struct wendy_conf_span {
 };
 
 /**
- * Read and decode the wendy_conf partition.  All errors are logged; call once
+ * Read and decode the wendy_conf partition. All errors are logged; call once
  * at startup before any getter.
  *
  * Partition layout:
@@ -24,6 +30,28 @@ struct wendy_conf_span {
  *   Offset 0x08: protobuf-encoded WendyConf message
  */
 void wendy_conf_init(void);
+
+/**
+ * Write a protobuf-encoded WendyConf message to the wendy_conf partition.
+ * The message must not exceed the maximum size returned by
+ * wendy_conf_get_max_size().
+ *
+ * In REPLACE mode the given message becomes the whole configuration. In
+ * UPDATE mode, any root property of WendyConf (device_name, wifi,
+ * provisioning) absent from the given message is kept from the current
+ * configuration.
+ *
+ * Writing invalidates the in-RAM configuration: from that point on the
+ * getters return empty spans / zero values. The new configuration takes
+ * effect after reboot.
+ */
+esp_err_t wendy_conf_write(const void *pb_data, size_t pb_size, enum wendy_conf_write_mode mode);
+
+/**
+ * Largest protobuf-encoded WendyConf message the wendy_conf partition can
+ * hold.
+ */
+size_t wendy_conf_get_max_size(void);
 
 struct wendy_conf_span wendy_conf_get_device_name(void);
 
