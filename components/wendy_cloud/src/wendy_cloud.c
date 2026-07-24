@@ -10,6 +10,7 @@
 #include "wendy_conf.h"
 #include "wendy_com_link.h"
 
+#include <stdatomic.h>
 #include <string.h>
 
 #define _CONNECT_TIMEOUT_MS 10000
@@ -17,24 +18,31 @@
 
 static const char *TAG = "wendy_cloud";
 
-static volatile wendy_cloud_state_t s_state = WENDY_CLOUD_STATE_IDLE;
-static TaskHandle_t                 s_task  = NULL;
-static SemaphoreHandle_t            s_stopped;
-static volatile bool                s_stop;
+static _Atomic wendy_cloud_state_t s_state = WENDY_CLOUD_STATE_IDLE;
+// Touched only by the start/stop callers (which must not run concurrently)
+// and cleared by the cloud task on exit, ordered via s_stopped.
+static TaskHandle_t                s_task  = NULL;
+static SemaphoreHandle_t           s_stopped;
+// Wakes the cloud task on link death or stop. Module-owned so the com task
+// never has to touch a task handle that may already be dead.
+static SemaphoreHandle_t           s_wake;
+static atomic_bool                 s_stop;
 
-/* The TLS handle is owned by this module, but once handed off to the com
-   core it may only be touched (read/written/destroyed) on the com task,
-   after wcom_remove_link. s_link_id is written on the com task only. */
+// The TLS handle is owned by this module, but once handed off to the com
+// core it may only be touched (read/written/destroyed) on the com task,
+// after wcom_remove_link. Cross-task visibility comes from the wcom op
+// queue (release/acquire) on handoff and from s_wake on hand-back.
+// s_link_id is written on the com task only.
 static esp_tls_t     *s_tls = NULL;
-static volatile int   s_link_id;
+static atomic_int     s_link_id;
 
 struct _add_link_op {
     struct wcom_operation base;
     esp_tls_t *tls;
 };
 
-/* One connection at a time: the cloud task blocks until the previous link is
-   fully torn down, so a single static op instance is enough. */
+// One connection at a time: the cloud task blocks until the previous link is
+// fully torn down, so a single static op instance is enough.
 static struct _add_link_op s_add_op;
 
 
@@ -77,11 +85,11 @@ static esp_err_t cloud_connect(void)
     cfg.cacert_buf   = chain.data;
     cfg.cacert_bytes = chain.size;
 #endif
-    /* With WENDY_CLOUD_SKIP_SERVER_VERIFICATION no CA source is configured at all,
-       which makes esp-tls fall back to MBEDTLS_SSL_VERIFY_NONE — this needs
-       ESP_TLS_INSECURE + ESP_TLS_SKIP_SERVER_CERT_VERIFY (selected by the
-       Kconfig option). The client cert/key above are independent of server
-       verification and are still presented. */
+    // With WENDY_CLOUD_SKIP_SERVER_VERIFICATION no CA source is configured at all,
+    // which makes esp-tls fall back to MBEDTLS_SSL_VERIFY_NONE — this needs
+    // ESP_TLS_INSECURE + ESP_TLS_SKIP_SERVER_CERT_VERIFY (selected by the
+    // Kconfig option). The client cert/key above are independent of server
+    // verification and are still presented.
 
     int ret = esp_tls_conn_new_sync(
         host.data,
@@ -106,8 +114,8 @@ static esp_err_t cloud_connect(void)
     return ESP_OK;
 }
 
-/* Com task. Tears down the cloud link. Bookkeeping is cleared before
-   wcom_remove_link because removal re-fires this handler (UNDEFINED). */
+// Com task. Tears down the cloud link. Bookkeeping is cleared before
+// wcom_remove_link because removal re-fires this handler (UNDEFINED).
 static void _on_link_state_changed(
     struct wcom_state_change_handler *handler,
     int link_id,
@@ -115,29 +123,29 @@ static void _on_link_state_changed(
 {
     if (state == WCOM_LINK_STATE_CONNECTED)
         return;
-    if (s_link_id == 0 || link_id != s_link_id)
+    int cur_link_id = s_link_id;
+    if (cur_link_id == 0 || link_id != cur_link_id)
         return;
 
     ESP_LOGI(TAG, "link %d down (state %d)", link_id, (int)state);
     esp_tls_t *tls = s_tls;
     s_tls = NULL;
+    // State before s_link_id: once s_link_id is 0 a stopping cloud task may
+    // exit and set IDLE, which DISCONNECTED must not overwrite.
+    s_state = WENDY_CLOUD_STATE_DISCONNECTED;
     s_link_id = 0;
     wcom_remove_link(link_id);
     esp_tls_conn_destroy(tls); // client-mode destroy also closes the fd
-    s_state = WENDY_CLOUD_STATE_DISCONNECTED;
-    /* During stop the cloud task polls s_link_id and may already be gone —
-       notifying it then would touch a dead task handle. */
-    if (!s_stop && s_task)
-        xTaskNotifyGive(s_task);
+    xSemaphoreGive(s_wake);
 }
 
 static struct wcom_state_change_handler s_state_handler = {
     .func = _on_link_state_changed,
 };
 
-/* Com task. Hands the established TLS connection to the com core; from here
-   on all socket I/O happens on the com task and the device behaves exactly
-   as if a local client had connected. */
+// Com task. Hands the established TLS connection to the com core; from here
+// on all socket I/O happens on the com task and the device behaves exactly
+// as if a local client had connected.
 static void _add_link_exec(struct wcom_operation *op)
 {
     static bool subscribed = false;
@@ -153,20 +161,20 @@ static void _add_link_exec(struct wcom_operation *op)
         esp_tls_conn_destroy(aop->tls);
         s_tls = NULL;
         s_state = WENDY_CLOUD_STATE_ERROR;
-        if (!s_stop && s_task)
-            xTaskNotifyGive(s_task);
+        xSemaphoreGive(s_wake);
         return;
     }
     s_link_id = link_id;
     ESP_LOGI(TAG, "link %d added", link_id);
 }
 
-/* Com task. Queued by wendy_cloud_stop after s_add_op, so it always runs
-   after a pending handoff and funnels teardown through the state handler. */
+// Com task. Queued by wendy_cloud_stop after s_add_op, so it always runs
+// after a pending handoff and funnels teardown through the state handler.
 static void _close_link_exec(struct wcom_operation *op)
 {
-    if (s_link_id != 0)
-        wcom_close(s_link_id);
+    int link_id = s_link_id;
+    if (link_id != 0)
+        wcom_close(link_id);
 }
 
 static void cloud_task(void *arg)
@@ -183,7 +191,7 @@ static void cloud_task(void *arg)
             if (s_stop)
                 break;
             ESP_LOGI(TAG, "retrying in %d ms", CONFIG_WENDY_CLOUD_RECONNECT_DELAY_MS);
-            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(CONFIG_WENDY_CLOUD_RECONNECT_DELAY_MS));
+            xSemaphoreTake(s_wake, pdMS_TO_TICKS(CONFIG_WENDY_CLOUD_RECONNECT_DELAY_MS));
             continue;
         }
 
@@ -202,12 +210,12 @@ static void cloud_task(void *arg)
         wcom_core_exec(&s_add_op.base);
 
         // sleep until the link dies (state handler) or stop is requested
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        xSemaphoreTake(s_wake, portMAX_DELAY);
         if (s_stop)
             break;
 
         ESP_LOGI(TAG, "reconnecting in %d ms", CONFIG_WENDY_CLOUD_RECONNECT_DELAY_MS);
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(CONFIG_WENDY_CLOUD_RECONNECT_DELAY_MS));
+        xSemaphoreTake(s_wake, pdMS_TO_TICKS(CONFIG_WENDY_CLOUD_RECONNECT_DELAY_MS));
     }
 
     // wait for the com task to finish tearing down any live link
@@ -244,6 +252,9 @@ esp_err_t wendy_cloud_start(void)
 
     if (!s_stopped)
         s_stopped = xSemaphoreCreateBinary();
+    if (!s_wake)
+        s_wake = xSemaphoreCreateBinary();
+    xSemaphoreTake(s_wake, 0); // drain a stale wake left over from a previous run
     s_stop = false;
 
     BaseType_t ret = xTaskCreatePinnedToCore(
@@ -278,7 +289,7 @@ void wendy_cloud_stop(void)
         .func = _close_link_exec,
     };
     wcom_core_exec(&close_op);
-    xTaskNotifyGive(s_task); // wake the task from any wait
+    xSemaphoreGive(s_wake); // wake the task from any wait
 
     if (xSemaphoreTake(s_stopped, pdMS_TO_TICKS(15000)) != pdTRUE)
         ESP_LOGE(TAG, "stop timed out");
@@ -294,4 +305,4 @@ bool wendy_cloud_is_connected(void)
     return (s_state == WENDY_CLOUD_STATE_CONNECTED);
 }
 
-#endif /* CONFIG_WENDY_CLOUD */
+#endif // CONFIG_WENDY_CLOUD
