@@ -29,7 +29,7 @@ jobs:
             variant: esp32p4_dfr1172_firebeetle
             flash_size: 16MB
     container:
-      image: espressif/idf:v5.5.1
+      image: espressif/idf:v5.5.4
     steps:
       - uses: actions/checkout@v4
 
