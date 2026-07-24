@@ -22,15 +22,4 @@ menu "Wendy Cloud"
         int "Reconnect delay (ms)"
         depends on WENDY_CLOUD
         default 5000
-
-    config WENDY_CLOUD_SKIP_SERVER_VERIFICATION
-        bool "Skip cloud server certificate verification (dev only)"
-        depends on WENDY_CLOUD
-        default n
-        select ESP_TLS_INSECURE
-        select ESP_TLS_SKIP_SERVER_CERT_VERIFY
-        help
-            The dev tinycloud server uses a self-signed certificate. Skip
-            server certificate verification on the cloud connection; the
-            device still presents its mTLS client certificate.
 endmenu

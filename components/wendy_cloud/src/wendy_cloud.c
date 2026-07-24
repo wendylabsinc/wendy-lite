@@ -71,25 +71,17 @@ static esp_err_t cloud_connect(void)
 
     struct wendy_conf_span key = wendy_conf_get_private_key();
     struct wendy_conf_span cert = wendy_conf_get_certificate();
+    struct wendy_conf_span chain = wendy_conf_get_chain_of_trust();
 
     esp_tls_cfg_t cfg = {
         .clientcert_buf   = cert.data,
         .clientcert_bytes = cert.size,
         .clientkey_buf    = key.data,
         .clientkey_bytes  = key.size,
+        .cacert_buf       = chain.data,
+        .cacert_bytes     = chain.size,
         .timeout_ms       = _CONNECT_TIMEOUT_MS,
     };
-
-#if !CONFIG_WENDY_CLOUD_SKIP_SERVER_VERIFICATION
-    struct wendy_conf_span chain = wendy_conf_get_chain_of_trust();
-    cfg.cacert_buf   = chain.data;
-    cfg.cacert_bytes = chain.size;
-#endif
-    // With WENDY_CLOUD_SKIP_SERVER_VERIFICATION no CA source is configured at all,
-    // which makes esp-tls fall back to MBEDTLS_SSL_VERIFY_NONE — this needs
-    // ESP_TLS_INSECURE + ESP_TLS_SKIP_SERVER_CERT_VERIFY (selected by the
-    // Kconfig option). The client cert/key above are independent of server
-    // verification and are still presented.
 
     int ret = esp_tls_conn_new_sync(
         host.data,
@@ -238,17 +230,11 @@ esp_err_t wendy_cloud_start(void)
     struct wendy_conf_span host = wendy_conf_get_cloud_host();
     struct wendy_conf_span key = wendy_conf_get_private_key();
     struct wendy_conf_span cert = wendy_conf_get_certificate();
-    if (host.size == 0 || key.size == 0 || cert.size == 0) {
+    struct wendy_conf_span chain = wendy_conf_get_chain_of_trust();
+    if (host.size == 0 || key.size == 0 || cert.size == 0 || chain.size == 0) {
         ESP_LOGE(TAG, "cloud provisioning not found in wendy_conf");
         return ESP_FAIL;
     }
-#if !CONFIG_WENDY_CLOUD_SKIP_SERVER_VERIFICATION
-    struct wendy_conf_span chain = wendy_conf_get_chain_of_trust();
-    if (chain.size == 0) {
-        ESP_LOGE(TAG, "cloud chain of trust not found in wendy_conf");
-        return ESP_FAIL;
-    }
-#endif
 
     if (!s_stopped)
         s_stopped = xSemaphoreCreateBinary();
