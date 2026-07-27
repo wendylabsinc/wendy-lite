@@ -20,6 +20,10 @@ jobs:
           - target: esp32c6
             variant: esp32c6
             flash_size: 4MB
+          - target: esp32c6
+            board: esp32c6_generic_native
+            variant: esp32c6_native
+            flash_size: 4MB
           - target: esp32p4
             board: waveshare_lcd_4b
             variant: esp32p4_waveshare_lcd_4b
@@ -86,6 +90,7 @@ jobs:
             --notes "Automated nightly build from \`main\` ($(date -u '+%Y-%m-%d %H:%M UTC')), commit ${{ github.sha }}" \
             wendy_mcu_esp32c5/wendy_mcu_esp32c5.bin \
             wendy_mcu_esp32c6/wendy_mcu_esp32c6.bin \
+            wendy_mcu_esp32c6/wendy_mcu_esp32c6_native.bin \
             wendy_mcu_esp32p4_waveshare_lcd_4b/wendy_mcu_esp32p4_waveshare_lcd_4b.bin \
             wendy_mcu_esp32p4_dfr1172_firebeetle/wendy_mcu_esp32p4_dfr1172_firebeetle.bin
 
