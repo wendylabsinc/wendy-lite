@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -13,7 +12,6 @@ import (
 	"math"
 	"os"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,7 +29,6 @@ const (
 	chunkSizeForSerial = 768
 	versionMajor       = 2
 	versionMinor       = 0
-	esc                = 0x1B
 )
 
 type protocolVersion struct {
@@ -184,11 +181,6 @@ func (c *WendyLiteClient) ConnectToSerial(device string) error {
 		lock.release()
 		return fmt.Errorf("open serial: %w", err)
 	}
-	if err := serialHandshake(port); err != nil {
-		port.Close()
-		lock.release()
-		return err
-	}
 	c.link = &directLink{conn: port, isSerial: true}
 	c.serialLock = lock
 	if err := c.handshake(); err != nil {
@@ -219,59 +211,6 @@ func (c *WendyLiteClient) ConnectViaCloudInsecure(serverAddr string, assetID uin
 	}
 	go c.readLoop()
 	return nil
-}
-
-func serialHandshake(port serial.Port) error {
-	if _, err := port.Write([]byte{esc, esc, esc, esc, 'e'}); err != nil {
-		return fmt.Errorf("serial handshake: send escape: %w", err)
-	}
-
-	var sentinel string
-
-	if err := port.SetReadTimeout(100 * time.Millisecond); err != nil {
-		return fmt.Errorf("serial handshake: set timeout: %w", err)
-	}
-
-	window := make([]byte, 0, 32)
-	oneByte := make([]byte, 1)
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		n, err := port.Read(oneByte)
-		if err != nil {
-			return fmt.Errorf("serial handshake: read: %w", err)
-		}
-		if n == 0 {
-			// rx timeout, so rx buffer empty, so send sentinel
-			var randBytes [16]byte
-			if _, err := rand.Read(randBytes[:]); err != nil {
-				return fmt.Errorf("serial handshake: generate sentinel: %w", err)
-			}
-			sentinel = hex.EncodeToString(randBytes[:])
-			window = window[:0]
-			if _, err := port.Write([]byte(strings.Repeat(" ", 16) + sentinel)); err != nil {
-				return fmt.Errorf("serial handshake: send sentinel: %w", err)
-			}
-			continue
-		}
-		if n == 1 {
-			if len(window) < 32 {
-				window = append(window, oneByte[0])
-			} else {
-				copy(window, window[1:])
-				window[31] = oneByte[0]
-			}
-			if sentinel != "" && len(window) == 32 && string(window) == sentinel {
-				if err := port.SetReadTimeout(0); err != nil {
-					return fmt.Errorf("serial handshake: clear timeout: %w", err)
-				}
-				if _, err := port.Write([]byte{esc, 'm'}); err != nil {
-					return fmt.Errorf("serial handshake: send mode switch: %w", err)
-				}
-				return nil
-			}
-		}
-	}
-	return fmt.Errorf("serial handshake: sentinel not received within 3 seconds")
 }
 
 func (c *WendyLiteClient) Close() error {
@@ -828,6 +767,9 @@ func (c *WendyLiteClient) sendCommand(cmd *wendypb.WendyComCommand, timeout time
 }
 
 func (c *WendyLiteClient) handshake() error {
+	if err := c.link.linkHandshake(); err != nil {
+		return err
+	}
 	var b [4]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return fmt.Errorf("handshake id: %w", err)
