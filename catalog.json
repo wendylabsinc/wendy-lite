@@ -30,6 +30,12 @@
             "target": "esp32p4",
             "board": "dfr1172_firebeetle",
             "flash_size": "16MB"
+        },
+        {
+            "name": "wendy_mcu_esp32s3_seeed_xiao_native",
+            "target": "esp32s3",
+            "board": "seeed_xiao_esp32s3_native",
+            "flash_size": "8MB"
         }
     ],
     "boards": [
@@ -57,6 +63,11 @@
             "name": "esp32p4_dfr1172_firebeetle",
             "display_name": "DFRobot FireBeetle 2 ESP32-P4 (DFR1172), 16MB flash",
             "binary": "wendy_mcu_esp32p4_dfr1172_firebeetle"
+        },
+        {
+            "name": "esp32s3_seeed_xiao_native",
+            "display_name": "Seeed Studio XIAO ESP32S3, 8MB flash, native app support",
+            "binary": "wendy_mcu_esp32s3_seeed_xiao_native"
         }
     ]
 }
