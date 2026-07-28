@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdarg.h>
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -17,6 +18,10 @@ esp_err_t wendy_usj_init(void);
  * Only active in console mode; calls in other modes are no-ops.
  */
 void wendy_usj_write(const void *data, size_t len);
+
+void wendy_usj_printf(const char *fmt, ...);
+
+void wendy_usj_vprintf(const char *fmt, va_list args);
 
 #ifdef __cplusplus
 }

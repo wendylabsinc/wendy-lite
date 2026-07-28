@@ -367,6 +367,11 @@ void wcom_core_exec(struct wcom_operation *op)
     }
 }
 
+bool wcom_is_com_thread(void)
+{
+    return xTaskGetCurrentTaskHandle() == _main_task;
+}
+
 void wcom_add_state_change_handler(struct wcom_state_change_handler *handler)
 {
     assert(xTaskGetCurrentTaskHandle() == _main_task);
@@ -430,6 +435,8 @@ void wcom_send(int link_id, struct wcom_tx_chunk *chunk)
     else
         ch->tx_chunk_first = chunk;
 
+    while (chunk->next)
+        chunk = chunk->next;
     ch->tx_chunk_last = chunk;
 }
 

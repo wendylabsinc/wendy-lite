@@ -9,7 +9,7 @@
 PB_BIND(WendyComProtocolVersion, WendyComProtocolVersion, AUTO)
 
 
-PB_BIND(WendyComProtocolVersionParams, WendyComProtocolVersionParams, AUTO)
+PB_BIND(WendyComHandshake, WendyComHandshake, AUTO)
 
 
 PB_BIND(WendyComPingParams, WendyComPingParams, AUTO)
@@ -33,16 +33,81 @@ PB_BIND(WendyComAppStartParams, WendyComAppStartParams, AUTO)
 PB_BIND(WendyComAppStopParams, WendyComAppStopParams, AUTO)
 
 
+PB_BIND(WendyComConfPushBeginParams, WendyComConfPushBeginParams, AUTO)
+
+
+PB_BIND(WendyComConfPushDataParams, WendyComConfPushDataParams, AUTO)
+
+
+PB_BIND(WendyComConfPushEndParams, WendyComConfPushEndParams, AUTO)
+
+
 PB_BIND(WendyComGetDeviceIdentityParams, WendyComGetDeviceIdentityParams, AUTO)
 
 
 PB_BIND(WendyComDeviceIdentity, WendyComDeviceIdentity, AUTO)
 
 
+PB_BIND(WendyComGetDeviceInfoParams, WendyComGetDeviceInfoParams, AUTO)
+
+
+PB_BIND(WendyComConsoleAttachParams, WendyComConsoleAttachParams, AUTO)
+
+
+PB_BIND(WendyComConsoleDetachParams, WendyComConsoleDetachParams, AUTO)
+
+
+PB_BIND(WendyComConsoleBegin, WendyComConsoleBegin, AUTO)
+
+
+PB_BIND(WendyComConsoleData, WendyComConsoleData, AUTO)
+
+
+PB_BIND(WendyComConsoleEnd, WendyComConsoleEnd, AUTO)
+
+
+PB_BIND(WendyComDeviceInfo, WendyComDeviceInfo, AUTO)
+
+
 PB_BIND(WendyComCommand, WendyComCommand, AUTO)
 
 
 PB_BIND(WendyComResponse, WendyComResponse, AUTO)
+
+
+PB_BIND(WendyComEvent, WendyComEvent, AUTO)
+
+
+PB_BIND(WendyComOpenChannel, WendyComOpenChannel, AUTO)
+
+
+PB_BIND(WendyComCloseChannel, WendyComCloseChannel, AUTO)
+
+
+PB_BIND(WendyComChannelOpen, WendyComChannelOpen, AUTO)
+
+
+PB_BIND(WendyComChannelClose, WendyComChannelClose, AUTO)
+
+
+PB_BIND(WendyComChannelError, WendyComChannelError, AUTO)
+
+
+PB_BIND(WendyComChannelState, WendyComChannelState, AUTO)
+
+
+PB_BIND(WendyComService, WendyComService, AUTO)
+
+
+PB_BIND(WendyComMessage, WendyComMessage, AUTO)
+
+
+
+
+
+
+
+
 
 
 

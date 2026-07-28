@@ -8,28 +8,29 @@ on:
     branches: [main]
 
 jobs:
+  # catalog.json is the single source of truth for the set of firmware variants.
+  # Its `binaries` array is shaped exactly like a matrix `include` list, so it
+  # can be handed to strategy.matrix as-is.
+  catalog:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate build matrix from catalog
+        id: gen
+        run: |
+          echo "matrix=$(jq -c '{include: .binaries}' catalog.json)" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: catalog
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - target: esp32c5
-            variant: esp32c5
-            flash_size: 4MB
-          - target: esp32c6
-            variant: esp32c6
-            flash_size: 4MB
-          - target: esp32p4
-            board: waveshare_lcd_4b
-            variant: esp32p4_waveshare_lcd_4b
-            flash_size: 32MB
-          - target: esp32p4
-            board: dfr1172_firebeetle
-            variant: esp32p4_dfr1172_firebeetle
-            flash_size: 16MB
+      matrix: ${{ fromJSON(needs.catalog.outputs.matrix) }}
     container:
-      image: espressif/idf:v5.5.1
+      image: espressif/idf:v5.5.4
     steps:
       - uses: actions/checkout@v4
 
@@ -37,11 +38,7 @@ jobs:
         shell: bash
         run: |
           . $IDF_PATH/export.sh
-          if [ -n "${{ matrix.board }}" ]; then
-            idf.py @boards/${{ matrix.board }}.cfg set-target ${{ matrix.target }}
-          else
-            idf.py set-target ${{ matrix.target }}
-          fi
+          idf.py @boards/${{ matrix.board }}.cfg set-target ${{ matrix.target }}
           idf.py build
 
       - name: Create merged firmware binary
@@ -50,7 +47,7 @@ jobs:
           . $IDF_PATH/export.sh
           cd build
           esptool.py --chip ${{ matrix.target }} merge_bin \
-            -o wendy_mcu_${{ matrix.variant }}.bin \
+            -o ${{ matrix.name }}.bin \
             --flash_mode dio \
             --flash_size ${{ matrix.flash_size }} \
             @flash_args
@@ -58,8 +55,8 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wendy_mcu_${{ matrix.variant }}
-          path: build/wendy_mcu_${{ matrix.variant }}.bin
+          name: ${{ matrix.name }}
+          path: build/${{ matrix.name }}.bin
 
   nightly:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -79,15 +76,14 @@ jobs:
         run: |
           # Delete existing nightly release and tag if present
           gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
-          # Create new nightly pre-release at current commit
+          # Create new nightly pre-release at current commit. catalog.json ships
+          # alongside the binaries so consumers can discover the variants.
           gh release create nightly \
             --prerelease \
             --title "Nightly" \
             --notes "Automated nightly build from \`main\` ($(date -u '+%Y-%m-%d %H:%M UTC')), commit ${{ github.sha }}" \
-            wendy_mcu_esp32c5/wendy_mcu_esp32c5.bin \
-            wendy_mcu_esp32c6/wendy_mcu_esp32c6.bin \
-            wendy_mcu_esp32p4_waveshare_lcd_4b/wendy_mcu_esp32p4_waveshare_lcd_4b.bin \
-            wendy_mcu_esp32p4_dfr1172_firebeetle/wendy_mcu_esp32p4_dfr1172_firebeetle.bin
+            $(jq -r '.binaries[] | "\(.name)/\(.name).bin"' catalog.json) \
+            catalog.json
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -96,17 +92,27 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Checkout must come first: it cleans its destination, which would wipe
+      # the downloaded artifacts. Only catalog.json is needed from the repo.
+      - uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
+
+      - name: Build asset list from catalog
+        id: assets
+        run: |
+          {
+            echo 'files<<EOF'
+            jq -r '.binaries[] | "\(.name)/\(.name).bin"' catalog.json
+            echo catalog.json
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
 
       - name: Attach firmware to release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            wendy_mcu_esp32c5/wendy_mcu_esp32c5.bin
-            wendy_mcu_esp32c6/wendy_mcu_esp32c6.bin
-            wendy_mcu_esp32p4_waveshare_lcd_4b/wendy_mcu_esp32p4_waveshare_lcd_4b.bin
-            wendy_mcu_esp32p4_dfr1172_firebeetle/wendy_mcu_esp32p4_dfr1172_firebeetle.bin
+          files: ${{ steps.assets.outputs.files }}
 
   # Publish firmware to the GCS bucket + manifests that `wendy os install`
   # reads from (firmware/<chip>/<version>/ and manifests/<chip>.json +
@@ -121,6 +127,9 @@ jobs:
       contents: read
       id-token: write   # required for GCP workload-identity federation
     steps:
+      # Checked out for catalog.json, which drives the loop below.
+      - uses: actions/checkout@v4
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
@@ -161,13 +170,11 @@ jobs:
           # Tags are vX.Y.Z; GCS manifests use plain X.Y.Z.
           VERSION="${REF_NAME#v}"
           TOKEN="$(gcloud auth print-access-token)"
-          # The variant name is the chip key that `wendy os install` queries.
-          for variant in \
-            esp32c5 \
-            esp32c6 \
-            esp32p4_waveshare_lcd_4b \
-            esp32p4_dfr1172_firebeetle; do
-            bin="wendy_mcu_${variant}/wendy_mcu_${variant}.bin"
+          # The binary name minus its wendy_mcu_ prefix is the chip key that
+          # `wendy os install` queries.
+          for name in $(jq -r '.binaries[].name' catalog.json); do
+            variant="${name#wendy_mcu_}"
+            bin="${name}/${name}.bin"
             echo "Publishing ${variant} v${VERSION} from ${bin}"
             # Sequential loop keeps master.json writes serial (no race).
             "$RUNNER_TEMP/publisher" \

@@ -2,6 +2,7 @@ build
 .build
 .cache
 target
+.vscode
 
 # macOS Finder metadata
 .DS_Store

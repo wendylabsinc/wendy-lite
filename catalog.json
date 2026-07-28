@@ -1,0 +1,62 @@
+{
+    "version": 1,
+    "binaries": [
+        {
+            "name": "wendy_mcu_esp32c5",
+            "target": "esp32c5",
+            "board": "esp32c5_generic",
+            "flash_size": "4MB"
+        },
+        {
+            "name": "wendy_mcu_esp32c6",
+            "target": "esp32c6",
+            "board": "esp32c6_generic",
+            "flash_size": "4MB"
+        },
+        {
+            "name": "wendy_mcu_esp32c6_native",
+            "target": "esp32c6",
+            "board": "esp32c6_generic_native",
+            "flash_size": "4MB"
+        },
+        {
+            "name": "wendy_mcu_esp32p4_waveshare_lcd_4b",
+            "target": "esp32p4",
+            "board": "waveshare_lcd_4b",
+            "flash_size": "32MB"
+        },
+        {
+            "name": "wendy_mcu_esp32p4_dfr1172_firebeetle",
+            "target": "esp32p4",
+            "board": "dfr1172_firebeetle",
+            "flash_size": "16MB"
+        }
+    ],
+    "boards": [
+        {
+            "name": "esp32c5_generic",
+            "display_name": "Generic ESP32-C5 board, 4MB flash",
+            "binary": "wendy_mcu_esp32c5"
+        },
+        {
+            "name": "esp32c6_generic",
+            "display_name": "Generic ESP32-C6 board, 4MB flash",
+            "binary": "wendy_mcu_esp32c6"
+        },
+        {
+            "name": "esp32c6_generic_native",
+            "display_name": "Generic ESP32-C6 board, 4MB flash, native app support",
+            "binary": "wendy_mcu_esp32c6_native"
+        },
+        {
+            "name": "esp32p4_waveshare_lcd_4b",
+            "display_name": "Waveshare ESP32-P4-WIFI6-Touch-LCD-4B, 32MB flash",
+            "binary": "wendy_mcu_esp32p4_waveshare_lcd_4b"
+        },
+        {
+            "name": "esp32p4_dfr1172_firebeetle",
+            "display_name": "DFRobot FireBeetle 2 ESP32-P4 (DFR1172), 16MB flash",
+            "binary": "wendy_mcu_esp32p4_dfr1172_firebeetle"
+        }
+    ]
+}

@@ -1,0 +1,8 @@
+menu "Wendy App USB"
+    config WENDY_APP_USB
+        bool "Enable app-facing USB functions"
+        default n
+        help
+            USB CDC and HID access from WASM apps.
+            Only functional on ESP32-S2/S3 with USB OTG.
+endmenu

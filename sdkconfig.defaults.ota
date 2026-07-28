@@ -1,0 +1,6 @@
+# OTA overlay: two OTA app slots.
+# Selected with an idf.py argfile passed before set-target:
+#     idf.py @ota.cfg set-target esp32c6
+
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.ota.csv"

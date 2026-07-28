@@ -1,0 +1,45 @@
+menu "Wendy Core"
+    config WENDY_FIRMWARE_VERSION_MAJOR
+        int "Firmware version major"
+        default 0
+
+    config WENDY_FIRMWARE_VERSION_MINOR
+        int "Firmware version minor"
+        default 1
+
+    config WENDY_FIRMWARE_VERSION_PATCH
+        int "Firmware version patch"
+        default 0
+
+    config WENDY_DEVICE_NAME_BUF_SIZE
+        int "Device name buffer size (bytes, including null terminator)"
+        default 64
+        help
+            Size of the buffer used to hold the device name (BLE advertising
+            name, mDNS hostname, etc.), including the null terminator.
+            We use 64 because this corresponds to the DNS name standard.
+
+    config WENDY_DEVICE_NAME_DEFAULT_PREFIX
+        string "Default device name prefix"
+        default "wendy"
+        help
+            Prefix used when no device name has been provisioned. The
+            actual name is formed as "<prefix>-XXXX" where XXXX is
+            derived from the last 2 bytes of the BT MAC address.
+
+    config WENDY_P4_BOARD_NAME
+        string "ESP32-P4 board name"
+        default ""
+        help
+            Identifies the selected ESP32-P4 board variant. Set to a non-empty
+            value by a boards/<board>.defaults overlay (selected via the
+            matching boards/<board>.cfg argfile). The top-level CMakeLists.txt
+            aborts an esp32p4 build when this is empty, since P4 boards differ
+            in flash size and partition layout. Unused on non-P4 targets.
+
+    config WENDY_CORE_WASM_APP_SUPPORT
+        bool "Enable WASM app support"
+        default n
+        help
+            Enable the ability to run WASM applications on the device.
+endmenu

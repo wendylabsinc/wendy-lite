@@ -1,0 +1,3 @@
+dependencies:
+  nanopb:
+    override_path: "../nanopb"

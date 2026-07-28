@@ -1,0 +1,7 @@
+menu "Wendy SPI"
+    config WENDY_SPI
+        bool "Enable SPI host functions"
+        default y
+        help
+            SPI master bus access from WASM apps.
+endmenu

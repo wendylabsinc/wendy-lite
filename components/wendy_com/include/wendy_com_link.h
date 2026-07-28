@@ -48,6 +48,7 @@ struct wcom_state_change_handler {
 
 void wcom_core_init(void);
 void wcom_core_exec(struct wcom_operation *op);
+bool wcom_is_com_thread(void);
 
 // agent side interface, abstracting platform entirely
 

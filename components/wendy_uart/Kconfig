@@ -1,0 +1,7 @@
+menu "Wendy UART"
+    config WENDY_UART
+        bool "Enable UART host functions"
+        default y
+        help
+            UART serial port access from WASM apps.
+endmenu

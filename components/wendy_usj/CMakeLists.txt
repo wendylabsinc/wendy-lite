@@ -2,7 +2,7 @@ if(CONFIG_WENDY_USJ)
     idf_component_register(
         SRCS "src/wendy_usj.c"
         INCLUDE_DIRS "include"
-        REQUIRES esp_driver_usb_serial_jtag vfs esp_log freertos wendy_com nanopb
+        REQUIRES esp_driver_usb_serial_jtag vfs esp_log freertos wendy_com wendy_stdio nanopb
     )
     # Belt-and-suspenders: IDF's REQUIRES propagation for esp_driver_usb_serial_jtag
     # can fail when the build description is stale. Add the include path explicitly.
@@ -12,6 +12,8 @@ if(CONFIG_WENDY_USJ)
     target_include_directories(${COMPONENT_LIB} PRIVATE "${vfs_dir}/include")
     idf_component_get_property(wendy_com_dir wendy_com COMPONENT_DIR)
     target_include_directories(${COMPONENT_LIB} PRIVATE "${wendy_com_dir}/include")
+    idf_component_get_property(wendy_stdio_dir wendy_stdio COMPONENT_DIR)
+    target_include_directories(${COMPONENT_LIB} PRIVATE "${wendy_stdio_dir}/include")
     idf_component_get_property(nanopb_dir nanopb COMPONENT_DIR)
     target_include_directories(${COMPONENT_LIB} PRIVATE "${nanopb_dir}")
     # usb_serial_jtag_vfs.c is only compiled in the IDF component when

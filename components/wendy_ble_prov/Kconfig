@@ -1,0 +1,11 @@
+menu "Wendy BLE Provisioning"
+    config WENDY_BLE_PROV
+        bool "Enable BLE WiFi provisioning and discovery"
+        default n
+        depends on BT_ENABLED && BT_NIMBLE_ENABLED
+        help
+            Advertise via BLE as "Wendy-XXXX" and expose a GATT service
+            that allows clients to write WiFi credentials.  Credentials
+            are stored in NVS and survive reboots.
+
+endmenu

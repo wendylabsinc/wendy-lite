@@ -1,0 +1,8 @@
+menu "Wendy System Functions"
+    config WENDY_SYS
+        bool "Enable system host functions"
+        default y
+        help
+            System functions: uptime, reboot, firmware version,
+            device ID, sleep, yield.
+endmenu

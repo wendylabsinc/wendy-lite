@@ -1,0 +1,41 @@
+menu "Wendy WASM Runtime"
+    config WENDY_WASM
+        bool "Enable the WASM runtime"
+        default y
+        help
+            Build the WAMR-based WASM runtime and the ability to run
+            WASM applications. When disabled, all modules exposing a
+            WASM API are disabled as well.
+
+    if WENDY_WASM
+
+    config WENDY_WASM_STACK_SIZE
+        int "WASM stack size (bytes)"
+        default 32768
+        help
+            Stack size for the WASM runtime execution environment.
+
+    config WENDY_WASM_HEAP_SIZE
+        int "WASM heap size (bytes)"
+        default 32768
+        help
+            Heap size available to WASM applications (inside WAMR pool).
+
+    config WENDY_WASM_POOL_SIZE
+        int "WAMR memory pool size (bytes)"
+        default 180224
+        help
+            Total pre-allocated pool for the WAMR runtime. This is
+            grabbed early in boot before WiFi/BLE consume RAM.
+            Must fit linear memory + heap + stack + WAMR overhead.
+            ESP32-C6: 176 KB (294 KB total, ~114 KB left for WiFi/BLE).
+
+    config WENDY_WASM_USE_PSRAM
+        bool "Allocate WASM heap from PSRAM"
+        default y if SPIRAM
+        help
+            When PSRAM is available, allocate the WASM heap from
+            external memory to preserve internal SRAM.
+
+    endif
+endmenu

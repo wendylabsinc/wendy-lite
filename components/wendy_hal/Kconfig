@@ -1,0 +1,46 @@
+menu "Wendy Hardware Abstraction Layer"
+    config WENDY_HAL_GPIO
+        bool "Enable GPIO HAL"
+        default y
+
+    config WENDY_HAL_I2C
+        bool "Enable I2C HAL"
+        default y
+
+    config WENDY_HAL_I2C_PORT
+        int "Default I2C port number"
+        depends on WENDY_HAL_I2C
+        default 0
+        range 0 1
+
+    config WENDY_HAL_I2C_SDA
+        int "Default I2C SDA pin"
+        depends on WENDY_HAL_I2C
+        default 8
+
+    config WENDY_HAL_I2C_SCL
+        int "Default I2C SCL pin"
+        depends on WENDY_HAL_I2C
+        default 9
+
+    config WENDY_HAL_I2C_FREQ_HZ
+        int "Default I2C frequency (Hz)"
+        depends on WENDY_HAL_I2C
+        default 100000
+
+    config WENDY_HAL_TIMER
+        bool "Enable Timer HAL"
+        default y
+
+    config WENDY_HAL_NEOPIXEL
+        bool "Enable NeoPixel (WS2812) HAL"
+        default y
+
+    config WENDY_HAL_RMT
+        bool "Enable RMT timing-buffer HAL"
+        default y
+        help
+            Raw RMT peripheral access for precise timing waveforms
+            (WS2812, IR, etc.) from WASM apps.
+
+endmenu

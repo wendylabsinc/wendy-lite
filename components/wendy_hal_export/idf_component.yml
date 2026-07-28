@@ -3,3 +3,25 @@ dependencies:
     version: ">=5.3.0"
   espressif/wasm-micro-runtime:
     version: "~2.4.0"
+  wendy_hal:
+    override_path: "../wendy_hal"
+  wendy_callback:
+    override_path: "../wendy_callback"
+  wendy_sys:
+    override_path: "../wendy_sys"
+  wendy_storage:
+    override_path: "../wendy_storage"
+  wendy_uart:
+    override_path: "../wendy_uart"
+  wendy_spi:
+    override_path: "../wendy_spi"
+  wendy_otel:
+    override_path: "../wendy_otel"
+  wendy_wasi_shim:
+    override_path: "../wendy_wasi_shim"
+  wendy_ble:
+    override_path: "../wendy_ble"
+  wendy_net:
+    override_path: "../wendy_net"
+  wendy_app_usb:
+    override_path: "../wendy_app_usb"

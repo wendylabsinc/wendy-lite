@@ -17,7 +17,14 @@ fi
 PAIRS=(
     "components/wendy_com/proto/wendy_com_msg.proto:Proto/wendy/lite/wendy_com_msg.proto"
     "components/wendy_conf/proto/wendy_conf.proto:Proto/wendy/lite/wendy_conf.proto"
+    "go/proto/wendy_com_tunnel_msg.proto:Proto/wendy/lite/wendy_com_tunnel_msg.proto"
+    "go/proto/wendy_com_tunnel_service.proto:Proto/wendy/lite/wendy_com_tunnel_service.proto"
     "go/console/liteclient/client.go:go/internal/cli/liteclient/client.go"
+    "go/console/liteclient/link.go:go/internal/cli/liteclient/link.go"
+    "go/console/liteclient/link_direct.go:go/internal/cli/liteclient/link_direct.go"
+    "go/console/liteclient/link_tunnel.go:go/internal/cli/liteclient/link_tunnel.go"
+    "go/console/liteclient/serial_lock_windows.go:go/internal/cli/liteclient/serial_lock_windows.go"
+    "go/console/liteclient/serial_lock_unix.go:go/internal/cli/liteclient/serial_lock_unix.go"
 )
 
 any_diff=0

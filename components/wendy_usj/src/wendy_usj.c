@@ -1,11 +1,14 @@
-#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <termios.h>
 #include <unistd.h>
+
+#if CONFIG_VFS_SUPPORT_TERMIOS
+#include <termios.h>
+#endif
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -17,12 +20,13 @@
 #include "wendy_com.h"
 #include "wendy_com_uart.h"
 #include "wendy_com_link.h"
+#include "wendy_com_stdio.h"
+#include "wendy_stdio.h"
 #include "wendy_usj.h"
 
 #define TAG              "wendy_usj"
 #define TX_BUF_SIZE      1024
 #define RX_BUF_SIZE      3000
-#define LOG_BUF_SIZE      256
 #define TX_TIMEOUT_MS     500
 #define POLL_INTERVAL_MS 1000
 #define ESC              0x1B
@@ -34,7 +38,6 @@ typedef enum {
     USJ_MODE_COM     = 3,
 } usj_mode_t;
 
-static vprintf_like_t s_orig_vprintf;
 static atomic_int s_mode;
 
 static int s_com_link_id = -1;
@@ -82,6 +85,7 @@ static void _enter_com_exec(struct wcom_operation *op)
         return;
     }
 
+#if CONFIG_VFS_SUPPORT_TERMIOS
     struct termios tios;
     if (tcgetattr(fd, &tios) < 0)
         ESP_LOGE(TAG, "tcgetattr (before): errno=%d", errno);
@@ -93,6 +97,7 @@ static void _enter_com_exec(struct wcom_operation *op)
     if (tcgetattr(fd, &tios) < 0)
         ESP_LOGE(TAG, "tcgetattr (after): errno=%d", errno);
     ESP_LOGI(TAG, "termios after:  c_iflag=0x%08lx c_oflag=0x%08lx", (unsigned long)tios.c_iflag, (unsigned long)tios.c_oflag);
+#endif
 
     wendy_com_uart_init(&s_com_uart, fd);
 
@@ -169,26 +174,28 @@ static void _task_main(void *arg)
     }
 }
 
-static int _log_printf(const char *fmt, va_list args)
-{
-    va_list copy;
-    va_copy(copy, args);
-    int ret = s_orig_vprintf(fmt, copy);
-    va_end(copy);
+static wendy_stdio_out_data_handler_t s_prev_out_handler;
 
-    char buf[LOG_BUF_SIZE];
-    int len = vsnprintf(buf, sizeof(buf), fmt, args);
-    if (len >= (int)sizeof(buf)) {
-        char *buf = malloc(len + 1);
-        if (buf) {
-            vsnprintf(buf, len + 1, fmt, args);
-            wendy_usj_write(buf, (size_t)len);
-            free(buf);
-        }
-    } else if (len > 0) {
-        wendy_usj_write(buf, (size_t)len);
+static void _out_data_handler(const void *data, size_t size)
+{
+    if (s_prev_out_handler)
+        s_prev_out_handler(data, size);
+    wendy_usj_write(data, size);
+}
+
+static vprintf_like_t s_prev_com_log_vprintf;
+
+static int _com_thread_log_vprintf(const char *format, va_list args)
+{
+    int rv = 0;
+    if (s_prev_com_log_vprintf) {
+        va_list args2;
+        va_copy(args2, args);
+        rv = s_prev_com_log_vprintf(format, args2);
+        va_end(args2);
     }
-    return ret;
+    wendy_usj_vprintf(format, args);
+    return rv;
 }
 
 esp_err_t wendy_usj_init(void)
@@ -208,7 +215,8 @@ esp_err_t wendy_usj_init(void)
     usb_serial_jtag_vfs_use_driver();
     s_com_uart.fd = -1;
     atomic_store(&s_mode, USJ_MODE_CONSOLE);
-    s_orig_vprintf = esp_log_set_vprintf(_log_printf);
+    s_prev_out_handler = wendy_stdio_set_out_data_handler(_out_data_handler);
+    s_prev_com_log_vprintf = wcom_set_com_thread_log_vprintf(_com_thread_log_vprintf);
 
     BaseType_t ret = xTaskCreate(_task_main, "wendy_usj", 4096, NULL,
                                  tskIDLE_PRIORITY + 1, NULL);
@@ -232,4 +240,34 @@ void wendy_usj_write(const void *data, size_t len)
             s_host_disconnected = true;
         }
     }
+}
+
+void wendy_usj_vprintf(const char *fmt, va_list args)
+{
+    char buf[128];
+    va_list args2;
+    va_copy(args2, args);
+    int n = vsnprintf(buf, sizeof(buf), fmt, args);
+    if (n >= (int)sizeof(buf)) {
+        char *heap_buf = malloc(n + 1);
+        if (heap_buf) {
+            n = vsnprintf(heap_buf, n + 1, fmt, args2);
+            if (n > 0)
+                wendy_usj_write(heap_buf, n);
+            free(heap_buf);
+        } else {
+            wendy_usj_write(buf, sizeof(buf) - 1);
+        }
+    } else if (n > 0) {
+        wendy_usj_write(buf, n);
+    }
+    va_end(args2);
+}
+
+void wendy_usj_printf(const char *fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    wendy_usj_vprintf(fmt, args);
+    va_end(args);
 }

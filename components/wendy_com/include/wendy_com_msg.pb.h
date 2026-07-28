@@ -10,38 +10,79 @@
 #endif
 
 /* Enum definitions */
+/* Type of app pushed by WENDY_COM_CMD_APP_PUSH_BEGIN — wasm when omitted. */
+typedef enum _WendyComAppType {
+    WendyComAppType_WENDY_COM_APP_TYPE_WASM = 0,
+    WendyComAppType_WENDY_COM_APP_TYPE_NATIVE = 1
+} WendyComAppType;
+
+/* Mode of the conf push started by WENDY_COM_CMD_CONF_PUSH_BEGIN — replace
+ when omitted. REPLACE makes the pushed blob the whole configuration; UPDATE
+ keeps the current value of root fields absent from the pushed blob. */
+typedef enum _WendyComConfPushMode {
+    WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_REPLACE = 0,
+    WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE = 1
+} WendyComConfPushMode;
+
+typedef enum _WendyComConsoleIo {
+    WendyComConsoleIo_WENDY_COM_CONSOLE_IO_STANDARD_INPUT = 0,
+    WendyComConsoleIo_WENDY_COM_CONSOLE_IO_STANDARD_OUTPUT = 1,
+    WendyComConsoleIo_WENDY_COM_CONSOLE_IO_STANDARD_ERROR = 2
+} WendyComConsoleIo;
+
 typedef enum _WendyComResult {
     WendyComResult_WENDY_COM_RESULT_OK = 0,
     WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR = 1,
     WendyComResult_WENDY_COM_RESULT_BAD_PROTOCOL_VERSION = 2,
     WendyComResult_WENDY_COM_RESULT_BAD_STATE = 3,
-    WendyComResult_WENDY_COM_RESULT_BUSY = 4
+    WendyComResult_WENDY_COM_RESULT_BUSY = 4,
+    WendyComResult_WENDY_COM_RESULT_BAD_APP_TYPE = 5,
+    WendyComResult_WENDY_COM_RESULT_BAD_APP_SIZE = 6,
+    WendyComResult_WENDY_COM_RESULT_BAD_CONF_SIZE = 7
 } WendyComResult;
 
+typedef enum _WendyComChannelErrorReason {
+    WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_NOT_OPEN = 0, /* command received on a channel that is not open */
+    WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_REJECTED = 1 /* service message not allowed (open/close refused) */
+} WendyComChannelErrorReason;
+
 /* Struct definitions */
-/* Response data for WENDY_COM_CMD_GET_PROTOCOL_VERSION */
+/* Protocol version, exchanged in the handshake. The major number must match
+ on both sides; minor is informational. */
 typedef struct _WendyComProtocolVersion {
     uint32_t major;
     uint32_t minor;
 } WendyComProtocolVersion;
 
-/* Command parameter messages — empty ones serve as presence markers. */
-typedef struct _WendyComProtocolVersionParams {
-    uint32_t major;
-    uint32_t minor;
-} WendyComProtocolVersionParams;
+/* First message in each direction after connect. The host sends its version
+ with a fresh handshake_id; the device echoes handshake_id with its own
+ version, then eventually closes the connection if the host's major version
+ is unsupported. Commands are rejected until the handshake completes. */
+typedef struct _WendyComHandshake {
+    uint32_t handshake_id;
+    bool has_version;
+    WendyComProtocolVersion version;
+} WendyComHandshake;
 
+/* Command parameter messages — empty ones serve as presence markers. */
 typedef struct _WendyComPingParams {
     char dummy_field;
 } WendyComPingParams;
 
+/* Params for WENDY_COM_CMD_REBOOT. app_auto_start defaults to true when
+ absent. Settings survive exactly one software reboot; a hardware boot
+ resets to defaults. The delay is measured from the end of device init;
+ an AppStart command received during the delay starts the app immediately. */
 typedef struct _WendyComRebootParams {
-    char dummy_field;
+    bool has_app_auto_start;
+    bool app_auto_start; /* absent => true */
+    uint32_t app_auto_start_delay; /* milliseconds */
 } WendyComRebootParams;
 
 /* Params for WENDY_COM_CMD_APP_PUSH_BEGIN */
 typedef struct _WendyComAppPushBeginParams {
     uint32_t size;
+    WendyComAppType app_type;
 } WendyComAppPushBeginParams;
 
 /* Params for WENDY_COM_CMD_APP_PUSH_DATA */
@@ -62,6 +103,22 @@ typedef struct _WendyComAppStopParams {
     char dummy_field;
 } WendyComAppStopParams;
 
+/* Params for WENDY_COM_CMD_CONF_PUSH_BEGIN */
+typedef struct _WendyComConfPushBeginParams {
+    uint32_t size; /* total size of the encoded WendyConf blob */
+    WendyComConfPushMode mode;
+} WendyComConfPushBeginParams;
+
+/* Params for WENDY_COM_CMD_CONF_PUSH_DATA */
+typedef struct _WendyComConfPushDataParams {
+    uint32_t offset;
+    pb_callback_t data;
+} WendyComConfPushDataParams;
+
+typedef struct _WendyComConfPushEndParams {
+    char dummy_field;
+} WendyComConfPushEndParams;
+
 typedef struct _WendyComGetDeviceIdentityParams {
     char dummy_field;
 } WendyComGetDeviceIdentityParams;
@@ -72,12 +129,60 @@ typedef struct _WendyComDeviceIdentity {
     pb_callback_t display_name;
 } WendyComDeviceIdentity;
 
-/* Top-level command message — the oneof variant identifies the command. */
+typedef struct _WendyComGetDeviceInfoParams {
+    char dummy_field;
+} WendyComGetDeviceInfoParams;
+
+/* Params for WENDY_COM_CMD_CONSOLE_ATTACH — start streaming console output as
+ WendyComConsoleData events carrying the given event_id. A repeated attach
+ with the same event_id refreshes the auto-detach deadline. */
+typedef struct _WendyComConsoleAttachParams {
+    uint32_t event_id;
+    uint32_t duration; /* milliseconds; 0 = no deadline (attach forever) */
+    bool blocking; /* writers block when the capture buffer is full, instead of overwriting oldest data */
+} WendyComConsoleAttachParams;
+
+/* Params for WENDY_COM_CMD_CONSOLE_DETACH — stop streaming console output. */
+typedef struct _WendyComConsoleDetachParams {
+    uint32_t event_id;
+} WendyComConsoleDetachParams;
+
+/* Marks the start of a console stream, sent before the first
+ WendyComConsoleData event. Not implemented yet. */
+typedef struct _WendyComConsoleBegin {
+    char dummy_field;
+} WendyComConsoleBegin;
+
+/* One chunk of console output, streamed as an event while attached. */
+typedef struct _WendyComConsoleData {
+    WendyComConsoleIo io;
+    bool gap; /* data was lost before this chunk */
+    pb_callback_t data;
+} WendyComConsoleData;
+
+/* Marks the end of a console stream, sent after the last
+ WendyComConsoleData event. Not implemented yet. */
+typedef struct _WendyComConsoleEnd {
+    char dummy_field;
+} WendyComConsoleEnd;
+
+typedef struct _WendyComDeviceInfo {
+    pb_callback_t os; /* typically "wendy-lite" */
+    pb_callback_t os_version;
+    pb_callback_t cpu_architecture;
+    /* Board can be "esp32c6", but this doesn't mean that this field contains
+ the SoC name. Here "esp32c6" means "generic esp32c6 board". Should
+ probably be replaced by "esp32c6-generic" in the future. */
+    pb_callback_t board;
+    bool wasm_app_support;
+    bool native_app_support;
+} WendyComDeviceInfo;
+
+/* Command sent host -> device — the oneof variant identifies the command. */
 typedef struct _WendyComCommand {
     uint32_t request_id;
     pb_size_t which_params;
     union {
-        WendyComProtocolVersionParams protocol_version;
         WendyComPingParams ping;
         WendyComRebootParams reboot;
         WendyComAppPushBeginParams app_push_begin;
@@ -86,6 +191,12 @@ typedef struct _WendyComCommand {
         WendyComAppStartParams app_start;
         WendyComAppStopParams app_stop;
         WendyComGetDeviceIdentityParams get_device_identity;
+        WendyComGetDeviceInfoParams get_device_info;
+        WendyComConsoleAttachParams console_attach;
+        WendyComConsoleDetachParams console_detach;
+        WendyComConfPushBeginParams conf_push_begin;
+        WendyComConfPushDataParams conf_push_data;
+        WendyComConfPushEndParams conf_push_end;
     } params;
 } WendyComCommand;
 
@@ -95,10 +206,80 @@ typedef struct _WendyComResponse {
     WendyComResult result;
     pb_size_t which_data;
     union {
-        WendyComProtocolVersion protocol_version;
         WendyComDeviceIdentity device_identity;
+        WendyComDeviceInfo device_info;
     } data;
 } WendyComResponse;
+
+/* Unsolicited device -> host or host -> device message. */
+typedef struct _WendyComEvent {
+    uint32_t event_id;
+    pb_size_t which_data;
+    union {
+        WendyComConsoleBegin console_begin;
+        WendyComConsoleData console_data;
+        WendyComConsoleEnd console_end;
+    } data;
+} WendyComEvent;
+
+/* Channel management. The channel these messages operate on is the one
+ carried by the channel byte of the frame header — OpenChannel arrives on
+ the channel being opened, CloseChannel on the one being closed — so the
+ bodies are empty presence markers. OpenChannel and CloseChannel are sent
+ host -> device; ChannelState is sent device -> host. Devices that don't
+ track channels may ignore these messages. */
+typedef struct _WendyComOpenChannel {
+    char dummy_field;
+} WendyComOpenChannel;
+
+typedef struct _WendyComCloseChannel {
+    char dummy_field;
+} WendyComCloseChannel;
+
+/* Reports the state of the channel carried by the frame's channel byte,
+ sent device -> host. */
+typedef struct _WendyComChannelOpen {
+    char dummy_field;
+} WendyComChannelOpen;
+
+typedef struct _WendyComChannelClose {
+    char dummy_field;
+} WendyComChannelClose;
+
+typedef struct _WendyComChannelError {
+    WendyComChannelErrorReason reason;
+} WendyComChannelError;
+
+typedef struct _WendyComChannelState {
+    pb_size_t which_state;
+    union {
+        WendyComChannelOpen open;
+        WendyComChannelClose close;
+        WendyComChannelError error;
+    } state;
+} WendyComChannelState;
+
+typedef struct _WendyComService {
+    pb_size_t which_cmd;
+    union {
+        WendyComOpenChannel open_channel;
+        WendyComCloseChannel close_channel;
+        WendyComChannelState channel_state;
+    } cmd;
+} WendyComService;
+
+/* Base wrapper — every frame body, in either direction, is exactly one of
+ these. */
+typedef struct _WendyComMessage {
+    pb_size_t which_msg;
+    union {
+        WendyComHandshake handshake;
+        WendyComService service;
+        WendyComCommand command;
+        WendyComResponse response;
+        WendyComEvent event;
+    } msg;
+} WendyComMessage;
 
 
 #ifdef __cplusplus
@@ -106,9 +287,37 @@ extern "C" {
 #endif
 
 /* Helper constants for enums */
+#define _WendyComAppType_MIN WendyComAppType_WENDY_COM_APP_TYPE_WASM
+#define _WendyComAppType_MAX WendyComAppType_WENDY_COM_APP_TYPE_NATIVE
+#define _WendyComAppType_ARRAYSIZE ((WendyComAppType)(WendyComAppType_WENDY_COM_APP_TYPE_NATIVE+1))
+
+#define _WendyComConfPushMode_MIN WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_REPLACE
+#define _WendyComConfPushMode_MAX WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE
+#define _WendyComConfPushMode_ARRAYSIZE ((WendyComConfPushMode)(WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE+1))
+
+#define _WendyComConsoleIo_MIN WendyComConsoleIo_WENDY_COM_CONSOLE_IO_STANDARD_INPUT
+#define _WendyComConsoleIo_MAX WendyComConsoleIo_WENDY_COM_CONSOLE_IO_STANDARD_ERROR
+#define _WendyComConsoleIo_ARRAYSIZE ((WendyComConsoleIo)(WendyComConsoleIo_WENDY_COM_CONSOLE_IO_STANDARD_ERROR+1))
+
 #define _WendyComResult_MIN WendyComResult_WENDY_COM_RESULT_OK
-#define _WendyComResult_MAX WendyComResult_WENDY_COM_RESULT_BUSY
-#define _WendyComResult_ARRAYSIZE ((WendyComResult)(WendyComResult_WENDY_COM_RESULT_BUSY+1))
+#define _WendyComResult_MAX WendyComResult_WENDY_COM_RESULT_BAD_CONF_SIZE
+#define _WendyComResult_ARRAYSIZE ((WendyComResult)(WendyComResult_WENDY_COM_RESULT_BAD_CONF_SIZE+1))
+
+#define _WendyComChannelErrorReason_MIN WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_NOT_OPEN
+#define _WendyComChannelErrorReason_MAX WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_REJECTED
+#define _WendyComChannelErrorReason_ARRAYSIZE ((WendyComChannelErrorReason)(WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_REJECTED+1))
+
+
+
+
+
+#define WendyComAppPushBeginParams_app_type_ENUMTYPE WendyComAppType
+
+
+
+
+
+#define WendyComConfPushBeginParams_mode_ENUMTYPE WendyComConfPushMode
 
 
 
@@ -118,6 +327,7 @@ extern "C" {
 
 
 
+#define WendyComConsoleData_io_ENUMTYPE WendyComConsoleIo
 
 
 
@@ -125,59 +335,148 @@ extern "C" {
 #define WendyComResponse_result_ENUMTYPE WendyComResult
 
 
+
+
+
+
+#define WendyComChannelError_reason_ENUMTYPE WendyComChannelErrorReason
+
+
+
+
+
 /* Initializer values for message structs */
 #define WendyComProtocolVersion_init_default     {0, 0}
-#define WendyComProtocolVersionParams_init_default {0, 0}
+#define WendyComHandshake_init_default           {0, false, WendyComProtocolVersion_init_default}
 #define WendyComPingParams_init_default          {0}
-#define WendyComRebootParams_init_default        {0}
-#define WendyComAppPushBeginParams_init_default  {0}
+#define WendyComRebootParams_init_default        {false, 0, 0}
+#define WendyComAppPushBeginParams_init_default  {0, _WendyComAppType_MIN}
 #define WendyComAppPushDataParams_init_default   {0, {{NULL}, NULL}}
 #define WendyComAppPushEndParams_init_default    {0}
 #define WendyComAppStartParams_init_default      {0}
 #define WendyComAppStopParams_init_default       {0}
+#define WendyComConfPushBeginParams_init_default {0, _WendyComConfPushMode_MIN}
+#define WendyComConfPushDataParams_init_default  {0, {{NULL}, NULL}}
+#define WendyComConfPushEndParams_init_default   {0}
 #define WendyComGetDeviceIdentityParams_init_default {0}
 #define WendyComDeviceIdentity_init_default      {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
-#define WendyComCommand_init_default             {0, 0, {WendyComProtocolVersionParams_init_default}}
-#define WendyComResponse_init_default            {0, _WendyComResult_MIN, 0, {WendyComProtocolVersion_init_default}}
+#define WendyComGetDeviceInfoParams_init_default {0}
+#define WendyComConsoleAttachParams_init_default {0, 0, 0}
+#define WendyComConsoleDetachParams_init_default {0}
+#define WendyComConsoleBegin_init_default        {0}
+#define WendyComConsoleData_init_default         {_WendyComConsoleIo_MIN, 0, {{NULL}, NULL}}
+#define WendyComConsoleEnd_init_default          {0}
+#define WendyComDeviceInfo_init_default          {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, 0, 0}
+#define WendyComCommand_init_default             {0, 0, {WendyComPingParams_init_default}}
+#define WendyComResponse_init_default            {0, _WendyComResult_MIN, 0, {WendyComDeviceIdentity_init_default}}
+#define WendyComEvent_init_default               {0, 0, {WendyComConsoleBegin_init_default}}
+#define WendyComOpenChannel_init_default         {0}
+#define WendyComCloseChannel_init_default        {0}
+#define WendyComChannelOpen_init_default         {0}
+#define WendyComChannelClose_init_default        {0}
+#define WendyComChannelError_init_default        {_WendyComChannelErrorReason_MIN}
+#define WendyComChannelState_init_default        {0, {WendyComChannelOpen_init_default}}
+#define WendyComService_init_default             {0, {WendyComOpenChannel_init_default}}
+#define WendyComMessage_init_default             {0, {WendyComHandshake_init_default}}
 #define WendyComProtocolVersion_init_zero        {0, 0}
-#define WendyComProtocolVersionParams_init_zero  {0, 0}
+#define WendyComHandshake_init_zero              {0, false, WendyComProtocolVersion_init_zero}
 #define WendyComPingParams_init_zero             {0}
-#define WendyComRebootParams_init_zero           {0}
-#define WendyComAppPushBeginParams_init_zero     {0}
+#define WendyComRebootParams_init_zero           {false, 0, 0}
+#define WendyComAppPushBeginParams_init_zero     {0, _WendyComAppType_MIN}
 #define WendyComAppPushDataParams_init_zero      {0, {{NULL}, NULL}}
 #define WendyComAppPushEndParams_init_zero       {0}
 #define WendyComAppStartParams_init_zero         {0}
 #define WendyComAppStopParams_init_zero          {0}
+#define WendyComConfPushBeginParams_init_zero    {0, _WendyComConfPushMode_MIN}
+#define WendyComConfPushDataParams_init_zero     {0, {{NULL}, NULL}}
+#define WendyComConfPushEndParams_init_zero      {0}
 #define WendyComGetDeviceIdentityParams_init_zero {0}
 #define WendyComDeviceIdentity_init_zero         {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
-#define WendyComCommand_init_zero                {0, 0, {WendyComProtocolVersionParams_init_zero}}
-#define WendyComResponse_init_zero               {0, _WendyComResult_MIN, 0, {WendyComProtocolVersion_init_zero}}
+#define WendyComGetDeviceInfoParams_init_zero    {0}
+#define WendyComConsoleAttachParams_init_zero    {0, 0, 0}
+#define WendyComConsoleDetachParams_init_zero    {0}
+#define WendyComConsoleBegin_init_zero           {0}
+#define WendyComConsoleData_init_zero            {_WendyComConsoleIo_MIN, 0, {{NULL}, NULL}}
+#define WendyComConsoleEnd_init_zero             {0}
+#define WendyComDeviceInfo_init_zero             {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, 0, 0}
+#define WendyComCommand_init_zero                {0, 0, {WendyComPingParams_init_zero}}
+#define WendyComResponse_init_zero               {0, _WendyComResult_MIN, 0, {WendyComDeviceIdentity_init_zero}}
+#define WendyComEvent_init_zero                  {0, 0, {WendyComConsoleBegin_init_zero}}
+#define WendyComOpenChannel_init_zero            {0}
+#define WendyComCloseChannel_init_zero           {0}
+#define WendyComChannelOpen_init_zero            {0}
+#define WendyComChannelClose_init_zero           {0}
+#define WendyComChannelError_init_zero           {_WendyComChannelErrorReason_MIN}
+#define WendyComChannelState_init_zero           {0, {WendyComChannelOpen_init_zero}}
+#define WendyComService_init_zero                {0, {WendyComOpenChannel_init_zero}}
+#define WendyComMessage_init_zero                {0, {WendyComHandshake_init_zero}}
 
 /* Field tags (for use in manual encoding/decoding) */
 #define WendyComProtocolVersion_major_tag        1
 #define WendyComProtocolVersion_minor_tag        2
-#define WendyComProtocolVersionParams_major_tag  1
-#define WendyComProtocolVersionParams_minor_tag  2
+#define WendyComHandshake_handshake_id_tag       1
+#define WendyComHandshake_version_tag            2
+#define WendyComRebootParams_app_auto_start_tag  1
+#define WendyComRebootParams_app_auto_start_delay_tag 2
 #define WendyComAppPushBeginParams_size_tag      1
+#define WendyComAppPushBeginParams_app_type_tag  2
 #define WendyComAppPushDataParams_offset_tag     1
 #define WendyComAppPushDataParams_data_tag       2
+#define WendyComConfPushBeginParams_size_tag     1
+#define WendyComConfPushBeginParams_mode_tag     2
+#define WendyComConfPushDataParams_offset_tag    1
+#define WendyComConfPushDataParams_data_tag      2
 #define WendyComDeviceIdentity_id_tag            1
 #define WendyComDeviceIdentity_name_tag          2
 #define WendyComDeviceIdentity_display_name_tag  3
+#define WendyComConsoleAttachParams_event_id_tag 1
+#define WendyComConsoleAttachParams_duration_tag 2
+#define WendyComConsoleAttachParams_blocking_tag 3
+#define WendyComConsoleDetachParams_event_id_tag 1
+#define WendyComConsoleData_io_tag               1
+#define WendyComConsoleData_gap_tag              2
+#define WendyComConsoleData_data_tag             3
+#define WendyComDeviceInfo_os_tag                1
+#define WendyComDeviceInfo_os_version_tag        2
+#define WendyComDeviceInfo_cpu_architecture_tag  3
+#define WendyComDeviceInfo_board_tag             4
+#define WendyComDeviceInfo_wasm_app_support_tag  5
+#define WendyComDeviceInfo_native_app_support_tag 6
 #define WendyComCommand_request_id_tag           1
-#define WendyComCommand_protocol_version_tag     2
-#define WendyComCommand_ping_tag                 3
-#define WendyComCommand_reboot_tag               4
-#define WendyComCommand_app_push_begin_tag       5
-#define WendyComCommand_app_push_data_tag        6
-#define WendyComCommand_app_push_end_tag         7
-#define WendyComCommand_app_start_tag            8
-#define WendyComCommand_app_stop_tag             9
-#define WendyComCommand_get_device_identity_tag  10
+#define WendyComCommand_ping_tag                 2
+#define WendyComCommand_reboot_tag               3
+#define WendyComCommand_app_push_begin_tag       4
+#define WendyComCommand_app_push_data_tag        5
+#define WendyComCommand_app_push_end_tag         6
+#define WendyComCommand_app_start_tag            7
+#define WendyComCommand_app_stop_tag             8
+#define WendyComCommand_get_device_identity_tag  9
+#define WendyComCommand_get_device_info_tag      10
+#define WendyComCommand_console_attach_tag       11
+#define WendyComCommand_console_detach_tag       12
+#define WendyComCommand_conf_push_begin_tag      13
+#define WendyComCommand_conf_push_data_tag       14
+#define WendyComCommand_conf_push_end_tag        15
 #define WendyComResponse_request_id_tag          1
 #define WendyComResponse_result_tag              2
-#define WendyComResponse_protocol_version_tag    3
-#define WendyComResponse_device_identity_tag     4
+#define WendyComResponse_device_identity_tag     3
+#define WendyComResponse_device_info_tag         4
+#define WendyComEvent_event_id_tag               1
+#define WendyComEvent_console_begin_tag          2
+#define WendyComEvent_console_data_tag           3
+#define WendyComEvent_console_end_tag            4
+#define WendyComChannelError_reason_tag          1
+#define WendyComChannelState_open_tag            1
+#define WendyComChannelState_close_tag           2
+#define WendyComChannelState_error_tag           3
+#define WendyComService_open_channel_tag         1
+#define WendyComService_close_channel_tag        2
+#define WendyComService_channel_state_tag        3
+#define WendyComMessage_handshake_tag            1
+#define WendyComMessage_service_tag              2
+#define WendyComMessage_command_tag              3
+#define WendyComMessage_response_tag             4
+#define WendyComMessage_event_tag                5
 
 /* Struct field encoding specification for nanopb */
 #define WendyComProtocolVersion_FIELDLIST(X, a) \
@@ -186,11 +485,12 @@ X(a, STATIC,   SINGULAR, UINT32,   minor,             2)
 #define WendyComProtocolVersion_CALLBACK NULL
 #define WendyComProtocolVersion_DEFAULT NULL
 
-#define WendyComProtocolVersionParams_FIELDLIST(X, a) \
-X(a, STATIC,   SINGULAR, UINT32,   major,             1) \
-X(a, STATIC,   SINGULAR, UINT32,   minor,             2)
-#define WendyComProtocolVersionParams_CALLBACK NULL
-#define WendyComProtocolVersionParams_DEFAULT NULL
+#define WendyComHandshake_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   handshake_id,      1) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  version,           2)
+#define WendyComHandshake_CALLBACK NULL
+#define WendyComHandshake_DEFAULT NULL
+#define WendyComHandshake_version_MSGTYPE WendyComProtocolVersion
 
 #define WendyComPingParams_FIELDLIST(X, a) \
 
@@ -198,12 +498,14 @@ X(a, STATIC,   SINGULAR, UINT32,   minor,             2)
 #define WendyComPingParams_DEFAULT NULL
 
 #define WendyComRebootParams_FIELDLIST(X, a) \
-
+X(a, STATIC,   OPTIONAL, BOOL,     app_auto_start,    1) \
+X(a, STATIC,   SINGULAR, UINT32,   app_auto_start_delay,   2)
 #define WendyComRebootParams_CALLBACK NULL
 #define WendyComRebootParams_DEFAULT NULL
 
 #define WendyComAppPushBeginParams_FIELDLIST(X, a) \
-X(a, STATIC,   SINGULAR, UINT32,   size,              1)
+X(a, STATIC,   SINGULAR, UINT32,   size,              1) \
+X(a, STATIC,   SINGULAR, UENUM,    app_type,          2)
 #define WendyComAppPushBeginParams_CALLBACK NULL
 #define WendyComAppPushBeginParams_DEFAULT NULL
 
@@ -228,6 +530,23 @@ X(a, CALLBACK, SINGULAR, BYTES,    data,              2)
 #define WendyComAppStopParams_CALLBACK NULL
 #define WendyComAppStopParams_DEFAULT NULL
 
+#define WendyComConfPushBeginParams_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   size,              1) \
+X(a, STATIC,   SINGULAR, UENUM,    mode,              2)
+#define WendyComConfPushBeginParams_CALLBACK NULL
+#define WendyComConfPushBeginParams_DEFAULT NULL
+
+#define WendyComConfPushDataParams_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   offset,            1) \
+X(a, CALLBACK, SINGULAR, BYTES,    data,              2)
+#define WendyComConfPushDataParams_CALLBACK pb_default_field_callback
+#define WendyComConfPushDataParams_DEFAULT NULL
+
+#define WendyComConfPushEndParams_FIELDLIST(X, a) \
+
+#define WendyComConfPushEndParams_CALLBACK NULL
+#define WendyComConfPushEndParams_DEFAULT NULL
+
 #define WendyComGetDeviceIdentityParams_FIELDLIST(X, a) \
 
 #define WendyComGetDeviceIdentityParams_CALLBACK NULL
@@ -240,20 +559,68 @@ X(a, CALLBACK, SINGULAR, STRING,   display_name,      3)
 #define WendyComDeviceIdentity_CALLBACK pb_default_field_callback
 #define WendyComDeviceIdentity_DEFAULT NULL
 
+#define WendyComGetDeviceInfoParams_FIELDLIST(X, a) \
+
+#define WendyComGetDeviceInfoParams_CALLBACK NULL
+#define WendyComGetDeviceInfoParams_DEFAULT NULL
+
+#define WendyComConsoleAttachParams_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   event_id,          1) \
+X(a, STATIC,   SINGULAR, UINT32,   duration,          2) \
+X(a, STATIC,   SINGULAR, BOOL,     blocking,          3)
+#define WendyComConsoleAttachParams_CALLBACK NULL
+#define WendyComConsoleAttachParams_DEFAULT NULL
+
+#define WendyComConsoleDetachParams_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   event_id,          1)
+#define WendyComConsoleDetachParams_CALLBACK NULL
+#define WendyComConsoleDetachParams_DEFAULT NULL
+
+#define WendyComConsoleBegin_FIELDLIST(X, a) \
+
+#define WendyComConsoleBegin_CALLBACK NULL
+#define WendyComConsoleBegin_DEFAULT NULL
+
+#define WendyComConsoleData_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UENUM,    io,                1) \
+X(a, STATIC,   SINGULAR, BOOL,     gap,               2) \
+X(a, CALLBACK, SINGULAR, BYTES,    data,              3)
+#define WendyComConsoleData_CALLBACK pb_default_field_callback
+#define WendyComConsoleData_DEFAULT NULL
+
+#define WendyComConsoleEnd_FIELDLIST(X, a) \
+
+#define WendyComConsoleEnd_CALLBACK NULL
+#define WendyComConsoleEnd_DEFAULT NULL
+
+#define WendyComDeviceInfo_FIELDLIST(X, a) \
+X(a, CALLBACK, SINGULAR, STRING,   os,                1) \
+X(a, CALLBACK, SINGULAR, STRING,   os_version,        2) \
+X(a, CALLBACK, SINGULAR, STRING,   cpu_architecture,   3) \
+X(a, CALLBACK, SINGULAR, STRING,   board,             4) \
+X(a, STATIC,   SINGULAR, BOOL,     wasm_app_support,   5) \
+X(a, STATIC,   SINGULAR, BOOL,     native_app_support,   6)
+#define WendyComDeviceInfo_CALLBACK pb_default_field_callback
+#define WendyComDeviceInfo_DEFAULT NULL
+
 #define WendyComCommand_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   request_id,        1) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (params,protocol_version,params.protocol_version),   2) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (params,ping,params.ping),   3) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (params,reboot,params.reboot),   4) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (params,app_push_begin,params.app_push_begin),   5) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (params,app_push_data,params.app_push_data),   6) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (params,app_push_end,params.app_push_end),   7) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (params,app_start,params.app_start),   8) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (params,app_stop,params.app_stop),   9) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (params,get_device_identity,params.get_device_identity),  10)
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,ping,params.ping),   2) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,reboot,params.reboot),   3) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,app_push_begin,params.app_push_begin),   4) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,app_push_data,params.app_push_data),   5) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,app_push_end,params.app_push_end),   6) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,app_start,params.app_start),   7) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,app_stop,params.app_stop),   8) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,get_device_identity,params.get_device_identity),   9) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,get_device_info,params.get_device_info),  10) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,console_attach,params.console_attach),  11) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,console_detach,params.console_detach),  12) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,conf_push_begin,params.conf_push_begin),  13) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,conf_push_data,params.conf_push_data),  14) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,conf_push_end,params.conf_push_end),  15)
 #define WendyComCommand_CALLBACK NULL
 #define WendyComCommand_DEFAULT NULL
-#define WendyComCommand_params_protocol_version_MSGTYPE WendyComProtocolVersionParams
 #define WendyComCommand_params_ping_MSGTYPE WendyComPingParams
 #define WendyComCommand_params_reboot_MSGTYPE WendyComRebootParams
 #define WendyComCommand_params_app_push_begin_MSGTYPE WendyComAppPushBeginParams
@@ -262,19 +629,95 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (params,get_device_identity,params.get_device
 #define WendyComCommand_params_app_start_MSGTYPE WendyComAppStartParams
 #define WendyComCommand_params_app_stop_MSGTYPE WendyComAppStopParams
 #define WendyComCommand_params_get_device_identity_MSGTYPE WendyComGetDeviceIdentityParams
+#define WendyComCommand_params_get_device_info_MSGTYPE WendyComGetDeviceInfoParams
+#define WendyComCommand_params_console_attach_MSGTYPE WendyComConsoleAttachParams
+#define WendyComCommand_params_console_detach_MSGTYPE WendyComConsoleDetachParams
+#define WendyComCommand_params_conf_push_begin_MSGTYPE WendyComConfPushBeginParams
+#define WendyComCommand_params_conf_push_data_MSGTYPE WendyComConfPushDataParams
+#define WendyComCommand_params_conf_push_end_MSGTYPE WendyComConfPushEndParams
 
 #define WendyComResponse_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   request_id,        1) \
 X(a, STATIC,   SINGULAR, UENUM,    result,            2) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (data,protocol_version,data.protocol_version),   3) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (data,device_identity,data.device_identity),   4)
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,device_identity,data.device_identity),   3) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,device_info,data.device_info),   4)
 #define WendyComResponse_CALLBACK NULL
 #define WendyComResponse_DEFAULT NULL
-#define WendyComResponse_data_protocol_version_MSGTYPE WendyComProtocolVersion
 #define WendyComResponse_data_device_identity_MSGTYPE WendyComDeviceIdentity
+#define WendyComResponse_data_device_info_MSGTYPE WendyComDeviceInfo
+
+#define WendyComEvent_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   event_id,          1) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,console_begin,data.console_begin),   2) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,console_data,data.console_data),   3) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,console_end,data.console_end),   4)
+#define WendyComEvent_CALLBACK NULL
+#define WendyComEvent_DEFAULT NULL
+#define WendyComEvent_data_console_begin_MSGTYPE WendyComConsoleBegin
+#define WendyComEvent_data_console_data_MSGTYPE WendyComConsoleData
+#define WendyComEvent_data_console_end_MSGTYPE WendyComConsoleEnd
+
+#define WendyComOpenChannel_FIELDLIST(X, a) \
+
+#define WendyComOpenChannel_CALLBACK NULL
+#define WendyComOpenChannel_DEFAULT NULL
+
+#define WendyComCloseChannel_FIELDLIST(X, a) \
+
+#define WendyComCloseChannel_CALLBACK NULL
+#define WendyComCloseChannel_DEFAULT NULL
+
+#define WendyComChannelOpen_FIELDLIST(X, a) \
+
+#define WendyComChannelOpen_CALLBACK NULL
+#define WendyComChannelOpen_DEFAULT NULL
+
+#define WendyComChannelClose_FIELDLIST(X, a) \
+
+#define WendyComChannelClose_CALLBACK NULL
+#define WendyComChannelClose_DEFAULT NULL
+
+#define WendyComChannelError_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UENUM,    reason,            1)
+#define WendyComChannelError_CALLBACK NULL
+#define WendyComChannelError_DEFAULT NULL
+
+#define WendyComChannelState_FIELDLIST(X, a) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (state,open,state.open),   1) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (state,close,state.close),   2) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (state,error,state.error),   3)
+#define WendyComChannelState_CALLBACK NULL
+#define WendyComChannelState_DEFAULT NULL
+#define WendyComChannelState_state_open_MSGTYPE WendyComChannelOpen
+#define WendyComChannelState_state_close_MSGTYPE WendyComChannelClose
+#define WendyComChannelState_state_error_MSGTYPE WendyComChannelError
+
+#define WendyComService_FIELDLIST(X, a) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (cmd,open_channel,cmd.open_channel),   1) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (cmd,close_channel,cmd.close_channel),   2) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (cmd,channel_state,cmd.channel_state),   3)
+#define WendyComService_CALLBACK NULL
+#define WendyComService_DEFAULT NULL
+#define WendyComService_cmd_open_channel_MSGTYPE WendyComOpenChannel
+#define WendyComService_cmd_close_channel_MSGTYPE WendyComCloseChannel
+#define WendyComService_cmd_channel_state_MSGTYPE WendyComChannelState
+
+#define WendyComMessage_FIELDLIST(X, a) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (msg,handshake,msg.handshake),   1) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (msg,service,msg.service),   2) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (msg,command,msg.command),   3) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (msg,response,msg.response),   4) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (msg,event,msg.event),   5)
+#define WendyComMessage_CALLBACK NULL
+#define WendyComMessage_DEFAULT NULL
+#define WendyComMessage_msg_handshake_MSGTYPE WendyComHandshake
+#define WendyComMessage_msg_service_MSGTYPE WendyComService
+#define WendyComMessage_msg_command_MSGTYPE WendyComCommand
+#define WendyComMessage_msg_response_MSGTYPE WendyComResponse
+#define WendyComMessage_msg_event_MSGTYPE WendyComEvent
 
 extern const pb_msgdesc_t WendyComProtocolVersion_msg;
-extern const pb_msgdesc_t WendyComProtocolVersionParams_msg;
+extern const pb_msgdesc_t WendyComHandshake_msg;
 extern const pb_msgdesc_t WendyComPingParams_msg;
 extern const pb_msgdesc_t WendyComRebootParams_msg;
 extern const pb_msgdesc_t WendyComAppPushBeginParams_msg;
@@ -282,14 +725,33 @@ extern const pb_msgdesc_t WendyComAppPushDataParams_msg;
 extern const pb_msgdesc_t WendyComAppPushEndParams_msg;
 extern const pb_msgdesc_t WendyComAppStartParams_msg;
 extern const pb_msgdesc_t WendyComAppStopParams_msg;
+extern const pb_msgdesc_t WendyComConfPushBeginParams_msg;
+extern const pb_msgdesc_t WendyComConfPushDataParams_msg;
+extern const pb_msgdesc_t WendyComConfPushEndParams_msg;
 extern const pb_msgdesc_t WendyComGetDeviceIdentityParams_msg;
 extern const pb_msgdesc_t WendyComDeviceIdentity_msg;
+extern const pb_msgdesc_t WendyComGetDeviceInfoParams_msg;
+extern const pb_msgdesc_t WendyComConsoleAttachParams_msg;
+extern const pb_msgdesc_t WendyComConsoleDetachParams_msg;
+extern const pb_msgdesc_t WendyComConsoleBegin_msg;
+extern const pb_msgdesc_t WendyComConsoleData_msg;
+extern const pb_msgdesc_t WendyComConsoleEnd_msg;
+extern const pb_msgdesc_t WendyComDeviceInfo_msg;
 extern const pb_msgdesc_t WendyComCommand_msg;
 extern const pb_msgdesc_t WendyComResponse_msg;
+extern const pb_msgdesc_t WendyComEvent_msg;
+extern const pb_msgdesc_t WendyComOpenChannel_msg;
+extern const pb_msgdesc_t WendyComCloseChannel_msg;
+extern const pb_msgdesc_t WendyComChannelOpen_msg;
+extern const pb_msgdesc_t WendyComChannelClose_msg;
+extern const pb_msgdesc_t WendyComChannelError_msg;
+extern const pb_msgdesc_t WendyComChannelState_msg;
+extern const pb_msgdesc_t WendyComService_msg;
+extern const pb_msgdesc_t WendyComMessage_msg;
 
 /* Defines for backwards compatibility with code written before nanopb-0.4.0 */
 #define WendyComProtocolVersion_fields &WendyComProtocolVersion_msg
-#define WendyComProtocolVersionParams_fields &WendyComProtocolVersionParams_msg
+#define WendyComHandshake_fields &WendyComHandshake_msg
 #define WendyComPingParams_fields &WendyComPingParams_msg
 #define WendyComRebootParams_fields &WendyComRebootParams_msg
 #define WendyComAppPushBeginParams_fields &WendyComAppPushBeginParams_msg
@@ -297,26 +759,64 @@ extern const pb_msgdesc_t WendyComResponse_msg;
 #define WendyComAppPushEndParams_fields &WendyComAppPushEndParams_msg
 #define WendyComAppStartParams_fields &WendyComAppStartParams_msg
 #define WendyComAppStopParams_fields &WendyComAppStopParams_msg
+#define WendyComConfPushBeginParams_fields &WendyComConfPushBeginParams_msg
+#define WendyComConfPushDataParams_fields &WendyComConfPushDataParams_msg
+#define WendyComConfPushEndParams_fields &WendyComConfPushEndParams_msg
 #define WendyComGetDeviceIdentityParams_fields &WendyComGetDeviceIdentityParams_msg
 #define WendyComDeviceIdentity_fields &WendyComDeviceIdentity_msg
+#define WendyComGetDeviceInfoParams_fields &WendyComGetDeviceInfoParams_msg
+#define WendyComConsoleAttachParams_fields &WendyComConsoleAttachParams_msg
+#define WendyComConsoleDetachParams_fields &WendyComConsoleDetachParams_msg
+#define WendyComConsoleBegin_fields &WendyComConsoleBegin_msg
+#define WendyComConsoleData_fields &WendyComConsoleData_msg
+#define WendyComConsoleEnd_fields &WendyComConsoleEnd_msg
+#define WendyComDeviceInfo_fields &WendyComDeviceInfo_msg
 #define WendyComCommand_fields &WendyComCommand_msg
 #define WendyComResponse_fields &WendyComResponse_msg
+#define WendyComEvent_fields &WendyComEvent_msg
+#define WendyComOpenChannel_fields &WendyComOpenChannel_msg
+#define WendyComCloseChannel_fields &WendyComCloseChannel_msg
+#define WendyComChannelOpen_fields &WendyComChannelOpen_msg
+#define WendyComChannelClose_fields &WendyComChannelClose_msg
+#define WendyComChannelError_fields &WendyComChannelError_msg
+#define WendyComChannelState_fields &WendyComChannelState_msg
+#define WendyComService_fields &WendyComService_msg
+#define WendyComMessage_fields &WendyComMessage_msg
 
 /* Maximum encoded size of messages (where known) */
 /* WendyComAppPushDataParams_size depends on runtime parameters */
+/* WendyComConfPushDataParams_size depends on runtime parameters */
 /* WendyComDeviceIdentity_size depends on runtime parameters */
+/* WendyComConsoleData_size depends on runtime parameters */
+/* WendyComDeviceInfo_size depends on runtime parameters */
 /* WendyComCommand_size depends on runtime parameters */
 /* WendyComResponse_size depends on runtime parameters */
-#define WENDY_COM_MSG_PB_H_MAX_SIZE              WendyComProtocolVersion_size
-#define WendyComAppPushBeginParams_size          6
+/* WendyComEvent_size depends on runtime parameters */
+/* WendyComMessage_size depends on runtime parameters */
+#define WENDY_COM_MSG_PB_H_MAX_SIZE              WendyComHandshake_size
+#define WendyComAppPushBeginParams_size          8
 #define WendyComAppPushEndParams_size            0
 #define WendyComAppStartParams_size              0
 #define WendyComAppStopParams_size               0
+#define WendyComChannelClose_size                0
+#define WendyComChannelError_size                2
+#define WendyComChannelOpen_size                 0
+#define WendyComChannelState_size                4
+#define WendyComCloseChannel_size                0
+#define WendyComConfPushBeginParams_size         8
+#define WendyComConfPushEndParams_size           0
+#define WendyComConsoleAttachParams_size         14
+#define WendyComConsoleBegin_size                0
+#define WendyComConsoleDetachParams_size         6
+#define WendyComConsoleEnd_size                  0
 #define WendyComGetDeviceIdentityParams_size     0
+#define WendyComGetDeviceInfoParams_size         0
+#define WendyComHandshake_size                   20
+#define WendyComOpenChannel_size                 0
 #define WendyComPingParams_size                  0
-#define WendyComProtocolVersionParams_size       12
 #define WendyComProtocolVersion_size             12
-#define WendyComRebootParams_size                0
+#define WendyComRebootParams_size                8
+#define WendyComService_size                     6
 
 #ifdef __cplusplus
 } /* extern "C" */

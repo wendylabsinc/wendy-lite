@@ -1,0 +1,7 @@
+dependencies:
+  espressif/mdns:
+    version: "*"
+  wendy_com:
+    override_path: "../wendy_com"
+  wendy_conf:
+    override_path: "../wendy_conf"

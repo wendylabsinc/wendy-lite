@@ -3,3 +3,5 @@ dependencies:
     version: ">=5.1.0"
   espressif/led_strip:
     version: "*"
+  wendy_callback:
+    override_path: "../wendy_callback"
