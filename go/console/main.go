@@ -206,7 +206,7 @@ func runConsole(client *liteclient.WendyLiteClient, scanner *bufio.Scanner, roll
 			}
 			w.Write(chunk.Data)
 		case <-enter:
-			if err := detach(); err != nil {
+			if err := detach(true); err != nil {
 				fmt.Fprintln(os.Stderr, "console detach:", err)
 			}
 			return
