@@ -409,6 +409,30 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
     _send_message(link, &out);
 }
 
+/* Host -> device events carry no response, so every non-reply path must
+   re-arm the header read itself: the other message kinds get it from
+   _done_sending_msg when their reply finishes sending. */
+static void _process_event(struct _agent_link *link, const WendyComEvent *evt, const struct _span *data_span)
+{
+    struct _agent_channel *channel = _find_channel(link, link->rx_channel);
+    if (!channel) {
+        ESP_LOGW(TAG, "link %d event on unopened channel %u", link->link_id, link->rx_channel);
+        _send_channel_state(link, WendyComChannelState_error_tag,
+                            WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_NOT_OPEN);
+        return;
+    }
+
+    if (evt->which_data == WendyComEvent_console_data_tag &&
+        evt->data.console_data.io == WendyComConsoleIo_WENDY_COM_CONSOLE_IO_STANDARD_INPUT) {
+        if (data_span->data)
+            wcom_cmd_console_stdin_data(channel->client_id, data_span->data, data_span->size);
+    } else {
+        ESP_LOGW(TAG, "link %d unexpected event ignored (which_data=%d)",
+                 link->link_id, evt->which_data);
+    }
+    _start_recv_header(link);
+}
+
 static void _process_message(struct _agent_link *link, const uint8_t *body, size_t size)
 {
     struct _span data_span = {NULL, 0};
@@ -447,6 +471,24 @@ static void _process_message(struct _agent_link *link, const uint8_t *body, size
         }
     }
 
+    /* Same limitation for an inbound console_data event (host -> device
+       stdin): decode again with the event path pre-set. */
+    if (req.which_msg == WendyComMessage_event_tag &&
+        req.msg.event.which_data == WendyComEvent_console_data_tag) {
+        data_span = (struct _span){NULL, 0};
+        req = (WendyComMessage)WendyComMessage_init_zero;
+        req.which_msg = WendyComMessage_event_tag;
+        req.msg.event.which_data = WendyComEvent_console_data_tag;
+        req.msg.event.data.console_data.data.funcs.decode = _capture_span;
+        req.msg.event.data.console_data.data.arg = &data_span;
+        stream = pb_istream_from_buffer(body, size);
+        if (!pb_decode_noinit(&stream, WendyComMessage_fields, &req)) {
+            ESP_LOGE(TAG, "link %d pb_decode: %s", link->link_id, PB_GET_ERROR(&stream));
+            wcom_close(link->link_id);
+            return;
+        }
+    }
+
     switch (req.which_msg) {
     case WendyComMessage_handshake_tag:
         _process_handshake(link, &req.msg.handshake);
@@ -461,6 +503,14 @@ static void _process_message(struct _agent_link *link, const uint8_t *body, size
         break;
     case WendyComMessage_service_tag:
         _process_service_message(link, &req.msg.service);
+        break;
+    case WendyComMessage_event_tag:
+        if (!link->handshake_done) {
+            ESP_LOGE(TAG, "link %d event received before handshake", link->link_id);
+            wcom_close(link->link_id);
+            return;
+        }
+        _process_event(link, &req.msg.event, &data_span);
         break;
     default:
         ESP_LOGE(TAG, "link %d unexpected message (which_msg=%d)", link->link_id, req.which_msg);

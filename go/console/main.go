@@ -2,12 +2,15 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/term"
 
 	"console/liteclient"
 )
@@ -158,7 +161,7 @@ func run(target string) error {
 				fmt.Fprintln(os.Stderr, "usage: console [--rolling] [--noblocking]")
 				continue
 			}
-			runConsole(client, scanner, rolling, blocking)
+			runConsole(client, rolling, blocking)
 
 		case "quit", "exit":
 			return nil
@@ -171,30 +174,61 @@ func run(target string) error {
 	return scanner.Err()
 }
 
-// runConsole streams the device's console output until the user presses
-// Enter. It never returns before the Enter-watcher goroutine's Scan has
-// completed: the REPL reuses scanner, and two concurrent Scan calls on one
-// bufio.Scanner are invalid.
-func runConsole(client *liteclient.WendyLiteClient, scanner *bufio.Scanner, rolling bool, blocking bool) {
+// runConsole streams the device's console output and forwards keystrokes to
+// the device's stdin, with the local terminal in raw mode, until the user
+// presses Ctrl-C. It never returns before the stdin-reader goroutine has
+// stopped: the REPL reads os.Stdin next, and two concurrent readers would
+// steal each other's bytes.
+func runConsole(client *liteclient.WendyLiteClient, rolling bool, blocking bool) {
+	const ctrlC = 0x03
+
 	ch, detach, err := client.ConsoleAttach(rolling, blocking)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "console attach:", err)
 		return
 	}
-	fmt.Fprintln(os.Stderr, "streaming console output — press Enter to stop")
+	fmt.Fprintln(os.Stderr, "console attached — press Ctrl-C to stop")
 
-	enter := make(chan struct{})
+	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "raw mode:", err)
+		if err := detach(true); err != nil {
+			fmt.Fprintln(os.Stderr, "console detach:", err)
+		}
+		return
+	}
+	restore := func() { term.Restore(int(os.Stdin.Fd()), oldState) }
+
+	quit := make(chan struct{})
 	go func() {
-		scanner.Scan()
-		close(enter)
+		defer close(quit)
+		buf := make([]byte, 1024)
+		forward := true
+		for {
+			n, err := os.Stdin.Read(buf)
+			data := buf[:n]
+			last := false
+			if i := bytes.IndexByte(data, ctrlC); i >= 0 {
+				data, last = data[:i], true
+			}
+			if len(data) > 0 && forward {
+				// A dead link fails every send; stop forwarding but keep
+				// reading so the terminal is handed back only on Ctrl-C.
+				forward = client.ConsolePushStdinData(data) == nil
+			}
+			if last || err != nil {
+				return
+			}
+		}
 	}()
 
 	for {
 		select {
 		case chunk, ok := <-ch:
 			if !ok {
-				fmt.Fprintln(os.Stderr, "connection lost — press Enter")
-				<-enter
+				fmt.Fprint(os.Stderr, "connection lost — press Ctrl-C\r\n")
+				<-quit
+				restore()
 				return
 			}
 			w := os.Stdout
@@ -204,9 +238,12 @@ func runConsole(client *liteclient.WendyLiteClient, scanner *bufio.Scanner, roll
 			if chunk.Gap {
 				fmt.Fprint(w, "[…output lost…]")
 			}
-			w.Write(chunk.Data)
-		case <-enter:
-			if err := detach(true); err != nil {
+			// Raw mode disables output post-processing, so bare LFs from the
+			// device would stair-step without this.
+			w.Write(bytes.ReplaceAll(chunk.Data, []byte("\n"), []byte("\r\n")))
+		case <-quit:
+			restore()
+			if err := detach(false); err != nil {
 				fmt.Fprintln(os.Stderr, "console detach:", err)
 			}
 			return

@@ -6,6 +6,7 @@
 #include "esp_system.h"
 #include "wendy_com_common.h"
 #include "wendy_com_stdio_pump.h"
+#include "wendy_stdio.h"
 #include <pb_encode.h>
 
 
@@ -185,6 +186,17 @@ WendyComResult wcom_cmd_console_detach(int client_id, uint32_t event_id)
 {
     ESP_LOGI(TAG, "CONSOLE_DETACH client=%d event_id=%u", client_id, (unsigned)event_id);
     return wcom_stdio_pump_detach(client_id, event_id);
+}
+
+// Logs at DEBUG, unlike the other wrappers: this fires per keystroke, and an
+// INFO log would itself be captured and streamed back to the attached console.
+void wcom_cmd_console_stdin_data(int client_id, const uint8_t *data, size_t size)
+{
+    ESP_LOGD(TAG, "CONSOLE_STDIN client=%d size=%zu", client_id, size);
+    size_t accepted = wendy_stdio_put_stdin_data(data, size);
+    if (accepted < size)
+        ESP_LOGW(TAG, "CONSOLE_STDIN client=%d dropped %zu of %zu bytes",
+                 client_id, size - accepted, size);
 }
 
 void wcom_cmd_client_disconnected(int client_id)

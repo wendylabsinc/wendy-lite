@@ -1,7 +1,8 @@
 # wendy_stdio
 
 Intercepts everything written to `stdout` and `stderr` (log output and plain
-`printf` alike) while keeping the normal console fully functional.
+`printf` alike) while keeping the normal console fully functional, and lets
+the application inject data into `stdin`.
 
 ## How it works
 
@@ -52,6 +53,12 @@ void app_init(void)
 `wendy_stdio_set_out_data_handler()` returns the previously registered
 handler (`NULL` if none) so handlers can be chained. It may be called before
 or after `wendy_stdio_init()`; passing `NULL` unregisters.
+
+`wendy_stdio_put_stdin_data()` injects data into `stdin`: reads on the
+console first drain a 128-byte FIFO fed by this function, then fall back to
+the real console device, so injected and typed input may interleave. Bytes
+that don't fit in the FIFO are dropped; the function returns the number of
+bytes accepted.
 
 ## Notes
 
