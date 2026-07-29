@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -13,7 +12,6 @@ import (
 	"math"
 	"os"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,7 +29,6 @@ const (
 	chunkSizeForSerial = 768
 	versionMajor       = 2
 	versionMinor       = 0
-	esc                = 0x1B
 )
 
 type protocolVersion struct {
@@ -92,12 +89,18 @@ type subscription struct {
 	ch     chan *wendypb.WendyComMessage
 }
 
+// WendyLiteClient drives one connection to one device: connect once, then
+// Close is terminal — create a new client to reconnect.
 type WendyLiteClient struct {
 	link                wcomLink
 	serialLock          *serialLock
 	requestIdGen        atomic.Uint32
 	eventIdGen          atomic.Uint32
 	peerProtocolVersion protocolVersion
+
+	closeOnce sync.Once
+	closeErr  error
+	readDone  sync.WaitGroup // tracks the readLoop goroutine
 
 	mu      sync.Mutex // guards subs and readErr
 	subs    []*subscription
@@ -120,7 +123,7 @@ func (c *WendyLiteClient) ConnectInsecure(address string) error {
 		c.link = nil
 		return fmt.Errorf("handshake: %w", err)
 	}
-	go c.readLoop()
+	c.startReadLoop()
 	return nil
 }
 
@@ -164,7 +167,7 @@ func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert t
 		c.link = nil
 		return fmt.Errorf("handshake: %w", err)
 	}
-	go c.readLoop()
+	c.startReadLoop()
 	return nil
 }
 
@@ -184,11 +187,6 @@ func (c *WendyLiteClient) ConnectToSerial(device string) error {
 		lock.release()
 		return fmt.Errorf("open serial: %w", err)
 	}
-	if err := serialHandshake(port); err != nil {
-		port.Close()
-		lock.release()
-		return err
-	}
 	c.link = &directLink{conn: port, isSerial: true}
 	c.serialLock = lock
 	if err := c.handshake(); err != nil {
@@ -198,7 +196,7 @@ func (c *WendyLiteClient) ConnectToSerial(device string) error {
 		c.serialLock = nil
 		return fmt.Errorf("handshake: %w", err)
 	}
-	go c.readLoop()
+	c.startReadLoop()
 	return nil
 }
 
@@ -206,6 +204,8 @@ func (c *WendyLiteClient) ConnectToSerial(device string) error {
 // server (dev server: self-signed cert, verification skipped). The WendyCom
 // handshake runs end-to-end through the broker to the device identified by
 // assetID.
+// SECURITY: This should be used in development tools only. Warn if it's not
+// the case.
 func (c *WendyLiteClient) ConnectViaCloudInsecure(serverAddr string, assetID uint32) error {
 	link, err := dialTunnelLinkInsecure(serverAddr, assetID)
 	if err != nil {
@@ -217,72 +217,20 @@ func (c *WendyLiteClient) ConnectViaCloudInsecure(serverAddr string, assetID uin
 		c.link = nil
 		return fmt.Errorf("handshake: %w", err)
 	}
-	go c.readLoop()
+	c.startReadLoop()
 	return nil
-}
-
-func serialHandshake(port serial.Port) error {
-	if _, err := port.Write([]byte{esc, esc, esc, esc, 'e'}); err != nil {
-		return fmt.Errorf("serial handshake: send escape: %w", err)
-	}
-
-	var sentinel string
-
-	if err := port.SetReadTimeout(100 * time.Millisecond); err != nil {
-		return fmt.Errorf("serial handshake: set timeout: %w", err)
-	}
-
-	window := make([]byte, 0, 32)
-	oneByte := make([]byte, 1)
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		n, err := port.Read(oneByte)
-		if err != nil {
-			return fmt.Errorf("serial handshake: read: %w", err)
-		}
-		if n == 0 {
-			// rx timeout, so rx buffer empty, so send sentinel
-			var randBytes [16]byte
-			if _, err := rand.Read(randBytes[:]); err != nil {
-				return fmt.Errorf("serial handshake: generate sentinel: %w", err)
-			}
-			sentinel = hex.EncodeToString(randBytes[:])
-			window = window[:0]
-			if _, err := port.Write([]byte(strings.Repeat(" ", 16) + sentinel)); err != nil {
-				return fmt.Errorf("serial handshake: send sentinel: %w", err)
-			}
-			continue
-		}
-		if n == 1 {
-			if len(window) < 32 {
-				window = append(window, oneByte[0])
-			} else {
-				copy(window, window[1:])
-				window[31] = oneByte[0]
-			}
-			if sentinel != "" && len(window) == 32 && string(window) == sentinel {
-				if err := port.SetReadTimeout(0); err != nil {
-					return fmt.Errorf("serial handshake: clear timeout: %w", err)
-				}
-				if _, err := port.Write([]byte{esc, 'm'}); err != nil {
-					return fmt.Errorf("serial handshake: send mode switch: %w", err)
-				}
-				return nil
-			}
-		}
-	}
-	return fmt.Errorf("serial handshake: sentinel not received within 3 seconds")
 }
 
 func (c *WendyLiteClient) Close() error {
 	if c.link == nil {
 		return nil
 	}
-	err := c.link.close()
-	c.link = nil
-	c.serialLock.release()
-	c.serialLock = nil
-	return err
+	c.closeOnce.Do(func() {
+		c.closeErr = c.link.close()
+		c.readDone.Wait()
+		c.serialLock.release()
+	})
+	return c.closeErr
 }
 
 func (c *WendyLiteClient) Ping() error {
@@ -305,7 +253,7 @@ func (c *WendyLiteClient) Ping() error {
 // stopped after the reboot; delay postpones the auto-start (an AppStart
 // command cuts the delay short). Both settings apply to the next boot only.
 func (c *WendyLiteClient) ResetTargetDevice(appAutoStart bool, delay time.Duration) error {
-	if delay/time.Millisecond > math.MaxUint32 {
+	if delay < 0 || delay/time.Millisecond > math.MaxUint32 {
 		return fmt.Errorf("delay %v out of range", delay)
 	}
 	// The device reboots on receipt, so no ack is expected.
@@ -565,7 +513,10 @@ func (c *WendyLiteClient) GetDeviceInfo(timeout time.Duration) (*DeviceInfo, err
 // ConsoleAttach asks the device to stream its console output and returns the
 // chunk channel plus an idempotent detach function. The channel is closed on
 // detach and on connection loss. detach stops local delivery, then tells the
-// device to stop streaming and returns its result.
+// device to stop streaming and returns its result. With abrupt the detach
+// command is only sent, without waiting for the device's acknowledgment —
+// for teardown paths where waiting could hang (device unresponsive, network
+// loss) and the caller closes the connection right after.
 //
 // With rollingMode the attachment is a lease: it is requested for
 // consoleLease and silently renewed every consoleRenew, so the device
@@ -576,7 +527,7 @@ func (c *WendyLiteClient) GetDeviceInfo(timeout time.Duration) (*DeviceInfo, err
 // block when the capture buffer is full, until it is drained. Without
 // blockingMode the oldest buffered data is dropped instead and the loss is
 // reported as a gap.
-func (c *WendyLiteClient) ConsoleAttach(rollingMode bool, blockingMode bool) (<-chan ConsoleChunk, func() error, error) {
+func (c *WendyLiteClient) ConsoleAttach(rollingMode bool, blockingMode bool) (<-chan ConsoleChunk, func(abrupt bool) error, error) {
 	eventID := c.eventIdGen.Add(1)
 
 	// Subscribe before attaching so no chunk is lost.
@@ -642,12 +593,12 @@ func (c *WendyLiteClient) ConsoleAttach(rollingMode bool, blockingMode bool) (<-
 
 	var once sync.Once
 	var detachErr error
-	detach := func() error {
+	detach := func(abrupt bool) error {
 		once.Do(func() {
 			close(done)
 			c.unsubscribe(sub)
 			renewer.Wait() // no renewal may land after the detach command
-			detachErr = c.sendConsoleDetach(eventID)
+			detachErr = c.sendConsoleDetach(eventID, abrupt)
 		})
 		return detachErr
 	}
@@ -674,13 +625,19 @@ func (c *WendyLiteClient) sendConsoleAttach(eventID uint32, duration time.Durati
 	return nil
 }
 
-func (c *WendyLiteClient) sendConsoleDetach(eventID uint32) error {
-	resp, err := c.sendCommand(&wendypb.WendyComCommand{
+func (c *WendyLiteClient) sendConsoleDetach(eventID uint32, abrupt bool) error {
+	cmd := &wendypb.WendyComCommand{
 		RequestId: c.requestIdGen.Add(1),
 		Params: &wendypb.WendyComCommand_ConsoleDetach{
 			ConsoleDetach: &wendypb.WendyComConsoleDetachParams{EventId: eventID},
 		},
-	}, 0)
+	}
+	if abrupt {
+		return c.link.send(&wendypb.WendyComMessage{
+			Msg: &wendypb.WendyComMessage_Command{Command: cmd},
+		})
+	}
+	resp, err := c.sendCommand(cmd, 0)
 	if err != nil {
 		return err
 	}
@@ -750,12 +707,21 @@ func (c *WendyLiteClient) unsubscribe(s *subscription) {
 	}
 }
 
+// startReadLoop hands c.link to the read loop goroutine and registers it with
+// readDone so Close can wait for it to exit.
+func (c *WendyLiteClient) startReadLoop() {
+	c.readDone.Add(1)
+	go c.readLoop(c.link)
+}
+
 // readLoop receives every message from the device and hands it to the first
 // subscriber whose filter matches. It runs from the end of the handshake
-// until the connection dies.
-func (c *WendyLiteClient) readLoop() {
+// until the connection dies. The link is a parameter rather than read from
+// c.link so the loop cannot race with Close mutating the client.
+func (c *WendyLiteClient) readLoop(link wcomLink) {
+	defer c.readDone.Done()
 	for {
-		msg, err := c.link.recv(0)
+		msg, err := link.recv(0)
 		if err != nil {
 			c.failAll(err)
 			return
@@ -828,6 +794,9 @@ func (c *WendyLiteClient) sendCommand(cmd *wendypb.WendyComCommand, timeout time
 }
 
 func (c *WendyLiteClient) handshake() error {
+	if err := c.link.linkHandshake(); err != nil {
+		return err
+	}
 	var b [4]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return fmt.Errorf("handshake id: %w", err)
@@ -853,10 +822,13 @@ func (c *WendyLiteClient) handshake() error {
 		return fmt.Errorf("unexpected reply message type")
 	case hs.GetHandshakeId() != id:
 		return fmt.Errorf("handshake ID mismatch")
+	case hs.GetVersion() == nil:
+		return fmt.Errorf("handshake missing version")
 	case hs.GetVersion().GetMajor() != versionMajor:
 		return fmt.Errorf("unsupported device protocol version %d.%d",
 			hs.GetVersion().GetMajor(), hs.GetVersion().GetMinor())
 	}
-	c.peerProtocolVersion = protocolVersion{Major: hs.GetVersion().GetMajor(), Minor: hs.GetVersion().GetMinor()}
+	ver := hs.GetVersion()
+	c.peerProtocolVersion = protocolVersion{Major: ver.GetMajor(), Minor: ver.GetMinor()}
 	return nil
 }

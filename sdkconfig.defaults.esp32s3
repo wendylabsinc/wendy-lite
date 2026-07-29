@@ -1,0 +1,22 @@
+# Target: ESP32-S3
+CONFIG_IDF_TARGET="esp32s3"
+
+# Flash size - keep at 4 MB; partitions.csv is sized accordingly.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# Partition table - custom CSV with single WASM slot
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# WAMR: classic interp + mini loader keep flash/RAM use tight on the C6.
+CONFIG_WAMR_INTERP_CLASSIC=y
+# CONFIG_WAMR_INTERP_FAST is not set
+CONFIG_WAMR_INTERP_LOADER_MINI=y
+# CONFIG_WAMR_INTERP_LOADER_NORMAL is not set
+
+# Move WiFi/PHY hot paths from IRAM to flash (frees ~15-25 KB DIRAM)
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_EXTRA_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+CONFIG_ESP_WIFI_SLP_IRAM_OPT=n
+CONFIG_ESP_PHY_IRAM_OPT=n

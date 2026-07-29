@@ -12,6 +12,8 @@
 
 #define WENDY_COM_UART_RAW_BUF_SIZE 256
 
+#define WENDY_COM_UART_ESC 0x10 // CTRL-P, aka DLE (Data Link Escape)
+
 typedef enum wendy_com_uart_esc_cmd {
     WENDY_COM_UART_ESC_CMD_CONSOLE    = 'c',
     WENDY_COM_UART_ESC_CMD_ECHO       = 'e',

@@ -29,7 +29,6 @@
 #define RX_BUF_SIZE      3000
 #define TX_TIMEOUT_MS     500
 #define POLL_INTERVAL_MS 1000
-#define ESC              0x1B
 
 typedef enum {
     USJ_MODE_OFF     = 0,
@@ -161,7 +160,7 @@ static void _task_main(void *arg)
 
         for (int i = 0; i < n; i++) {
             uint8_t b = buf[i];
-            if (b == ESC) {
+            if (b == WENDY_COM_UART_ESC) {
                 esc_pending = true;
             } else if (esc_pending) {
                 _handle_esc_command(b);

@@ -2,8 +2,6 @@
 #include <unistd.h>
 #include <errno.h>
 
-#define ESC 0x1B
-
 void wendy_com_uart_init(wendy_com_uart_t *uart, int fd)
 {
     uart->fd = fd;
@@ -40,13 +38,13 @@ ssize_t wendy_com_uart_read(wendy_com_uart_t *uart, void *data, size_t datalen)
 
         uint8_t b = uart->raw_buf[uart->raw_pos++];
 
-        if (b == ESC) {
+        if (b == WENDY_COM_UART_ESC) {
             uart->pending_esc = true;
         } else if (uart->pending_esc) {
             uart->pending_esc = false;
             switch (b) {
                 case WENDY_COM_UART_ESC_CMD_ESC:
-                    out[written++] = ESC;
+                    out[written++] = WENDY_COM_UART_ESC;
                     break;
                 case WENDY_COM_UART_ESC_CMD_KEEP_ALIVE:
                     // keep alive, not yet implemented

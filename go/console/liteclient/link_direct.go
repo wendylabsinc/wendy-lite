@@ -2,10 +2,13 @@ package liteclient
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,6 +16,8 @@ import (
 	"go.bug.st/serial"
 	"google.golang.org/protobuf/proto"
 )
+
+const escapeChar = 0x10 // CTRL-P, aka DLE (Data Link Escape)
 
 // directLink frames WendyComMessages with the 8-byte link header over a
 // direct connection (TCP-TLS or serial). The header channel byte stays 0:
@@ -23,10 +28,75 @@ type directLink struct {
 	writeMu  sync.Mutex // serializes frames across command goroutines
 }
 
+// linkHandshake switches a serial device into WendyCom mode; on TCP-TLS there
+// is nothing to set up.
+func (l *directLink) linkHandshake() error {
+	if !l.isSerial {
+		return nil
+	}
+	return serialHandshake(l.conn.(serial.Port))
+}
+
+func serialHandshake(port serial.Port) error {
+	if _, err := port.Write([]byte{escapeChar, escapeChar, escapeChar, escapeChar, 'e'}); err != nil {
+		return fmt.Errorf("serial handshake: send escape: %w", err)
+	}
+
+	var sentinel string
+
+	if err := port.SetReadTimeout(100 * time.Millisecond); err != nil {
+		return fmt.Errorf("serial handshake: set timeout: %w", err)
+	}
+
+	window := make([]byte, 0, 32)
+	oneByte := make([]byte, 1)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		n, err := port.Read(oneByte)
+		if err != nil {
+			return fmt.Errorf("serial handshake: read: %w", err)
+		}
+		if n == 0 {
+			// rx timeout, so rx buffer empty, so send sentinel
+			var randBytes [16]byte
+			if _, err := rand.Read(randBytes[:]); err != nil {
+				return fmt.Errorf("serial handshake: generate sentinel: %w", err)
+			}
+			sentinel = hex.EncodeToString(randBytes[:])
+			window = window[:0]
+			if _, err := port.Write([]byte(strings.Repeat(" ", 16) + sentinel)); err != nil {
+				return fmt.Errorf("serial handshake: send sentinel: %w", err)
+			}
+			continue
+		}
+		if n == 1 {
+			if len(window) < 32 {
+				window = append(window, oneByte[0])
+			} else {
+				copy(window, window[1:])
+				window[31] = oneByte[0]
+			}
+			if sentinel != "" && len(window) == 32 && string(window) == sentinel {
+				if err := port.SetReadTimeout(0); err != nil {
+					return fmt.Errorf("serial handshake: clear timeout: %w", err)
+				}
+				if _, err := port.Write([]byte{escapeChar, 'm'}); err != nil {
+					return fmt.Errorf("serial handshake: send mode switch: %w", err)
+				}
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("serial handshake: sentinel not received within 3 seconds")
+}
+
 func (l *directLink) send(req *wendypb.WendyComMessage) error {
 	body, err := proto.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
+	}
+	if len(body) > 0xFFFF {
+		return fmt.Errorf("message too large: %d bytes exceeds 65535", len(body))
 	}
 	msg := make([]byte, headerSize+len(body))
 	msg[0] = headerMagic
@@ -34,7 +104,7 @@ func (l *directLink) send(req *wendypb.WendyComMessage) error {
 	binary.BigEndian.PutUint16(msg[6:8], uint16(len(body)))
 	copy(msg[headerSize:], body)
 	if l.isSerial {
-		msg = bytes.ReplaceAll(msg, []byte{esc}, []byte{esc, '_'})
+		msg = bytes.ReplaceAll(msg, []byte{escapeChar}, []byte{escapeChar, '_'})
 	}
 	l.writeMu.Lock()
 	defer l.writeMu.Unlock()
@@ -70,7 +140,7 @@ func (l *directLink) maxChunk() int {
 func (l *directLink) close() error {
 	if l.isSerial {
 		if port, ok := l.conn.(serial.Port); ok {
-			_, _ = port.Write([]byte{esc, 'o'})
+			_, _ = port.Write([]byte{escapeChar, 'o'})
 			_ = port.Drain()
 		}
 	}
@@ -78,27 +148,34 @@ func (l *directLink) close() error {
 }
 
 // readRawMessage reads one framed message of any kind (response, event, handshake)
-// and returns its raw body. A timeout <= 0 means no deadline.
+// and returns its raw body. Frames on a non-zero category or channel are
+// consumed and discarded. A timeout <= 0 means no deadline.
 func (l *directLink) readRawMessage(timeout time.Duration) ([]byte, error) {
-	header := make([]byte, headerSize)
-	if err := l.readFull(header, timeout); err != nil {
-		return nil, fmt.Errorf("reading header: %w", err)
+	for {
+		header := make([]byte, headerSize)
+		if err := l.readFull(header, timeout); err != nil {
+			return nil, fmt.Errorf("reading header: %w", err)
+		}
+		if header[0] != headerMagic {
+			return nil, fmt.Errorf("unexpected magic byte: 0x%02X", header[0])
+		}
+		if header[1] != headerVersion {
+			return nil, fmt.Errorf("unexpected protocol version: 0x%02X", header[1])
+		}
+		bodyLen := binary.BigEndian.Uint16(header[6:8])
+		if bodyLen == 0 {
+			return nil, fmt.Errorf("invalid frame: zero-length body")
+		}
+		body := make([]byte, bodyLen)
+		if err := l.readFull(body, timeout); err != nil {
+			return nil, fmt.Errorf("reading body: %w", err)
+		}
+		if header[2] != 0 || header[3] != 0 {
+			// Not the default category/channel: skip this frame.
+			continue
+		}
+		return body, nil
 	}
-	if header[0] != headerMagic {
-		return nil, fmt.Errorf("unexpected magic byte: 0x%02X", header[0])
-	}
-	if header[1] != headerVersion {
-		return nil, fmt.Errorf("unexpected protocol version: 0x%02X", header[1])
-	}
-	bodyLen := binary.BigEndian.Uint16(header[6:8])
-	if bodyLen == 0 {
-		return nil, nil
-	}
-	body := make([]byte, bodyLen)
-	if err := l.readFull(body, timeout); err != nil {
-		return nil, fmt.Errorf("reading body: %w", err)
-	}
-	return body, nil
 }
 
 // readFull reads exactly len(buf) bytes from the connection within timeout.
