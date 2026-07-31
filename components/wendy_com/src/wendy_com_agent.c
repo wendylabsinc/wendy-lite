@@ -62,11 +62,9 @@ static struct _agent_link _links[WCOM_LINK_COUNT];
 
 static void _start_recv_header(struct _agent_link *link);
 
-/**
- * A client_id is an opaque ID, which is always positive and non-zero.
- * Internally, the agent is able to extract the link and channel from the client_id.
- * Even if a channel is closed and reopened, it does not get the same client_id.
- */
+/// A client_id is an opaque ID, which is always positive and non-zero.
+/// Internally, the agent is able to extract the link and channel from the client_id.
+/// Even if a channel is closed and reopened, it does not get the same client_id.
 static int _generate_client_id(int link_index, int channel_index)
 {
     uint32_t id;
@@ -136,8 +134,8 @@ static void *_get_buffer(struct _agent_link *link, size_t size)
 
 static bool _capture_span(pb_istream_t *stream, const pb_field_t *field, void **arg)
 {
-    /* For a pb_istream_from_buffer stream, state is the current read pointer,
-       so at callback entry it points to the first byte of the field content. */
+    // For a pb_istream_from_buffer stream, state is the current read pointer,
+    // so at callback entry it points to the first byte of the field content.
     struct _span *out = *arg;
     out->data = stream->state;
     out->size = stream->bytes_left;
@@ -296,11 +294,11 @@ static void _close_channel(struct _agent_link *link, uint8_t channel)
     _send_channel_state(link, WendyComChannelState_close_tag, 0);
 }
 
-/* Channel management is link-level, not session-level: the cloud broker
-   opens the first tunnel channel before that tunnel's handshake reaches us,
-   so service messages are accepted even before the handshake. Every service
-   message is answered with a ChannelState report, whose completion re-arms
-   the header read. */
+// Channel management is link-level, not session-level: the cloud broker
+// opens the first tunnel channel before that tunnel's handshake reaches us,
+// so service messages are accepted even before the handshake. Every service
+// message is answered with a ChannelState report, whose completion re-arms
+// the header read.
 static void _process_service_message(struct _agent_link *link, const WendyComService *svc)
 {
     switch (svc->which_cmd) {
@@ -409,13 +407,37 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
     _send_message(link, &out);
 }
 
+// Host -> device events carry no response, so every non-reply path must
+// re-arm the header read itself: the other message kinds get it from
+// _done_sending_msg when their reply finishes sending.
+static void _process_event(struct _agent_link *link, const WendyComEvent *evt, const struct _span *data_span)
+{
+    struct _agent_channel *channel = _find_channel(link, link->rx_channel);
+    if (!channel) {
+        ESP_LOGW(TAG, "link %d event on unopened channel %u", link->link_id, link->rx_channel);
+        _send_channel_state(link, WendyComChannelState_error_tag,
+                            WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_NOT_OPEN);
+        return;
+    }
+
+    if (evt->which_data == WendyComEvent_console_data_tag &&
+        evt->data.console_data.io == WendyComConsoleIo_WENDY_COM_CONSOLE_IO_STANDARD_INPUT) {
+        if (data_span->data)
+            wcom_cmd_console_stdin_data(channel->client_id, data_span->data, data_span->size);
+    } else {
+        ESP_LOGW(TAG, "link %d unexpected event ignored (which_data=%d)",
+                 link->link_id, evt->which_data);
+    }
+    _start_recv_header(link);
+}
+
 static void _process_message(struct _agent_link *link, const uint8_t *body, size_t size)
 {
     struct _span data_span = {NULL, 0};
     WendyComMessage req = WendyComMessage_init_zero;
-    /* Pre-set the oneof discriminators along the app_push_data path so nanopb
-       preserves our callback when it encounters those fields: it only resets
-       a oneof member whose which_ value doesn't already match the wire tag. */
+    // Pre-set the oneof discriminators along the app_push_data path so nanopb
+    // preserves our callback when it encounters those fields: it only resets
+    // a oneof member whose which_ value doesn't already match the wire tag.
     req.which_msg = WendyComMessage_command_tag;
     req.msg.command.which_params = WendyComCommand_app_push_data_tag;
     req.msg.command.params.app_push_data.data.funcs.decode = _capture_span;
@@ -428,9 +450,9 @@ static void _process_message(struct _agent_link *link, const uint8_t *body, size
         return;
     }
 
-    /* Only one oneof member can be pre-set per decode, so a conf_push_data
-       command came out with its data callback reset and the bytes skipped.
-       Decode again with the conf_push_data path pre-set instead. */
+    // Only one oneof member can be pre-set per decode, so a conf_push_data
+    // command came out with its data callback reset and the bytes skipped.
+    // Decode again with the conf_push_data path pre-set instead.
     if (req.which_msg == WendyComMessage_command_tag &&
         req.msg.command.which_params == WendyComCommand_conf_push_data_tag) {
         data_span = (struct _span){NULL, 0};
@@ -439,6 +461,24 @@ static void _process_message(struct _agent_link *link, const uint8_t *body, size
         req.msg.command.which_params = WendyComCommand_conf_push_data_tag;
         req.msg.command.params.conf_push_data.data.funcs.decode = _capture_span;
         req.msg.command.params.conf_push_data.data.arg = &data_span;
+        stream = pb_istream_from_buffer(body, size);
+        if (!pb_decode_noinit(&stream, WendyComMessage_fields, &req)) {
+            ESP_LOGE(TAG, "link %d pb_decode: %s", link->link_id, PB_GET_ERROR(&stream));
+            wcom_close(link->link_id);
+            return;
+        }
+    }
+
+    // Same limitation for an inbound console_data event (host -> device
+    // stdin): decode again with the event path pre-set.
+    if (req.which_msg == WendyComMessage_event_tag &&
+        req.msg.event.which_data == WendyComEvent_console_data_tag) {
+        data_span = (struct _span){NULL, 0};
+        req = (WendyComMessage)WendyComMessage_init_zero;
+        req.which_msg = WendyComMessage_event_tag;
+        req.msg.event.which_data = WendyComEvent_console_data_tag;
+        req.msg.event.data.console_data.data.funcs.decode = _capture_span;
+        req.msg.event.data.console_data.data.arg = &data_span;
         stream = pb_istream_from_buffer(body, size);
         if (!pb_decode_noinit(&stream, WendyComMessage_fields, &req)) {
             ESP_LOGE(TAG, "link %d pb_decode: %s", link->link_id, PB_GET_ERROR(&stream));
@@ -461,6 +501,14 @@ static void _process_message(struct _agent_link *link, const uint8_t *body, size
         break;
     case WendyComMessage_service_tag:
         _process_service_message(link, &req.msg.service);
+        break;
+    case WendyComMessage_event_tag:
+        if (!link->handshake_done) {
+            ESP_LOGE(TAG, "link %d event received before handshake", link->link_id);
+            wcom_close(link->link_id);
+            return;
+        }
+        _process_event(link, &req.msg.event, &data_span);
         break;
     default:
         ESP_LOGE(TAG, "link %d unexpected message (which_msg=%d)", link->link_id, req.which_msg);

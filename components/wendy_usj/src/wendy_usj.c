@@ -168,6 +168,8 @@ static void _task_main(void *arg)
                 mode = atomic_load(&s_mode);
             } else if (mode == USJ_MODE_ECHO) {
                 usb_serial_jtag_write_bytes(&b, 1, pdMS_TO_TICKS(1000));
+            } else if (mode == USJ_MODE_CONSOLE) {
+                wendy_stdio_put_stdin_data(&b, 1);
             }
         }
     }
