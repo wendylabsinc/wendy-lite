@@ -13,7 +13,7 @@ Wendy Lite firmware builds for four ESP-IDF targets:
 | `esp32c5` | Espressif ESP32-C5-DevKitC | Native (2.4 / 5 GHz Wi-Fi 6 + BLE) | 4 MB | - | system allocator |
 | `esp32c6` | Espressif ESP32-C6-DevKitC | Native | 4 MB | - | system allocator |
 | `esp32p4` | Waveshare ESP32-P4-WIFI6-Touch-LCD-4B, DFRobot DFR1172 FireBeetle 2, Espressif P4-Function-EV-Board, other P4+C6 boards (see notes) | Via on-board ESP32-C6 over SDIO (ESP-Hosted) | 16-32 MB | 32 MB | 24 MiB pre-allocated from PSRAM |
-| `esp32s3` | Seeed Studio XIAO ESP32S3 | Native | 8 MB | - | system allocator |
+| `esp32s3` | Seeed Studio XIAO ESP32S3, M5Stack StampS3 | Native | 8 MB | - | system allocator |
 
 The four targets share the same source tree. Per-target overrides live in `sdkconfig.defaults.<target>`. The `esp32p4` target additionally selects a per-board overlay from `boards/` (see [ESP32-P4 notes](#esp32-p4-notes) below). Guest WASM binaries are interchangeable between targets.
 
@@ -30,6 +30,8 @@ idf.py @boards/waveshare_lcd_4b.cfg   set-target esp32p4
 idf.py @boards/dfr1172_firebeetle.cfg set-target esp32p4
 # or, for the Seeed Studio XIAO ESP32S3 (8 MB flash, OTA app slots):
 idf.py @boards/seeed_xiao_esp32s3_native.cfg set-target esp32s3
+# or, for the M5Stack StampS3 (8 MB flash, no PSRAM, OTA app slots):
+idf.py @boards/m5_stamp_s3_native.cfg set-target esp32s3
 ```
 
 ### Build, flash, monitor
