@@ -23,10 +23,10 @@ static struct {
 
 static bool _kick_queued;
 
-/* Events share the link tx queue with responses but need their own tx state:
-   a link's header/tx_chunks may be busy with an in-flight response. A single
-   attachment exists globally, so one static slot suffices. The slot outlives
-   an attachment: a frame may still be queued across detach/re-attach. */
+// Events share the link tx queue with responses but need their own tx state:
+// a link's header/tx_chunks may be busy with an in-flight response. A single
+// attachment exists globally, so one static slot suffices. The slot outlives
+// an attachment: a frame may still be queued across detach/re-attach.
 static struct {
     struct wcom_agent_msg_header header;
     struct wcom_tx_chunk tx_chunks[2];
@@ -43,8 +43,8 @@ struct _span {
 static void _pump(void);
 static void _schedule_pump(void);
 
-/* The body buffer may be freed only when no queued frame references it and
-   no attachment will reuse it. */
+// The body buffer may be freed only when no queued frame references it and
+// no attachment will reuse it.
 static void _free_body_if_unused(void)
 {
     if (_event_slot.busy || _state.attached)
@@ -54,8 +54,8 @@ static void _free_body_if_unused(void)
     _event_slot.body_size = 0;
 }
 
-/* Called on the com task once the frame is fully sent (true) or the link's
-   tx queue was torn down (false). */
+// Called on the com task once the frame is fully sent (true) or the link's
+// tx queue was torn down (false).
 static void _done_sending_event(int link_id, const struct wcom_tx_chunk *chunk, bool success)
 {
     _event_slot.busy = false;
@@ -63,9 +63,9 @@ static void _done_sending_event(int link_id, const struct wcom_tx_chunk *chunk, 
     if (success) {
         _pump();
     } else {
-        /* The link is tearing down its tx queue and invokes done handlers
-           while iterating it — a chunk enqueued inline here would be
-           orphaned, so defer. */
+        // The link is tearing down its tx queue and invokes done handlers
+        // while iterating it — a chunk enqueued inline here would be
+        // orphaned, so defer.
         _schedule_pump();
     }
 }
@@ -108,9 +108,9 @@ static void _data_handler(void *ctx)
     _pump();
 }
 
-/* Single funnel for streaming stdio data: called when new data arrives,
-   when the previous event was sent, and once after attach. The auto-detach
-   deadline is checked lazily exactly here. */
+// Single funnel for streaming stdio data: called when new data arrives,
+// when the previous event was sent, and once after attach. The auto-detach
+// deadline is checked lazily exactly here.
 static void _pump(void)
 {
     if (!_state.attached || _event_slot.busy)
@@ -208,10 +208,10 @@ WendyComResult wcom_stdio_pump_attach(int client_id, uint32_t event_id, uint32_t
     _state.deadline_us = deadline_us;
     wcom_stdio_set_blocking(blocking_mode);
     wcom_stdio_set_data_handler(_data_handler, NULL);
-    /* Deferred first drain: the kick op runs after the attach response is
-       queued (so the response frame precedes the first event frame) and
-       covers data buffered before any handler was registered, for which the
-       stdio module's internal notify does not fire. */
+    // Deferred first drain: the kick op runs after the attach response is
+    // queued (so the response frame precedes the first event frame) and
+    // covers data buffered before any handler was registered, for which the
+    // stdio module's internal notify does not fire.
     _schedule_pump();
     return WendyComResult_WENDY_COM_RESULT_OK;
 }

@@ -347,10 +347,8 @@ void wcom_core_init(void)
     xTaskCreate(_main, "wcom", WCOM_TASK_STACK, NULL, WCOM_TASK_PRIO, NULL);
 }
 
-/**
- * Execute a function on the com thread/task.
- * This function is thread-safe.
- */
+/// Execute a function on the com thread/task.
+/// This function is thread-safe.
 void wcom_core_exec(struct wcom_operation *op)
 {
     struct wcom_operation *old_head;
@@ -454,12 +452,10 @@ void wcom_close(int link_id)
     _fire_state_change_handlers(ch->id, ch->state);
 }
 
-/**
- * The returned link ID is a positive number (it's never zero).
- * It is an opaque identifier that is never reused for a different connection
- * (except after a long time).
- * Returns -1 if the link couldn't be added (e.g. max links reached).
- */
+/// The returned link ID is a positive number (it's never zero).
+/// It is an opaque identifier that is never reused for a different connection
+/// (except after a long time).
+/// Returns -1 if the link couldn't be added (e.g. max links reached).
 int wcom_add_tls_link(esp_tls_t *tls)
 {
     assert(xTaskGetCurrentTaskHandle() == _main_task);

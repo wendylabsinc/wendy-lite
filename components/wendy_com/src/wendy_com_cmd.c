@@ -13,7 +13,7 @@
 static const char *TAG = "wcom_cmd";
 static const struct wcom_app_delegate *_app_delegate;
 
-/* At most one push (app or conf) may be in progress at a time. */
+// At most one push (app or conf) may be in progress at a time.
 enum _push_kind { PUSH_NONE, PUSH_APP, PUSH_CONF };
 static enum _push_kind _push_kind = PUSH_NONE;
 static int _pushing_client_id = 0;
