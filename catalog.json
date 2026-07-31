@@ -36,6 +36,12 @@
             "target": "esp32s3",
             "board": "seeed_xiao_esp32s3_native",
             "flash_size": "8MB"
+        },
+        {
+            "name": "wendy_mcu_esp32s3_m5_stamp_s3_native",
+            "target": "esp32s3",
+            "board": "m5_stamp_s3_native",
+            "flash_size": "8MB"
         }
     ],
     "boards": [
@@ -66,8 +72,13 @@
         },
         {
             "name": "esp32s3_seeed_xiao_native",
-            "display_name": "Seeed Studio XIAO ESP32S3, 8MB flash, native app support",
+            "display_name": "Seeed Studio XIAO ESP32S3, 8MB flash, 8MB PSRAM, native app support",
             "binary": "wendy_mcu_esp32s3_seeed_xiao_native"
+        },
+        {
+            "name": "esp32s3_m5_stamp_s3_native",
+            "display_name": "M5Stack StampS3, 8MB flash, native app support",
+            "binary": "wendy_mcu_esp32s3_m5_stamp_s3_native"
         }
     ]
 }
