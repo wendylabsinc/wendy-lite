@@ -1,7 +1,5 @@
 # Name,     Type, SubType, Offset,   Size,     Flags
-# 8 MB flash layout with OTA. Data partitions keep the offsets of the old
-# 4 MB layout; the app slots grew to 3.75 MB each (esp-dl face detection),
-# with ota_1 relocated to the upper 4 MB.
+# 8 MB flash layout with OTA.
 nvs,        data, nvs,     0x9000,   0x6000,
 phy_init,   data, phy,     0xf000,   0x1000,
 ota_0,      app,  ota_0,   0x10000,  0x3C0000,
