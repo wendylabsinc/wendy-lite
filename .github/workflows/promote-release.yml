@@ -22,17 +22,23 @@ jobs:
             exit 1
           fi
 
-      - name: Download nightly assets
+      - name: Push release tag at nightly's commit
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.event.inputs.version }}
         run: |
-          gh release download nightly --dir assets
-
-      - name: Create release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "${{ github.event.inputs.version }}" \
-            --title "${{ github.event.inputs.version }}" \
-            --generate-notes \
-            assets/*
+          # Tag the exact commit the `nightly` pre-release was built from,
+          # so promotion always ships what nightly already validated,
+          # regardless of what has landed on main since.
+          #
+          # This must be a real `git push`, not `gh release create` /
+          # the REST API's implicit tag creation: GitHub does not fire
+          # `on: push: tags:` workflows for tags created through the API,
+          # only for actual pushed refs. Pushing the tag here is what makes
+          # build.yml's tag-triggered build -> release -> publish jobs run,
+          # which build fresh binaries from this commit, attach them to a
+          # new GitHub release, and publish firmware to the GCS bucket
+          # `wendy os install` reads from.
+          COMMIT=$(gh release view nightly --json targetCommitish --jq .targetCommitish)
+          git tag "$VERSION" "$COMMIT"
+          git push origin "$VERSION"
