@@ -1,6 +1,7 @@
 dependencies:
   espressif/wasm-micro-runtime:
-    version: "~2.4.0"
+    git: "https://github.com/wendylabsinc/wasm-micro-runtime.git"
+    version: "wendy/esp32c61-target-support"
   wendy_callback:
     override_path: "../wendy_callback"
   wendy_wasm:
