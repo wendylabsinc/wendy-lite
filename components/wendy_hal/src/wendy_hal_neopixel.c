@@ -24,17 +24,30 @@ int wendy_hal_neopixel_init(int pin, int num_leds)
         .flags.invert_out = false,
     };
 
+    esp_err_t err;
+#if CONFIG_WENDY_HAL_NEOPIXEL_SPI_BACKEND
+    led_strip_spi_config_t spi_config = {
+        .clk_src = SPI_CLK_SRC_DEFAULT,
+        .spi_bus = SPI2_HOST,
+        .flags.with_dma = false,
+    };
+    err = led_strip_new_spi_device(&strip_config, &spi_config, &s_strip);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "led_strip_new_spi_device failed: %s", esp_err_to_name(err));
+        return -1;
+    }
+#else
     led_strip_rmt_config_t rmt_config = {
         .clk_src = RMT_CLK_SRC_DEFAULT,
         .resolution_hz = 10 * 1000 * 1000, /* 10 MHz */
         .flags.with_dma = false,
     };
-
-    esp_err_t err = led_strip_new_rmt_device(&strip_config, &rmt_config, &s_strip);
+    err = led_strip_new_rmt_device(&strip_config, &rmt_config, &s_strip);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "led_strip_new_rmt_device failed: %s", esp_err_to_name(err));
         return -1;
     }
+#endif
 
     s_strip_pin = pin;
     s_strip_count = num_leds;

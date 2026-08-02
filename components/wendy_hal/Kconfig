@@ -36,11 +36,23 @@ menu "Wendy Hardware Abstraction Layer"
         bool "Enable NeoPixel (WS2812) HAL"
         default y
 
+    config WENDY_HAL_NEOPIXEL_SPI_BACKEND
+        bool
+        depends on WENDY_HAL_NEOPIXEL
+        default y if !SOC_RMT_SUPPORTED
+        default n if SOC_RMT_SUPPORTED
+        help
+            Selects the led_strip SPI-MOSI backend instead of RMT for
+            chips with no RMT peripheral (e.g. ESP32-C61). Not user-facing;
+            picked automatically from the target's SOC_RMT_SUPPORTED cap.
+
     config WENDY_HAL_RMT
         bool "Enable RMT timing-buffer HAL"
+        depends on SOC_RMT_SUPPORTED
         default y
         help
             Raw RMT peripheral access for precise timing waveforms
-            (WS2812, IR, etc.) from WASM apps.
+            (WS2812, IR, etc.) from WASM apps. Unavailable on chips with
+            no RMT peripheral (e.g. ESP32-C61).
 
 endmenu
