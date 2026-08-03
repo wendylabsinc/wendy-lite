@@ -26,7 +26,6 @@
 #define WENDY_SERVER_PORT         5054
 #define WENDY_SERVER_BACKLOG      4
 #define WENDY_SERVER_TASK_STACK   8192
-#define WENDY_SERVER_TASK_PRIO    5
 #define WENDY_SERVER_MAX_LINKS    4
 
 
@@ -298,5 +297,7 @@ static void _server_task(void *arg)
 void wendy_server_start(const char *device_name)
 {
     _device_name = device_name ? strdup(device_name) : NULL;
-    xTaskCreate(_server_task, "wendy_server", WENDY_SERVER_TASK_STACK, NULL, WENDY_SERVER_TASK_PRIO, NULL);
+    xTaskCreatePinnedToCore(_server_task, "wendy_server", WENDY_SERVER_TASK_STACK, NULL,
+                             CONFIG_WENDY_SERVER_TASK_PRIORITY, NULL,
+                             CONFIG_WENDY_SERVER_TASK_CORE_AFFINITY);
 }
