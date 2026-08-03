@@ -23,6 +23,7 @@
 #include "wendy_com_stdio.h"
 #include "wendy_stdio.h"
 #include "wendy_usj.h"
+#include "wendy_usj_rom_print.h"
 
 #define TAG              "wendy_usj"
 #define TX_BUF_SIZE      1024
@@ -201,6 +202,8 @@ static int _com_thread_log_vprintf(const char *format, va_list args)
 
 esp_err_t wendy_usj_init(void)
 {
+    wendy_usj_rom_print_usb_disable();
+
     usb_serial_jtag_driver_config_t cfg = {
         .tx_buffer_size = TX_BUF_SIZE,
         .rx_buffer_size = RX_BUF_SIZE,
