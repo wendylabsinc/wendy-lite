@@ -6,15 +6,15 @@ dependencies:
   wendy_wasm:
     override_path: "../wendy_wasm"
     rules:
-      - if: "$CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True"
+      - if: "target != esp32c61"
   wendy_hal:
     override_path: "../wendy_hal"
     rules:
-      - if: "$CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True"
+      - if: "target != esp32c61"
   wendy_hal_export:
     override_path: "../wendy_hal_export"
     rules:
-      - if: "$CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True"
+      - if: "target != esp32c61"
   wendy_usb:
     override_path: "../wendy_usb"
   wendy_usj:

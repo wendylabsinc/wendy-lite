@@ -1,20 +1,21 @@
 # Target: ESP32-C61 (single-chip Wi-Fi 6 + BLE 5 board, RISC-V, no 802.15.4).
 # Mirrors the C6 overlay; the firmware-side knobs we care about are the same
-# shape: 4 MB flash, classic WAMR, native Wi-Fi + BT.
+# shape: 4 MB flash, native Wi-Fi + BT.
 CONFIG_IDF_TARGET="esp32c61"
+
+# No published espressif/wasm-micro-runtime release lists esp32c61 as a
+# supported target yet, so WASM app support is unavailable on this chip
+# for now — compiled out entirely rather than depending on it.
+CONFIG_WENDY_CORE_WASM_APP_SUPPORT=n
 
 # Flash size - keep at 4 MB; partitions.csv is sized accordingly.
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 
-# Partition table - custom CSV with single WASM slot
+# Partition table - shares the standard 4 MB layout (its WASM slot goes
+# unused on this target, but reflashing to a WASM-capable target later
+# needs no partition-table change).
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
-
-# WAMR: classic interp + mini loader keep flash/RAM use tight on the C61.
-CONFIG_WAMR_INTERP_CLASSIC=y
-# CONFIG_WAMR_INTERP_FAST is not set
-CONFIG_WAMR_INTERP_LOADER_MINI=y
-# CONFIG_WAMR_INTERP_LOADER_NORMAL is not set
 
 # Move WiFi/PHY hot paths from IRAM to flash (frees ~15-25 KB DIRAM)
 CONFIG_ESP_WIFI_IRAM_OPT=n
