@@ -222,8 +222,9 @@ esp_err_t wendy_usj_init(void)
     s_prev_out_handler = wendy_stdio_set_out_data_handler(_out_data_handler);
     s_prev_com_log_vprintf = wcom_set_com_thread_log_vprintf(_com_thread_log_vprintf);
 
-    BaseType_t ret = xTaskCreate(_task_main, "wendy_usj", 4096, NULL,
-                                 tskIDLE_PRIORITY + 1, NULL);
+    BaseType_t ret = xTaskCreatePinnedToCore(_task_main, "wendy_usj", 4096, NULL,
+                                             CONFIG_WENDY_USJ_TASK_PRIORITY, NULL,
+                                             CONFIG_WENDY_USJ_TASK_CORE_AFFINITY);
     if (ret != pdPASS)
         return ESP_ERR_NO_MEM;
 

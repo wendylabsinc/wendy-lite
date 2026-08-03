@@ -6,4 +6,33 @@ menu "Wendy USJ (USB Serial/JTAG)"
         help
             Installs the USB Serial/JTAG driver which is used to output
             logs but also to take control via the WendyCom protocol.
+
+    config WENDY_USJ_TASK_PRIORITY
+        int "USJ task priority"
+        depends on WENDY_USJ
+        default 2
+        range 1 24
+
+    choice WENDY_USJ_TASK_CORE_AFFINITY
+        prompt "USJ task core affinity"
+        depends on WENDY_USJ
+        default WENDY_USJ_TASK_CORE_AFFINITY_NO_AFFINITY
+        help
+            Core affinity of the wendy_usj task.
+
+        config WENDY_USJ_TASK_CORE_AFFINITY_CPU0
+            bool "Core 0"
+        config WENDY_USJ_TASK_CORE_AFFINITY_CPU1
+            bool "Core 1"
+            depends on !FREERTOS_UNICORE
+        config WENDY_USJ_TASK_CORE_AFFINITY_NO_AFFINITY
+            bool "No affinity"
+    endchoice
+
+    config WENDY_USJ_TASK_CORE_AFFINITY
+        hex
+        depends on WENDY_USJ
+        default 0x0 if WENDY_USJ_TASK_CORE_AFFINITY_CPU0
+        default 0x1 if WENDY_USJ_TASK_CORE_AFFINITY_CPU1
+        default FREERTOS_NO_AFFINITY if WENDY_USJ_TASK_CORE_AFFINITY_NO_AFFINITY
 endmenu

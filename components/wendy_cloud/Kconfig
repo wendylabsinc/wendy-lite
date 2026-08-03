@@ -18,6 +18,29 @@ menu "Wendy Cloud"
         default 5
         range 1 24
 
+    choice WENDY_CLOUD_TASK_CORE_AFFINITY
+        prompt "Cloud task core affinity"
+        depends on WENDY_CLOUD
+        default WENDY_CLOUD_TASK_CORE_AFFINITY_NO_AFFINITY
+        help
+            Core affinity of the wendy_cloud task.
+
+        config WENDY_CLOUD_TASK_CORE_AFFINITY_CPU0
+            bool "Core 0"
+        config WENDY_CLOUD_TASK_CORE_AFFINITY_CPU1
+            bool "Core 1"
+            depends on !FREERTOS_UNICORE
+        config WENDY_CLOUD_TASK_CORE_AFFINITY_NO_AFFINITY
+            bool "No affinity"
+    endchoice
+
+    config WENDY_CLOUD_TASK_CORE_AFFINITY
+        hex
+        depends on WENDY_CLOUD
+        default 0x0 if WENDY_CLOUD_TASK_CORE_AFFINITY_CPU0
+        default 0x1 if WENDY_CLOUD_TASK_CORE_AFFINITY_CPU1
+        default FREERTOS_NO_AFFINITY if WENDY_CLOUD_TASK_CORE_AFFINITY_NO_AFFINITY
+
     config WENDY_CLOUD_RECONNECT_DELAY_MS
         int "Reconnect delay (ms)"
         depends on WENDY_CLOUD

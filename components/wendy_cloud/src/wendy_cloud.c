@@ -250,7 +250,7 @@ esp_err_t wendy_cloud_start(void)
         NULL,
         CONFIG_WENDY_CLOUD_TASK_PRIORITY,
         &s_task,
-        tskNO_AFFINITY);
+        CONFIG_WENDY_CLOUD_TASK_CORE_AFFINITY);
 
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "task create failed");

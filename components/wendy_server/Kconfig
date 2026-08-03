@@ -1,0 +1,27 @@
+menu "Wendy Server"
+    config WENDY_SERVER_TASK_PRIORITY
+        int "Server task priority"
+        default 5
+        range 1 24
+
+    choice WENDY_SERVER_TASK_CORE_AFFINITY
+        prompt "Server task core affinity"
+        default WENDY_SERVER_TASK_CORE_AFFINITY_NO_AFFINITY
+        help
+            Core affinity of the wendy_server task.
+
+        config WENDY_SERVER_TASK_CORE_AFFINITY_CPU0
+            bool "Core 0"
+        config WENDY_SERVER_TASK_CORE_AFFINITY_CPU1
+            bool "Core 1"
+            depends on !FREERTOS_UNICORE
+        config WENDY_SERVER_TASK_CORE_AFFINITY_NO_AFFINITY
+            bool "No affinity"
+    endchoice
+
+    config WENDY_SERVER_TASK_CORE_AFFINITY
+        hex
+        default 0x0 if WENDY_SERVER_TASK_CORE_AFFINITY_CPU0
+        default 0x1 if WENDY_SERVER_TASK_CORE_AFFINITY_CPU1
+        default FREERTOS_NO_AFFINITY if WENDY_SERVER_TASK_CORE_AFFINITY_NO_AFFINITY
+endmenu
