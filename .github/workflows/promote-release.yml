@@ -13,7 +13,15 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Checked out with a PAT (not the default GITHUB_TOKEN) so the tag
+      # push below is authenticated as a real actor. GitHub never fires
+      # `on: push` workflow triggers for pushes made with the Actions
+      # GITHUB_TOKEN -- that's an anti-recursion guardrail, not a bug --
+      # so build.yml's tag-triggered build -> release -> publish jobs
+      # would silently never run otherwise.
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.RELEASE_TOKEN }}
 
       - name: Validate version format
         run: |
@@ -24,7 +32,7 @@ jobs:
 
       - name: Push release tag at nightly's commit
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           VERSION: ${{ github.event.inputs.version }}
         run: |
           # Tag the exact commit the `nightly` pre-release was built from,
