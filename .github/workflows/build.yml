@@ -21,7 +21,10 @@ jobs:
       - name: Generate build matrix from catalog
         id: gen
         run: |
-          echo "matrix=$(jq -c '{include: .binaries}' catalog.json)" >> "$GITHUB_OUTPUT"
+          # catalog.json names are unprefixed (e.g. "esp32c5"); artifacts,
+          # release assets, and GCS publish paths have a wendy_mcu_ prefix,
+          # stored as asset_name here for downstream jobs to use.
+          echo "matrix=$(jq -c '{include: (.binaries | map(. + {asset_name: ("wendy_mcu_" + .name)}))}' catalog.json)" >> "$GITHUB_OUTPUT"
 
   build:
     needs: catalog
@@ -38,7 +41,7 @@ jobs:
         shell: bash
         run: |
           . $IDF_PATH/export.sh
-          idf.py @boards/${{ matrix.board }}.cfg set-target ${{ matrix.target }}
+          idf.py @boards/${{ matrix.board_cfg }}.cfg set-target ${{ matrix.target }}
           idf.py build
 
       - name: Create merged firmware binary
@@ -47,7 +50,7 @@ jobs:
           . $IDF_PATH/export.sh
           cd build
           esptool.py --chip ${{ matrix.target }} merge_bin \
-            -o ${{ matrix.name }}.bin \
+            -o ${{ matrix.asset_name }}.bin \
             --flash_mode dio \
             --flash_size ${{ matrix.flash_size }} \
             @flash_args
@@ -55,8 +58,8 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.name }}
-          path: build/${{ matrix.name }}.bin
+          name: ${{ matrix.asset_name }}
+          path: build/${{ matrix.asset_name }}.bin
 
   nightly:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -82,7 +85,7 @@ jobs:
             --prerelease \
             --title "Nightly" \
             --notes "Automated nightly build from \`main\` ($(date -u '+%Y-%m-%d %H:%M UTC')), commit ${{ github.sha }}" \
-            $(jq -r '.binaries[] | "\(.name)/\(.name).bin"' catalog.json) \
+            $(jq -r '.binaries[] | "wendy_mcu_\(.name)/wendy_mcu_\(.name).bin"' catalog.json) \
             catalog.json
 
   release:
@@ -104,7 +107,7 @@ jobs:
         run: |
           {
             echo 'files<<EOF'
-            jq -r '.binaries[] | "\(.name)/\(.name).bin"' catalog.json
+            jq -r '.binaries[] | "wendy_mcu_\(.name)/wendy_mcu_\(.name).bin"' catalog.json
             echo catalog.json
             echo EOF
           } >> "$GITHUB_OUTPUT"
@@ -170,11 +173,10 @@ jobs:
           # Tags are vX.Y.Z; GCS manifests use plain X.Y.Z.
           VERSION="${REF_NAME#v}"
           TOKEN="$(gcloud auth print-access-token)"
-          # The binary name minus its wendy_mcu_ prefix is the chip key that
-          # `wendy os install` queries.
-          for name in $(jq -r '.binaries[].name' catalog.json); do
-            variant="${name#wendy_mcu_}"
-            bin="${name}/${name}.bin"
+          # catalog.json names are the firmwareId key that `wendy os install` queries;
+          # artifacts/bins on disk have the wendy_mcu_ prefix.
+          for variant in $(jq -r '.binaries[].name' catalog.json); do
+            bin="wendy_mcu_${variant}/wendy_mcu_${variant}.bin"
             echo "Publishing ${variant} v${VERSION} from ${bin}"
             # Sequential loop keeps master.json writes serial (no race).
             "$RUNNER_TEMP/publisher" \

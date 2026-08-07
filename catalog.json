@@ -1,46 +1,46 @@
 {
-    "version": 1,
+    "version": 2,
     "binaries": [
         {
-            "name": "wendy_mcu_esp32c5",
+            "name": "esp32c5",
             "target": "esp32c5",
-            "board": "esp32c5_generic",
+            "board_cfg": "esp32c5_generic",
             "flash_size": "4MB"
         },
         {
-            "name": "wendy_mcu_esp32c6",
+            "name": "esp32c6",
             "target": "esp32c6",
-            "board": "esp32c6_generic",
+            "board_cfg": "esp32c6_generic",
             "flash_size": "4MB"
         },
         {
-            "name": "wendy_mcu_esp32c6_native",
+            "name": "esp32c6_native",
             "target": "esp32c6",
-            "board": "esp32c6_generic_native",
+            "board_cfg": "esp32c6_generic_native",
             "flash_size": "4MB"
         },
         {
-            "name": "wendy_mcu_esp32p4_waveshare_lcd_4b",
+            "name": "esp32p4_waveshare_lcd_4b",
             "target": "esp32p4",
-            "board": "waveshare_lcd_4b",
+            "board_cfg": "waveshare_lcd_4b",
             "flash_size": "32MB"
         },
         {
-            "name": "wendy_mcu_esp32p4_dfr1172_firebeetle",
+            "name": "esp32p4_dfr1172_firebeetle",
             "target": "esp32p4",
-            "board": "dfr1172_firebeetle",
+            "board_cfg": "dfr1172_firebeetle",
             "flash_size": "16MB"
         },
         {
-            "name": "wendy_mcu_esp32s3_seeed_xiao_native",
+            "name": "esp32s3_seeed_xiao_native",
             "target": "esp32s3",
-            "board": "seeed_xiao_esp32s3_native",
+            "board_cfg": "seeed_xiao_esp32s3_native",
             "flash_size": "8MB"
         },
         {
-            "name": "wendy_mcu_esp32s3_m5_stamp_s3_native",
+            "name": "esp32s3_m5_stamp_s3_native",
             "target": "esp32s3",
-            "board": "m5_stamp_s3_native",
+            "board_cfg": "m5_stamp_s3_native",
             "flash_size": "8MB"
         }
     ],
@@ -48,37 +48,44 @@
         {
             "name": "esp32c5_generic",
             "display_name": "Generic ESP32-C5 board, 4MB flash",
-            "binary": "wendy_mcu_esp32c5"
+            "binary": "esp32c5",
+            "target": "esp32c5"
         },
         {
             "name": "esp32c6_generic",
             "display_name": "Generic ESP32-C6 board, 4MB flash",
-            "binary": "wendy_mcu_esp32c6"
+            "binary": "esp32c6",
+            "target": "esp32c6"
         },
         {
             "name": "esp32c6_generic_native",
             "display_name": "Generic ESP32-C6 board, 4MB flash, native app support",
-            "binary": "wendy_mcu_esp32c6_native"
+            "binary": "esp32c6_native",
+            "target": "esp32c6"
         },
         {
             "name": "esp32p4_waveshare_lcd_4b",
             "display_name": "Waveshare ESP32-P4-WIFI6-Touch-LCD-4B, 32MB flash",
-            "binary": "wendy_mcu_esp32p4_waveshare_lcd_4b"
+            "binary": "esp32p4_waveshare_lcd_4b",
+            "target": "esp32p4"
         },
         {
             "name": "esp32p4_dfr1172_firebeetle",
             "display_name": "DFRobot FireBeetle 2 ESP32-P4 (DFR1172), 16MB flash",
-            "binary": "wendy_mcu_esp32p4_dfr1172_firebeetle"
+            "binary": "esp32p4_dfr1172_firebeetle",
+            "target": "esp32p4"
         },
         {
             "name": "esp32s3_seeed_xiao_native",
             "display_name": "Seeed Studio XIAO ESP32S3, 8MB flash, 8MB PSRAM, native app support",
-            "binary": "wendy_mcu_esp32s3_seeed_xiao_native"
+            "binary": "esp32s3_seeed_xiao_native",
+            "target": "esp32s3"
         },
         {
             "name": "esp32s3_m5_stamp_s3_native",
             "display_name": "M5Stack StampS3, 8MB flash, native app support",
-            "binary": "wendy_mcu_esp32s3_m5_stamp_s3_native"
+            "binary": "esp32s3_m5_stamp_s3_native",
+            "target": "esp32s3"
         }
     ]
 }
