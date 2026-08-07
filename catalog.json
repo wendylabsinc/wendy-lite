@@ -44,6 +44,24 @@
             "flash_size": "8MB"
         }
     ],
+    "targets": [
+        {
+            "name": "esp32c5",
+            "display_name": "ESP32-C5"
+        },
+        {
+            "name": "esp32c6",
+            "display_name": "ESP32-C6"
+        },
+        {
+            "name": "esp32p4",
+            "display_name": "ESP32-P4"
+        },
+        {
+            "name": "esp32s3",
+            "display_name": "ESP32-S3"
+        }
+    ],
     "boards": [
         {
             "name": "esp32c5_generic",
