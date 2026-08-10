@@ -19,7 +19,6 @@
 //--- literals ---//
 
 #define WCOM_TASK_STACK     8192
-#define WCOM_TASK_PRIO      5
 
 #define WENDY_COM_LINK_ERR_UNKNOWN    -1
 #define WENDY_COM_LINK_ERR_WANT_READ  -2
@@ -344,7 +343,9 @@ static void _main(void *arg)
 
 void wcom_core_init(void)
 {
-    xTaskCreate(_main, "wcom", WCOM_TASK_STACK, NULL, WCOM_TASK_PRIO, NULL);
+    xTaskCreatePinnedToCore(_main, "wcom", WCOM_TASK_STACK, NULL,
+                             CONFIG_WENDY_COM_TASK_PRIORITY, NULL,
+                             CONFIG_WENDY_COM_TASK_CORE_AFFINITY);
 }
 
 /// Execute a function on the com thread/task.

@@ -9,6 +9,9 @@ dependencies:
     rules:
       - if: "target == esp32p4"
   espressif/esp_hosted:
-    version: "*"
+    # esp_hosted 3.0 restructured its BT Kconfig (breaking change); stay on 2.x
+    # until that migration is done. See:
+    # https://github.com/espressif/esp-hosted/blob/unified_release/docs/migration.md
+    version: ">=2.0,<3.0"
     rules:
       - if: "target == esp32p4"

@@ -1,0 +1,27 @@
+menu "Wendy Com"
+    config WENDY_COM_TASK_PRIORITY
+        int "Com task priority"
+        default 5
+        range 1 24
+
+    choice WENDY_COM_TASK_CORE_AFFINITY
+        prompt "Com task core affinity"
+        default WENDY_COM_TASK_CORE_AFFINITY_NO_AFFINITY
+        help
+            Core affinity of the WendyCom task ("wcom").
+
+        config WENDY_COM_TASK_CORE_AFFINITY_CPU0
+            bool "Core 0"
+        config WENDY_COM_TASK_CORE_AFFINITY_CPU1
+            bool "Core 1"
+            depends on !FREERTOS_UNICORE
+        config WENDY_COM_TASK_CORE_AFFINITY_NO_AFFINITY
+            bool "No affinity"
+    endchoice
+
+    config WENDY_COM_TASK_CORE_AFFINITY
+        hex
+        default 0x0 if WENDY_COM_TASK_CORE_AFFINITY_CPU0
+        default 0x1 if WENDY_COM_TASK_CORE_AFFINITY_CPU1
+        default FREERTOS_NO_AFFINITY if WENDY_COM_TASK_CORE_AFFINITY_NO_AFFINITY
+endmenu

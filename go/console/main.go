@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/term"
 
-	"console/liteclient"
+	"github.com/wendylabsinc/wendy/go/console/liteclient"
 )
 
 func run(target string) error {

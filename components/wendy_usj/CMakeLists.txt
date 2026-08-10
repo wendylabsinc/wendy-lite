@@ -1,6 +1,6 @@
 if(CONFIG_WENDY_USJ)
     idf_component_register(
-        SRCS "src/wendy_usj.c"
+        SRCS "src/wendy_usj.c" "src/wendy_usj_rom_print.c"
         INCLUDE_DIRS "include"
         REQUIRES esp_driver_usb_serial_jtag vfs esp_log freertos wendy_com wendy_stdio nanopb
     )
