@@ -20,9 +20,9 @@
             "flash_size": "4MB"
         },
         {
-            "name": "wendy_mcu_esp32c61",
+            "name": "esp32c61_native",
             "target": "esp32c61",
-            "board": "esp32c61_generic",
+            "board": "esp32c61_generic_native",
             "flash_size": "4MB"
         },
         {
@@ -100,9 +100,10 @@
             "target": "esp32c6"
         },
         {
-            "name": "esp32c61_generic",
-            "display_name": "Generic ESP32-C61 board, 4MB flash",
-            "binary": "wendy_mcu_esp32c61"
+            "name": "esp32c61_generic_native",
+            "display_name": "Generic ESP32-C61 board, 4MB flash, native app support",
+            "binary": "esp32c61_native",
+            "target": "esp32c61"
         },
         {
             "name": "esp32p4_waveshare_lcd_4b",
