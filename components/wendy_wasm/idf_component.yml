@@ -3,5 +3,3 @@ dependencies:
     version: ">=5.3.0"
   espressif/wasm-micro-runtime:
     version: "~2.4.0"
-    rules:
-      - if: "target != esp32c61"

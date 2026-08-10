@@ -50,7 +50,7 @@ idf.py monitor
 
 ### ESP32-C61 notes
 
-No published `espressif/wasm-micro-runtime` release lists `esp32c61` as a supported target yet, so WASM app support -- and every component that exists solely to bridge native code to WASM guests (`wendy_wasm`, `wendy_hal`, `wendy_hal_export`, and everything `wendy_hal_export` pulls in) -- is dropped from the build on this target via `-DEXCLUDE_COMPONENTS=...` in `boards/esp32c61_generic.cfg`, rather than depending on an unofficial WAMR fork. The C61 also has no RMT peripheral, so the NeoPixel HAL falls back to the SPI-backed `led_strip` driver automatically on chips where it's built.
+No published `espressif/wasm-micro-runtime` release lists `esp32c61` as a supported target yet, so WASM app support -- and every component that exists solely to bridge native code to WASM guests (`wendy_wasm`, `wendy_hal`, `wendy_hal_export`, and everything `wendy_hal_export` pulls in) -- is dropped from the build on this target via `EXCLUDE_COMPONENTS` set conditionally on `IDF_TARGET` in the root `CMakeLists.txt`, rather than depending on an unofficial WAMR fork. This is target-conditioned in `CMakeLists.txt` itself (not the board argfile) so it applies however `esp32c61` gets selected as the target. The C61 also has no RMT peripheral, so the NeoPixel HAL falls back to the SPI-backed `led_strip` driver automatically on chips where it's built.
 
 ### ESP32-P4 notes
 

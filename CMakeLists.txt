@@ -8,6 +8,21 @@ set(EXTRA_COMPONENT_DIRS
     "${CMAKE_CURRENT_LIST_DIR}/components"
 )
 
+# No published espressif/wasm-micro-runtime release lists esp32c61 as a
+# supported target yet, so every component that exists solely to bridge
+# native code to WASM guests is dropped from the build on this target
+# (see the "target != esp32c61" rules in their idf_component.yml files and
+# the ESP32-C61 notes in README.md). This must be based on IDF_TARGET here
+# rather than left to a board argfile's -DEXCLUDE_COMPONENTS=..., since
+# that only applies if set-target happens to be invoked through it.
+if(IDF_TARGET STREQUAL "esp32c61")
+    set(EXCLUDE_COMPONENTS
+        wendy_wasm wendy_hal wendy_hal_export wendy_app_usb wendy_ble
+        wendy_callback wendy_safety wendy_storage wendy_net wendy_sys
+        wendy_spi wendy_otel wendy_wasi_shim wendy_uart
+    )
+endif()
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(wendy_mcu)
 
