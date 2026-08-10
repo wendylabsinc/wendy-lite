@@ -22,7 +22,7 @@
         {
             "name": "esp32c61_native",
             "target": "esp32c61",
-            "board": "esp32c61_generic_native",
+            "board_cfg": "esp32c61_generic_native",
             "flash_size": "4MB"
         },
         {
