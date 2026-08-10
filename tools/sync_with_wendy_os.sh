@@ -23,8 +23,9 @@ PAIRS=(
     "go/console/liteclient/link.go:go/internal/cli/liteclient/link.go"
     "go/console/liteclient/link_direct.go:go/internal/cli/liteclient/link_direct.go"
     "go/console/liteclient/link_tunnel.go:go/internal/cli/liteclient/link_tunnel.go"
-    "go/console/liteclient/serial_lock_windows.go:go/internal/cli/liteclient/serial_lock_windows.go"
-    "go/console/liteclient/serial_lock_unix.go:go/internal/cli/liteclient/serial_lock_unix.go"
+    "go/internal/shared/seriallock/lock_unix.go:go/internal/shared/seriallock/lock_unix.go"
+    "go/internal/shared/seriallock/lock_windows.go:go/internal/shared/seriallock/lock_windows.go"
+    "go/internal/shared/seriallock/lock_unix_test.go:go/internal/shared/seriallock/lock_unix_test.go"
 )
 
 any_diff=0
@@ -58,5 +59,51 @@ for pair in "${PAIRS[@]}"; do
     fi
     echo
 done
+
+echo "=== catalog.json -> wlite_variants.go"
+catalog_src="$WENDY_LITE/catalog.json"
+catalog_dst="$WENDY_OS/go/internal/cli/commands/wlite_variants.go"
+echo "    wendy-lite : $catalog_src"
+echo "    WendyOS    : $catalog_dst"
+
+if [[ ! -f "$catalog_src" ]]; then
+    echo "    ERROR: file not found in wendy-lite"
+    any_diff=1
+elif [[ ! -f "$catalog_dst" ]]; then
+    echo "    ERROR: file not found in WendyOS"
+    any_diff=1
+else
+    embedded=$(awk '
+        /^const wendyLiteCatalogJSON = `$/ { capture=1; next }
+        capture && /^`$/ { capture=0; next }
+        capture { print }
+    ' "$catalog_dst")
+
+    if [[ "$embedded" == "$(cat "$catalog_src")" ]]; then
+        echo "    -> identical"
+    else
+        tmp=$(mktemp)
+        awk -v jsonfile="$catalog_src" '
+            BEGIN {
+                while ((getline line < jsonfile) > 0) json = json line "\n"
+            }
+            /^const wendyLiteCatalogJSON = `$/ {
+                print
+                printf "%s", json
+                skip=1
+                next
+            }
+            skip && /^`$/ {
+                print
+                skip=0
+                next
+            }
+            skip { next }
+            { print }
+        ' "$catalog_dst" > "$tmp" && mv "$tmp" "$catalog_dst"
+        echo "    -> updated wlite_variants.go from catalog.json"
+    fi
+fi
+echo
 
 exit $any_diff
