@@ -139,9 +139,6 @@ jobs:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
 
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
-
       # The publisher lives in the WendyOS builder repo so the OS and firmware
       # publish paths share one tool. That repo is public, so the default
       # GITHUB_TOKEN can check it out -- no separate token needed.
@@ -172,7 +169,6 @@ jobs:
           set -euo pipefail
           # Tags are vX.Y.Z; GCS manifests use plain X.Y.Z.
           VERSION="${REF_NAME#v}"
-          TOKEN="$(gcloud auth print-access-token)"
           # catalog.json names are the firmwareId key that `wendy os install` queries;
           # artifacts/bins on disk have the wendy_mcu_ prefix.
           for variant in $(jq -r '.binaries[].name' catalog.json); do
@@ -184,6 +180,5 @@ jobs:
               --chip "$variant" \
               --version "$VERSION" \
               --file "$bin" \
-              --notify-discord=false \
-              --access-token "$TOKEN" </dev/null
+              --notify-discord=false </dev/null
           done
