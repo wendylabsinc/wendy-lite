@@ -6,16 +6,18 @@ The Wendy host firmware exposes a comprehensive set of hardware APIs through WAS
 
 ## Supported Hardware
 
-Wendy Lite firmware builds for four ESP-IDF targets:
+Wendy Lite firmware builds for six ESP-IDF targets:
 
 | Target | Boards | Wi-Fi / BT | Flash | PSRAM | WAMR pool |
 |---|---|---|---|---|---|
 | `esp32c5` | Espressif ESP32-C5-DevKitC | Native (2.4 / 5 GHz Wi-Fi 6 + BLE) | 4 MB | - | system allocator |
 | `esp32c6` | Espressif ESP32-C6-DevKitC | Native | 4 MB | - | system allocator |
+| `esp32c61` | Generic ESP32-C61 board | Native (Wi-Fi 6 + BLE) | 4 MB | - | n/a (no WASM app support yet; see [ESP32-C61 notes](#esp32-c61-notes)) |
 | `esp32p4` | Waveshare ESP32-P4-WIFI6-Touch-LCD-4B, DFRobot DFR1172 FireBeetle 2, Espressif P4-Function-EV-Board, other P4+C6 boards (see notes) | Via on-board ESP32-C6 over SDIO (ESP-Hosted) | 16-32 MB | 32 MB | 24 MiB pre-allocated from PSRAM |
-| `esp32s3` | Seeed Studio XIAO ESP32S3, M5Stack StampS3 | Native | 8 MB | - | system allocator |
+| `esp32s3` | Generic ESP32-S3 board | Native | 4 MB | - | system allocator |
+| `esp32s3` (native app support) | Seeed Studio XIAO ESP32S3, M5Stack StampS3 | Native | 8 MB | - | system allocator |
 
-The four targets share the same source tree. Per-target overrides live in `sdkconfig.defaults.<target>`. The `esp32p4` target additionally selects a per-board overlay from `boards/` (see [ESP32-P4 notes](#esp32-p4-notes) below). Guest WASM binaries are interchangeable between targets.
+The targets share the same source tree. Per-target overrides live in `sdkconfig.defaults.<target>`. The `esp32p4` target additionally selects a per-board overlay from `boards/` (see [ESP32-P4 notes](#esp32-p4-notes) below). Guest WASM binaries are interchangeable between targets that support WASM apps.
 
 ## Building the Firmware
 
@@ -25,9 +27,13 @@ The four targets share the same source tree. Per-target overrides live in `sdkco
 idf.py set-target esp32c5      # for the C5 DevKit
 # or
 idf.py set-target esp32c6      # for the C6 DevKit
+# or, for a generic ESP32-C61 board (no WASM app support yet, see notes below):
+idf.py @boards/esp32c61_generic.cfg set-target esp32c61
 # or, for ESP32-P4, select a board overlay:
 idf.py @boards/waveshare_lcd_4b.cfg   set-target esp32p4
 idf.py @boards/dfr1172_firebeetle.cfg set-target esp32p4
+# or, for a generic ESP32-S3 board (4 MB flash, no PSRAM):
+idf.py @boards/esp32s3_generic.cfg set-target esp32s3
 # or, for the Seeed Studio XIAO ESP32S3 (8 MB flash, OTA app slots):
 idf.py @boards/seeed_xiao_esp32s3_native.cfg set-target esp32s3
 # or, for the M5Stack StampS3 (8 MB flash, no PSRAM, OTA app slots):
@@ -41,6 +47,10 @@ idf.py build
 idf.py flash
 idf.py monitor
 ```
+
+### ESP32-C61 notes
+
+No published `espressif/wasm-micro-runtime` release lists `esp32c61` as a supported target yet, so WASM app support -- and every component that exists solely to bridge native code to WASM guests (`wendy_wasm`, `wendy_hal`, `wendy_hal_export`, and everything `wendy_hal_export` pulls in) -- is dropped from the build on this target via `EXCLUDE_COMPONENTS` set conditionally on `IDF_TARGET` in the root `CMakeLists.txt`, rather than depending on an unofficial WAMR fork. This is target-conditioned in `CMakeLists.txt` itself (not the board argfile) so it applies however `esp32c61` gets selected as the target. The C61 also has no RMT peripheral, so the NeoPixel HAL falls back to the SPI-backed `led_strip` driver automatically on chips where it's built.
 
 ### ESP32-P4 notes
 
