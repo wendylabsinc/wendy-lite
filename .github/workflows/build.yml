@@ -16,7 +16,7 @@ jobs:
     outputs:
       matrix: ${{ steps.gen.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Generate build matrix from catalog
         id: gen
@@ -35,7 +35,7 @@ jobs:
     container:
       image: espressif/idf:v5.5.4
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build firmware
         shell: bash
@@ -68,7 +68,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -97,7 +97,7 @@ jobs:
     steps:
       # Checkout must come first: it cleans its destination, which would wipe
       # the downloaded artifacts. Only catalog.json is needed from the repo.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -131,7 +131,7 @@ jobs:
       id-token: write   # required for GCP workload-identity federation
     steps:
       # Checked out for catalog.json, which drives the loop below.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
@@ -146,7 +146,7 @@ jobs:
       # publish paths share one tool. That repo is public, so the default
       # GITHUB_TOKEN can check it out -- no separate token needed.
       - name: Check out publisher tool
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: wendylabsinc/meta-wendyos-jetson
           path: builder
