@@ -232,17 +232,6 @@ static void start_services(void)
 {
     if (s_services_started) return;
 
-#if CONFIG_WENDY_CLOUD_PROV
-    {
-        extern bool wendy_cloud_is_provisioned(void);
-        if (wendy_cloud_is_provisioned()) {
-            ESP_LOGI(TAG, "cloud-provisioned: skipping UDP listener and mDNS");
-            s_services_started = true;
-            return;
-        }
-    }
-#endif
-
     esp_err_t err = start_mdns_service();
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "mDNS initialization failed");

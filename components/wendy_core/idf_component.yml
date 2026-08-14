@@ -15,13 +15,7 @@ dependencies:
     override_path: "../wendy_hal_export"
     rules:
       - if: "$CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True"
-  wendy_usb:
-    override_path: "../wendy_usb"
   wendy_usj:
     override_path: "../wendy_usj"
   wendy_wifi:
     override_path: "../wendy_wifi"
-  wendy_ble_prov:
-    override_path: "../wendy_ble_prov"
-  wendy_cloud_prov:
-    override_path: "../wendy_cloud_prov"
