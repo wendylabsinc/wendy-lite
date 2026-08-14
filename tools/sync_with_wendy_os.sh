@@ -23,6 +23,7 @@ PAIRS=(
     "go/console/liteclient/link.go:go/internal/cli/liteclient/link.go"
     "go/console/liteclient/link_direct.go:go/internal/cli/liteclient/link_direct.go"
     "go/console/liteclient/link_tunnel.go:go/internal/cli/liteclient/link_tunnel.go"
+    "go/internal/shared/seriallock/seriallock.go:go/internal/shared/seriallock/seriallock.go"
     "go/internal/shared/seriallock/lock_unix.go:go/internal/shared/seriallock/lock_unix.go"
     "go/internal/shared/seriallock/lock_windows.go:go/internal/shared/seriallock/lock_windows.go"
     "go/internal/shared/seriallock/lock_unix_test.go:go/internal/shared/seriallock/lock_unix_test.go"
