@@ -78,6 +78,10 @@
             "display_name": "ESP32-C6"
         },
         {
+            "name": "esp32c61",
+            "display_name": "ESP32-C61"
+        },
+        {
             "name": "esp32p4",
             "display_name": "ESP32-P4"
         },
