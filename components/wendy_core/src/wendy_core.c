@@ -18,8 +18,6 @@
 #include "esp_vfs_eventfd.h"
 #include "nvs_flash.h"
 
-#include "esp_netif.h"
-
 #include "wendy_core.h"
 #include "wendy_conf.h"
 
@@ -37,10 +35,6 @@
 #include "wendy_net.h"
 #endif
 
-#if CONFIG_WENDY_USB_CDC_ENABLED
-#include "wendy_usb.h"
-#endif
-
 #include "wendy_stdio.h"
 
 #if CONFIG_WENDY_USJ
@@ -52,27 +46,10 @@
 #include "wendy_com.h"
 #endif
 
-#if CONFIG_WENDY_CLOUD_PROV
-#include "wendy_cloud_prov.h"
-#endif
-
-#if CONFIG_WENDY_BLE_PROV
-#include "wendy_ble_prov.h"
-#include "nvs.h"
-#endif
-
 static const char *TAG = "wendy_core";
 
 /* ── Event bits ─────────────────────────────────────────────────────── */
 
-#if CONFIG_WENDY_USB_CDC_ENABLED
-#define EVT_RUN_REQUEST       BIT0
-#define EVT_STOP_REQUEST      BIT1
-#define EVT_RESET_REQUEST     BIT2
-#endif
-#define EVT_BLE_UP            BIT3
-#define EVT_PROV_WIFI_CREDS   BIT4
-#define EVT_PROV_CLEAR_CREDS  BIT5
 #define EVT_APP_START_REQUEST BIT6
 
 static EventGroupHandle_t s_events;
@@ -329,50 +306,15 @@ static void wasm_persist_abort(uint8_t slot)
 #endif
 }
 
-/* ── BLE provisioning state ─────────────────────────────────────────── */
-
-#if CONFIG_WENDY_BLE_PROV
-static char s_ble_prov_ssid[33];
-static char s_ble_prov_pass[65];
-
-static void on_ble_up(void)
-{
-    xEventGroupSetBits(s_events, EVT_BLE_UP);
-}
-
-static void on_ble_wifi_creds(const char *ssid, const char *password)
-{
-    strlcpy(s_ble_prov_ssid, ssid, sizeof(s_ble_prov_ssid));
-    strlcpy(s_ble_prov_pass, password, sizeof(s_ble_prov_pass));
-    xEventGroupSetBits(s_events, EVT_PROV_WIFI_CREDS);
-}
-
-static void on_ble_clear_creds(void)
-{
-    xEventGroupSetBits(s_events, EVT_PROV_CLEAR_CREDS);
-}
-#endif /* CONFIG_WENDY_BLE_PROV */
-
 /* ── stdout redirect ────────────────────────────────────────────────── */
 
 #if CONFIG_WENDY_WASM
 static void wasm_output_cb(const char *data, uint32_t len, void *ctx)
 {
-#if CONFIG_WENDY_USB_CDC_ENABLED
-    wendy_usb_send_stdout(data, len);
-#endif
     fwrite(data, 1, len, stdout);
     fflush(stdout);
 }
 #endif /* CONFIG_WENDY_WASM */
-
-/* ── USB protocol callbacks ─────────────────────────────────────────── */
-
-#if CONFIG_WENDY_USB_CDC_ENABLED
-static void on_run(void)  { xEventGroupSetBits(s_events, EVT_RUN_REQUEST); }
-static void on_stop(void) { xEventGroupSetBits(s_events, EVT_STOP_REQUEST); }
-static void on_reset(void){ xEventGroupSetBits(s_events, EVT_RESET_REQUEST); }
-#endif /* CONFIG_WENDY_USB_CDC_ENABLED */
 
 /* -- WASM execution ---------------------------------------------------- */
 
@@ -832,58 +774,6 @@ esp_err_t wendy_core_init(void)
     /* Initialize hardware */
     init_hal();
 
-    /* Initialize USB CDC protocol (if enabled) */
-#if CONFIG_WENDY_USB_CDC_ENABLED
-    wendy_usb_callbacks_t usb_cbs = {
-        .on_upload_begin  = wasm_persist_begin,
-        .on_upload_chunk  = wasm_persist_chunk,
-        .on_upload_end    = wasm_persist_end,
-        .on_upload_abort  = wasm_persist_abort,
-        .on_run           = on_run,
-        .on_stop          = on_stop,
-        .on_reset         = on_reset,
-    };
-    err = wendy_usb_init(&usb_cbs);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "USB CDC init failed (running headless)");
-    }
-#endif
-
-    /* Initialize cloud provisioning (must be before BLE so locked flag is ready) */
-#if CONFIG_WENDY_CLOUD_PROV
-    err = wendy_cloud_prov_init();
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "cloud provisioning init failed");
-    }
-#endif
-
-    /* Initialize BLE provisioning and discovery (if enabled) */
-#if CONFIG_WENDY_BLE_PROV
-    ESP_LOGI(TAG, "Starting BLE...");
-    wendy_ble_prov_callbacks_t ble_prov_cbs = {
-        .on_ble_up      = on_ble_up,
-        .on_wifi_creds  = on_ble_wifi_creds,
-        .on_clear_creds = on_ble_clear_creds,
-    };
-    err = wendy_ble_prov_init(s_device_name[0] ? s_device_name : NULL, &ble_prov_cbs);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "BLE provisioning init failed");
-    }
-
-    // Wait for BLE stack to come up
-    xEventGroupWaitBits(
-        s_events,
-        EVT_BLE_UP,
-        pdTRUE, pdFALSE, portMAX_DELAY);
-
-    ESP_LOGI(TAG, "BLE stack is up");
-
-    if (!s_device_name[0]) {
-        strlcpy(s_device_name, wendy_ble_prov_get_device_name(), sizeof(s_device_name));
-        ESP_LOGI(TAG, "device name: %s", s_device_name);
-    }
-#endif
-
     if (!s_device_name[0]) {
         uint8_t mac[6];
         esp_efuse_mac_get_default(mac);
@@ -915,108 +805,10 @@ esp_err_t wendy_core_init(void)
     err = wendy_wifi_init(s_device_name);
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "WiFi connected");
-#if CONFIG_WENDY_BLE_PROV
-        /* Get IP address for BLE status */
-        esp_netif_ip_info_t ip_info;
-        esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-        if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
-            char ip_str[16];
-            snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip_info.ip));
-            wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_CONNECTED, ip_str);
-        } else {
-            wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_CONNECTED, NULL);
-        }
-#endif
     } else if (err == WENDY_WIFI_ERR_NO_CREDS) {
-        ESP_LOGW(TAG, "no WiFi credentials, waiting for BLE provisioning...");
-#if CONFIG_WENDY_BLE_PROV
-        wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_NO_CREDS, NULL);
-
-        /* Provisioning wait loop — blocks until WiFi connects via BLE */
-        bool provisioned = false;
-        while (!provisioned) {
-            EventBits_t bits = xEventGroupWaitBits(
-                s_events,
-                EVT_PROV_WIFI_CREDS | EVT_PROV_CLEAR_CREDS,
-                pdTRUE, pdFALSE, portMAX_DELAY);
-
-            if (bits & EVT_PROV_CLEAR_CREDS) {
-                ESP_LOGI(TAG, "clearing saved WiFi credentials");
-                nvs_handle_t nvs;
-                if (nvs_open("wendy_prov", NVS_READWRITE, &nvs) == ESP_OK) {
-                    nvs_erase_all(nvs);
-                    nvs_commit(nvs);
-                    nvs_close(nvs);
-                }
-                wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_NO_CREDS, NULL);
-            }
-
-            if (bits & EVT_PROV_WIFI_CREDS) {
-                ESP_LOGI(TAG, "BLE provisioning: connecting to '%s'...", s_ble_prov_ssid);
-                wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_CONNECTING, NULL);
-
-                esp_err_t conn_err = wendy_wifi_try_connect(s_ble_prov_ssid, s_ble_prov_pass);
-                if (conn_err == ESP_OK) {
-                    esp_netif_ip_info_t ip_info;
-                    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-                    if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
-                        char ip_str[16];
-                        snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip_info.ip));
-                        wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_CONNECTED, ip_str);
-                    } else {
-                        wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_CONNECTED, NULL);
-                    }
-                    provisioned = true;
-                } else {
-                    ESP_LOGW(TAG, "BLE provisioning: WiFi connection failed");
-                    wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_FAILED, NULL);
-                }
-            }
-        }
-#endif /* CONFIG_WENDY_BLE_PROV */
+        ESP_LOGW(TAG, "no WiFi credentials configured, continuing without WiFi");
     } else {
         ESP_LOGW(TAG, "WiFi init failed (running without WiFi)");
-#if CONFIG_WENDY_BLE_PROV
-        wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_FAILED, NULL);
-
-        /* Enter provisioning wait loop on hard failure too */
-        bool provisioned = false;
-        while (!provisioned) {
-            EventBits_t bits = xEventGroupWaitBits(
-                s_events,
-                EVT_PROV_WIFI_CREDS | EVT_PROV_CLEAR_CREDS,
-                pdTRUE, pdFALSE, portMAX_DELAY);
-
-            if (bits & EVT_PROV_CLEAR_CREDS) {
-                nvs_handle_t nvs;
-                if (nvs_open("wendy_prov", NVS_READWRITE, &nvs) == ESP_OK) {
-                    nvs_erase_all(nvs);
-                    nvs_commit(nvs);
-                    nvs_close(nvs);
-                }
-                wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_NO_CREDS, NULL);
-            }
-
-            if (bits & EVT_PROV_WIFI_CREDS) {
-                wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_CONNECTING, NULL);
-                esp_err_t conn_err = wendy_wifi_try_connect(s_ble_prov_ssid, s_ble_prov_pass);
-                if (conn_err == ESP_OK) {
-                    esp_netif_ip_info_t ip_info;
-                    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-                    if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
-                        char ip_str[16];
-                        snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip_info.ip));
-                        wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_CONNECTED, ip_str);
-                    } else {
-                        wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_CONNECTED, NULL);
-                    }
-                    provisioned = true;
-                } else {
-                    wendy_ble_prov_set_status(WENDY_BLE_PROV_STATUS_FAILED, NULL);
-                }
-            }
-        }
-#endif /* CONFIG_WENDY_BLE_PROV */
     }
 #endif /* CONFIG_WENDY_WIFI_ENABLED */
 
