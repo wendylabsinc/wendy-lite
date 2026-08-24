@@ -117,6 +117,8 @@ static char s_device_name[CONFIG_WENDY_DEVICE_NAME_BUF_SIZE];
 
 #define WENDY_WASM_THREAD_STACK_SIZE 8192
 #define WENDY_WASM_CONTROL_QUEUE_LEN 4
+#define WENDY_WASM_CONTROL_QUEUE_TIMEOUT_MS 1000
+#define WENDY_WASM_CONTROL_RESPONSE_TIMEOUT_MS 10000
 
 typedef enum {
     WASM_CONTROL_START,
@@ -128,7 +130,9 @@ typedef struct {
     wasm_control_command_t command;
     uint8_t slot;
     esp_err_t result;
+    atomic_uint ref_count;
     SemaphoreHandle_t done;
+    StaticSemaphore_t done_storage;
 } wasm_control_request_t;
 
 static esp_err_t wasm_control_call(wasm_control_command_t command, uint8_t slot);
@@ -166,7 +170,7 @@ static bool wait_for_wasm_inactive(uint32_t timeout_ms)
         vTaskDelay(pdMS_TO_TICKS(step_ms));
     }
     if (s_wasm_active) {
-        ESP_LOGW(TAG, "WASM guest still active after %lums",
+        ESP_LOGW(TAG, "WASM guest still active after %lums; operation aborted",
                  (unsigned long)timeout_ms);
         return false;
     }
@@ -457,6 +461,13 @@ static esp_err_t wasm_app_start_on_control_thread(uint8_t slot)
     return ESP_OK;
 }
 
+static void wasm_control_request_release(wasm_control_request_t *request)
+{
+    if (atomic_fetch_sub(&request->ref_count, 1) == 1) {
+        free(request);
+    }
+}
+
 static void *wasm_control_thread_entry(void *arg)
 {
     (void)arg;
@@ -484,6 +495,7 @@ static void *wasm_control_thread_entry(void *arg)
             break;
         }
         xSemaphoreGive(request->done);
+        wasm_control_request_release(request);
     }
 
     return NULL;
@@ -493,25 +505,35 @@ static esp_err_t wasm_control_call(wasm_control_command_t command, uint8_t slot)
 {
     if (!s_wasm_control_queue) return ESP_ERR_INVALID_STATE;
 
-    StaticSemaphore_t done_storage;
-    SemaphoreHandle_t done = xSemaphoreCreateBinaryStatic(&done_storage);
-    if (!done) return ESP_ERR_NO_MEM;
+    wasm_control_request_t *request = calloc(1, sizeof(*request));
+    if (!request) return ESP_ERR_NO_MEM;
+    request->command = command;
+    request->slot = slot;
+    request->result = ESP_FAIL;
+    atomic_init(&request->ref_count, 2); /* caller + control thread */
+    request->done = xSemaphoreCreateBinaryStatic(&request->done_storage);
+    if (!request->done) {
+        free(request);
+        return ESP_ERR_NO_MEM;
+    }
 
-    wasm_control_request_t request = {
-        .command = command,
-        .slot = slot,
-        .result = ESP_FAIL,
-        .done = done,
-    };
-    wasm_control_request_t *request_ptr = &request;
-
-    if (xQueueSend(s_wasm_control_queue, &request_ptr, portMAX_DELAY) != pdTRUE) {
+    if (xQueueSend(s_wasm_control_queue, &request,
+                   pdMS_TO_TICKS(WENDY_WASM_CONTROL_QUEUE_TIMEOUT_MS)) != pdTRUE) {
+        ESP_LOGE(TAG, "timed out queueing WAMR control command %d", command);
+        free(request);
         return ESP_ERR_TIMEOUT;
     }
-    if (xSemaphoreTake(done, portMAX_DELAY) != pdTRUE) {
+
+    if (xSemaphoreTake(request->done,
+                       pdMS_TO_TICKS(WENDY_WASM_CONTROL_RESPONSE_TIMEOUT_MS)) != pdTRUE) {
+        ESP_LOGE(TAG, "timed out waiting for WAMR control command %d", command);
+        wasm_control_request_release(request);
         return ESP_ERR_TIMEOUT;
     }
-    return request.result;
+
+    esp_err_t result = request->result;
+    wasm_control_request_release(request);
+    return result;
 }
 
 static esp_err_t start_wasm_control_thread(void)
@@ -532,6 +554,7 @@ static esp_err_t start_wasm_control_thread(void)
         ESP_LOGE(TAG, "failed to create WAMR lifecycle control thread");
         return ESP_FAIL;
     }
+    /* This thread intentionally lives until the firmware is reset. */
     pthread_detach(s_wasm_control_thread);
     return ESP_OK;
 }
