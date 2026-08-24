@@ -8,6 +8,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
 
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -93,6 +95,8 @@ static void capture_boot_params(void)
 #if CONFIG_WENDY_WASM
 static wendy_wasm_module_handle_t s_current_module = NULL;
 static pthread_t s_wasm_exec_thread;
+static pthread_t s_wasm_control_thread;
+static QueueHandle_t s_wasm_control_queue;
 static atomic_bool s_wasm_active = false;
 static atomic_bool s_wasm_flash_busy = false;
 static bool s_current_module_flash_backed = false;
@@ -112,6 +116,22 @@ static char s_device_name[CONFIG_WENDY_DEVICE_NAME_BUF_SIZE];
 #if CONFIG_WENDY_WASM
 
 #define WENDY_WASM_THREAD_STACK_SIZE 8192
+#define WENDY_WASM_CONTROL_QUEUE_LEN 4
+
+typedef enum {
+    WASM_CONTROL_START,
+    WASM_CONTROL_STOP,
+    WASM_CONTROL_STOP_FOR_FLASH,
+} wasm_control_command_t;
+
+typedef struct {
+    wasm_control_command_t command;
+    uint8_t slot;
+    esp_err_t result;
+    SemaphoreHandle_t done;
+} wasm_control_request_t;
+
+static esp_err_t wasm_control_call(wasm_control_command_t command, uint8_t slot);
 
 static void reset_guest_resources(void)
 {
@@ -136,14 +156,6 @@ static void mark_current_module_unloaded(void)
     s_wasm_flash_busy = false;
 }
 
-static void stop_current_module_for_flash_write(void)
-{
-    if (s_current_module && s_wasm_active) {
-        ESP_LOGI(TAG, "stopping flash-backed WASM before flash write...");
-        wendy_wasm_stop(s_current_module);
-    }
-}
-
 /* Spin until the WASM exec thread observes the stop and clears s_wasm_active,
  * or the timeout expires. Returns false (and logs) if the guest hung. */
 static bool wait_for_wasm_inactive(uint32_t timeout_ms)
@@ -154,7 +166,7 @@ static bool wait_for_wasm_inactive(uint32_t timeout_ms)
         vTaskDelay(pdMS_TO_TICKS(step_ms));
     }
     if (s_wasm_active) {
-        ESP_LOGW(TAG, "WASM guest still active after %lums; continuing anyway",
+        ESP_LOGW(TAG, "WASM guest still active after %lums",
                  (unsigned long)timeout_ms);
         return false;
     }
@@ -201,15 +213,14 @@ static esp_err_t wasm_persist_begin(uint8_t slot, uint32_t total_len)
         return ESP_ERR_INVALID_SIZE;
     }
 
-    /* Stop any flash-backed guest before erasing under it. */
-    stop_current_module_for_flash_write();
-    for (int i = 0; i < 100 && s_wasm_flash_busy; i++) {
-        stop_current_module_for_flash_write();
-        vTaskDelay(pdMS_TO_TICKS(50));
-    }
-    if (s_wasm_flash_busy) {
-        ESP_LOGE(TAG, "timed out waiting for flash-backed WASM to stop");
-        return ESP_ERR_TIMEOUT;
+    /* Stop any flash-backed guest before erasing under it. WAMR's stop API
+     * must run from the same pthread-owned control path as the rest of its
+     * lifecycle, not directly from the FreeRTOS transport task. */
+    esp_err_t control_err = wasm_control_call(WASM_CONTROL_STOP_FOR_FLASH, 0);
+    if (control_err != ESP_OK) {
+        ESP_LOGE(TAG, "failed to stop flash-backed WASM: %s",
+                 esp_err_to_name(control_err));
+        return control_err;
     }
 
     const char *label = partition_label_for(slot);
@@ -363,33 +374,56 @@ static bool start_loaded_wasm_module(void)
     return true;
 }
 
-static void wasm_app_stop(void)
+/* These lifecycle implementations are only called by wasm_control_thread_entry.
+ * WAMR uses pthread TLS internally, so invoking them from the raw FreeRTOS wcom
+ * task can assert while WAMR reports an otherwise recoverable loader error. */
+static esp_err_t wasm_app_stop_on_control_thread(void)
 {
-    if (!s_current_module) return;
-    wendy_wasm_stop(s_current_module);
-    wait_for_wasm_inactive(5000);
+    if (!s_current_module) return ESP_OK;
+    esp_err_t err = wendy_wasm_stop(s_current_module);
+    if (err != ESP_OK) return err;
+    if (!wait_for_wasm_inactive(5000)) return ESP_ERR_TIMEOUT;
     reset_guest_resources();
     wendy_wasm_unload(s_current_module);
     mark_current_module_unloaded();
+    return ESP_OK;
 }
 
-static esp_err_t wasm_app_start(uint8_t slot)
+static esp_err_t wasm_app_stop_for_flash_on_control_thread(void)
+{
+    if (!s_current_module || !s_wasm_active) {
+        s_wasm_flash_busy = false;
+        return ESP_OK;
+    }
+
+    ESP_LOGI(TAG, "stopping flash-backed WASM before flash write...");
+    esp_err_t err = wendy_wasm_stop(s_current_module);
+    if (err != ESP_OK) return err;
+    return wait_for_wasm_inactive(5000) ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
+static esp_err_t wasm_app_start_on_control_thread(uint8_t slot)
 {
     static bool initialized;
 
-    wasm_app_stop();
+    esp_err_t err = wasm_app_stop_on_control_thread();
+    if (err != ESP_OK) return err;
 
     ESP_LOGI(TAG, "loading WASM from flash slot %d...", slot);
 
     if (initialized) {
-        wendy_wasm_reinit();
+        err = wendy_wasm_reinit();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "WASM runtime reinit failed");
+            return err;
+        }
     } else {
         /* Initialize the WASM runtime — must be in pthread context */
         wendy_wasm_config_t wasm_cfg = WENDY_WASM_CONFIG_DEFAULT();
         wasm_cfg.output_cb  = wasm_output_cb;
         wasm_cfg.output_ctx = NULL;
 
-        esp_err_t err = wendy_wasm_init(&wasm_cfg);
+        err = wendy_wasm_init(&wasm_cfg);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "WASM runtime init failed");
             return err;
@@ -399,7 +433,7 @@ static esp_err_t wasm_app_start(uint8_t slot)
     }
 
     /* Register HAL native functions with WAMR */
-    esp_err_t err = wendy_hal_export_init();
+    err = wendy_hal_export_init();
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "some HAL exports failed to register");
         return err;
@@ -423,6 +457,85 @@ static esp_err_t wasm_app_start(uint8_t slot)
     return ESP_OK;
 }
 
+static void *wasm_control_thread_entry(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG, "WAMR lifecycle control thread ready");
+
+    while (true) {
+        wasm_control_request_t *request = NULL;
+        if (xQueueReceive(s_wasm_control_queue, &request, portMAX_DELAY) != pdTRUE
+            || !request) {
+            continue;
+        }
+
+        switch (request->command) {
+        case WASM_CONTROL_START:
+            request->result = wasm_app_start_on_control_thread(request->slot);
+            break;
+        case WASM_CONTROL_STOP:
+            request->result = wasm_app_stop_on_control_thread();
+            break;
+        case WASM_CONTROL_STOP_FOR_FLASH:
+            request->result = wasm_app_stop_for_flash_on_control_thread();
+            break;
+        default:
+            request->result = ESP_ERR_INVALID_ARG;
+            break;
+        }
+        xSemaphoreGive(request->done);
+    }
+
+    return NULL;
+}
+
+static esp_err_t wasm_control_call(wasm_control_command_t command, uint8_t slot)
+{
+    if (!s_wasm_control_queue) return ESP_ERR_INVALID_STATE;
+
+    StaticSemaphore_t done_storage;
+    SemaphoreHandle_t done = xSemaphoreCreateBinaryStatic(&done_storage);
+    if (!done) return ESP_ERR_NO_MEM;
+
+    wasm_control_request_t request = {
+        .command = command,
+        .slot = slot,
+        .result = ESP_FAIL,
+        .done = done,
+    };
+    wasm_control_request_t *request_ptr = &request;
+
+    if (xQueueSend(s_wasm_control_queue, &request_ptr, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    if (xSemaphoreTake(done, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    return request.result;
+}
+
+static esp_err_t start_wasm_control_thread(void)
+{
+    s_wasm_control_queue = xQueueCreate(WENDY_WASM_CONTROL_QUEUE_LEN,
+                                       sizeof(wasm_control_request_t *));
+    if (!s_wasm_control_queue) return ESP_ERR_NO_MEM;
+
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, WENDY_WASM_THREAD_STACK_SIZE);
+    int ret = pthread_create(&s_wasm_control_thread, &attr,
+                             wasm_control_thread_entry, NULL);
+    pthread_attr_destroy(&attr);
+    if (ret != 0) {
+        vQueueDelete(s_wasm_control_queue);
+        s_wasm_control_queue = NULL;
+        ESP_LOGE(TAG, "failed to create WAMR lifecycle control thread");
+        return ESP_FAIL;
+    }
+    pthread_detach(s_wasm_control_thread);
+    return ESP_OK;
+}
+
 #endif /* CONFIG_WENDY_WASM */
 
 static void apply_app_auto_start(struct wcom_operation *op)
@@ -430,7 +543,7 @@ static void apply_app_auto_start(struct wcom_operation *op)
     if (s_app_auto_start_enabled) {
         s_app_auto_start_enabled = false;
 #if CONFIG_WENDY_WASM
-        esp_err_t err = wasm_app_start(0);
+        esp_err_t err = wasm_control_call(WASM_CONTROL_START, 0);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "auto-start WASM app failed: %s", esp_err_to_name(err));
         }
@@ -631,7 +744,7 @@ static WendyComResult com_app_start(void)
         slot = s_persist_load_slot;
         s_persist_load_pending = false;
     }
-    esp_err_t e = wasm_app_start(slot);
+    esp_err_t e = wasm_control_call(WASM_CONTROL_START, slot);
     return e == ESP_OK ? WendyComResult_WENDY_COM_RESULT_OK
                        : WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
 #else
@@ -643,8 +756,9 @@ static WendyComResult com_app_stop(void)
 {
     cancel_app_auto_start();
     #if defined CONFIG_WENDY_WASM
-    wasm_app_stop();
-    return WendyComResult_WENDY_COM_RESULT_OK;
+    esp_err_t e = wasm_control_call(WASM_CONTROL_STOP, 0);
+    return e == ESP_OK ? WendyComResult_WENDY_COM_RESULT_OK
+                       : WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
     #else
     return WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
     #endif
@@ -654,7 +768,11 @@ static WendyComResult com_reboot(bool app_auto_start, uint32_t app_auto_start_de
 {
     cancel_app_auto_start();
     #if defined CONFIG_WENDY_WASM
-    wasm_app_stop();
+    esp_err_t stop_err = wasm_control_call(WASM_CONTROL_STOP, 0);
+    if (stop_err != ESP_OK) {
+        ESP_LOGW(TAG, "failed to stop WASM before reboot: %s",
+                 esp_err_to_name(stop_err));
+    }
     #endif
     uint32_t delay = app_auto_start_delay_ms;
     if (delay > 120000)
@@ -769,6 +887,13 @@ esp_err_t wendy_core_init(void)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "WAMR pool pre-allocation failed");
     }
+
+    err = start_wasm_control_thread();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "WAMR lifecycle control thread init failed: %s",
+                 esp_err_to_name(err));
+        return err;
+    }
 #endif
 
     /* Initialize hardware */
@@ -826,9 +951,9 @@ esp_err_t wendy_core_init(void)
     }
 
     if (s_boot_app_auto_start) {
-        // Start the wasm app, but we do that from the wcom thread,
-        // in order to have all commands executed by the same thread.
-        // No-op if an AppStart command already started it.
+        // Queue auto-start through wcom so it remains ordered with commands.
+        // The operation then synchronously delegates all WAMR lifecycle work
+        // to its dedicated pthread-owned control path.
         static struct wcom_operation op = {
             .func = apply_app_auto_start,
         };
