@@ -18,9 +18,6 @@ let package = Package(
             ],
             linkerSettings: [
                 .unsafeFlags([
-                    "-Xclang-linker", "-nostartfiles",
-                    "-Xlinker", "--no-entry",
-                    "-Xlinker", "--export=_start",
                     "-Xlinker", "--allow-undefined",
                     "-Xlinker", "--initial-memory=65536",
                     "-Xlinker", "--table-base=1",

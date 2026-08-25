@@ -184,55 +184,57 @@ func drawString(_ spi: Int32, _ dc: Int32,
 
 // ── Entry point ─────────────────────────────────────────────────────
 
-@_cdecl("_start")
-func start() {
-    // Waveshare ESP32-C6-LCD-1.47 pins
-    let pinMOSI: Int32 = 6
-    let pinSCK:  Int32 = 7
-    let pinCS:   Int32 = 14
-    let pinDC:   Int32 = 15
-    let pinRST:  Int32 = 21
-    let pinBL:   Int32 = 22
+@main
+struct SwiftDisplayApp {
+    static func main() {
+        // Waveshare ESP32-C6-LCD-1.47 pins
+        let pinMOSI: Int32 = 6
+        let pinSCK:  Int32 = 7
+        let pinCS:   Int32 = 14
+        let pinDC:   Int32 = 15
+        let pinRST:  Int32 = 21
+        let pinBL:   Int32 = 22
 
-    let scale: Int32 = 3
-    let white: UInt16 = 0xFFFF
-    let swiftOrange: UInt16 = 0xF287    // #F05138
+        let scale: Int32 = 3
+        let white: UInt16 = 0xFFFF
+        let swiftOrange: UInt16 = 0xF287    // #F05138
 
-    // Configure DC / RST / BL as GPIO outputs
-    gpio_configure(pinDC,  WENDY_GPIO_OUTPUT, WENDY_GPIO_PULL_NONE)
-    gpio_configure(pinRST, WENDY_GPIO_OUTPUT, WENDY_GPIO_PULL_NONE)
-    gpio_configure(pinBL,  WENDY_GPIO_OUTPUT, WENDY_GPIO_PULL_NONE)
+        // Configure DC / RST / BL as GPIO outputs
+        gpio_configure(pinDC,  WENDY_GPIO_OUTPUT, WENDY_GPIO_PULL_NONE)
+        gpio_configure(pinRST, WENDY_GPIO_OUTPUT, WENDY_GPIO_PULL_NONE)
+        gpio_configure(pinBL,  WENDY_GPIO_OUTPUT, WENDY_GPIO_PULL_NONE)
 
-    // Open SPI to ST7789 (host 1 = SPI2, no MISO, 40 MHz)
-    let spi = spi_open(1, pinMOSI, -1, pinSCK, pinCS, 40_000_000)
-    if spi < 0 { return }
+        // Open SPI to ST7789 (host 1 = SPI2, no MISO, 40 MHz)
+        let spi = spi_open(1, pinMOSI, -1, pinSCK, pinCS, 40_000_000)
+        if spi < 0 { return }
 
-    // Bring up the display
-    st7789Init(spi, pinDC, pinRST, pinBL)
+        // Bring up the display
+        st7789Init(spi, pinDC, pinRST, pinBL)
 
-    // Swift-orange background
-    clear(spi, pinDC, swiftOrange)
+        // Swift-orange background
+        clear(spi, pinDC, swiftOrange)
 
-    // "Swifty" — 6 chars × 24 px = 144 px wide
-    // centred x = (172 − 144) / 2 = 14
-    // two lines total: 48 + 12 gap + 48 = 108, start y = (320−108)/2 = 106
-    var line1: (UInt8, UInt8, UInt8, UInt8, UInt8, UInt8) =
-        (0x53, 0x77, 0x69, 0x66, 0x74, 0x79)       // S w i f t y
+        // "Swifty" — 6 chars × 24 px = 144 px wide
+        // centred x = (172 − 144) / 2 = 14
+        // two lines total: 48 + 12 gap + 48 = 108, start y = (320−108)/2 = 106
+        var line1: (UInt8, UInt8, UInt8, UInt8, UInt8, UInt8) =
+            (0x53, 0x77, 0x69, 0x66, 0x74, 0x79)       // S w i f t y
 
-    withUnsafePointer(to: &line1) { ptr in
-        drawString(spi, pinDC,
-                   UnsafeRawPointer(ptr).assumingMemoryBound(to: UInt8.self),
-                   6, 14, 106, white, scale)
-    }
+        withUnsafePointer(to: &line1) { ptr in
+            drawString(spi, pinDC,
+                       UnsafeRawPointer(ptr).assumingMemoryBound(to: UInt8.self),
+                       6, 14, 106, white, scale)
+        }
 
-    // "Steve" — 5 chars × 24 px = 120 px wide
-    // centred x = (172 − 120) / 2 = 26,  y = 106 + 48 + 12 = 166
-    var line2: (UInt8, UInt8, UInt8, UInt8, UInt8) =
-        (0x53, 0x74, 0x65, 0x76, 0x65)             // S t e v e
+        // "Steve" — 5 chars × 24 px = 120 px wide
+        // centred x = (172 − 120) / 2 = 26,  y = 106 + 48 + 12 = 166
+        var line2: (UInt8, UInt8, UInt8, UInt8, UInt8) =
+            (0x53, 0x74, 0x65, 0x76, 0x65)             // S t e v e
 
-    withUnsafePointer(to: &line2) { ptr in
-        drawString(spi, pinDC,
-                   UnsafeRawPointer(ptr).assumingMemoryBound(to: UInt8.self),
-                   5, 26, 166, white, scale)
+        withUnsafePointer(to: &line2) { ptr in
+            drawString(spi, pinDC,
+                       UnsafeRawPointer(ptr).assumingMemoryBound(to: UInt8.self),
+                       5, 26, 166, white, scale)
+        }
     }
 }
