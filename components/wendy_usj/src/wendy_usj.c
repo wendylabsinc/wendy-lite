@@ -116,21 +116,32 @@ static void _handle_esc_command(uint8_t cmd)
     static struct wcom_operation op;
     switch (cmd) {
         case WENDY_COM_UART_ESC_CMD_CONSOLE:
-            ESP_LOGI(TAG, "mode -> console");
+            ESP_LOGI(TAG, "entering console mode");
             atomic_store(&s_mode, USJ_MODE_CONSOLE);
             break;
         case WENDY_COM_UART_ESC_CMD_ECHO:
-            ESP_LOGI(TAG, "mode -> echo");
+            if (!wcom_is_running()) {
+                ESP_LOGI(TAG, "echo mode rejected (WendyCom agent not available)");
+                break;
+            }
+            ESP_LOGI(TAG, "entering echo mode");
             atomic_store(&s_mode, USJ_MODE_ECHO);
             break;
         case WENDY_COM_UART_ESC_CMD_COM:
-            ESP_LOGI(TAG, "mode -> com");
+            if (!wcom_is_running()) {
+                ESP_LOGI(TAG, "com mode rejected (WendyCom agent not available)");
+                // prevent any WendyCom message to be echoed
+                ESP_LOGI(TAG, "entering off mode");
+                atomic_store(&s_mode, USJ_MODE_OFF);
+                break;
+            }
+            ESP_LOGI(TAG, "entering com mode");
             atomic_store(&s_mode, USJ_MODE_COM);
             op.func = _enter_com_exec;
             wcom_exec(&op);
             break;
         case WENDY_COM_UART_ESC_CMD_OFF:
-            ESP_LOGI(TAG, "mode -> off");
+            ESP_LOGI(TAG, "entering off mode");
             atomic_store(&s_mode, USJ_MODE_OFF);
             break;
         case WENDY_COM_UART_ESC_CMD_KEEP_ALIVE:
