@@ -818,7 +818,7 @@ static void com_get_device_identity(const char **id, const char **name, const ch
 #define _TOSTRING(x) _STRINGIFY(x)
 
 static void com_get_device_info(const char **os, const char **os_version,
-                                const char **cpu_architecture, const char **board,
+                                const char **cpu_architecture, const char **target,
                                 bool *wasm_app_support, bool *native_app_support)
 {
     *os = "wendy-lite";
@@ -826,8 +826,7 @@ static void com_get_device_info(const char **os, const char **os_version,
                   _TOSTRING(CONFIG_WENDY_FIRMWARE_VERSION_MINOR) "."
                   _TOSTRING(CONFIG_WENDY_FIRMWARE_VERSION_PATCH);
     *cpu_architecture = CONFIG_IDF_TARGET_ARCH;
-    /* "esp32c6" means "generic esp32c6 board", not the SoC name */
-    *board = CONFIG_IDF_TARGET;
+    *target = CONFIG_IDF_TARGET;
 #if CONFIG_WENDY_WASM
     /* WASM support also needs the slot-0 app partition in the partition table */
     *wasm_app_support = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, 0x80,

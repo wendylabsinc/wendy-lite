@@ -157,10 +157,10 @@ WendyComResult wcom_cmd_get_device_identity(WendyComDeviceIdentity *out)
 WendyComResult wcom_cmd_get_device_info(WendyComDeviceInfo *out)
 {
     ESP_LOGI(TAG, "GET_DEVICE_INFO");
-    const char *os = "???", *os_version = "???", *cpu_architecture = "???", *board = "???";
+    const char *os = "???", *os_version = "???", *cpu_architecture = "???", *target = "???";
     bool wasm_app_support = false, native_app_support = false;
     if (_app_delegate && _app_delegate->on_get_device_info)
-        _app_delegate->on_get_device_info(&os, &os_version, &cpu_architecture, &board,
+        _app_delegate->on_get_device_info(&os, &os_version, &cpu_architecture, &target,
                                           &wasm_app_support, &native_app_support);
     out->os.funcs.encode               = _encode_string;
     out->os.arg                        = (void *)os;
@@ -168,8 +168,10 @@ WendyComResult wcom_cmd_get_device_info(WendyComDeviceInfo *out)
     out->os_version.arg                = (void *)os_version;
     out->cpu_architecture.funcs.encode = _encode_string;
     out->cpu_architecture.arg          = (void *)cpu_architecture;
-    out->board.funcs.encode            = _encode_string;
-    out->board.arg                     = (void *)board;
+    out->target.funcs.encode           = _encode_string;
+    out->target.arg                    = (void *)target;
+    /* out->board is left unset: nothing determines the board yet, and an
+       omitted field means "board not known" */
     out->wasm_app_support              = wasm_app_support;
     out->native_app_support            = native_app_support;
     return WendyComResult_WENDY_COM_RESULT_OK;

@@ -141,6 +141,7 @@ func run(target string) error {
 			fmt.Printf("os:                 %s\n", info.OS)
 			fmt.Printf("os_version:         %s\n", info.OSVersion)
 			fmt.Printf("cpu_architecture:   %s\n", info.CPUArchitecture)
+			fmt.Printf("target:             %s\n", info.Target)
 			fmt.Printf("board:              %s\n", info.Board)
 			fmt.Printf("wasm_app_support:   %t\n", info.WasmAppSupport)
 			fmt.Printf("native_app_support: %t\n", info.NativeAppSupport)

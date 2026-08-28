@@ -44,9 +44,13 @@ type DeviceIdentity struct {
 }
 
 type DeviceInfo struct {
-	OS               string
-	OSVersion        string
-	CPUArchitecture  string
+	OS              string
+	OSVersion       string
+	CPUArchitecture string
+	// Target is the SoC name, e.g. "esp32c6".
+	Target string
+	// Board identifies the board, e.g. "esp32s3_seeed_xiao_native". Empty when
+	// the device does not know which board it runs on.
 	Board            string
 	WasmAppSupport   bool
 	NativeAppSupport bool
@@ -505,6 +509,7 @@ func (c *WendyLiteClient) GetDeviceInfo(timeout time.Duration) (*DeviceInfo, err
 		OS:               di.GetOs(),
 		OSVersion:        di.GetOsVersion(),
 		CPUArchitecture:  di.GetCpuArchitecture(),
+		Target:           di.GetTarget(),
 		Board:            di.GetBoard(),
 		WasmAppSupport:   di.GetWasmAppSupport(),
 		NativeAppSupport: di.GetNativeAppSupport(),

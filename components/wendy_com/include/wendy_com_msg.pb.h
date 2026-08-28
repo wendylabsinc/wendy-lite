@@ -170,12 +170,14 @@ typedef struct _WendyComDeviceInfo {
     pb_callback_t os; /* typically "wendy-lite" */
     pb_callback_t os_version;
     pb_callback_t cpu_architecture;
-    /* Board can be "esp32c6", but this doesn't mean that this field contains
- the SoC name. Here "esp32c6" means "generic esp32c6 board". Should
- probably be replaced by "esp32c6-generic" in the future. */
-    pb_callback_t board;
+    /* SoC name, e.g. "esp32c6" or "esp32s3". */
+    pb_callback_t target;
     bool wasm_app_support;
     bool native_app_support;
+    /* Board identifier, e.g. "esp32c6_generic" or "esp32s3_seeed_xiao_native".
+ Empty when the board is not known, which is typically the case when
+ wendy-lite is compiled and flashed manually. */
+    pb_callback_t board;
 } WendyComDeviceInfo;
 
 /* Command sent host -> device — the oneof variant identifies the command. */
@@ -366,7 +368,7 @@ extern "C" {
 #define WendyComConsoleBegin_init_default        {0}
 #define WendyComConsoleData_init_default         {_WendyComConsoleIo_MIN, 0, {{NULL}, NULL}}
 #define WendyComConsoleEnd_init_default          {0}
-#define WendyComDeviceInfo_init_default          {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, 0, 0}
+#define WendyComDeviceInfo_init_default          {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, 0, 0, {{NULL}, NULL}}
 #define WendyComCommand_init_default             {0, 0, {WendyComPingParams_init_default}}
 #define WendyComResponse_init_default            {0, _WendyComResult_MIN, 0, {WendyComDeviceIdentity_init_default}}
 #define WendyComEvent_init_default               {0, 0, {WendyComConsoleBegin_init_default}}
@@ -398,7 +400,7 @@ extern "C" {
 #define WendyComConsoleBegin_init_zero           {0}
 #define WendyComConsoleData_init_zero            {_WendyComConsoleIo_MIN, 0, {{NULL}, NULL}}
 #define WendyComConsoleEnd_init_zero             {0}
-#define WendyComDeviceInfo_init_zero             {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, 0, 0}
+#define WendyComDeviceInfo_init_zero             {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, 0, 0, {{NULL}, NULL}}
 #define WendyComCommand_init_zero                {0, 0, {WendyComPingParams_init_zero}}
 #define WendyComResponse_init_zero               {0, _WendyComResult_MIN, 0, {WendyComDeviceIdentity_init_zero}}
 #define WendyComEvent_init_zero                  {0, 0, {WendyComConsoleBegin_init_zero}}
@@ -439,9 +441,10 @@ extern "C" {
 #define WendyComDeviceInfo_os_tag                1
 #define WendyComDeviceInfo_os_version_tag        2
 #define WendyComDeviceInfo_cpu_architecture_tag  3
-#define WendyComDeviceInfo_board_tag             4
+#define WendyComDeviceInfo_target_tag            4
 #define WendyComDeviceInfo_wasm_app_support_tag  5
 #define WendyComDeviceInfo_native_app_support_tag 6
+#define WendyComDeviceInfo_board_tag             7
 #define WendyComCommand_request_id_tag           1
 #define WendyComCommand_ping_tag                 2
 #define WendyComCommand_reboot_tag               3
@@ -597,9 +600,10 @@ X(a, CALLBACK, SINGULAR, BYTES,    data,              3)
 X(a, CALLBACK, SINGULAR, STRING,   os,                1) \
 X(a, CALLBACK, SINGULAR, STRING,   os_version,        2) \
 X(a, CALLBACK, SINGULAR, STRING,   cpu_architecture,   3) \
-X(a, CALLBACK, SINGULAR, STRING,   board,             4) \
+X(a, CALLBACK, SINGULAR, STRING,   target,            4) \
 X(a, STATIC,   SINGULAR, BOOL,     wasm_app_support,   5) \
-X(a, STATIC,   SINGULAR, BOOL,     native_app_support,   6)
+X(a, STATIC,   SINGULAR, BOOL,     native_app_support,   6) \
+X(a, CALLBACK, SINGULAR, STRING,   board,             7)
 #define WendyComDeviceInfo_CALLBACK pb_default_field_callback
 #define WendyComDeviceInfo_DEFAULT NULL
 
