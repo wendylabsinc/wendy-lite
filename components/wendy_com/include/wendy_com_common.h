@@ -20,7 +20,7 @@ struct wcom_app_delegate {
     WendyComResult (*on_reboot)(bool app_auto_start, uint32_t app_auto_start_delay_ms);
     void (*on_get_device_identity)(const char **id, const char **name, const char **display_name);
     void (*on_get_device_info)(const char **os, const char **os_version,
-                               const char **cpu_architecture, const char **board,
+                               const char **cpu_architecture, const char **target,
                                bool *wasm_app_support, bool *native_app_support);
 };
 
