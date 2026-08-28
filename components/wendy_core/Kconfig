@@ -1,16 +1,16 @@
 menu "Wendy Core"
-    # These defaults are a placeholder carried by dev, PR and nightly builds.
-    # Release builds get the real version injected from the vX.Y.Z git tag by
-    # .github/workflows/build.yml, via a generated version.defaults overlay
-    # appended last to SDKCONFIG_DEFAULTS -- so do not read the values below as
-    # the version of a tagged commit.
+    # 0.0.0 marks a build that is not a release. Release builds get the real
+    # version injected from the vX.Y.Z git tag by .github/workflows/build.yml,
+    # via a generated version.defaults overlay appended last to
+    # SDKCONFIG_DEFAULTS -- so do not read the values below as the version of a
+    # tagged commit.
     config WENDY_FIRMWARE_VERSION_MAJOR
         int "Firmware version major"
         default 0
 
     config WENDY_FIRMWARE_VERSION_MINOR
         int "Firmware version minor"
-        default 1
+        default 0
 
     config WENDY_FIRMWARE_VERSION_PATCH
         int "Firmware version patch"
