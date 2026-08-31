@@ -79,6 +79,9 @@ jobs:
 
       - name: Build firmware
         shell: bash
+        env:
+          BOARD_CFG: ${{ matrix.board_cfg }}
+          TARGET: ${{ matrix.target }}
         run: |
           . $IDF_PATH/export.sh
           # boards/<board>.cfg is a one-line idf.py argfile holding
@@ -87,8 +90,8 @@ jobs:
           # (kconfgen applies --defaults files in order, later overriding
           # earlier). It has to go on set-target: that is what regenerates
           # sdkconfig from the whole chain.
-          idf.py "$(cat boards/${{ matrix.board_cfg }}.cfg);version.defaults" \
-            set-target ${{ matrix.target }}
+          idf.py "$(cat "boards/${BOARD_CFG}.cfg");version.defaults" \
+            set-target "$TARGET"
           idf.py build
 
       # Fail the release rather than ship a binary carrying the placeholder
@@ -110,13 +113,17 @@ jobs:
 
       - name: Create merged firmware binary
         shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          ASSET_NAME: ${{ matrix.asset_name }}
+          FLASH_SIZE: ${{ matrix.flash_size }}
         run: |
           . $IDF_PATH/export.sh
           cd build
-          esptool.py --chip ${{ matrix.target }} merge_bin \
-            -o ${{ matrix.asset_name }}.bin \
+          esptool.py --chip "$TARGET" merge_bin \
+            -o "${ASSET_NAME}.bin" \
             --flash_mode dio \
-            --flash_size ${{ matrix.flash_size }} \
+            --flash_size "$FLASH_SIZE" \
             @flash_args
 
       - name: Upload build artifact
