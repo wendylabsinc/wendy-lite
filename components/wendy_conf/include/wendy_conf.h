@@ -44,6 +44,9 @@ void wendy_conf_init(void);
  * Writing invalidates the in-RAM configuration: from that point on the
  * getters return empty spans / zero values. The new configuration takes
  * effect after reboot.
+ *
+ * The two resolved-name getters below are the exception: they are decided at
+ * init and a write does not disturb them.
  */
 esp_err_t wendy_conf_write(const void *pb_data, size_t pb_size, enum wendy_conf_write_mode mode);
 
@@ -59,13 +62,33 @@ size_t wendy_conf_get_max_size(void);
  * not change when the device is reprovisioned or renamed, and it is available
  * even when the conf partition is missing or corrupt.
  *
- * It is the factory MAC address burned into eFuse, rendered as 12 lowercase
- * hex digits ("98a3167e5f2c"). NUL-terminated and never NULL, unlike the
- * spans below. Built once during wendy_conf_init().
+ * Today, the ID is built from the factory MAC address burned into eFuse,
+ * rendered as 12 lowercase hex digits ("98a3167e5f2c"). NUL-terminated and
+ * never NULL, unlike the spans below. Built once during wendy_conf_init().
  */
 const char *wendy_conf_get_device_id(void);
 
 struct wendy_conf_span wendy_conf_get_device_name(void);
+
+/**
+ * The device name to advertise: the configured name when there is one, and
+ * "<prefix>-xxxx" otherwise, where xxxx is an hex number derived from the
+ * device ID.
+ *
+ * NUL-terminated and never NULL, unlike the spans above. Built once during
+ * wendy_conf_init() and fixed for the life of the boot: a wendy_conf_write()
+ * does not change it, and a new name takes effect only after reboot. Callers
+ * may hold the pointer, and every subsystem that asks gets the same answer.
+ */
+const char *wendy_conf_get_resolved_device_name(void);
+
+/**
+ * The name to show a person. WendyConf carries no separate display name yet,
+ * so this answers exactly like wendy_conf_get_resolved_device_name(); it
+ * exists so callers that mean "shown to a person" — a BLE GATT read, an mDNS
+ * service instance — say so, and keep saying so once the two diverge.
+ */
+const char *wendy_conf_get_resolved_device_display_name(void);
 
 struct wendy_conf_span wendy_conf_get_network_ssid(void);
 struct wendy_conf_span wendy_conf_get_network_password(void);

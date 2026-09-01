@@ -324,11 +324,6 @@ static void _host_task(void *param)
     nimble_port_freertos_deinit();
 }
 
-static char *_dup_or_empty(const char *s)
-{
-    return strdup(s ? s : "");
-}
-
 /// Bringing the stack up costs tens of KiB on a chip that is already tight
 /// with WiFi and the WAMR pool resident, and a shortfall shows up much later
 /// as mbedtls_ssl_setup returning ALLOC_FAILED. Log both numbers so the cost
@@ -538,9 +533,7 @@ esp_err_t wendy_ble_host_init(void)
     return ESP_OK;
 }
 
-esp_err_t wendy_ble_start(const char *device_id,
-                          const char *device_name,
-                          const char *display_name)
+esp_err_t wendy_ble_start(void)
 {
     if (_started)
         return ESP_OK;
@@ -558,9 +551,12 @@ esp_err_t wendy_ble_start(const char *device_id,
     }
 #endif
 
-    _device_id    = _dup_or_empty(device_id);
-    _device_name  = _dup_or_empty(device_name);
-    _display_name = _dup_or_empty(display_name);
+    // Snapshot the identity for the life of the advertisement. wendy_conf
+    // fixes these at init and never changes them, so the copies are belt and
+    // braces: they keep the advertisement owning the bytes it hands to NimBLE.
+    _device_id    = strdup(wendy_conf_get_device_id());
+    _device_name  = strdup(wendy_conf_get_resolved_device_name());
+    _display_name = strdup(wendy_conf_get_resolved_device_display_name());
     if (!_device_id || !_device_name || !_display_name) {
         ESP_LOGE(TAG, "out of memory");
         return ESP_ERR_NO_MEM;
@@ -619,13 +615,8 @@ esp_err_t wendy_ble_host_init(void)
     return ESP_ERR_NOT_SUPPORTED;
 }
 
-esp_err_t wendy_ble_start(const char *device_id,
-                          const char *device_name,
-                          const char *display_name)
+esp_err_t wendy_ble_start(void)
 {
-    (void)device_id;
-    (void)device_name;
-    (void)display_name;
     return ESP_ERR_NOT_SUPPORTED;
 }
 

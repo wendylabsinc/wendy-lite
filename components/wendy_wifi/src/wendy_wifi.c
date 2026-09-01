@@ -40,7 +40,6 @@ static EventGroupHandle_t s_wifi_events;
 static bool s_infra_initialized = false;
 static bool s_connected = false;
 static bool s_services_started = false;
-static char s_device_name[CONFIG_WENDY_DEVICE_NAME_BUF_SIZE];
 
 #define WIFI_CONNECTED_BIT  BIT0
 #define WIFI_FAIL_BIT       BIT1
@@ -197,8 +196,9 @@ static esp_err_t start_mdns_service(void)
     assert(sizeof(prefix) < sizeof(hostname));
     memcpy(hostname + out, prefix, sizeof(prefix) - 1);
     out += sizeof(prefix) - 1;
-    for (size_t in = 0; s_device_name[in] && out < sizeof(hostname) - 1; in++) {
-        unsigned char c = (unsigned char)s_device_name[in];
+    const char *device_name = wendy_conf_get_resolved_device_name();
+    for (size_t in = 0; device_name[in] && out < sizeof(hostname) - 1; in++) {
+        unsigned char c = (unsigned char)device_name[in];
         if (c >= 'A' && c <= 'Z') {
             hostname[out++] = (char)(c + 32);
         } else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
@@ -238,7 +238,7 @@ static void start_services(void)
     }
 
     // Initialize the mTLS server accessible via the local network
-    wendy_server_start(s_device_name);
+    wendy_server_start();
 
     // Initialize the mTLS server accessible via the cloud
 #if CONFIG_WENDY_CLOUD
@@ -255,10 +255,8 @@ static void start_services(void)
 
 /* ── Public API ─────────────────────────────────────────────────────── */
 
-esp_err_t wendy_wifi_init(const char *device_name)
+esp_err_t wendy_wifi_init(void)
 {
-    strlcpy(s_device_name, device_name ? device_name : CONFIG_WENDY_DEVICE_NAME_DEFAULT_PREFIX "-0000", sizeof(s_device_name));
-
     esp_err_t err = wifi_infra_init();
     if (err != ESP_OK) return err;
 

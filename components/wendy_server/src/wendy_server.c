@@ -45,7 +45,6 @@ struct wendy_server_link {
 //--- globals ---//
 
 static struct wendy_server_link _links[WENDY_SERVER_MAX_LINKS];
-static char *_device_name;
 
 
 //--- internal functions ---//
@@ -180,10 +179,20 @@ static void _server_task(void *arg)
         ESP_LOGI(TAG, "mTLS disabled: any client will be accepted");
     }
 
+    // The full identity, so a browser can tell which board answers without
+    // opening a connection first: the ID pins it down, the names label it.
     mdns_txt_item_t txt_items[] = {
         {
+            .key = "id",
+            .value = wendy_conf_get_device_id()
+        },
+        {
             .key = "name",
-            .value = _device_name
+            .value = wendy_conf_get_resolved_device_name()
+        },
+        {
+            .key = "displayname",
+            .value = wendy_conf_get_resolved_device_display_name()
         },
         {
             .key = "mtls",
@@ -191,9 +200,9 @@ static void _server_task(void *arg)
         }
     };
 
-    esp_err_t mdns_err = mdns_service_add(_device_name, "_wendy-lite", "_tcp", WENDY_SERVER_PORT, txt_items, sizeof(txt_items) / sizeof(txt_items[0]));
-    free(_device_name);
-    _device_name = NULL;
+    esp_err_t mdns_err = mdns_service_add(wendy_conf_get_resolved_device_display_name(),
+                                          "_wendy-lite", "_tcp", WENDY_SERVER_PORT,
+                                          txt_items, sizeof(txt_items) / sizeof(txt_items[0]));
     if (mdns_err != ESP_OK) {
         ESP_LOGE(TAG, "mDNS service add failed: %s", esp_err_to_name(mdns_err));
     } else {
@@ -291,9 +300,8 @@ static void _server_task(void *arg)
 
 //--- public functions ---//
 
-void wendy_server_start(const char *device_name)
+void wendy_server_start(void)
 {
-    _device_name = device_name ? strdup(device_name) : NULL;
     xTaskCreatePinnedToCore(_server_task, "wendy_server", WENDY_SERVER_TASK_STACK, NULL,
                              CONFIG_WENDY_SERVER_TASK_PRIORITY, NULL,
                              CONFIG_WENDY_SERVER_TASK_CORE_AFFINITY);

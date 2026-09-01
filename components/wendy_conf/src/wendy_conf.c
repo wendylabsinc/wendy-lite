@@ -56,6 +56,13 @@ static struct conf_cache s_cache = CONF_CACHE_INIT;
 /* 12 hex digits plus the terminator. Empty until built. */
 static char s_device_id[13];
 
+/* The configured name, or the fallback built from the device ID. Empty until
+ * built. */
+static char s_resolved_device_name[CONFIG_WENDY_DEVICE_NAME_BUF_SIZE];
+
+/* How many trailing device-ID hex digits the fallback name carries. */
+#define FALLBACK_ID_DIGITS 4
+
 
 //--- functions ---//
 
@@ -82,6 +89,43 @@ const char *wendy_conf_get_device_id(void)
     return s_device_id;
 }
 
+/**
+ * Resolve the name every transport advertises.  Called exactly once, from
+ * wendy_conf_init() once the conf cache is settled: the name is fixed for the
+ * life of the boot, so every subsystem that asks gets the same answer.  The
+ * copy below is what makes that possible — it lifts the name out of the
+ * mmapped partition, which a later write unmaps and erases.
+ */
+static void _build_resolved_device_name(void)
+{
+    // The configured name first: a named board keeps its name even if the MAC
+    // read failed, in which case the device ID getter below would abort.
+    wendy_conf_copy_span(s_resolved_device_name, sizeof(s_resolved_device_name),
+                         s_cache.device_name);
+    if (s_resolved_device_name[0])
+        return;
+
+    // Unnamed: fall back to the tail of the device ID.  Not the head — that is
+    // the vendor OUI, the same on every board we ship.
+    const char *id     = wendy_conf_get_device_id();
+    size_t      id_len = strlen(id);
+    const char *tail   = id_len > FALLBACK_ID_DIGITS
+                       ? id + id_len - FALLBACK_ID_DIGITS
+                       : id;
+    snprintf(s_resolved_device_name, sizeof(s_resolved_device_name), "%s-%s",
+             CONFIG_WENDY_DEVICE_NAME_DEFAULT_PREFIX, tail);
+}
+
+const char *wendy_conf_get_resolved_device_name(void)
+{
+    return s_resolved_device_name;
+}
+
+const char *wendy_conf_get_resolved_device_display_name(void)
+{
+    return wendy_conf_get_resolved_device_name();
+}
+
 static bool _capture_span(pb_istream_t *stream, const pb_field_t *field, void **arg)
 {
     // For a pb_istream_from_buffer stream, state is the current read pointer,
@@ -103,12 +147,12 @@ static void _invalidate_cache(void)
     s_cache = CONF_CACHE_INIT;
 }
 
-void wendy_conf_init(void)
+/**
+ * Map the conf partition and decode it into the cache.  Every failure leaves
+ * the cache invalid, which the getters report as empty spans / zero scalars.
+ */
+static void _load_conf(void)
 {
-    // Before any of the early returns below: the device ID does not come from
-    // the partition, so a missing or corrupt conf must not cost us one.
-    _build_device_id();
-
     const esp_partition_t *part = esp_partition_find_first(
         ESP_PARTITION_TYPE_DATA, WENDY_CONF_PART_SUBTYPE, "wendy_conf");
     if (!part) {
@@ -178,6 +222,15 @@ void wendy_conf_init(void)
     s_cache.pb_size = pb_size;
     s_cache.valid   = true;
     ESP_LOGI(TAG, "loaded %" PRIu32 " bytes", pb_size);
+}
+
+void wendy_conf_init(void)
+{
+    // The device ID does not come from the partition, so a missing or corrupt
+    // conf must not cost us one — nor the name we derive from it.
+    _build_device_id();
+    _load_conf();
+    _build_resolved_device_name();
 }
 
 /**

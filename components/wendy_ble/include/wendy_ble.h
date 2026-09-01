@@ -18,15 +18,13 @@ esp_err_t wendy_ble_host_init(void);
 /// service, and (once implemented) serve WendyCom over mTLS on an L2CAP
 /// connection-oriented channel.
 ///
-/// The three identity strings are the ones com_get_device_identity() serves to
-/// WendyCom, so a scan and an `identity` command can never disagree. They are
-/// copied.
+/// The advertised identity is read from wendy_conf, the same source
+/// com_get_device_identity() serves to WendyCom, so a scan and an `identity`
+/// command can never disagree.
 ///
 /// Returns ESP_ERR_INVALID_STATE when CONFIG_WENDY_BLE_REQUIRE_MTLS is set and
 /// the device is not provisioned; nothing is advertised in that case.
-esp_err_t wendy_ble_start(const char *device_id,
-                          const char *device_name,
-                          const char *display_name);
+esp_err_t wendy_ble_start(void);
 
 #ifdef __cplusplus
 }
