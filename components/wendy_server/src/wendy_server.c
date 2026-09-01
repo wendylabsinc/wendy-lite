@@ -44,11 +44,6 @@ struct wendy_server_link {
 
 //--- globals ---//
 
-extern const uint8_t default_cert_der_start[] asm("_binary_default_cert_der_start");
-extern const uint8_t default_cert_der_end[]   asm("_binary_default_cert_der_end");
-extern const uint8_t default_key_der_start[]  asm("_binary_default_key_der_start");
-extern const uint8_t default_key_der_end[]    asm("_binary_default_key_der_end");
-
 static struct wendy_server_link _links[WENDY_SERVER_MAX_LINKS];
 static char *_device_name;
 
@@ -144,7 +139,9 @@ static void _server_task(void *arg)
     struct wendy_conf_span key = wendy_conf_get_private_key();
     struct wendy_conf_span cert = wendy_conf_get_certificate();
     struct wendy_conf_span chain = wendy_conf_get_chain_of_trust();
-    bool trusted = key.size > 0 && cert.size > 0 && chain.size > 0;
+    struct wendy_conf_span default_cert = wendy_conf_get_default_certificate();
+    struct wendy_conf_span default_key = wendy_conf_get_default_private_key();
+    bool trusted = wendy_conf_is_provisioned();
 
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd < 0) {
@@ -231,10 +228,10 @@ static void _server_task(void *arg)
             };
         } else {
             cfg = (esp_tls_cfg_server_t){
-                .servercert_buf   = default_cert_der_start,
-                .servercert_bytes = default_cert_der_end - default_cert_der_start,
-                .serverkey_buf    = default_key_der_start,
-                .serverkey_bytes  = default_key_der_end - default_key_der_start,
+                .servercert_buf   = default_cert.data,
+                .servercert_bytes = default_cert.size,
+                .serverkey_buf    = default_key.data,
+                .serverkey_bytes  = default_key.size,
                 // no cacert_buf: peer identity checks disabled
             };
         }

@@ -3,8 +3,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <stdio.h>
+
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_partition.h"
+#include "esp_system.h"
 #include "pb_decode.h"
 
 #include "wendy_conf.h"
@@ -49,8 +53,34 @@ struct conf_cache {
 
 static struct conf_cache s_cache = CONF_CACHE_INIT;
 
+/* 12 hex digits plus the terminator. Empty until built. */
+static char s_device_id[13];
+
 
 //--- functions ---//
+
+static void _build_device_id(void)
+{
+    uint8_t mac[6];
+    esp_err_t err = esp_read_mac(mac, ESP_MAC_EFUSE_FACTORY);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_read_mac failed: %s", esp_err_to_name(err));
+        return;
+    }
+    snprintf(s_device_id, sizeof(s_device_id), "%02x%02x%02x%02x%02x%02x",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
+const char *wendy_conf_get_device_id(void)
+{
+    // Built during wendy_conf_init(), and derived from hardware rather than
+    // the conf blob, so a missing or corrupt conf does not explain an empty
+    // one here.  Rather than hand back an empty string a caller has no way to
+    // notice, fail loudly.
+    if (!s_device_id[0])
+        esp_system_abort("device id unavailable (wendy_conf_init not run?)");
+    return s_device_id;
+}
 
 static bool _capture_span(pb_istream_t *stream, const pb_field_t *field, void **arg)
 {
@@ -75,6 +105,10 @@ static void _invalidate_cache(void)
 
 void wendy_conf_init(void)
 {
+    // Before any of the early returns below: the device ID does not come from
+    // the partition, so a missing or corrupt conf must not cost us one.
+    _build_device_id();
+
     const esp_partition_t *part = esp_partition_find_first(
         ESP_PARTITION_TYPE_DATA, WENDY_CONF_PART_SUBTYPE, "wendy_conf");
     if (!part) {
@@ -375,6 +409,34 @@ struct wendy_conf_span wendy_conf_get_certificate(void)
 struct wendy_conf_span wendy_conf_get_chain_of_trust(void)
 {
     return s_cache.chain_der;
+}
+
+extern const uint8_t default_cert_der_start[] asm("_binary_default_cert_der_start");
+extern const uint8_t default_cert_der_end[]   asm("_binary_default_cert_der_end");
+extern const uint8_t default_key_der_start[]  asm("_binary_default_key_der_start");
+extern const uint8_t default_key_der_end[]    asm("_binary_default_key_der_end");
+
+bool wendy_conf_is_provisioned(void)
+{
+    return s_cache.key_der.size > 0
+        && s_cache.cert_der.size > 0
+        && s_cache.chain_der.size > 0;
+}
+
+struct wendy_conf_span wendy_conf_get_default_certificate(void)
+{
+    return (struct wendy_conf_span){
+        .data = default_cert_der_start,
+        .size = (size_t)(default_cert_der_end - default_cert_der_start),
+    };
+}
+
+struct wendy_conf_span wendy_conf_get_default_private_key(void)
+{
+    return (struct wendy_conf_span){
+        .data = default_key_der_start,
+        .size = (size_t)(default_key_der_end - default_key_der_start),
+    };
 }
 
 void wendy_conf_copy_span(char *dest, size_t dest_size, struct wendy_conf_span src)

@@ -32,7 +32,7 @@ set(requires
     wendy_spi
     wendy_otel
     wendy_wasi_shim
-    wendy_ble
+    wendy_ble_export
     wendy_net
     wendy_app_usb
 )

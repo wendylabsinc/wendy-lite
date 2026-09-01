@@ -19,8 +19,8 @@ dependencies:
     override_path: "../wendy_otel"
   wendy_wasi_shim:
     override_path: "../wendy_wasi_shim"
-  wendy_ble:
-    override_path: "../wendy_ble"
+  wendy_ble_export:
+    override_path: "../wendy_ble_export"
   wendy_net:
     override_path: "../wendy_net"
   wendy_app_usb:

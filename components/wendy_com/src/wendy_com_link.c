@@ -31,6 +31,7 @@ enum link_type {
     LINK_TYPE_NONE = 0,
     LINK_TYPE_TLS,
     LINK_TYPE_UART,
+    LINK_TYPE_STREAM,
 };
 
 struct wcom_link {
@@ -40,7 +41,9 @@ struct wcom_link {
     union {
         esp_tls_t *tls;
         wendy_com_uart_t *uart;
+        const struct wcom_stream_ops *ops;
     };
+    void *stream_ctx;                  // LINK_TYPE_STREAM only
     int fd;
     struct wcom_tx_chunk *tx_chunk_first;
     struct wcom_tx_chunk *tx_chunk_last;
@@ -71,7 +74,12 @@ static struct wcom_state_change_handler *_state_change_handler_last;
 static ssize_t _link_read(struct wcom_link *ch, void *buf, size_t len)
 {
     ssize_t n;
-    if (ch->type == LINK_TYPE_TLS) {
+    if (ch->type == LINK_TYPE_STREAM) {
+        n = ch->ops->read(ch->stream_ctx, buf, len);
+        if (n == WCOM_STREAM_ERR_WANT_READ)  return WENDY_COM_LINK_ERR_WANT_READ;
+        if (n == WCOM_STREAM_ERR_WANT_WRITE) return WENDY_COM_LINK_ERR_WANT_WRITE;
+        if (n < 0)                           return WENDY_COM_LINK_ERR_UNKNOWN;
+    } else if (ch->type == LINK_TYPE_TLS) {
         n = esp_tls_conn_read(ch->tls, buf, len);
         if (n == MBEDTLS_ERR_SSL_WANT_READ)  return WENDY_COM_LINK_ERR_WANT_READ;
         if (n == MBEDTLS_ERR_SSL_WANT_WRITE) return WENDY_COM_LINK_ERR_WANT_WRITE;
@@ -88,7 +96,12 @@ static ssize_t _link_read(struct wcom_link *ch, void *buf, size_t len)
 static ssize_t _link_write(struct wcom_link *ch, const void *data, size_t len)
 {
     ssize_t n;
-    if (ch->type == LINK_TYPE_TLS) {
+    if (ch->type == LINK_TYPE_STREAM) {
+        n = ch->ops->write(ch->stream_ctx, data, len);
+        if (n == WCOM_STREAM_ERR_WANT_READ)  return WENDY_COM_LINK_ERR_WANT_READ;
+        if (n == WCOM_STREAM_ERR_WANT_WRITE) return WENDY_COM_LINK_ERR_WANT_WRITE;
+        if (n < 0)                           return WENDY_COM_LINK_ERR_UNKNOWN;
+    } else if (ch->type == LINK_TYPE_TLS) {
         n = esp_tls_conn_write(ch->tls, data, len);
         if (n == MBEDTLS_ERR_SSL_WANT_READ)  return WENDY_COM_LINK_ERR_WANT_READ;
         if (n == MBEDTLS_ERR_SSL_WANT_WRITE) return WENDY_COM_LINK_ERR_WANT_WRITE;
@@ -256,6 +269,15 @@ static void _main(void *arg)
             if (ch->fd > maxfd)
                 maxfd = ch->fd;
 
+            // A stream link's fd is a readiness eventfd, not the transport.
+            // It is always watched for read and never for write: an eventfd
+            // is permanently writable, so putting it in wfds would turn a
+            // stalled transmit into a busy loop.
+            if (ch->type == LINK_TYPE_STREAM) {
+                FD_SET(ch->fd, &rfds);
+                continue;
+            }
+
             // RX: only poll when chunks are queued; if last read stalled on WANT_WRITE, wait for writable
             if (ch->rx_chunk_first) {
                 if (ch->rx_need_write)
@@ -273,20 +295,31 @@ static void _main(void *arg)
             }
         }
 
-        // If any link has data buffered inside the TLS layer, select() on the
-        // raw fd would block even though data is ready. Use a zero timeout so we
-        // don't stall, and handle those links as readable below.
-        bool tls_pending = false;
+        // A link can already be able to make progress in a way select() cannot
+        // see, in which case blocking on the fds would stall it. Use a zero
+        // timeout instead and let the handling below find it.
+        bool progress_pending = false;
         for (int i = 0; i < WCOM_LINK_COUNT; i++) {
             struct wcom_link *ch = &_links[i];
-            if (ch->state == WCOM_LINK_STATE_CONNECTED && ch->rx_tls_readable && ch->rx_chunk_first) {
-                tls_pending = true;
+            if (ch->state != WCOM_LINK_STATE_CONNECTED)
+                continue;
+            // Bytes buffered inside the TLS layer rather than on the raw fd.
+            if (ch->rx_tls_readable && ch->rx_chunk_first) {
+                progress_pending = true;
+                break;
+            }
+            // A stream link whose wakeup fd was already drained while its
+            // transport still has data to read or room to write.
+            if (ch->type == LINK_TYPE_STREAM
+                && ((ch->rx_chunk_first && ch->ops->can_read(ch->stream_ctx))
+                    || (ch->tx_chunk_first && ch->ops->can_write(ch->stream_ctx)))) {
+                progress_pending = true;
                 break;
             }
         }
 
         struct timeval zero_tv = {0, 0};
-        if (select(maxfd + 1, &rfds, &wfds, NULL, tls_pending ? &zero_tv : NULL) < 0)
+        if (select(maxfd + 1, &rfds, &wfds, NULL, progress_pending ? &zero_tv : NULL) < 0)
             continue;
 
         // drain wakeup signal — no action needed beyond waking up to rebuild fd sets
@@ -316,8 +349,23 @@ static void _main(void *arg)
             if (ch->state != WCOM_LINK_STATE_CONNECTED || ch->fd < 0)
                 continue;
 
-            bool readable = FD_ISSET(ch->fd, &rfds) || ch->rx_tls_readable;
-            bool writable = FD_ISSET(ch->fd, &wfds);
+            bool readable, writable;
+            if (ch->type == LINK_TYPE_STREAM) {
+                // Drain before sampling, never after: the transport signals
+                // the eventfd after it changes state, so a signal that races
+                // this is still visible in can_read()/can_write() — or, if it
+                // lands later, leaves the counter non-zero and wakes the next
+                // select(). Draining last would swallow it.
+                if (FD_ISSET(ch->fd, &rfds)) {
+                    uint64_t drain;
+                    read(ch->fd, &drain, sizeof(drain));
+                }
+                readable = ch->ops->can_read(ch->stream_ctx) || ch->rx_tls_readable;
+                writable = ch->ops->can_write(ch->stream_ctx);
+            } else {
+                readable = FD_ISSET(ch->fd, &rfds) || ch->rx_tls_readable;
+                writable = FD_ISSET(ch->fd, &wfds);
+            }
 
             // resume stalled read: was waiting for writable, socket is now writable
             if (writable && ch->rx_need_write)
@@ -522,6 +570,46 @@ int wcom_add_uart_link(wendy_com_uart_t *uart)
     return -1;
 }
 
+/// Register a transport that drives itself through wcom_stream_ops rather
+/// than a file descriptor. Same contract as wcom_add_tls_link: a positive,
+/// non-reused link ID, or -1 when the link table is full.
+int wcom_add_stream_link(const struct wcom_stream_ops *ops, void *ctx)
+{
+    assert(xTaskGetCurrentTaskHandle() == _main_task);
+    assert(ops && ops->read && ops->write && ops->wakeup_fd
+           && ops->can_read && ops->can_write);
+
+    for (int i = 0; i < WCOM_LINK_COUNT; i++) {
+        struct wcom_link *ch = &_links[i];
+        if (ch->state == WCOM_LINK_STATE_UNDEFINED) {
+            _link_id_generator++;
+            if (_link_id_generator >= (INT_MAX / WCOM_LINK_COUNT))
+                _link_id_generator = 1;
+            ch->id = _link_id_generator * WCOM_LINK_COUNT + i;
+            ch->state = WCOM_LINK_STATE_CONNECTED;
+            ch->type = LINK_TYPE_STREAM;
+            ch->ops = ops;
+            ch->stream_ctx = ctx;
+            // The transport owns this fd; wcom only ever drains it, and only
+            // after select() reports it readable — an eventfd cannot be made
+            // non-blocking on ESP-IDF, so that ordering is load-bearing.
+            ch->fd = ops->wakeup_fd(ctx);
+            ch->tx_chunk_first = NULL;
+            ch->tx_chunk_last = NULL;
+            ch->tx_chunk_offset = 0;
+            ch->rx_chunk_first = NULL;
+            ch->rx_chunk_last = NULL;
+            ch->rx_chunk_offset = 0;
+            ch->rx_need_write = false;
+            ch->rx_tls_readable = false;
+            ch->tx_need_read = false;
+            _fire_state_change_handlers(ch->id, ch->state);
+            return ch->id;
+        }
+    }
+    return -1;
+}
+
 void wcom_remove_link(int link_id)
 {
     assert(xTaskGetCurrentTaskHandle() == _main_task);
@@ -538,6 +626,7 @@ void wcom_remove_link(int link_id)
         ch->type = LINK_TYPE_NONE;
         ch->uart = NULL;
         ch->tls = NULL;
+        ch->stream_ctx = NULL;
         ch->fd = -1;
         return;
     }

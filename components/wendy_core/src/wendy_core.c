@@ -48,6 +48,10 @@
 #include "wendy_com.h"
 #endif
 
+#if CONFIG_WENDY_BLE
+#include "wendy_ble.h"
+#endif
+
 static const char *TAG = "wendy_core";
 
 /* ── Event bits ─────────────────────────────────────────────────────── */
@@ -809,7 +813,7 @@ static WendyComResult com_reboot(bool app_auto_start, uint32_t app_auto_start_de
 
 static void com_get_device_identity(const char **id, const char **name, const char **display_name)
 {
-    *id = s_device_name;
+    *id = wendy_conf_get_device_id();
     *name = s_device_name;
     *display_name = s_device_name;
 }
@@ -947,6 +951,22 @@ esp_err_t wendy_core_init(void)
     };
     wcom_set_app_delegate(&app_delegate);
     wcom_start();
+
+    /* Initialize the BLE transport (if enabled). Deliberately before WiFi and
+     * not gated on it: a board with no credentials is exactly the case BLE
+     * exists to cover. The identity comes from the same delegate WendyCom
+     * serves, so a BLE scan and an identity command can't disagree. */
+#if CONFIG_WENDY_BLE
+    {
+        const char *ble_id, *ble_name, *ble_display_name;
+        com_get_device_identity(&ble_id, &ble_name, &ble_display_name);
+        esp_err_t ble_err = wendy_ble_start(ble_id, ble_name, ble_display_name);
+        if (ble_err != ESP_OK) {
+            ESP_LOGW(TAG, "BLE transport not started: %s",
+                     esp_err_to_name(ble_err));
+        }
+    }
+#endif
 
     /* Initialize WiFi transport (if enabled) */
 #if CONFIG_WENDY_WIFI_ENABLED

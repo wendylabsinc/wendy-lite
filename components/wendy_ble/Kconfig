@@ -1,8 +1,77 @@
-menu "Wendy BLE"
+menu "Wendy BLE (WendyCom transport)"
     config WENDY_BLE
-        bool "Enable BLE host functions"
-        default n
+        bool "Enable WendyCom over BLE"
+        default y
         depends on BT_ENABLED && BT_NIMBLE_ENABLED
         help
-            BLE GAP and GATT functions using NimBLE.
+            Serve WendyCom over mTLS over a BLE L2CAP connection-oriented
+            channel. The device acts as a BLE peripheral; the console connects
+            as a central.
+
+            This component owns the NimBLE stack: it calls nimble_port_init(),
+            installs the host sync callback and drives advertising. No other
+            component may bring the stack up.
+
+    config WENDY_BLE_PSM
+        int "L2CAP PSM"
+        default 128
+        range 128 255
+        depends on WENDY_BLE
+        help
+            LE PSM the L2CAP connection-oriented channel listens on. The LE
+            dynamic range is 0x0080-0x00FF (128-255). The console reads the
+            value from the GATT info service, so it only has to match a
+            hard-coded default on platforms with no GATT support.
+
+    config WENDY_BLE_MTU
+        int "L2CAP MTU"
+        default 512
+        range 64 1024
+        depends on WENDY_BLE
+        help
+            Largest SDU this device will receive. The receive ring is twice
+            this size, and the transmit side uses min(this, peer MTU).
+
+    config WENDY_BLE_REQUIRE_MTLS
+        bool "Require mTLS (refuse to advertise when unprovisioned)"
+        default n
+        depends on WENDY_BLE
+        help
+            When set, the device neither advertises nor opens the L2CAP server
+            unless wendy_conf carries a private key, a certificate and a chain
+            of trust.
+
+            When unset (the default), an unprovisioned device serves the
+            embedded self-signed certificate with client verification off,
+            matching what wendy_server does on TCP. That keeps BLE usable as a
+            recovery path on a fresh board, which is its main purpose.
+
+    config WENDY_BLE_TASK_PRIORITY
+        int "BLE session task priority"
+        default 5
+        range 1 24
+        depends on WENDY_BLE
+
+    choice WENDY_BLE_TASK_CORE_AFFINITY
+        prompt "BLE session task core affinity"
+        default WENDY_BLE_TASK_CORE_AFFINITY_NO_AFFINITY
+        depends on WENDY_BLE
+        help
+            Core affinity of the wendy_ble session task.
+
+        config WENDY_BLE_TASK_CORE_AFFINITY_CPU0
+            bool "Core 0"
+        config WENDY_BLE_TASK_CORE_AFFINITY_CPU1
+            bool "Core 1"
+            depends on !FREERTOS_UNICORE
+        config WENDY_BLE_TASK_CORE_AFFINITY_NO_AFFINITY
+            bool "No affinity"
+    endchoice
+
+    config WENDY_BLE_TASK_CORE_AFFINITY
+        hex
+        depends on WENDY_BLE
+        default 0x0 if WENDY_BLE_TASK_CORE_AFFINITY_CPU0
+        default 0x1 if WENDY_BLE_TASK_CORE_AFFINITY_CPU1
+        default FREERTOS_NO_AFFINITY if WENDY_BLE_TASK_CORE_AFFINITY_NO_AFFINITY
 endmenu

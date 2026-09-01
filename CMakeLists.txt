@@ -17,7 +17,7 @@ set(EXTRA_COMPONENT_DIRS
 # that only applies if set-target happens to be invoked through it.
 if(IDF_TARGET STREQUAL "esp32c61")
     set(EXCLUDE_COMPONENTS
-        wendy_wasm wendy_hal wendy_hal_export wendy_app_usb wendy_ble
+        wendy_wasm wendy_hal wendy_hal_export wendy_app_usb wendy_ble_export
         wendy_callback wendy_safety wendy_storage wendy_net wendy_sys
         wendy_spi wendy_otel wendy_wasi_shim wendy_uart
     )
