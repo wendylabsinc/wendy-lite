@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_vfs_eventfd.h"
 #include "freertos/semphr.h"
 
@@ -30,6 +31,29 @@
 // many small blocks and competes with ATT traffic.
 #define SDU_COUNT  6
 
+// Largest SDU we transmit, chosen so one SDU is one L2CAP PDU, one HCI ACL
+// fragment and one link-layer packet: 245 + 2 (SDU length) + 4 (L2CAP header)
+// = 251, the most a data PDU carries once the data length extension is
+// negotiated, and under the 255-byte ACL packet the host fragments to.
+//
+// Anything larger is refragmented inside the host, and every fragment is
+// chained out of the 128-byte msys pool — ble_hs_mbuf_l2cap_pkt() asks msys
+// for a zero-length packet, which always lands in the smallest pool, and
+// os_mbuf_append() then extends the chain from that same pool. A 512-byte SDU
+// costs about nine of the twelve blocks that exist, held until the controller
+// drains them, which is what makes ble_l2cap_send() return ENOMEM under load.
+// The link layer sends 251-byte packets either way, so chunking here costs no
+// throughput.
+#define TX_SDU_MAX  245
+
+// How long to hold transmits off when the host runs out of mbufs, and how long
+// to keep doing that before calling the link dead. The host releases those
+// blocks as the controller acknowledges the packets it is already holding,
+// which happens on the following connection events, so the wait is one
+// connection interval rather than a guess at a queue depth.
+#define TX_BACKOFF_MS   10
+#define TX_BACKOFF_MAX  200   // ~2 s; past this the shortage is not transient
+
 
 //--- globals ---//
 
@@ -41,12 +65,15 @@ static SemaphoreHandle_t _mutex;
 static SemaphoreHandle_t _session_sem;
 static SemaphoreHandle_t _rx_sem;
 static SemaphoreHandle_t _tx_sem;
+static esp_timer_handle_t _tx_backoff_timer;
 static int _wakeup_fd = -1;
 
 /* Guarded by _mutex. */
 static struct ble_l2cap_chan *_chan;
 static uint16_t _tx_mtu;
 static bool     _tx_stalled;
+static bool     _tx_backoff;        // out of host mbufs; holding transmits off
+static unsigned _tx_backoff_count;  // consecutive hold-offs, reset on a send
 static bool     _peer_gone;        // channel closed; drain the ring, then EOF
 static bool     _recv_ready_owed;  // the stack is waiting on us for a buffer
 static uint8_t  _ring[RING_SIZE];
@@ -76,6 +103,16 @@ static void _signal(SemaphoreHandle_t sem)
         uint64_t one = 1;
         (void)write(_wakeup_fd, &one, sizeof(one));
     }
+}
+
+/// End of a transmit hold-off. Runs on the esp_timer task.
+static void _tx_backoff_expired(void *arg)
+{
+    (void)arg;
+    _lock();
+    _tx_backoff = false;
+    _unlock();
+    _signal(_tx_sem);
 }
 
 /// Hand the stack a fresh receive buffer. Only ever called with at least one
@@ -140,27 +177,40 @@ static int _l2cap_event(struct ble_l2cap_event *event, void *arg)
             }
             struct ble_l2cap_chan_info info;
             uint16_t tx_mtu = MTU;
+            uint16_t peer_mps = 0;
             if (ble_l2cap_get_chan_info(event->connect.chan, &info) == 0) {
                 // An SDU larger than what the peer advertised is rejected
                 // outright, so this is a hard bound, not a preference.
                 tx_mtu = info.peer_coc_mtu < MTU ? info.peer_coc_mtu : MTU;
+                peer_mps = info.peer_l2cap_mtu;
             }
             _lock();
             _chan = event->connect.chan;
             _tx_mtu = tx_mtu;
             _tx_stalled = false;
+            _tx_backoff = false;
+            _tx_backoff_count = 0;
             _peer_gone = false;
             _recv_ready_owed = false;
             _ring_head = 0;
             _ring_len = 0;
             _unlock();
-            ESP_LOGI(TAG, "L2CAP channel open (tx mtu %u)", (unsigned)tx_mtu);
+            // The mbuf count is the baseline for the "msys free" figure in the
+            // transmit error path: a session that starts lower than the last
+            // one means blocks are not coming back.
+            ESP_LOGI(TAG,
+                     "L2CAP channel open (tx mtu %u, peer mps %u, sdu %u, "
+                     "msys %d/%d mbufs free)",
+                     (unsigned)tx_mtu, (unsigned)peer_mps,
+                     (unsigned)(tx_mtu < TX_SDU_MAX ? tx_mtu : TX_SDU_MAX),
+                     os_msys_num_free(), os_msys_count());
             _signal(_session_sem);
             return 0;
         }
 
         case BLE_L2CAP_EVENT_COC_DISCONNECTED:
-            ESP_LOGI(TAG, "L2CAP channel closed");
+            ESP_LOGI(TAG, "L2CAP channel closed (msys %d/%d mbufs free)",
+                     os_msys_num_free(), os_msys_count());
             _lock();
             _chan = NULL;
             _peer_gone = true;
@@ -234,6 +284,16 @@ esp_err_t wble_l2cap_init(void)
         return ESP_ERR_NO_MEM;
     }
 
+    const esp_timer_create_args_t backoff_args = {
+        .callback = _tx_backoff_expired,
+        .name     = "wble_tx_backoff",
+    };
+    esp_err_t err = esp_timer_create(&backoff_args, &_tx_backoff_timer);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_timer_create failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
     _wakeup_fd = eventfd(0, 0);
     if (_wakeup_fd < 0) {
         ESP_LOGE(TAG, "eventfd() failed");
@@ -278,6 +338,8 @@ void wble_l2cap_end_session(void)
     _chan = NULL;
     _peer_gone = false;
     _tx_stalled = false;
+    _tx_backoff = false;
+    _tx_backoff_count = 0;
     _recv_ready_owed = false;
     _ring_head = 0;
     _ring_len = 0;
@@ -331,13 +393,14 @@ ssize_t wble_l2cap_write(const void *buf, size_t len)
 
     _lock();
     struct ble_l2cap_chan *chan = _chan;
-    bool stalled = _tx_stalled;
-    size_t n = len < _tx_mtu ? len : _tx_mtu;
+    bool hold = _tx_stalled || _tx_backoff;
+    size_t cap = _tx_mtu < TX_SDU_MAX ? _tx_mtu : TX_SDU_MAX;
+    size_t n = len < cap ? len : cap;
     _unlock();
 
     if (!chan)
         return WBLE_ERR_UNKNOWN;
-    if (stalled)
+    if (hold)
         return WBLE_ERR_WANT_WRITE;
 
     struct os_mbuf *sdu = os_mbuf_get_pkthdr(&_sdu_mbuf_pool, 0);
@@ -349,8 +412,12 @@ ssize_t wble_l2cap_write(const void *buf, size_t len)
     }
 
     int rc = ble_l2cap_send(chan, sdu);
-    if (rc == 0)
+    if (rc == 0) {
+        _lock();
+        _tx_backoff_count = 0;
+        _unlock();
         return (ssize_t)n;
+    }
 
     if (rc == BLE_HS_ESTALLED) {
         // The stack kept the SDU and will finish it as credits arrive, so
@@ -358,11 +425,20 @@ ssize_t wble_l2cap_write(const void *buf, size_t len)
         // them twice. It just won't take another one until TX_UNSTALLED.
         _lock();
         _tx_stalled = true;
+        _tx_backoff_count = 0;
         _unlock();
         return (ssize_t)n;
     }
 
-    os_mbuf_free_chain(sdu);   // not consumed on any other return
+    // EBUSY and EBADDATA are the only returns that reject the SDU before the
+    // channel adopts it. Every other failure — ENOMEM out of msys while
+    // fragmenting, or a transmit that the link layer refused — runs the
+    // stack's internal failure path, which frees the SDU itself before
+    // returning, so freeing it here would put the block back into
+    // _sdu_mempool twice. (ble_l2cap_send documents itself as consuming the
+    // mbuf on success only. It does not.)
+    if (rc == BLE_HS_EBUSY || rc == BLE_HS_EBADDATA)
+        os_mbuf_free_chain(sdu);
 
     if (rc == BLE_HS_EBUSY) {
         // A previous SDU is still draining; TX_UNSTALLED is the wakeup.
@@ -372,7 +448,51 @@ ssize_t wble_l2cap_write(const void *buf, size_t len)
         return WBLE_ERR_WANT_WRITE;
     }
 
-    ESP_LOGE(TAG, "ble_l2cap_send failed: %d", rc);
+    if (rc == BLE_HS_ENOMEM) {
+        // The host is out of mbufs, which is a queue that has to drain rather
+        // than a broken stream: TX_SDU_MAX keeps an SDU to a single fragment,
+        // so this send took all of it or none of it, and the stack's failure
+        // path took ours with it. Nothing reached the peer, so the same bytes
+        // can go again.
+        //
+        // Nothing will announce that a block came free, either — msys blocks
+        // return as the controller acknowledges packets it already holds,
+        // which is not a channel event. This is the one shortage L2CAP's
+        // credit scheme does not cover, and the hold-off is the flow control
+        // standing in for it: can_write() stays false until the timer fires,
+        // which keeps the caller's select() asleep instead of spinning on a
+        // write that cannot succeed.
+        _lock();
+        bool exhausted = (++_tx_backoff_count >= TX_BACKOFF_MAX);
+        bool arm = !exhausted && !_tx_backoff;
+        if (arm)
+            _tx_backoff = true;
+        _unlock();
+
+        if (!exhausted) {
+            if (arm && esp_timer_start_once(_tx_backoff_timer,
+                                            TX_BACKOFF_MS * 1000) != ESP_OK) {
+                // Nothing else would ever lift the hold-off.
+                _lock();
+                _tx_backoff = false;
+                _unlock();
+            }
+            return WBLE_ERR_WANT_WRITE;
+        }
+
+        ESP_LOGE(TAG, "out of host mbufs for %d ms, giving up on the link "
+                      "(msys %d/%d mbufs free)",
+                 TX_BACKOFF_MAX * TX_BACKOFF_MS,
+                 os_msys_num_free(), os_msys_count());
+        return WBLE_ERR_UNKNOWN;
+    }
+
+    // The mbuf counts are summed over every msys pool, so a partial reading is
+    // the informative one: the transmit path only ever draws on the smallest
+    // pool, so MSYS_2 sitting untouched while MSYS_1 is empty points at this
+    // path rather than at the host at large.
+    ESP_LOGE(TAG, "ble_l2cap_send failed: %d (msys %d/%d mbufs free)",
+             rc, os_msys_num_free(), os_msys_count());
     return WBLE_ERR_UNKNOWN;
 }
 
@@ -387,7 +507,7 @@ bool wble_l2cap_can_read(void)
 bool wble_l2cap_can_write(void)
 {
     _lock();
-    bool ready = (_chan != NULL) && !_tx_stalled;
+    bool ready = (_chan != NULL) && !_tx_stalled && !_tx_backoff;
     _unlock();
     return ready;
 }
