@@ -817,14 +817,38 @@ static void com_get_device_identity(const char **id, const char **name, const ch
 #define _STRINGIFY(x) #x
 #define _TOSTRING(x) _STRINGIFY(x)
 
+// WENDY_CORE_COMPONENT_VERSION is defined by CMakeLists.txt from the COMPONENT_VERSION property.
+#ifndef WENDY_CORE_COMPONENT_VERSION
+#define WENDY_CORE_COMPONENT_VERSION ""
+#endif
+
+static const char *get_version(void)
+{
+#if CONFIG_WENDY_FIRMWARE_VERSION_MAJOR == 0 && CONFIG_WENDY_FIRMWARE_VERSION_MINOR == 0 && CONFIG_WENDY_FIRMWARE_VERSION_PATCH == 0
+    if (WENDY_CORE_COMPONENT_VERSION[0] == 0) {
+        return "dev";
+    } else {
+        // CONFIG_WENDY_FIRMWARE_VERSION_* only carries a real version on a
+        // release build of this repo (injected from the git tag by
+        // .github/workflows/build.yml), so it stays at 0.0.0 when the
+        // component is embedded in someone else's IDF project. There, report
+        // the version the IDF Component Manager resolved for wendy_core
+        // instead: the released version, or the commit for a git dependency.
+        return WENDY_CORE_COMPONENT_VERSION;
+    }
+#else
+    return _TOSTRING(CONFIG_WENDY_FIRMWARE_VERSION_MAJOR) "."
+            _TOSTRING(CONFIG_WENDY_FIRMWARE_VERSION_MINOR) "."
+            _TOSTRING(CONFIG_WENDY_FIRMWARE_VERSION_PATCH);
+#endif
+}
+
 static void com_get_device_info(const char **os, const char **os_version,
                                 const char **cpu_architecture, const char **board,
                                 bool *wasm_app_support, bool *native_app_support)
 {
     *os = "wendy-lite";
-    *os_version = _TOSTRING(CONFIG_WENDY_FIRMWARE_VERSION_MAJOR) "."
-                  _TOSTRING(CONFIG_WENDY_FIRMWARE_VERSION_MINOR) "."
-                  _TOSTRING(CONFIG_WENDY_FIRMWARE_VERSION_PATCH);
+    *os_version = get_version();
     *cpu_architecture = CONFIG_IDF_TARGET_ARCH;
     /* "esp32c6" means "generic esp32c6 board", not the SoC name */
     *board = CONFIG_IDF_TARGET;
