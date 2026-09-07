@@ -41,7 +41,7 @@ menu "Wendy BLE (WendyCom transport)"
             unless wendy_conf carries a private key, a certificate and a chain
             of trust.
 
-            When unset (the default), an unprovisioned device serves the
+            When unset, an unprovisioned device serves the
             embedded self-signed certificate with client verification off,
             matching what wendy_server does on TCP. That keeps BLE usable as a
             recovery path on a fresh board, which is its main purpose.
