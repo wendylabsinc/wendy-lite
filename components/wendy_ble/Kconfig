@@ -34,7 +34,7 @@ menu "Wendy BLE (WendyCom transport)"
 
     config WENDY_BLE_REQUIRE_MTLS
         bool "Require mTLS (refuse to advertise when unprovisioned)"
-        default n
+        default y
         depends on WENDY_BLE
         help
             When set, the device neither advertises nor opens the L2CAP server
