@@ -1,0 +1,11 @@
+menu "Wendy BLE exports"
+    config WENDY_BLE_EXPORT
+        bool "Enable BLE host functions for WASM guests"
+        default y
+        depends on WENDY_BLE
+        help
+            BLE GAP and GATT functions exposed to WASM guests, using NimBLE.
+
+            The NimBLE stack itself is owned and started by the wendy_ble
+            component (the WendyCom BLE transport), which this depends on.
+endmenu

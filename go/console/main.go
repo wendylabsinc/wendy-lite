@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,7 +14,15 @@ import (
 	"golang.org/x/term"
 
 	"github.com/wendylabsinc/wendy/go/console/liteclient"
+	"github.com/wendylabsinc/wendy/go/internal/shared/ble"
+	"github.com/wendylabsinc/wendy/go/internal/shared/ble/scan"
 )
+
+// bleScanDuration is how long a ble:// target without an address scans for.
+// Two seconds is usually enough at a 100 ms advertising interval, but a device
+// that has just dropped a connection takes a moment to start advertising
+// again, and missing it costs a confusing "no device found".
+const bleScanDuration = 4 * time.Second
 
 func run(target string) error {
 	client := liteclient.NewWendyLiteClient()
@@ -21,6 +30,13 @@ func run(target string) error {
 	switch {
 	case strings.HasPrefix(target, "/"):
 		err = client.ConnectToSerial(target)
+	case strings.HasPrefix(target, "ble://"):
+		var addr string
+		var psm uint16
+		addr, psm, err = resolveBLETarget(target)
+		if err == nil {
+			err = client.ConnectViaBLEInsecure(addr, psm)
+		}
 	case strings.HasPrefix(target, "cloud://"):
 		var addr string
 		var assetID uint32
@@ -251,6 +267,105 @@ func runConsole(client *liteclient.WendyLiteClient, rolling bool, blocking bool)
 	}
 }
 
+// resolveBLETarget turns a ble:// target into an address and a PSM.
+//
+//	ble://                  scan and take the only wendy-lite device
+//	ble://<name>            scan and match the advertised name
+//	ble://<address>         use it as-is (a CoreBluetooth peripheral UUID)
+//	ble://<target>?psm=129  override the PSM instead of reading it over GATT
+//
+// A PSM of 0 means "ask the device", which is what ConnectViaBLE does.
+func resolveBLETarget(target string) (string, uint16, error) {
+	rest := strings.TrimPrefix(target, "ble://")
+
+	var psm uint16
+	if base, query, found := strings.Cut(rest, "?"); found {
+		rest = base
+		for _, param := range strings.Split(query, "&") {
+			key, value, _ := strings.Cut(param, "=")
+			if key != "psm" {
+				return "", 0, fmt.Errorf("unknown ble:// parameter %q", key)
+			}
+			n, err := strconv.ParseUint(value, 10, 16)
+			if err != nil {
+				return "", 0, fmt.Errorf("bad psm %q: %w", value, err)
+			}
+			psm = uint16(n)
+		}
+	}
+
+	// An address is passed through untouched: scanning is neither needed nor
+	// available everywhere, and it costs seconds.
+	if looksLikeBLEAddress(rest) {
+		return rest, psm, nil
+	}
+
+	devices, err := scanForLiteDevices(bleScanDuration)
+	if err != nil {
+		return "", 0, err
+	}
+	if rest != "" {
+		var matches []scan.BLEDeviceInfo
+		for _, d := range devices {
+			if d.Name == rest {
+				matches = append(matches, d)
+			}
+		}
+		devices = matches
+	}
+
+	switch len(devices) {
+	case 0:
+		if rest == "" {
+			return "", 0, fmt.Errorf("no wendy-lite device found")
+		}
+		return "", 0, fmt.Errorf("no wendy-lite device named %q found", rest)
+	case 1:
+		d := devices[0]
+		fmt.Fprintf(os.Stderr, "found %s (%s, rssi %d)\n", d.Name, d.Address, d.RSSI)
+		return d.Address, psm, nil
+	default:
+		fmt.Fprintln(os.Stderr, "several wendy-lite devices found:")
+		for _, d := range devices {
+			fmt.Fprintf(os.Stderr, "  ble://%s   (name %s, rssi %d)\n",
+				d.Address, d.Name, d.RSSI)
+		}
+		return "", 0, fmt.Errorf("pass one of the addresses above")
+	}
+}
+
+// scanForLiteDevices scans for d and returns everything advertising the
+// wendy-lite info service.
+//
+// The scanner streams: every emit is the complete set seen so far, strongest
+// signal first, and the stream ends when the context expires. Draining it to
+// the close and keeping the last emit is how a streaming scanner becomes the
+// fixed-duration scan a one-shot CLI wants.
+func scanForLiteDevices(d time.Duration) ([]scan.BLEDeviceInfo, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+
+	stream, err := scan.DiscoverBluetoothContinuous(ctx, scan.Options{
+		Services: []string{ble.LiteInfoServiceUUID},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var latest []scan.BLEDeviceInfo
+	for devices := range stream {
+		latest = devices
+	}
+	return latest, nil
+}
+
+// looksLikeBLEAddress reports whether s is already an address rather than a
+// name to search for. On macOS that is a CoreBluetooth peripheral UUID; the
+// OS never exposes the hardware MAC.
+func looksLikeBLEAddress(s string) bool {
+	return len(s) == 36 && strings.Count(s, "-") == 4
+}
+
 // parseCloudTarget splits cloud://host:port[/asset-id] into the tinycloud
 // gRPC address and the target asset id (default 23).
 func parseCloudTarget(target string) (string, uint32, error) {
@@ -272,7 +387,7 @@ func parseCloudTarget(target string) (string, uint32, error) {
 
 func main() {
 	if len(os.Args) != 2 {
-		fmt.Fprintf(os.Stderr, "usage: %s host:port|/dev/ttyXXX|cloud://host:port[/asset-id]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "usage: %s host:port | /dev/ttyXXX | ble://[name-or-address] | cloud://host:port[/asset-id]\n", os.Args[0])
 		os.Exit(1)
 	}
 	if err := run(os.Args[1]); err != nil {

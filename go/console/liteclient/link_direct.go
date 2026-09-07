@@ -19,6 +19,28 @@ import (
 
 const escapeChar = 0x10 // CTRL-P, aka DLE (Data Link Escape)
 
+// WendyCom frame header: magic, version, four reserved bytes, then a 16-bit
+// big-endian body length. directLink owns this framing — the cloud tunnel does
+// not use it, because there the broker frames instead.
+const (
+	headerMagic   = 0xA5
+	headerVersion = 0x02
+	headerSize    = 8
+)
+
+// maxTLSRecordSize is the largest TLS record we allow ourselves to emit. The
+// device rejects any record whose plaintext exceeds its
+// MBEDTLS_SSL_IN_CONTENT_LEN and has no way to ask for a smaller one — TLS can
+// negotiate this (RFC 6066, RFC 8449) but crypto/tls implements neither
+// extension — so bounding our own writes is the only control available.
+//
+// It has to be enforced rather than assumed: crypto/tls sizes a record at
+// min(len(write), maxPayload), and maxPayload jumps from one TCP segment to 16
+// KiB once a connection has carried 128 KiB. Without a cap, an oversized
+// message would succeed on a fresh session and kill the link on a long-lived
+// one.
+const maxTLSRecordSize = 8192
+
 // directLink frames WendyComMessages with the 8-byte link header over a
 // direct connection (TCP-TLS or serial). The header channel byte stays 0:
 // direct links always use the default channel.
@@ -26,6 +48,18 @@ type directLink struct {
 	conn     io.ReadWriteCloser
 	isSerial bool
 	writeMu  sync.Mutex // serializes frames across command goroutines
+}
+
+// newDirectLink frames WendyCom over an established byte stream: TCP-TLS, or
+// TLS over a BLE L2CAP channel.
+func newDirectLink(conn io.ReadWriteCloser) *directLink {
+	return &directLink{conn: conn}
+}
+
+// newSerialLink frames WendyCom over a serial port, which needs escaping and a
+// smaller chunk than a network transport.
+func newSerialLink(port serial.Port) *directLink {
+	return &directLink{conn: port, isSerial: true}
 }
 
 // linkHandshake switches a serial device into WendyCom mode; on TCP-TLS there
@@ -37,36 +71,80 @@ func (l *directLink) linkHandshake() error {
 	return serialHandshake(l.conn.(serial.Port))
 }
 
-func serialHandshake(port serial.Port) error {
+// serialHandshakePort is the narrow slice of serial.Port used by the console
+// mode handshake. Keeping it narrow makes the boot-log interleaving behavior
+// deterministic to test without a physical serial device.
+type serialHandshakePort interface {
+	Read([]byte) (int, error)
+	Write([]byte) (int, error)
+	SetReadTimeout(time.Duration) error
+}
+
+func serialHandshake(port serialHandshakePort) error {
 	if _, err := port.Write([]byte{escapeChar, escapeChar, escapeChar, escapeChar, 'e'}); err != nil {
 		return fmt.Errorf("serial handshake: send escape: %w", err)
 	}
-
-	var sentinel string
 
 	if err := port.SetReadTimeout(100 * time.Millisecond); err != nil {
 		return fmt.Errorf("serial handshake: set timeout: %w", err)
 	}
 
+	// Every send carries a fresh sentinel, and only the most recent one is
+	// matched below. The sentinel is a stream position marker, not a liveness
+	// probe: because the echo is FIFO, seeing the *latest* one come back proves
+	// nothing the host wrote earlier is still in flight, which is the
+	// precondition for switching to WendyCom mode. Repeating one sentinel would
+	// only prove that some send was echoed, leaving the echoes of the later
+	// sends queued for the frame parser, which rejects them as a bad magic byte.
+	var sentinel string
+	sendSentinel := func() error {
+		var randBytes [16]byte
+		if _, err := rand.Read(randBytes[:]); err != nil {
+			return fmt.Errorf("serial handshake: generate sentinel: %w", err)
+		}
+		sentinel = hex.EncodeToString(randBytes[:])
+		if _, err := port.Write([]byte(strings.Repeat(" ", 16) + sentinel)); err != nil {
+			return fmt.Errorf("serial handshake: send sentinel: %w", err)
+		}
+		return nil
+	}
+	// Send immediately. Waiting for a quiet read timeout before the first send
+	// makes reconnecting after a physical reboot fail whenever boot or
+	// auto-started app logs keep the serial stream continuously readable for
+	// the entire 3-second handshake budget.
+	if err := sendSentinel(); err != nil {
+		return err
+	}
+	// The mode switch may be applied asynchronously by the device after the
+	// escape command is consumed, and console mode swallows host input without
+	// echoing it. Keep sending while draining output so at least one sentinel
+	// lands after that transition even if Read never times out because boot
+	// logs are continuous.
+	nextSentinel := time.Now().Add(100 * time.Millisecond)
+
 	window := make([]byte, 0, 32)
 	oneByte := make([]byte, 1)
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
+		if !time.Now().Before(nextSentinel) {
+			if err := sendSentinel(); err != nil {
+				return err
+			}
+			nextSentinel = time.Now().Add(100 * time.Millisecond)
+		}
 		n, err := port.Read(oneByte)
 		if err != nil {
 			return fmt.Errorf("serial handshake: read: %w", err)
 		}
 		if n == 0 {
-			// rx timeout, so rx buffer empty, so send sentinel
-			var randBytes [16]byte
-			if _, err := rand.Read(randBytes[:]); err != nil {
-				return fmt.Errorf("serial handshake: generate sentinel: %w", err)
-			}
-			sentinel = hex.EncodeToString(randBytes[:])
+			// The echo may have been lost while the device was switching modes,
+			// or to a dropped byte (USB Serial JTAG has no flow control);
+			// resend whenever the receive buffer goes quiet.
 			window = window[:0]
-			if _, err := port.Write([]byte(strings.Repeat(" ", 16) + sentinel)); err != nil {
-				return fmt.Errorf("serial handshake: send sentinel: %w", err)
+			if err := sendSentinel(); err != nil {
+				return err
 			}
+			nextSentinel = time.Now().Add(100 * time.Millisecond)
 			continue
 		}
 		if n == 1 {
@@ -76,7 +154,7 @@ func serialHandshake(port serial.Port) error {
 				copy(window, window[1:])
 				window[31] = oneByte[0]
 			}
-			if sentinel != "" && len(window) == 32 && string(window) == sentinel {
+			if len(window) == 32 && string(window) == sentinel {
 				if err := port.SetReadTimeout(serial.NoTimeout); err != nil {
 					return fmt.Errorf("serial handshake: clear timeout: %w", err)
 				}
@@ -109,7 +187,14 @@ func (l *directLink) send(req *wendypb.WendyComMessage) error {
 	l.writeMu.Lock()
 	defer l.writeMu.Unlock()
 	for len(msg) > 0 {
-		n, err := l.conn.Write(msg)
+		// A record never spans more than one Write, so capping the write caps
+		// the record. Serial is exempt: it carries no TLS, and its payload has
+		// already been escape-expanded above.
+		end := len(msg)
+		if !l.isSerial && end > maxTLSRecordSize {
+			end = maxTLSRecordSize
+		}
+		n, err := l.conn.Write(msg[:end])
 		if err != nil {
 			return fmt.Errorf("send: %w", err)
 		}
@@ -130,7 +215,7 @@ func (l *directLink) recv(timeout time.Duration) (*wendypb.WendyComMessage, erro
 	return msg, nil
 }
 
-func (l *directLink) maxChunk() int {
+func (l *directLink) preferredChunkSize() int {
 	if l.isSerial {
 		return chunkSizeForSerial
 	}

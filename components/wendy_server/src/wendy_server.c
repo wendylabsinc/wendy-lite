@@ -44,13 +44,7 @@ struct wendy_server_link {
 
 //--- globals ---//
 
-extern const uint8_t default_cert_der_start[] asm("_binary_default_cert_der_start");
-extern const uint8_t default_cert_der_end[]   asm("_binary_default_cert_der_end");
-extern const uint8_t default_key_der_start[]  asm("_binary_default_key_der_start");
-extern const uint8_t default_key_der_end[]    asm("_binary_default_key_der_end");
-
 static struct wendy_server_link _links[WENDY_SERVER_MAX_LINKS];
-static char *_device_name;
 
 
 //--- internal functions ---//
@@ -144,7 +138,9 @@ static void _server_task(void *arg)
     struct wendy_conf_span key = wendy_conf_get_private_key();
     struct wendy_conf_span cert = wendy_conf_get_certificate();
     struct wendy_conf_span chain = wendy_conf_get_chain_of_trust();
-    bool trusted = key.size > 0 && cert.size > 0 && chain.size > 0;
+    struct wendy_conf_span default_cert = wendy_conf_get_default_certificate();
+    struct wendy_conf_span default_key = wendy_conf_get_default_private_key();
+    bool trusted = wendy_conf_is_provisioned();
 
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd < 0) {
@@ -183,10 +179,20 @@ static void _server_task(void *arg)
         ESP_LOGI(TAG, "mTLS disabled: any client will be accepted");
     }
 
+    // The full identity, so a browser can tell which board answers without
+    // opening a connection first: the ID pins it down, the names label it.
     mdns_txt_item_t txt_items[] = {
         {
+            .key = "id",
+            .value = wendy_conf_get_device_id()
+        },
+        {
             .key = "name",
-            .value = _device_name
+            .value = wendy_conf_get_resolved_device_name()
+        },
+        {
+            .key = "displayname",
+            .value = wendy_conf_get_resolved_device_display_name()
         },
         {
             .key = "mtls",
@@ -194,9 +200,9 @@ static void _server_task(void *arg)
         }
     };
 
-    esp_err_t mdns_err = mdns_service_add(_device_name, "_wendy-lite", "_tcp", WENDY_SERVER_PORT, txt_items, sizeof(txt_items) / sizeof(txt_items[0]));
-    free(_device_name);
-    _device_name = NULL;
+    esp_err_t mdns_err = mdns_service_add(wendy_conf_get_resolved_device_display_name(),
+                                          "_wendy-lite", "_tcp", WENDY_SERVER_PORT,
+                                          txt_items, sizeof(txt_items) / sizeof(txt_items[0]));
     if (mdns_err != ESP_OK) {
         ESP_LOGE(TAG, "mDNS service add failed: %s", esp_err_to_name(mdns_err));
     } else {
@@ -231,10 +237,10 @@ static void _server_task(void *arg)
             };
         } else {
             cfg = (esp_tls_cfg_server_t){
-                .servercert_buf   = default_cert_der_start,
-                .servercert_bytes = default_cert_der_end - default_cert_der_start,
-                .serverkey_buf    = default_key_der_start,
-                .serverkey_bytes  = default_key_der_end - default_key_der_start,
+                .servercert_buf   = default_cert.data,
+                .servercert_bytes = default_cert.size,
+                .serverkey_buf    = default_key.data,
+                .serverkey_bytes  = default_key.size,
                 // no cacert_buf: peer identity checks disabled
             };
         }
@@ -294,9 +300,8 @@ static void _server_task(void *arg)
 
 //--- public functions ---//
 
-void wendy_server_start(const char *device_name)
+void wendy_server_start(void)
 {
-    _device_name = device_name ? strdup(device_name) : NULL;
     xTaskCreatePinnedToCore(_server_task, "wendy_server", WENDY_SERVER_TASK_STACK, NULL,
                              CONFIG_WENDY_SERVER_TASK_PRIORITY, NULL,
                              CONFIG_WENDY_SERVER_TASK_CORE_AFFINITY);

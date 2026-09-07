@@ -1,0 +1,17 @@
+menu "Wendy Conf"
+    config WENDY_DEVICE_NAME_BUF_SIZE
+        int "Device name buffer size (bytes, including null terminator)"
+        default 64
+        help
+            Size of the buffer used to hold the device name (BLE advertising
+            name, mDNS hostname, etc.), including the null terminator.
+            We use 64 because this corresponds to the DNS name standard.
+
+    config WENDY_DEVICE_NAME_DEFAULT_PREFIX
+        string "Default device name prefix"
+        default "wendy"
+        help
+            Prefix used when no device name has been configured. The actual
+            name is formed as "<prefix>-XXXX" where XXXX is a 4-digit hex
+            number derived from the device ID.
+endmenu

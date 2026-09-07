@@ -22,14 +22,11 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// The WendyCom protocol version this client speaks, exchanged in the handshake.
+// The major number must match the device's; minor is informational.
 const (
-	headerMagic        = 0xA5
-	headerVersion      = 0x02
-	headerSize         = 8
-	chunkSize          = 4096
-	chunkSizeForSerial = 768
-	versionMajor       = 2
-	versionMinor       = 0
+	versionMajor = 2
+	versionMinor = 0
 )
 
 type protocolVersion struct {
@@ -51,6 +48,12 @@ type DeviceInfo struct {
 	WasmAppSupport   bool
 	NativeAppSupport bool
 }
+
+// ErrSerialPortUnavailable marks failures that happened before a serial port
+// was successfully opened. Callers that probe for Wendy Lite firmware use it
+// to distinguish a busy/missing/inaccessible port from a port that opened but
+// failed the WendyCom handshake.
+var ErrSerialPortUnavailable = errors.New("serial port unavailable")
 
 type AppType int
 
@@ -117,7 +120,7 @@ func (c *WendyLiteClient) ConnectInsecure(address string) error {
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
-	c.link = &directLink{conn: conn}
+	c.link = newDirectLink(conn)
 	err = c.handshake()
 	if err != nil {
 		conn.Close()
@@ -161,7 +164,7 @@ func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert t
 	if err != nil {
 		return fmt.Errorf("connect (mTLS): %w", err)
 	}
-	c.link = &directLink{conn: conn}
+	c.link = newDirectLink(conn)
 	err = c.handshake()
 	if err != nil {
 		conn.Close()
@@ -175,7 +178,7 @@ func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert t
 func (c *WendyLiteClient) ConnectToSerial(device string) error {
 	lock, err := seriallock.Acquire(device)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrSerialPortUnavailable, err)
 	}
 	mode := &serial.Mode{
 		BaudRate: 115200,
@@ -186,9 +189,9 @@ func (c *WendyLiteClient) ConnectToSerial(device string) error {
 	port, err := serial.Open(device, mode)
 	if err != nil {
 		lock.Release()
-		return fmt.Errorf("open serial: %w", err)
+		return fmt.Errorf("%w: open serial: %w", ErrSerialPortUnavailable, err)
 	}
-	c.link = &directLink{conn: port, isSerial: true}
+	c.link = newSerialLink(port)
 	c.serialLock = lock
 	if err := c.handshake(); err != nil {
 		port.Close()
@@ -310,7 +313,7 @@ func (c *WendyLiteClient) PushApp(path string, appType AppType, onProgress func(
 		return fmt.Errorf("push begin: device returned error: %w", err)
 	}
 
-	buf := make([]byte, c.link.maxChunk())
+	buf := make([]byte, c.link.preferredChunkSize())
 	var offset uint32
 	for {
 		n, err := f.Read(buf)
@@ -393,9 +396,9 @@ func (c *WendyLiteClient) PushConf(conf *wendypb.WendyConf, mode ConfPushMode, o
 		return fmt.Errorf("push begin: device returned error: %w", err)
 	}
 
-	maxChunk := c.link.maxChunk()
+	chunk := c.link.preferredChunkSize()
 	for offset := uint32(0); offset < size; {
-		n := min(size-offset, uint32(maxChunk))
+		n := min(size-offset, uint32(chunk))
 		resp, err := c.sendCommand(&wendypb.WendyComCommand{
 			RequestId: c.requestIdGen.Add(1),
 			Params: &wendypb.WendyComCommand_ConfPushData{
@@ -652,7 +655,7 @@ func (c *WendyLiteClient) sendConsoleDetach(eventID uint32, abrupt bool) error {
 // the device sends no acknowledgment.
 func (c *WendyLiteClient) ConsolePushStdinData(data []byte) error {
 	for len(data) > 0 {
-		n := min(len(data), c.link.maxChunk())
+		n := min(len(data), c.link.preferredChunkSize())
 		err := c.link.send(&wendypb.WendyComMessage{
 			Msg: &wendypb.WendyComMessage_Event{
 				Event: &wendypb.WendyComEvent{

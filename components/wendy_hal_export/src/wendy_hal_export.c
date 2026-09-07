@@ -42,8 +42,8 @@ int wendy_hal_export_rmt(void);
 #if CONFIG_WENDY_WASI_SHIM
 #include "wendy_wasi_shim.h"
 #endif
-#if CONFIG_WENDY_BLE
-#include "wendy_ble.h"
+#if CONFIG_WENDY_BLE_EXPORT
+#include "wendy_ble_export.h"
 #endif
 #if CONFIG_WENDY_NET
 #include "wendy_net.h"
@@ -156,7 +156,7 @@ esp_err_t wendy_hal_export_init(void)
     }
 #endif
 
-#if CONFIG_WENDY_BLE
+#if CONFIG_WENDY_BLE_EXPORT
     count++;
     if (wendy_ble_export_init() != 0) {
         ESP_LOGE(TAG, "BLE export registration failed");

@@ -12,7 +12,6 @@
 #include "freertos/semphr.h"
 
 #include "esp_log.h"
-#include "esp_mac.h"
 #include "esp_attr.h"
 #include "esp_system.h"
 #include "esp_partition.h"
@@ -46,6 +45,10 @@
 #if CONFIG_WENDY_WIFI_ENABLED
 #include "wendy_wifi.h"
 #include "wendy_com.h"
+#endif
+
+#if CONFIG_WENDY_BLE
+#include "wendy_ble.h"
 #endif
 
 static const char *TAG = "wendy_core";
@@ -111,7 +114,6 @@ static uint8_t s_persist_slot = 0;
 #endif
 static bool s_persist_load_pending = false;
 static uint8_t s_persist_load_slot = 0;
-static char s_device_name[CONFIG_WENDY_DEVICE_NAME_BUF_SIZE];
 
 #if CONFIG_WENDY_WASM
 
@@ -809,9 +811,9 @@ static WendyComResult com_reboot(bool app_auto_start, uint32_t app_auto_start_de
 
 static void com_get_device_identity(const char **id, const char **name, const char **display_name)
 {
-    *id = s_device_name;
-    *name = s_device_name;
-    *display_name = s_device_name;
+    *id           = wendy_conf_get_device_id();
+    *name         = wendy_conf_get_resolved_device_name();
+    *display_name = wendy_conf_get_resolved_device_display_name();
 }
 
 #define _STRINGIFY(x) #x
@@ -922,10 +924,7 @@ esp_err_t wendy_core_init(void)
 
     /* Load configuration from the wendy-conf partition */
     wendy_conf_init();
-    wendy_conf_copy_span(s_device_name, sizeof(s_device_name), wendy_conf_get_device_name());
-    if (s_device_name[0]) {
-        ESP_LOGI(TAG, "device name: %s", s_device_name);
-    }
+    ESP_LOGI(TAG, "device name: %s", wendy_conf_get_resolved_device_name());
 
 #if CONFIG_WENDY_WASM
     /* Pre-allocate the WAMR memory pool while RAM is still plentiful,
@@ -946,13 +945,6 @@ esp_err_t wendy_core_init(void)
     /* Initialize hardware */
     init_hal();
 
-    if (!s_device_name[0]) {
-        uint8_t mac[6];
-        esp_efuse_mac_get_default(mac);
-        snprintf(s_device_name, sizeof(s_device_name), "wendy-%02x%02x", mac[4], mac[5]);
-        ESP_LOGI(TAG, "device name (fallback): %s", s_device_name);
-    }
-
     /* Initialize main com infrastructure */
     static const struct wcom_app_delegate app_delegate = {
         .on_app_push_begin      = com_push_begin,
@@ -972,9 +964,24 @@ esp_err_t wendy_core_init(void)
     wcom_set_app_delegate(&app_delegate);
     wcom_start();
 
+    /* Initialize the BLE transport (if enabled). Deliberately before WiFi and
+     * not gated on it: a board with no credentials is exactly the case BLE
+     * exists to cover. The identity comes from wendy_conf, the same source the
+     * delegate above reads, so a BLE scan and an identity command can't
+     * disagree. */
+#if CONFIG_WENDY_BLE
+    {
+        esp_err_t ble_err = wendy_ble_start();
+        if (ble_err != ESP_OK) {
+            ESP_LOGW(TAG, "BLE transport not started: %s",
+                     esp_err_to_name(ble_err));
+        }
+    }
+#endif
+
     /* Initialize WiFi transport (if enabled) */
 #if CONFIG_WENDY_WIFI_ENABLED
-    err = wendy_wifi_init(s_device_name);
+    err = wendy_wifi_init();
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "WiFi connected");
     } else if (err == WENDY_WIFI_ERR_NO_CREDS) {

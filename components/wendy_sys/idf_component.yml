@@ -5,3 +5,5 @@ dependencies:
     override_path: "../wendy_callback"
   wendy_wasm:
     override_path: "../wendy_wasm"
+  wendy_conf:
+    override_path: "../wendy_conf"
