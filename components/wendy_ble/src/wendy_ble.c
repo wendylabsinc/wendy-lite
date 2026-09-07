@@ -535,6 +535,8 @@ esp_err_t wendy_ble_host_init(void)
 
 esp_err_t wendy_ble_start(void)
 {
+    esp_err_t err = ESP_OK;
+
     if (_started)
         return ESP_OK;
 
@@ -559,29 +561,32 @@ esp_err_t wendy_ble_start(void)
     _display_name = strdup(wendy_conf_get_resolved_device_display_name());
     if (!_device_id || !_device_name || !_display_name) {
         ESP_LOGE(TAG, "out of memory");
-        return ESP_ERR_NO_MEM;
+        err = ESP_ERR_NO_MEM;
+        goto fail;
     }
 
     _build_mfg_data();
 
     // The GAP service name is what a central reads from the standard 0x2A00
-    // characteristic; keep it in step with the advertised name.
+    // characteristic; keep it in step with the advertised name. NimBLE copies
+    // the string into its own buffer, so the failure path may still free ours.
     ble_svc_gap_device_name_set(_device_name);
 
     _log_heap("before");
-    esp_err_t err = wendy_ble_host_init();
+    err = wendy_ble_host_init();
     if (err != ESP_OK)
-        return err;
+        goto fail;
     _log_heap("after");
 
     err = wble_l2cap_init();
     if (err != ESP_OK)
-        return err;
+        goto fail;
 
     _link_closed = xSemaphoreCreateBinary();
     if (!_link_closed) {
         ESP_LOGE(TAG, "semaphore allocation failed");
-        return ESP_ERR_NO_MEM;
+        err = ESP_ERR_NO_MEM;
+        goto fail;
     }
 
     if (xTaskCreatePinnedToCore(_session_task, "wendy_ble",
@@ -589,7 +594,8 @@ esp_err_t wendy_ble_start(void)
                                 CONFIG_WENDY_BLE_TASK_PRIORITY, NULL,
                                 CONFIG_WENDY_BLE_TASK_CORE_AFFINITY) != pdPASS) {
         ESP_LOGE(TAG, "session task creation failed");
-        return ESP_ERR_NO_MEM;
+        err = ESP_ERR_NO_MEM;
+        goto fail;
     }
 
     _started = true;
@@ -605,6 +611,21 @@ esp_err_t wendy_ble_start(void)
         _start_advertising();
 
     return ESP_OK;
+
+fail:
+    // _started is still false, so a caller may retry. Leave no half-built
+    // state behind for that retry to leak or read.
+    free(_device_id);
+    free(_device_name);
+    free(_display_name);
+    _device_id = NULL;
+    _device_name = NULL;
+    _display_name = NULL;
+    if (_link_closed) {
+        vSemaphoreDelete(_link_closed);
+        _link_closed = NULL;
+    }
+    return err;
 }
 
 #else /* !CONFIG_WENDY_BLE */
