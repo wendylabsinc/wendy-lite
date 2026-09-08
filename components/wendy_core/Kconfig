@@ -1,3 +1,12 @@
+# Marks wendy_core as part of the build. ESP-IDF only sources the Kconfig of
+# components in the build closure, so this is y exactly when a project depends
+# on wendy_core (directly or transitively) and the symbol does not exist at all
+# otherwise. No prompt, so it is invisible in menuconfig and an assignment in
+# sdkconfig or an sdkconfig.defaults overlay is ignored.
+config WENDY_CORE
+    bool
+    default y
+
 menu "Wendy Core"
     # 0.0.0 marks a build that is not a release. Release builds get the real
     # version injected from the vX.Y.Z git tag by .github/workflows/build.yml,
