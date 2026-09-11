@@ -62,8 +62,8 @@ var ErrLiteInfoUnavailable = errors.New("Wendy Lite info service unavailable")
 // device.
 //
 // address is what a scan reported for this platform — a CoreBluetooth
-// peripheral UUID on macOS, a MAC elsewhere. timeout bounds each step, not the
-// whole sequence, matching ReadLiteInfo.
+// peripheral UUID on macOS, a MAC elsewhere. timeout bounds the initial connect
+// and service discovery; characteristic reads use backend per-op timeouts.
 func ReadLiteInfoAt(address string, timeout time.Duration) (*LiteInfo, error) {
 	conn, err := central.Connect(address, central.TimeoutSeconds(timeout))
 	if err != nil {
