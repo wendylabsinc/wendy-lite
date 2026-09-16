@@ -155,7 +155,7 @@ static void _handle_esc_command(uint8_t cmd)
 
 static void _task_main(void *arg)
 {
-    uint8_t buf[256];
+    uint8_t b;
     bool esc_pending = false;
 
     for (;;) {
@@ -166,23 +166,20 @@ static void _task_main(void *arg)
             continue;
         }
 
-        int n = usb_serial_jtag_read_bytes(buf, sizeof(buf), pdMS_TO_TICKS(POLL_INTERVAL_MS));
+        int n = usb_serial_jtag_read_bytes(&b, 1, pdMS_TO_TICKS(POLL_INTERVAL_MS));
         if (n <= 0)
             continue;
 
-        for (int i = 0; i < n; i++) {
-            uint8_t b = buf[i];
-            if (b == WENDY_COM_UART_ESC) {
-                esc_pending = true;
-            } else if (esc_pending) {
-                _handle_esc_command(b);
-                esc_pending = false;
-                mode = atomic_load(&s_mode);
-            } else if (mode == USJ_MODE_ECHO) {
-                usb_serial_jtag_write_bytes(&b, 1, pdMS_TO_TICKS(1000));
-            } else if (mode == USJ_MODE_CONSOLE) {
-                wendy_stdio_put_stdin_data(&b, 1);
-            }
+        if (b == WENDY_COM_UART_ESC) {
+            esc_pending = true;
+        } else if (esc_pending) {
+            _handle_esc_command(b);
+            esc_pending = false;
+            mode = atomic_load(&s_mode);
+        } else if (mode == USJ_MODE_ECHO) {
+            usb_serial_jtag_write_bytes(&b, 1, pdMS_TO_TICKS(1000));
+        } else if (mode == USJ_MODE_CONSOLE) {
+            wendy_stdio_put_stdin_data(&b, 1);
         }
     }
 }
