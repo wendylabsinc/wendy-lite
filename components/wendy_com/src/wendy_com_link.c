@@ -260,6 +260,7 @@ static void _main(void *arg)
         // always watch the wakeup fd (signals new tx data or other internal events)
         int maxfd = _wakeup_efd;
         FD_SET(_wakeup_efd, &rfds);
+        int64_t uart_wait_us = -1; // -1 = no UART link has a pending deadline; 0 = one is due now
 
         for (int i = 0; i < WCOM_LINK_COUNT; i++) {
             struct wcom_link *ch = &_links[i];
@@ -268,6 +269,12 @@ static void _main(void *arg)
 
             if (ch->fd > maxfd)
                 maxfd = ch->fd;
+
+            if (ch->type == LINK_TYPE_UART) {
+                int64_t delay = wendy_com_uart_auto_close_delay(ch->uart);
+                if (delay >= 0 && (uart_wait_us < 0 || delay < uart_wait_us))
+                    uart_wait_us = delay;
+            }
 
             // A stream link's fd is a readiness eventfd, not the transport.
             // It is always watched for read and never for write: an eventfd
@@ -319,7 +326,16 @@ static void _main(void *arg)
         }
 
         struct timeval zero_tv = {0, 0};
-        if (select(maxfd + 1, &rfds, &wfds, NULL, progress_pending ? &zero_tv : NULL) < 0)
+        struct timeval uart_tv;
+        struct timeval *select_tv = NULL;
+        if (progress_pending) {
+            select_tv = &zero_tv;
+        } else if (uart_wait_us >= 0) {
+            uart_tv.tv_sec  = uart_wait_us / 1000000;
+            uart_tv.tv_usec = uart_wait_us % 1000000;
+            select_tv = &uart_tv;
+        }
+        if (select(maxfd + 1, &rfds, &wfds, NULL, select_tv) < 0)
             continue;
 
         // drain wakeup signal — no action needed beyond waking up to rebuild fd sets
@@ -363,7 +379,8 @@ static void _main(void *arg)
                 readable = ch->ops->can_read(ch->stream_ctx) || ch->rx_tls_readable;
                 writable = ch->ops->can_write(ch->stream_ctx);
             } else {
-                readable = FD_ISSET(ch->fd, &rfds) || ch->rx_tls_readable;
+                readable = FD_ISSET(ch->fd, &rfds) || ch->rx_tls_readable
+                           || (ch->type == LINK_TYPE_UART && wendy_com_uart_auto_close_delay(ch->uart) == 0);
                 writable = FD_ISSET(ch->fd, &wfds);
             }
 
