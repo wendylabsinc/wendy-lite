@@ -94,6 +94,9 @@ int wendy_com_uart_get_fd(wendy_com_uart_t *uart)
     return uart->fd;
 }
 
+// Returns an estimation of when this uart port auto-closes, in microseconds
+// from now, or -1 if no auto-close is foreseen. This is only a guess: the
+// caller must call read() to know whether the port is actually closed.
 int64_t wendy_com_uart_auto_close_delay(wendy_com_uart_t *uart)
 {
     if (!uart->keepalive_seen)
