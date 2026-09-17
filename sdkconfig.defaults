@@ -84,9 +84,10 @@ CONFIG_BT_NIMBLE_TRANSPORT_EVT_DISCARD_COUNT=4
 # no need for TERMIOS
 CONFIG_SUPPORT_TERMIOS=n
 
-# Take over the bootloader RTC watchdog explicitly in wendy_core_init()
-# instead of relying on ESP-IDF's automatic disable before app_main(). Set to
-# a real 40s timeout instead of disabling it; wendy_core_wdt.c feeds it every
-# 30s, gated on the wendy_com task staying responsive.
+# Take over the bootloader RTC watchdog explicitly in wendy_core_init() instead
+# of relying on ESP-IDF's automatic disable before app_main(). Keep it armed
+# with a real 40s timeout: wendy_core_wdt.c derives its feed period from the
+# timeout below and feeds it only while the wendy_com task stays responsive.
+CONFIG_WENDY_CORE_WATCHDOG=y
 CONFIG_BOOTLOADER_WDT_DISABLE_IN_USER_CODE=y
 CONFIG_BOOTLOADER_WDT_TIME_MS=40000
