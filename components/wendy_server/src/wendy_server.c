@@ -59,16 +59,11 @@ static int _tls_verify_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t 
     return 0;
 }
 
-static void _on_state_change(struct wcom_state_change_handler *handler, int link_id, enum wcom_link_state state)
+static void _on_interruption(int link_id, enum wcom_interruption_reason reason)
 {
-    ESP_LOGI(TAG, "link %d state -> %d", link_id, (int)state);
-
-    if (state == WCOM_LINK_STATE_CONNECTED)
-        return;
-
     for (int i = 0; i < WENDY_SERVER_MAX_LINKS; i++) {
         if (_links[i].tls != NULL && _links[i].link_id == link_id) {
-            ESP_LOGI(TAG, "remove link %d", link_id);
+            ESP_LOGI(TAG, "remove link %d (reason %d)", link_id, (int)reason);
             esp_tls_t *tls = _links[i].tls;
             _links[i].tls = NULL;
             _links[i].link_id = 0;
@@ -83,17 +78,8 @@ static void _on_state_change(struct wcom_state_change_handler *handler, int link
     }
 }
 
-static struct wcom_state_change_handler _state_handler = {
-    .func = _on_state_change,
-};
-
 static void _add_link_exec(struct wcom_operation *op)
 {
-    static bool subscribed = false;
-    if (!subscribed) {
-        wcom_add_state_change_handler(&_state_handler);
-        subscribed = true;
-    }
     struct _add_link_op *aop = (struct _add_link_op *)op;
 
     int slot = -1;
@@ -114,7 +100,7 @@ static void _add_link_exec(struct wcom_operation *op)
         return;
     }
 
-    int link_id = wcom_add_tls_link(aop->tls);
+    int link_id = wcom_add_tls_link(aop->tls, _on_interruption);
     if (link_id < 0) {
         ESP_LOGE(TAG, "max links reached, rejecting connection");
         int fd = -1;

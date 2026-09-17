@@ -376,7 +376,6 @@ static void _build_mfg_data(void)
  */
 
 static SemaphoreHandle_t _link_closed;
-static int _link_id;   // wcom task only
 
 static ssize_t _stream_read(void *ctx, void *buf, size_t len)
 {
@@ -431,43 +430,27 @@ static const struct wcom_stream_ops _stream_ops = {
 };
 
 /// Runs on the wcom task.
-static void _on_link_state_change(struct wcom_state_change_handler *handler,
-                                  int link_id, enum wcom_link_state state)
+static void _on_link_interruption(int link_id, enum wcom_interruption_reason reason)
 {
-    (void)handler;
-    if (link_id != _link_id || state == WCOM_LINK_STATE_CONNECTED)
-        return;
-
-    ESP_LOGI(TAG, "link %d closed (state %d)", link_id, (int)state);
-    _link_id = 0;
+    ESP_LOGI(TAG, "link %d closed (reason %d)", link_id, (int)reason);
     wcom_remove_link(link_id);
     // Tearing down TLS and the channel is the session task's job: it owns
     // those contexts again from here.
     xSemaphoreGive(_link_closed);
 }
 
-static struct wcom_state_change_handler _state_handler = {
-    .func = _on_link_state_change,
-};
-
 /// Runs on the wcom task.
 static void _add_link_exec(struct wcom_operation *op)
 {
     (void)op;
-    static bool subscribed = false;
-    if (!subscribed) {
-        wcom_add_state_change_handler(&_state_handler);
-        subscribed = true;
-    }
 
-    _link_id = wcom_add_stream_link(&_stream_ops, NULL);
-    if (_link_id < 0) {
+    int link_id = wcom_add_stream_link(&_stream_ops, NULL, _on_link_interruption);
+    if (link_id < 0) {
         ESP_LOGE(TAG, "no free wcom link for the BLE session");
-        _link_id = 0;
         xSemaphoreGive(_link_closed);
         return;
     }
-    ESP_LOGI(TAG, "link %d up", _link_id);
+    ESP_LOGI(TAG, "link %d up", link_id);
 }
 
 static void _session_task(void *arg)

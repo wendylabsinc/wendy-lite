@@ -44,11 +44,24 @@ struct wcom_state_change_handler {
     struct wcom_state_change_handler *next;
 };
 
+enum wcom_interruption_reason {
+    WCOM_INTERRUPTION_CONNECTION_CLOSED = 0,
+    WCOM_INTERRUPTION_CONNECTION_ERROR,
+};
+
+/// Called once, on the com thread, when the link it was given for is closed or
+/// fails, after the state change handlers have run. The link still exists at
+/// that point: its owner is expected to call wcom_remove_link() from here,
+/// before releasing the underlying transport.
+typedef void (*wcom_interruption_handler_t)(int link_id, enum wcom_interruption_reason reason);
+
 // base functions
 
 void wcom_core_init(void);
 void wcom_core_exec(struct wcom_operation *op);
 bool wcom_is_com_thread(void);
+
+const char *wcom_link_state_to_str(enum wcom_link_state state);
 
 // agent side interface, abstracting platform entirely
 
@@ -86,12 +99,10 @@ struct wcom_stream_ops {
     bool    (*can_write)(void *ctx);
 };
 
-int wcom_add_stream_link(const struct wcom_stream_ops *ops, void *ctx);
-
-// connection provider interface, ESP-IDF-specific
-
-int wcom_add_tls_link(esp_tls_t *tls);
-int wcom_add_uart_link(wendy_com_uart_t *uart);
+int wcom_add_stream_link(const struct wcom_stream_ops *ops, void *ctx,
+                         wcom_interruption_handler_t interruption_handler);
+int wcom_add_tls_link(esp_tls_t *tls, wcom_interruption_handler_t interruption_handler);
+int wcom_add_uart_link(wendy_com_uart_t *uart, wcom_interruption_handler_t interruption_handler);
 void wcom_remove_link(int link_id);
 
 #endif

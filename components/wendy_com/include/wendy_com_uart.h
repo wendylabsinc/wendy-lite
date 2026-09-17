@@ -31,11 +31,14 @@ typedef struct wendy_com_uart {
     bool pending_esc;
     bool eof_pending;
     uint8_t last_esc_cmd;
+    int64_t last_rx_us;  // esp_timer_get_time() of the last receive activity
+    bool keepalive_seen; // true once a DLE 'k' has been received on this link
 } wendy_com_uart_t;
 
 void wendy_com_uart_init(wendy_com_uart_t *uart, int fd);
 ssize_t wendy_com_uart_read(wendy_com_uart_t *uart, void *data, size_t datalen);
 ssize_t wendy_com_uart_write(wendy_com_uart_t *uart, const void *data, size_t datalen);
 int wendy_com_uart_get_fd(wendy_com_uart_t *uart);
+int64_t wendy_com_uart_auto_close_delay(wendy_com_uart_t *uart);
 
 #endif

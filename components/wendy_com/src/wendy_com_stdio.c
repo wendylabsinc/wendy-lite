@@ -90,10 +90,12 @@ static int _default_com_thread_log_vprintf(const char *format, va_list args)
         return len;
     size_t size = (size_t)len < sizeof(msg) ? (size_t)len : sizeof(msg) - 1;
     xSemaphoreTake(_mutex, portMAX_DELAY);
-    // No _notify_locked(): notifying from here would let a data handler that
-    // logs on failure (e.g. the stdio pump) re-trigger itself endlessly. The
-    // data is picked up with the next regular stdout traffic.
     _write_overwriting((const uint8_t *)msg, size);
+    // Announce it, or com thread logs stay here until another task writes to
+    // stdout. Whatever delivering this data prints lands back here as more
+    // data to deliver, which never ends if it is printed on every delivery —
+    // hence the contract on wcom_stdio_set_data_handler().
+    _notify_locked();
     xSemaphoreGive(_mutex);
     return len;
 }

@@ -1,6 +1,9 @@
 #include "wendy_com_uart.h"
+#include "esp_timer.h"
 #include <unistd.h>
 #include <errno.h>
+
+#define WCOM_UART_RX_TIMEOUT_US (12LL * 1000 * 1000) // 2x the client's 6s keep-alive interval
 
 void wendy_com_uart_init(wendy_com_uart_t *uart, int fd)
 {
@@ -10,6 +13,8 @@ void wendy_com_uart_init(wendy_com_uart_t *uart, int fd)
     uart->pending_esc = false;
     uart->eof_pending = false;
     uart->last_esc_cmd = 0;
+    uart->last_rx_us = esp_timer_get_time();
+    uart->keepalive_seen = false;
 }
 
 ssize_t wendy_com_uart_read(wendy_com_uart_t *uart, void *data, size_t datalen)
@@ -26,12 +31,17 @@ ssize_t wendy_com_uart_read(wendy_com_uart_t *uart, void *data, size_t datalen)
         if (uart->raw_pos >= uart->raw_len) {
             ssize_t n = read(uart->fd, uart->raw_buf, sizeof(uart->raw_buf));
             if (n < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    if (written == 0 && uart->keepalive_seen &&
+                        esp_timer_get_time() - uart->last_rx_us >= WCOM_UART_RX_TIMEOUT_US)
+                        return 0; // no data, and silent too long: treat like a closed connection
                     return written > 0 ? (ssize_t)written : WENDY_COM_UART_ERR_WANT_READ;
+                }
                 return WENDY_COM_UART_ERR_UNKNOWN;
             }
             if (n == 0)
                 return written > 0 ? (ssize_t)written : 0;
+            uart->last_rx_us = esp_timer_get_time();
             uart->raw_pos = 0;
             uart->raw_len = (int)n;
         }
@@ -47,7 +57,12 @@ ssize_t wendy_com_uart_read(wendy_com_uart_t *uart, void *data, size_t datalen)
                     out[written++] = WENDY_COM_UART_ESC;
                     break;
                 case WENDY_COM_UART_ESC_CMD_KEEP_ALIVE:
-                    // keep alive, not yet implemented
+                    uart->keepalive_seen = true;
+                    // A keep-alive left over in raw_buf from an earlier refill
+                    // is consumed here without passing through the stamp
+                    // above, so stamp it now: otherwise the only sign of life
+                    // on an idle link would be dropped on the floor.
+                    uart->last_rx_us = esp_timer_get_time();
                     break;
                 case WENDY_COM_UART_ESC_CMD_CONSOLE:
                 case WENDY_COM_UART_ESC_CMD_ECHO:
@@ -82,4 +97,15 @@ ssize_t wendy_com_uart_write(wendy_com_uart_t *uart, const void *data, size_t da
 int wendy_com_uart_get_fd(wendy_com_uart_t *uart)
 {
     return uart->fd;
+}
+
+// Returns an estimation of when this uart port auto-closes, in microseconds
+// from now, or -1 if no auto-close is foreseen. This is only a guess: the
+// caller must call read() to know whether the port is actually closed.
+int64_t wendy_com_uart_auto_close_delay(wendy_com_uart_t *uart)
+{
+    if (!uart->keepalive_seen)
+        return -1;
+    int64_t remaining = uart->last_rx_us + WCOM_UART_RX_TIMEOUT_US - esp_timer_get_time();
+    return remaining > 0 ? remaining : 0;
 }
