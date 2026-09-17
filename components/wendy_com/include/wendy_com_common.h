@@ -24,6 +24,10 @@ struct wcom_app_delegate {
                                bool *wasm_app_support, bool *native_app_support);
 };
 
+// An operation to run on the com task. Set `func`; `next` belongs to the queue
+// and is never read from the caller. Once queued, the node is the queue's until
+// its `func` starts running: until then, do not modify any part of it, nor any
+// payload embedded around it. See wcom_core_exec() in wendy_com_link.h.
 struct wcom_operation {
     void(* func)(struct wcom_operation *op);
     struct wcom_operation *next;

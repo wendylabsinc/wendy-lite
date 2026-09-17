@@ -47,7 +47,26 @@ struct wcom_state_change_handler {
 // base functions
 
 void wcom_core_init(void);
+
+// Queue op for execution on the com task, handing ownership of *op over to it.
+// Thread-safe and callable from any task — including the com task itself, and
+// from inside another operation's func — but not from an ISR, since it writes
+// to an eventfd.
+//
+// Ownership comes back to the caller the instant the com task enters func():
+// from that point the queue never reads or writes *op again, not even to find
+// the operation to run next. So func() may re-queue the node or free it
+// outright, and so may any other task once func() has started. wendy_server
+// relies on the free, wendy_com_stdio and wendy_com_stdio_pump on the re-queue.
+//
+// Until then the node belongs to the queue and the caller must not write any
+// part of it: not `next`, rewritten on the push and again when the queue is
+// drained; not `func`, read at call time; nor a payload embedded alongside it.
+// A producer reusing a single static node must therefore ensure it is never
+// queued twice before the previous func() has started — the queue does not
+// detect a double push, it corrupts the list.
 void wcom_core_exec(struct wcom_operation *op);
+
 bool wcom_is_com_thread(void);
 
 // agent side interface, abstracting platform entirely
