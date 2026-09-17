@@ -5,7 +5,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/timers.h"
 
-#include "esp_log.h"
 #include "hal/wdt_hal.h"
 
 #include "wendy_com.h"
@@ -14,8 +13,6 @@
 static wdt_hal_context_t s_rtc_wdt_ctx = RWDT_HAL_CONTEXT_DEFAULT();
 
 #if CONFIG_WENDY_CORE_WATCHDOG
-
-static const char *TAG = "wendy_core_wdt";
 
 /* How often we feed the RTC watchdog, derived from its timeout so the two
  * cannot drift apart when CONFIG_BOOTLOADER_WDT_TIME_MS is changed: leave 10s
@@ -74,13 +71,14 @@ static void feed_timer_cb(TimerHandle_t timer)
  */
 void wendy_core_wdt_start(void)
 {
-    TimerHandle_t timer = xTimerCreate("wdt_feed", pdMS_TO_TICKS(WDT_FEED_PERIOD_MS), pdTRUE, NULL,
-                                       feed_timer_cb);
-    if (timer) {
-        xTimerStart(timer, 0);
-    } else {
-        ESP_LOGW(TAG, "failed to create WDT feed timer");
-    }
+    /* Statically allocated so arming the watchdog feeder cannot fail on a
+     * heap that is too fragmented or too full to hold the timer control
+     * block -- exactly the kind of state the watchdog exists to recover from.
+     * xTimerCreateStatic() only returns NULL for a NULL buffer. */
+    static StaticTimer_t timer_buf;
+    TimerHandle_t timer = xTimerCreateStatic("wdt_feed", pdMS_TO_TICKS(WDT_FEED_PERIOD_MS), pdTRUE,
+                                             NULL, feed_timer_cb, &timer_buf);
+    xTimerStart(timer, 0);
 }
 
 #else /* !CONFIG_WENDY_CORE_WATCHDOG */
