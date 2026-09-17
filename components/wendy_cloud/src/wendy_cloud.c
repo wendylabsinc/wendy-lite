@@ -106,20 +106,10 @@ static esp_err_t cloud_connect(void)
     return ESP_OK;
 }
 
-// Com task. Tears down the cloud link. Bookkeeping is cleared before
-// wcom_remove_link because removal re-fires this handler (UNDEFINED).
-static void _on_link_state_changed(
-    struct wcom_state_change_handler *handler,
-    int link_id,
-    enum wcom_link_state state)
+// Com task. Tears down the cloud link.
+static void _on_link_interruption(int link_id, enum wcom_interruption_reason reason)
 {
-    if (state == WCOM_LINK_STATE_CONNECTED)
-        return;
-    int cur_link_id = s_link_id;
-    if (cur_link_id == 0 || link_id != cur_link_id)
-        return;
-
-    ESP_LOGI(TAG, "link %d down (state %d)", link_id, (int)state);
+    ESP_LOGI(TAG, "link %d down (reason %d)", link_id, (int)reason);
     esp_tls_t *tls = s_tls;
     s_tls = NULL;
     // State before s_link_id: once s_link_id is 0 a stopping cloud task may
@@ -131,23 +121,13 @@ static void _on_link_state_changed(
     xSemaphoreGive(s_wake);
 }
 
-static struct wcom_state_change_handler s_state_handler = {
-    .func = _on_link_state_changed,
-};
-
 // Com task. Hands the established TLS connection to the com core; from here
 // on all socket I/O happens on the com task and the device behaves exactly
 // as if a local client had connected.
 static void _add_link_exec(struct wcom_operation *op)
 {
-    static bool subscribed = false;
-    if (!subscribed) {
-        wcom_add_state_change_handler(&s_state_handler);
-        subscribed = true;
-    }
-
     struct _add_link_op *aop = (struct _add_link_op *)op;
-    int link_id = wcom_add_tls_link(aop->tls);
+    int link_id = wcom_add_tls_link(aop->tls, _on_link_interruption);
     if (link_id < 0) {
         ESP_LOGE(TAG, "no free com link, dropping cloud connection");
         esp_tls_conn_destroy(aop->tls);
@@ -161,7 +141,7 @@ static void _add_link_exec(struct wcom_operation *op)
 }
 
 // Com task. Queued by wendy_cloud_stop after s_add_op, so it always runs
-// after a pending handoff and funnels teardown through the state handler.
+// after a pending handoff and funnels teardown through the interruption handler.
 static void _close_link_exec(struct wcom_operation *op)
 {
     int link_id = s_link_id;
@@ -201,7 +181,7 @@ static void cloud_task(void *arg)
         s_add_op.tls = s_tls;
         wcom_core_exec(&s_add_op.base);
 
-        // sleep until the link dies (state handler) or stop is requested
+        // sleep until the link dies (interruption handler) or stop is requested
         xSemaphoreTake(s_wake, portMAX_DELAY);
         if (s_stop)
             break;
