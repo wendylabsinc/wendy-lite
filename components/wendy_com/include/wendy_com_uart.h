@@ -31,7 +31,7 @@ typedef struct wendy_com_uart {
     bool pending_esc;
     bool eof_pending;
     uint8_t last_esc_cmd;
-    int64_t last_rx_us;  // esp_timer_get_time() of the last byte received
+    int64_t last_rx_us;  // esp_timer_get_time() of the last receive activity
     bool keepalive_seen; // true once a DLE 'k' has been received on this link
 } wendy_com_uart_t;
 

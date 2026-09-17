@@ -58,6 +58,11 @@ ssize_t wendy_com_uart_read(wendy_com_uart_t *uart, void *data, size_t datalen)
                     break;
                 case WENDY_COM_UART_ESC_CMD_KEEP_ALIVE:
                     uart->keepalive_seen = true;
+                    // A keep-alive left over in raw_buf from an earlier refill
+                    // is consumed here without passing through the stamp
+                    // above, so stamp it now: otherwise the only sign of life
+                    // on an idle link would be dropped on the floor.
+                    uart->last_rx_us = esp_timer_get_time();
                     break;
                 case WENDY_COM_UART_ESC_CMD_CONSOLE:
                 case WENDY_COM_UART_ESC_CMD_ECHO:

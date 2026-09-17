@@ -283,7 +283,13 @@ static void _main(void *arg)
             if (ch->fd > maxfd)
                 maxfd = ch->fd;
 
-            if (ch->type == LINK_TYPE_UART) {
+            // Only let the auto-close deadline run while a read is posted:
+            // with no rx chunk queued, _link_do_rx() never reaches read(), so
+            // nothing drains the fd and nothing refreshes the keep-alive
+            // timestamp. Silence measured then says nothing about the peer,
+            // and an expired deadline would turn select() into a zero-timeout
+            // poll that spins until the next chunk is queued.
+            if (ch->type == LINK_TYPE_UART && ch->rx_chunk_first) {
                 int64_t delay = wendy_com_uart_auto_close_delay(ch->uart);
                 if (delay >= 0 && (uart_wait_us < 0 || delay < uart_wait_us))
                     uart_wait_us = delay;
@@ -393,7 +399,8 @@ static void _main(void *arg)
                 writable = ch->ops->can_write(ch->stream_ctx);
             } else {
                 readable = FD_ISSET(ch->fd, &rfds) || ch->rx_tls_readable
-                           || (ch->type == LINK_TYPE_UART && wendy_com_uart_auto_close_delay(ch->uart) == 0);
+                           || (ch->type == LINK_TYPE_UART && ch->rx_chunk_first
+                               && wendy_com_uart_auto_close_delay(ch->uart) == 0);
                 writable = FD_ISSET(ch->fd, &wfds);
             }
 
