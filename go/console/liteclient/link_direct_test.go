@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
+
+	wendypb "github.com/wendylabsinc/wendy/go/proto/gen/litepb"
 )
 
 // escapePrefixLen is the length of the echo mode command that prefixes every
@@ -210,5 +213,132 @@ func TestSerialHandshakeBacksOffInsteadOfFlooding(t *testing.T) {
 	if port.escapeWrites != len(port.sentinels) {
 		t.Errorf("%d of %d sentinels re-armed echo mode, want all",
 			port.escapeWrites, len(port.sentinels))
+	}
+}
+
+// recordingConn is a minimal io.ReadWriteCloser that records every write, for
+// exercising directLink's keep-alive without a real serial.Port: keep-alive
+// writes go through the same plain io.Writer path as send, so no serial.Port
+// methods are needed.
+type recordingConn struct {
+	mu     sync.Mutex
+	writes [][]byte
+}
+
+func (c *recordingConn) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.writes = append(c.writes, append([]byte(nil), p...))
+	return len(p), nil
+}
+
+func (c *recordingConn) Read([]byte) (int, error) {
+	return 0, errors.New("recordingConn: read not supported")
+}
+
+func (c *recordingConn) Close() error { return nil }
+
+func (c *recordingConn) snapshot() [][]byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([][]byte(nil), c.writes...)
+}
+
+func (c *recordingConn) countKeepAlives() int {
+	n := 0
+	for _, w := range c.snapshot() {
+		if bytes.Equal(w, []byte{escapeChar, keepAliveCmd}) {
+			n++
+		}
+	}
+	return n
+}
+
+func TestKeepAliveFiresWhenIdle(t *testing.T) {
+	prev := keepAliveInterval
+	keepAliveInterval = 20 * time.Millisecond
+	t.Cleanup(func() { keepAliveInterval = prev })
+
+	conn := &recordingConn{}
+	link := &directLink{conn: conn, isSerial: true, keepAliveStop: make(chan struct{})}
+	if err := link.startKeepAlive(); err != nil {
+		t.Fatalf("startKeepAlive() = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := link.close(); err != nil {
+			t.Errorf("close() = %v", err)
+		}
+	})
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && conn.countKeepAlives() < 2 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := conn.countKeepAlives(); n < 2 {
+		t.Fatalf("got %d keep-alive writes in %s of idle time, want at least 2", n, time.Second)
+	}
+}
+
+func TestKeepAlivePostponedBySend(t *testing.T) {
+	prev := keepAliveInterval
+	keepAliveInterval = 60 * time.Millisecond
+	t.Cleanup(func() { keepAliveInterval = prev })
+
+	conn := &recordingConn{}
+	link := &directLink{conn: conn, isSerial: true, keepAliveStop: make(chan struct{})}
+	if err := link.startKeepAlive(); err != nil {
+		t.Fatalf("startKeepAlive() = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := link.close(); err != nil {
+			t.Errorf("close() = %v", err)
+		}
+	})
+
+	time.Sleep(40 * time.Millisecond)
+	before := conn.countKeepAlives()
+	if err := link.send(&wendypb.WendyComMessage{}); err != nil {
+		t.Fatalf("send() = %v", err)
+	}
+
+	// A fresh interval starts from this send, not from startKeepAlive: no
+	// additional keep-alive should appear before it elapses.
+	time.Sleep(40 * time.Millisecond) // 40ms since the send
+	if n := conn.countKeepAlives(); n != before {
+		t.Fatalf("got %d keep-alive write(s) 40ms after send (had %d before), want no new ones: keep-alive was not postponed", n, before)
+	}
+
+	time.Sleep(40 * time.Millisecond) // 80ms since the send: past the interval
+	if n := conn.countKeepAlives(); n <= before {
+		t.Fatal("keep-alive never fired after the postponed interval elapsed")
+	}
+}
+
+func TestKeepAliveStopsOnClose(t *testing.T) {
+	prev := keepAliveInterval
+	keepAliveInterval = 20 * time.Millisecond
+	t.Cleanup(func() { keepAliveInterval = prev })
+
+	conn := &recordingConn{}
+	link := &directLink{conn: conn, isSerial: true, keepAliveStop: make(chan struct{})}
+	if err := link.startKeepAlive(); err != nil {
+		t.Fatalf("startKeepAlive() = %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- link.close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("close() = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("close() did not return: keep-alive goroutine leaked")
+	}
+
+	before := len(conn.snapshot())
+	time.Sleep(3 * keepAliveInterval)
+	if after := len(conn.snapshot()); after != before {
+		t.Errorf("write count grew from %d to %d after close: keep-alive kept running", before, after)
 	}
 }

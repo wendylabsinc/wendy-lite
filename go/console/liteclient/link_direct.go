@@ -10,6 +10,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	wendypb "github.com/wendylabsinc/wendy/go/proto/gen/litepb"
@@ -18,6 +19,13 @@ import (
 )
 
 const escapeChar = 0x10 // CTRL-P, aka DLE (Data Link Escape)
+
+// keepAliveCmd is DLE 'k', WENDY_COM_UART_ESC_CMD_KEEP_ALIVE in firmware: a
+// no-op the device can safely receive at any time, used to keep an
+// otherwise-idle serial link from going quiet.
+const keepAliveCmd = 'k'
+
+var keepAliveInterval = 6 * time.Second // var so tests can shrink it
 
 // WendyCom frame header: magic, version, four reserved bytes, then a 16-bit
 // big-endian body length. directLink owns this framing — the cloud tunnel does
@@ -48,6 +56,10 @@ type directLink struct {
 	conn     io.ReadWriteCloser
 	isSerial bool
 	writeMu  sync.Mutex // serializes frames across command goroutines
+
+	keepAliveStop chan struct{}
+	keepAliveDone sync.WaitGroup
+	lastSend      atomic.Int64 // UnixNano of the last successful write
 }
 
 // newDirectLink frames WendyCom over an established byte stream: TCP-TLS, or
@@ -59,7 +71,7 @@ func newDirectLink(conn io.ReadWriteCloser) *directLink {
 // newSerialLink frames WendyCom over a serial port, which needs escaping and a
 // smaller chunk than a network transport.
 func newSerialLink(port serial.Port) *directLink {
-	return &directLink{conn: port, isSerial: true}
+	return &directLink{conn: port, isSerial: true, keepAliveStop: make(chan struct{})}
 }
 
 // linkHandshake switches a serial device into WendyCom mode; on TCP-TLS there
@@ -68,7 +80,61 @@ func (l *directLink) linkHandshake() error {
 	if !l.isSerial {
 		return nil
 	}
-	return serialHandshake(l.conn.(serial.Port))
+	if err := serialHandshake(l.conn.(serial.Port)); err != nil {
+		return err
+	}
+	return l.startKeepAlive()
+}
+
+// startKeepAlive sends an immediate DLE 'k' so the device can start
+// monitoring for the keep-alive right away, then begins sending one every
+// keepAliveInterval of silence, so the serial link stays alive when no other
+// WendyCom traffic is flowing.
+func (l *directLink) startKeepAlive() error {
+	if err := l.sendKeepAlive(); err != nil {
+		return err
+	}
+	l.keepAliveDone.Add(1)
+	go l.keepAliveLoop()
+	return nil
+}
+
+// keepAliveLoop recomputes the remaining idle wait from lastSend on every
+// iteration rather than resetting a shared timer, which sidesteps the races
+// inherent in calling Timer.Reset from a goroutine other than the one
+// draining it.
+func (l *directLink) keepAliveLoop() {
+	defer l.keepAliveDone.Done()
+	for {
+		wait := keepAliveInterval - time.Since(time.Unix(0, l.lastSend.Load()))
+		if wait <= 0 {
+			if l.sendKeepAlive() != nil {
+				return
+			}
+			continue
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-timer.C:
+		case <-l.keepAliveStop:
+			timer.Stop()
+			return
+		}
+	}
+}
+
+// sendKeepAlive writes a bare DLE 'k' frame, sharing writeMu with send so it
+// never interleaves with a real message on the wire. A write error means the
+// link is dead; the read loop discovers that independently via recv, so this
+// just stops trying.
+func (l *directLink) sendKeepAlive() error {
+	l.writeMu.Lock()
+	defer l.writeMu.Unlock()
+	if _, err := l.conn.Write([]byte{escapeChar, keepAliveCmd}); err != nil {
+		return err
+	}
+	l.lastSend.Store(time.Now().UnixNano())
+	return nil
 }
 
 // serialHandshakePort is the narrow slice of serial.Port used by the console
@@ -227,6 +293,7 @@ func (l *directLink) send(req *wendypb.WendyComMessage) error {
 		}
 		msg = msg[n:]
 	}
+	l.lastSend.Store(time.Now().UnixNano())
 	return nil
 }
 
@@ -251,6 +318,8 @@ func (l *directLink) preferredChunkSize() int {
 
 func (l *directLink) close() error {
 	if l.isSerial {
+		close(l.keepAliveStop)
+		l.keepAliveDone.Wait()
 		if port, ok := l.conn.(serial.Port); ok {
 			_, _ = port.Write([]byte{escapeChar, 'o'})
 			_ = port.Drain()

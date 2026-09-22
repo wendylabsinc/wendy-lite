@@ -26,8 +26,11 @@ void wcom_stdio_set_blocking(bool blocking);
 /// Register the handler invoked on the com thread when the buffer holds
 /// unread data. Pass NULL to unregister. The handler should call
 /// wcom_stdio_read() until it returns 0; it is invoked again once new data
-/// arrives after such an empty read. Must be called from the com thread (or
-/// before any data flows).
+/// arrives after such an empty read. Delivering that data must not print
+/// systematically, on any task: such output lands in this very buffer and
+/// becomes more data to deliver, so anything printed on every delivery never
+/// ends. Sporadic output is fine, it is simply delivered in turn. Must be
+/// called from the com thread (or before any data flows).
 void wcom_stdio_set_data_handler(wcom_stdio_data_handler_t handler, void *ctx);
 
 /// Extract up to size bytes of buffered data, without ever blocking. Returns

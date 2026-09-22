@@ -581,6 +581,8 @@ static void _on_link_state_changed(
     int link_id,
     enum wcom_link_state state)
 {
+    ESP_LOGI(TAG, "link %d state -> %s", link_id, wcom_link_state_to_str(state));
+
     if (state == WCOM_LINK_STATE_CONNECTED) {
         for (int i = 0; i < WCOM_LINK_COUNT; i++) {
             struct _agent_link *ch = &_links[i];

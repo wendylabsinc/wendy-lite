@@ -40,20 +40,14 @@ typedef enum {
 
 static atomic_int s_mode;
 
-static int s_com_link_id = -1;
 static wendy_com_uart_t s_com_uart;
 static atomic_bool s_host_disconnected;
 
 
 static void _handle_esc_command(uint8_t cmd);
 
-static void _on_com_state_change(struct wcom_state_change_handler *handler,
-                                int link_id, enum wcom_link_state state)
+static void _on_com_interruption(int link_id, enum wcom_interruption_reason reason)
 {
-    if (link_id != s_com_link_id || state == WCOM_LINK_STATE_CONNECTED)
-        return;
-
-    s_com_link_id = -1;
     wcom_remove_link(link_id);
 
     if (s_com_uart.fd >= 0) {
@@ -71,12 +65,6 @@ static void _on_com_state_change(struct wcom_state_change_handler *handler,
 
 static void _enter_com_exec(struct wcom_operation *op)
 {
-    static struct wcom_state_change_handler handler;
-    if (!handler.func) {
-        handler.func = _on_com_state_change;
-        wcom_add_state_change_handler(&handler);
-    }
-
     usb_serial_jtag_vfs_set_tx_line_endings(ESP_LINE_ENDINGS_LF);
     usb_serial_jtag_vfs_set_rx_line_endings(ESP_LINE_ENDINGS_LF);
     int fd = open("/dev/usbserjtag", O_RDWR | O_NOCTTY);
@@ -101,14 +89,12 @@ static void _enter_com_exec(struct wcom_operation *op)
 
     wendy_com_uart_init(&s_com_uart, fd);
 
-    int link_id = wcom_add_uart_link(&s_com_uart);
-    if (link_id < 0) {
+    if (wcom_add_uart_link(&s_com_uart, _on_com_interruption) < 0) {
         close(fd);
         s_com_uart.fd = -1;
         atomic_store(&s_mode, USJ_MODE_OFF);
         return;
     }
-    s_com_link_id = link_id;
 }
 
 static void _handle_esc_command(uint8_t cmd)

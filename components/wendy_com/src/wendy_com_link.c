@@ -44,6 +44,7 @@ struct wcom_link {
         const struct wcom_stream_ops *ops;
     };
     void *stream_ctx;                  // LINK_TYPE_STREAM only
+    wcom_interruption_handler_t interruption_handler;
     int fd;
     struct wcom_tx_chunk *tx_chunk_first;
     struct wcom_tx_chunk *tx_chunk_last;
@@ -163,6 +164,26 @@ static void _clear_tx_queue(struct wcom_link *ch)
     ch->tx_chunk_offset = 0;
 }
 
+/// Bring a link down, notifying the state change handlers and then the link's
+/// own interruption handler.
+static void _link_interrupt(struct wcom_link *ch, enum wcom_link_state state)
+{
+    ch->state = state;
+    _clear_rx_queue(ch);
+    _clear_tx_queue(ch);
+    _fire_state_change_handlers(ch->id, state);
+
+    // Taken last: the interruption handler is the one that may remove the link,
+    // and it must run at most once per link.
+    int link_id = ch->id;
+    wcom_interruption_handler_t handler = ch->interruption_handler;
+    ch->interruption_handler = NULL;
+    if (handler)
+        handler(link_id, state == WCOM_LINK_STATE_ERROR
+                             ? WCOM_INTERRUPTION_CONNECTION_ERROR
+                             : WCOM_INTERRUPTION_CONNECTION_CLOSED);
+}
+
 static void _link_do_rx(struct wcom_link *ch)
 {
     while (ch->rx_chunk_first) {
@@ -194,15 +215,10 @@ static void _link_do_rx(struct wcom_link *ch)
         } else {
             ch->rx_need_write = false;
             ch->rx_tls_readable = false;
-            if (n == 0) {
-                ch->state = WCOM_LINK_STATE_DISCONNECTED;
-            } else {
+            if (n != 0)
                 ESP_LOGE(TAG, "rx error on link %d: %d", ch->id, n);
-                ch->state = WCOM_LINK_STATE_ERROR;
-            }
-            _clear_rx_queue(ch);
-            _clear_tx_queue(ch);
-            _fire_state_change_handlers(ch->id, ch->state);
+            _link_interrupt(ch, n == 0 ? WCOM_LINK_STATE_DISCONNECTED
+                                       : WCOM_LINK_STATE_ERROR);
             break;
         }
     }
@@ -237,10 +253,7 @@ static void _link_do_tx(struct wcom_link *ch)
         } else {
             ESP_LOGE(TAG, "tx error on link %d: %d", ch->id, n);
             ch->tx_need_read = false;
-            ch->state = WCOM_LINK_STATE_ERROR;
-            _clear_rx_queue(ch);
-            _clear_tx_queue(ch);
-            _fire_state_change_handlers(ch->id, ch->state);
+            _link_interrupt(ch, WCOM_LINK_STATE_ERROR);
             break;
         }
     }
@@ -260,6 +273,7 @@ static void _main(void *arg)
         // always watch the wakeup fd (signals new tx data or other internal events)
         int maxfd = _wakeup_efd;
         FD_SET(_wakeup_efd, &rfds);
+        int64_t uart_wait_us = -1; // -1 = no UART link has a pending deadline; 0 = one is due now
 
         for (int i = 0; i < WCOM_LINK_COUNT; i++) {
             struct wcom_link *ch = &_links[i];
@@ -268,6 +282,18 @@ static void _main(void *arg)
 
             if (ch->fd > maxfd)
                 maxfd = ch->fd;
+
+            // Only let the auto-close deadline run while a read is posted:
+            // with no rx chunk queued, _link_do_rx() never reaches read(), so
+            // nothing drains the fd and nothing refreshes the keep-alive
+            // timestamp. Silence measured then says nothing about the peer,
+            // and an expired deadline would turn select() into a zero-timeout
+            // poll that spins until the next chunk is queued.
+            if (ch->type == LINK_TYPE_UART && ch->rx_chunk_first) {
+                int64_t delay = wendy_com_uart_auto_close_delay(ch->uart);
+                if (delay >= 0 && (uart_wait_us < 0 || delay < uart_wait_us))
+                    uart_wait_us = delay;
+            }
 
             // A stream link's fd is a readiness eventfd, not the transport.
             // It is always watched for read and never for write: an eventfd
@@ -319,7 +345,16 @@ static void _main(void *arg)
         }
 
         struct timeval zero_tv = {0, 0};
-        if (select(maxfd + 1, &rfds, &wfds, NULL, progress_pending ? &zero_tv : NULL) < 0)
+        struct timeval uart_tv;
+        struct timeval *select_tv = NULL;
+        if (progress_pending) {
+            select_tv = &zero_tv;
+        } else if (uart_wait_us >= 0) {
+            uart_tv.tv_sec  = uart_wait_us / 1000000;
+            uart_tv.tv_usec = uart_wait_us % 1000000;
+            select_tv = &uart_tv;
+        }
+        if (select(maxfd + 1, &rfds, &wfds, NULL, select_tv) < 0)
             continue;
 
         // drain wakeup signal — no action needed beyond waking up to rebuild fd sets
@@ -363,7 +398,9 @@ static void _main(void *arg)
                 readable = ch->ops->can_read(ch->stream_ctx) || ch->rx_tls_readable;
                 writable = ch->ops->can_write(ch->stream_ctx);
             } else {
-                readable = FD_ISSET(ch->fd, &rfds) || ch->rx_tls_readable;
+                readable = FD_ISSET(ch->fd, &rfds) || ch->rx_tls_readable
+                           || (ch->type == LINK_TYPE_UART && ch->rx_chunk_first
+                               && wendy_com_uart_auto_close_delay(ch->uart) == 0);
                 writable = FD_ISSET(ch->fd, &wfds);
             }
 
@@ -419,6 +456,20 @@ bool wcom_is_com_thread(void)
     return xTaskGetCurrentTaskHandle() == _main_task;
 }
 
+const char *wcom_link_state_to_str(enum wcom_link_state state)
+{
+    switch (state) {
+        case WCOM_LINK_STATE_UNDEFINED:    return "undefined";
+        case WCOM_LINK_STATE_CONNECTED:    return "connected";
+        case WCOM_LINK_STATE_DISCONNECTED: return "disconnected";
+        case WCOM_LINK_STATE_ERROR:        return "error";
+    }
+    return "?";
+}
+
+/// A state change handler must never add nor remove a link: it is called while
+/// the core is working on that link. Use the link's interruption handler to
+/// remove it (see wcom_interruption_handler_t).
 void wcom_add_state_change_handler(struct wcom_state_change_handler *handler)
 {
     assert(xTaskGetCurrentTaskHandle() == _main_task);
@@ -495,17 +546,14 @@ void wcom_close(int link_id)
     if (!ch)
         return;
 
-    ch->state = WCOM_LINK_STATE_DISCONNECTED;
-    _clear_rx_queue(ch);
-    _clear_tx_queue(ch);
-    _fire_state_change_handlers(ch->id, ch->state);
+    _link_interrupt(ch, WCOM_LINK_STATE_DISCONNECTED);
 }
 
 /// The returned link ID is a positive number (it's never zero).
 /// It is an opaque identifier that is never reused for a different connection
 /// (except after a long time).
 /// Returns -1 if the link couldn't be added (e.g. max links reached).
-int wcom_add_tls_link(esp_tls_t *tls)
+int wcom_add_tls_link(esp_tls_t *tls, wcom_interruption_handler_t interruption_handler)
 {
     assert(xTaskGetCurrentTaskHandle() == _main_task);
 
@@ -519,6 +567,7 @@ int wcom_add_tls_link(esp_tls_t *tls)
             ch->state = WCOM_LINK_STATE_CONNECTED;
             ch->type = LINK_TYPE_TLS;
             ch->tls = tls;
+            ch->interruption_handler = interruption_handler;
             esp_tls_get_conn_sockfd(tls, &ch->fd);
             int flags = fcntl(ch->fd, F_GETFL, 0);
             fcntl(ch->fd, F_SETFL, flags | O_NONBLOCK);
@@ -537,7 +586,7 @@ int wcom_add_tls_link(esp_tls_t *tls)
     return -1;
 }
 
-int wcom_add_uart_link(wendy_com_uart_t *uart)
+int wcom_add_uart_link(wendy_com_uart_t *uart, wcom_interruption_handler_t interruption_handler)
 {
     assert(xTaskGetCurrentTaskHandle() == _main_task);
 
@@ -551,6 +600,7 @@ int wcom_add_uart_link(wendy_com_uart_t *uart)
             ch->state = WCOM_LINK_STATE_CONNECTED;
             ch->type = LINK_TYPE_UART;
             ch->uart = uart;
+            ch->interruption_handler = interruption_handler;
             ch->fd = wendy_com_uart_get_fd(uart);
             int flags = fcntl(ch->fd, F_GETFL, 0);
             fcntl(ch->fd, F_SETFL, flags | O_NONBLOCK);
@@ -573,7 +623,8 @@ int wcom_add_uart_link(wendy_com_uart_t *uart)
 /// Register a transport that drives itself through wcom_stream_ops rather
 /// than a file descriptor. Same contract as wcom_add_tls_link: a positive,
 /// non-reused link ID, or -1 when the link table is full.
-int wcom_add_stream_link(const struct wcom_stream_ops *ops, void *ctx)
+int wcom_add_stream_link(const struct wcom_stream_ops *ops, void *ctx,
+                         wcom_interruption_handler_t interruption_handler)
 {
     assert(xTaskGetCurrentTaskHandle() == _main_task);
     assert(ops && ops->read && ops->write && ops->wakeup_fd
@@ -590,6 +641,7 @@ int wcom_add_stream_link(const struct wcom_stream_ops *ops, void *ctx)
             ch->type = LINK_TYPE_STREAM;
             ch->ops = ops;
             ch->stream_ctx = ctx;
+            ch->interruption_handler = interruption_handler;
             // The transport owns this fd; wcom only ever drains it, and only
             // after select() reports it readable — an eventfd cannot be made
             // non-blocking on ESP-IDF, so that ordering is load-bearing.
@@ -627,6 +679,7 @@ void wcom_remove_link(int link_id)
         ch->uart = NULL;
         ch->tls = NULL;
         ch->stream_ctx = NULL;
+        ch->interruption_handler = NULL;
         ch->fd = -1;
         return;
     }
