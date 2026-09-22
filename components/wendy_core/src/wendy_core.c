@@ -20,6 +20,7 @@
 #include "nvs_flash.h"
 
 #include "wendy_core.h"
+#include "wendy_core_wdt.h"
 #include "wendy_conf.h"
 
 #if CONFIG_WENDY_WASM
@@ -885,6 +886,11 @@ static void init_hal(void)
 
 esp_err_t wendy_core_init(void)
 {
+    /* CONFIG_BOOTLOADER_WDT_DISABLE_IN_USER_CODE suppresses ESP-IDF's
+     * automatic RTC WDT disable before app_main(); feed it explicitly here
+     * instead, as the very first thing user code does. */
+    wendy_core_wdt_feed();
+
     capture_boot_params();
 
     esp_err_t stdio_err = wendy_stdio_init();
@@ -962,6 +968,7 @@ esp_err_t wendy_core_init(void)
     };
     wcom_set_app_delegate(&app_delegate);
     wcom_start();
+    wendy_core_wdt_start();
 
     /* Initialize the BLE transport (if enabled). Deliberately before WiFi and
      * not gated on it: a board with no credentials is exactly the case BLE

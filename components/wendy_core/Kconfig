@@ -35,6 +35,27 @@ menu "Wendy Core"
             aborts an esp32p4 build when this is empty, since P4 boards differ
             in flash size and partition layout. Unused on non-P4 targets.
 
+    config WENDY_CORE_WATCHDOG
+        bool "Enable the RTC watchdog"
+        default n
+        depends on BOOTLOADER_WDT_DISABLE_IN_USER_CODE
+        help
+            Keep the RTC watchdog the bootloader armed running for the whole
+            life of the firmware instead of only over startup. It is fed from
+            a periodic timer, but only through the wendy_com task, so a wedged
+            wendy_com task lets the watchdog run out and reset the board.
+
+            The timeout is BOOTLOADER_WDT_TIME_MS and the feed period is
+            derived from it, so changing the timeout cannot silently break the
+            margin between the two.
+
+            Depends on BOOTLOADER_WDT_DISABLE_IN_USER_CODE, which is what
+            stops ESP-IDF from disabling the RTC watchdog before app_main().
+            Turning this off therefore belongs together with turning that off:
+            clearing this one alone leaves the RTC watchdog armed with nothing
+            feeding it, and the board resets BOOTLOADER_WDT_TIME_MS into the
+            firmware.
+
     config WENDY_CORE_WASM_APP_SUPPORT
         bool "Enable WASM app support"
         default n

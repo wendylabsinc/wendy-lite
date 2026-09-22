@@ -363,7 +363,12 @@ static void _main(void *arg)
             read(_wakeup_efd, &val, sizeof(val));
         }
 
-        // drain and execute queued operations in FIFO order
+        // Drain and execute queued operations in FIFO order. Producers push
+        // onto a LIFO, so the batch is reversed first — which rewrites ->next
+        // on every node of it, long before any of their func() run. A node
+        // stays owned by this queue until its own func() is entered, and that
+        // is why a producer must not touch one it has already queued: doing so
+        // here would splice a still-pending node into a second list.
         struct wcom_operation *op = atomic_exchange_explicit(&_op_queue_head, NULL, memory_order_acquire);
         struct wcom_operation *prev = NULL;
         while (op) {
@@ -374,6 +379,11 @@ static void _main(void *arg)
         }
         op = prev;
         while (op) {
+            // Read ->next before the call, never after: entering func() hands
+            // the node back to its producer, which is then free to re-queue it
+            // — wendy_com_stdio and wendy_com_stdio_pump do, from inside func()
+            // itself — or to free() it, as wendy_server does. These two lines
+            // are therefore not reorderable.
             struct wcom_operation *next = op->next;
             op->func(op);
             op = next;
@@ -435,6 +445,8 @@ void wcom_core_init(void)
 
 /// Execute a function on the com thread/task.
 /// This function is thread-safe.
+/// Queueing a node that is already queued corrupts the list. See the full
+/// ownership contract in wendy_com_link.h.
 void wcom_core_exec(struct wcom_operation *op)
 {
     struct wcom_operation *old_head;
