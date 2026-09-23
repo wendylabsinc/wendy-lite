@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -260,7 +261,7 @@ func TestKeepAliveFiresWhenIdle(t *testing.T) {
 	t.Cleanup(func() { keepAliveInterval = prev })
 
 	conn := &recordingConn{}
-	link := &directLink{conn: conn, isSerial: true, keepAliveStop: make(chan struct{})}
+	link := newSerialLinkConn(conn)
 	if err := link.startKeepAlive(); err != nil {
 		t.Fatalf("startKeepAlive() = %v", err)
 	}
@@ -285,7 +286,7 @@ func TestKeepAlivePostponedBySend(t *testing.T) {
 	t.Cleanup(func() { keepAliveInterval = prev })
 
 	conn := &recordingConn{}
-	link := &directLink{conn: conn, isSerial: true, keepAliveStop: make(chan struct{})}
+	link := newSerialLinkConn(conn)
 	if err := link.startKeepAlive(); err != nil {
 		t.Fatalf("startKeepAlive() = %v", err)
 	}
@@ -320,7 +321,7 @@ func TestKeepAliveStopsOnClose(t *testing.T) {
 	t.Cleanup(func() { keepAliveInterval = prev })
 
 	conn := &recordingConn{}
-	link := &directLink{conn: conn, isSerial: true, keepAliveStop: make(chan struct{})}
+	link := newSerialLinkConn(conn)
 	if err := link.startKeepAlive(); err != nil {
 		t.Fatalf("startKeepAlive() = %v", err)
 	}
@@ -340,5 +341,215 @@ func TestKeepAliveStopsOnClose(t *testing.T) {
 	time.Sleep(3 * keepAliveInterval)
 	if after := len(conn.snapshot()); after != before {
 		t.Errorf("write count grew from %d to %d after close: keep-alive kept running", before, after)
+	}
+}
+
+var exitCmd = []byte{escapeChar, 'o'}
+
+func TestCloseSendsExitAndRejectsWrites(t *testing.T) {
+	conn := &recordingConn{}
+	link := newSerialLinkConn(conn)
+	if err := link.startKeepAlive(); err != nil {
+		t.Fatalf("startKeepAlive() = %v", err)
+	}
+	if err := link.close(); err != nil {
+		t.Fatalf("close() = %v", err)
+	}
+
+	writes := conn.snapshot()
+	if len(writes) == 0 || !bytes.Equal(writes[len(writes)-1], exitCmd) {
+		t.Fatalf("writes = %q, want the last one to be DLE 'o'", writes)
+	}
+	if err := link.send(&wendypb.WendyComMessage{}); !errors.Is(err, errLinkClosed) {
+		t.Fatalf("send() after close = %v, want %v", err, errLinkClosed)
+	}
+	if n := len(conn.snapshot()); n != len(writes) {
+		t.Fatalf("send() after close wrote to the port (%d writes, had %d)", n, len(writes))
+	}
+}
+
+func TestStartKeepAliveAfterCloseIsRejected(t *testing.T) {
+	conn := &recordingConn{}
+	link := newSerialLinkConn(conn)
+	if err := link.close(); err != nil {
+		t.Fatalf("close() = %v", err)
+	}
+	if err := link.startKeepAlive(); !errors.Is(err, errLinkClosed) {
+		t.Fatalf("startKeepAlive() after close = %v, want %v", err, errLinkClosed)
+	}
+	writes := conn.snapshot()
+	if len(writes) != 1 || !bytes.Equal(writes[0], exitCmd) {
+		t.Fatalf("writes = %q, want only DLE 'o'", writes)
+	}
+}
+
+func TestCloseWithoutKeepAliveDoesNotWait(t *testing.T) {
+	link := newSerialLinkConn(&recordingConn{})
+	done := make(chan error, 1)
+	go func() { done <- link.close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("close() = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("close() waited for a keep-alive loop that never started")
+	}
+}
+
+func TestCloseWaitsForInFlightWrite(t *testing.T) {
+	prev := keepAliveInterval
+	keepAliveInterval = 20 * time.Millisecond
+	t.Cleanup(func() { keepAliveInterval = prev })
+
+	conn := &recordingConn{}
+	link := newSerialLinkConn(conn)
+	if err := link.startKeepAlive(); err != nil {
+		t.Fatalf("startKeepAlive() = %v", err)
+	}
+
+	// Stand in for a send in flight; the keep-alive queues behind it on
+	// writeMu once its interval elapses.
+	link.writeMu.Lock()
+	time.Sleep(3 * keepAliveInterval)
+
+	done := make(chan error, 1)
+	go func() { done <- link.close() }()
+	select {
+	case err := <-done:
+		link.writeMu.Unlock()
+		t.Fatalf("close() = %v returned while a write held writeMu", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	link.writeMu.Unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("close() = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("close() did not return after the in-flight write finished")
+	}
+
+	writes := conn.snapshot()
+	if len(writes) == 0 || !bytes.Equal(writes[len(writes)-1], exitCmd) {
+		t.Fatalf("writes = %q, want DLE 'o' last with no keep-alive after it", writes)
+	}
+}
+
+func TestCloseNonSerialRejectsWrites(t *testing.T) {
+	conn := &recordingConn{}
+	link := newDirectLink(conn)
+	if err := link.close(); err != nil {
+		t.Fatalf("close() = %v", err)
+	}
+	if err := link.send(&wendypb.WendyComMessage{}); !errors.Is(err, errLinkClosed) {
+		t.Fatalf("send() after close = %v, want %v", err, errLinkClosed)
+	}
+	if n := len(conn.snapshot()); n != 0 {
+		t.Fatalf("got %d writes on a closed non-serial link, want none", n)
+	}
+}
+
+// stuckConn models a serial device that stopped draining: frame writes block
+// until ResetOutputBuffer purges them, the way PURGE_TXABORT aborts a pending
+// overlapped write on Windows. The 2-byte escape commands go through.
+type stuckConn struct {
+	recordingConn
+	purge     chan struct{}
+	purgeOnce sync.Once
+	resets    atomic.Int32
+	blocked   chan struct{} // closed when the first frame write blocks
+	blockOnce sync.Once
+}
+
+func newStuckConn() *stuckConn {
+	return &stuckConn{purge: make(chan struct{}), blocked: make(chan struct{})}
+}
+
+func (c *stuckConn) Write(p []byte) (int, error) {
+	if len(p) > 2 {
+		c.blockOnce.Do(func() { close(c.blocked) })
+		<-c.purge
+		return 0, errors.New("stuckConn: write aborted")
+	}
+	return c.recordingConn.Write(p)
+}
+
+func (c *stuckConn) ResetOutputBuffer() error {
+	c.resets.Add(1)
+	c.purgeOnce.Do(func() { close(c.purge) })
+	return nil
+}
+
+func enableCloseWatchdog(t *testing.T) {
+	t.Helper()
+	prevEnabled, prevDelay := closeWatchdogEnabled, closeWatchdogDelay
+	closeWatchdogEnabled, closeWatchdogDelay = true, 50*time.Millisecond
+	t.Cleanup(func() { closeWatchdogEnabled, closeWatchdogDelay = prevEnabled, prevDelay })
+}
+
+func TestCloseWatchdogAbortsStuckWrite(t *testing.T) {
+	enableCloseWatchdog(t)
+
+	conn := newStuckConn()
+	link := newSerialLinkConn(conn)
+	sendErr := make(chan error, 1)
+	go func() { sendErr <- link.send(&wendypb.WendyComMessage{}) }()
+	<-conn.blocked
+
+	done := make(chan error, 1)
+	go func() { done <- link.close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("close() = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("close() did not return: the watchdog did not free the stuck write")
+	}
+
+	if err := <-sendErr; err == nil {
+		t.Fatal("stuck send() returned nil after being purged, want an error")
+	}
+	if n := conn.resets.Load(); n < 1 {
+		t.Fatalf("ResetOutputBuffer called %d times, want at least 1", n)
+	}
+	writes := conn.snapshot()
+	if len(writes) == 0 || !bytes.Equal(writes[len(writes)-1], exitCmd) {
+		t.Fatalf("writes = %q, want DLE 'o' last", writes)
+	}
+}
+
+func TestCloseWatchdogIdleOnHealthyClose(t *testing.T) {
+	enableCloseWatchdog(t)
+
+	conn := newStuckConn()
+	link := newSerialLinkConn(conn)
+	if err := link.close(); err != nil {
+		t.Fatalf("close() = %v", err)
+	}
+	time.Sleep(3 * closeWatchdogDelay)
+	if n := conn.resets.Load(); n != 0 {
+		t.Fatalf("ResetOutputBuffer called %d times on a healthy close, want 0", n)
+	}
+}
+
+func TestCloseWatchdogRepeatsUntilStopped(t *testing.T) {
+	enableCloseWatchdog(t)
+
+	conn := newStuckConn()
+	link := &directLink{conn: conn}
+	stop := link.startCloseWatchdog()
+	time.Sleep(3*closeWatchdogDelay + closeWatchdogDelay/2)
+	stop()
+	n := conn.resets.Load()
+	if n < 2 {
+		t.Fatalf("ResetOutputBuffer called %d times in 3.5 periods, want it repeated", n)
+	}
+	time.Sleep(3 * closeWatchdogDelay)
+	if after := conn.resets.Load(); after != n {
+		t.Fatalf("ResetOutputBuffer called %d more times after stop", after-n)
 	}
 }
