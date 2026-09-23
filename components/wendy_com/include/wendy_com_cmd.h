@@ -22,8 +22,13 @@ WendyComResult wcom_cmd_console_attach(int client_id, uint32_t event_id, uint32_
 WendyComResult wcom_cmd_console_detach(int client_id, uint32_t event_id);
 void wcom_cmd_console_stdin_data(int client_id, const uint8_t *data, size_t size);
 
+WendyComResult wcom_cmd_sensor_link_get_manifest(wendy_lite_sensorlink_SensorManifest *out);
+WendyComResult wcom_cmd_sensor_link_subscribe(int client_id, const uint32_t *channel_ids, size_t count);
+WendyComResult wcom_cmd_sensor_link_unsubscribe(int client_id, const uint32_t *channel_ids, size_t count);
+
 void wcom_cmd_client_disconnected(int client_id);
 
 void wcom_cmd_set_app_delegate(const struct wcom_app_delegate *delegate);
+void wcom_cmd_set_sensor_link_delegate(const struct wcom_sensor_link_delegate *delegate);
 
 #endif

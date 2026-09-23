@@ -3,6 +3,7 @@
 #include "wendy_com_stdio.h"
 #include "wendy_com_link.h"
 #include "wendy_com_cmd.h"
+#include <stdbool.h>
 #include <stdatomic.h>
 
 
@@ -17,6 +18,11 @@ static void _on_ready(struct wcom_operation *op)
 void wcom_set_app_delegate(const struct wcom_app_delegate *delegate)
 {
     wcom_cmd_set_app_delegate(delegate);
+}
+
+void wcom_set_sensor_link_delegate(const struct wcom_sensor_link_delegate *delegate)
+{
+    wcom_cmd_set_sensor_link_delegate(delegate);
 }
 
 void wcom_start(void)

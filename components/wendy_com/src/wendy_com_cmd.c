@@ -6,12 +6,15 @@
 #include "esp_system.h"
 #include "wendy_com_common.h"
 #include "wendy_com_stdio_pump.h"
+#include "wendy_com_sensor.h"
+#include "wendy_conf.h"
 #include "wendy_stdio.h"
 #include <pb_encode.h>
 
 
 static const char *TAG = "wcom_cmd";
 static const struct wcom_app_delegate *_app_delegate;
+static const struct wcom_sensor_link_delegate *_sensor_link_delegate;
 
 // At most one push (app or conf) may be in progress at a time.
 enum _push_kind { PUSH_NONE, PUSH_APP, PUSH_CONF };
@@ -214,9 +217,95 @@ void wcom_cmd_client_disconnected(int client_id)
             _app_delegate->on_conf_push_abort();
     }
     wcom_stdio_pump_client_disconnected(client_id);
+    // After wcom_sensor, not before: with the stream already dropped, a
+    // delegate that answers by pushing one last frame is refused rather than
+    // sending into a link on its way out.
+    wcom_sensor_client_disconnected(client_id);
+    if (_sensor_link_delegate && _sensor_link_delegate->on_sensor_link_disconnected)
+        _sensor_link_delegate->on_sensor_link_disconnected(client_id);
 }
 
 void wcom_cmd_set_app_delegate(const struct wcom_app_delegate *delegate)
 {
     _app_delegate = delegate;
+}
+
+// The delegate speaks wcom_sensor_link_result; the protocol speaks
+// WendyComResult, which has no general failure code beyond UNKNOWN_ERROR.
+static WendyComResult _to_com_result(enum wcom_sensor_link_result result)
+{
+    return result == WCOM_SENSOR_LINK_OK ? WendyComResult_WENDY_COM_RESULT_OK
+                                         : WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
+}
+
+WendyComResult wcom_cmd_sensor_link_get_manifest(wendy_lite_sensorlink_SensorManifest *out)
+{
+    ESP_LOGI(TAG, "SENSOR_LINK_GET_MANIFEST");
+    struct wcom_sensor_descriptor sensors[WCOM_SENSOR_LINK_MAX_SENSORS];
+    size_t sensor_count = 0;
+    enum wcom_sensor_link_result result = WCOM_SENSOR_LINK_OK;
+
+    if (_sensor_link_delegate && _sensor_link_delegate->on_sensor_link_get_manifest)
+        result = _sensor_link_delegate->on_sensor_link_get_manifest(
+            sensors, WCOM_SENSOR_LINK_MAX_SENSORS, &sensor_count);
+    if (sensor_count > WCOM_SENSOR_LINK_MAX_SENSORS)
+        sensor_count = WCOM_SENSOR_LINK_MAX_SENSORS; // defensive clamp
+
+    out->device_asset_id = wendy_conf_get_asset_id();
+    out->sensors_count = (pb_size_t)sensor_count;
+    for (size_t i = 0; i < sensor_count; i++) {
+        const struct wcom_sensor_descriptor *src = &sensors[i];
+        wendy_lite_sensorlink_SensorDescriptor *dst = &out->sensors[i];
+        dst->channel_id = src->channel_id;
+        dst->kind = src->kind;
+        dst->name.funcs.encode = _encode_string;
+        dst->name.arg = (void *)(src->name ? src->name : "");
+        switch (src->format_kind) {
+        case WCOM_SENSOR_FORMAT_VIDEO:
+            dst->which_format = wendy_lite_sensorlink_SensorDescriptor_video_tag;
+            dst->format.video.codec  = src->format.video.codec;
+            dst->format.video.width  = src->format.video.width;
+            dst->format.video.height = src->format.video.height;
+            dst->format.video.fps    = src->format.video.fps;
+            break;
+        case WCOM_SENSOR_FORMAT_AUDIO:
+            dst->which_format = wendy_lite_sensorlink_SensorDescriptor_audio_tag;
+            dst->format.audio.codec       = src->format.audio.codec;
+            dst->format.audio.sample_rate = src->format.audio.sample_rate;
+            dst->format.audio.channels    = src->format.audio.channels;
+            break;
+        case WCOM_SENSOR_FORMAT_SENSOR:
+            dst->which_format = wendy_lite_sensorlink_SensorDescriptor_sensor_tag;
+            dst->format.sensor.schema.funcs.encode = _encode_string;
+            dst->format.sensor.schema.arg = (void *)(src->format.sensor.schema ? src->format.sensor.schema : "");
+            dst->format.sensor.rate_hz      = src->format.sensor.rate_hz;
+            dst->format.sensor.sample_bytes = src->format.sensor.sample_bytes;
+            break;
+        default:
+            dst->which_format = 0;
+            break;
+        }
+    }
+    return _to_com_result(result);
+}
+
+WendyComResult wcom_cmd_sensor_link_subscribe(int client_id, const uint32_t *channel_ids, size_t count)
+{
+    ESP_LOGI(TAG, "SENSOR_LINK_SUBSCRIBE client=%d count=%zu", client_id, count);
+    if (_sensor_link_delegate && _sensor_link_delegate->on_sensor_link_subscribe)
+        return _to_com_result(_sensor_link_delegate->on_sensor_link_subscribe(client_id, channel_ids, count));
+    return WendyComResult_WENDY_COM_RESULT_OK;
+}
+
+WendyComResult wcom_cmd_sensor_link_unsubscribe(int client_id, const uint32_t *channel_ids, size_t count)
+{
+    ESP_LOGI(TAG, "SENSOR_LINK_UNSUBSCRIBE client=%d count=%zu", client_id, count);
+    if (_sensor_link_delegate && _sensor_link_delegate->on_sensor_link_unsubscribe)
+        return _to_com_result(_sensor_link_delegate->on_sensor_link_unsubscribe(client_id, channel_ids, count));
+    return WendyComResult_WENDY_COM_RESULT_OK;
+}
+
+void wcom_cmd_set_sensor_link_delegate(const struct wcom_sensor_link_delegate *delegate)
+{
+    _sensor_link_delegate = delegate;
 }

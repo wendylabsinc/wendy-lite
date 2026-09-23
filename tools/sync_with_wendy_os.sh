@@ -16,6 +16,7 @@ fi
 # Each entry is "local_path:remote_path"
 PAIRS=(
     "components/wendy_com/proto/wendy_com_msg.proto:Proto/wendy/lite/wendy_com_msg.proto"
+    "components/wendy_com/proto/sensorlink.proto:Proto/wendy/lite/sensorlink.proto"
     "components/wendy_conf/proto/wendy_conf.proto:Proto/wendy/lite/wendy_conf.proto"
     "go/proto/wendy_com_tunnel_msg.proto:Proto/wendy/lite/wendy_com_tunnel_msg.proto"
     "go/proto/wendy_com_tunnel_service.proto:Proto/wendy/lite/wendy_com_tunnel_service.proto"

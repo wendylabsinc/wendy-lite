@@ -4,6 +4,7 @@
 #ifndef PB_WENDY_COM_MSG_PB_H_INCLUDED
 #define PB_WENDY_COM_MSG_PB_H_INCLUDED
 #include <pb.h>
+#include "sensorlink.pb.h"
 
 #if PB_PROTO_HEADER_VERSION != 40
 #error Regenerate this file with the current version of nanopb generator.
@@ -199,6 +200,9 @@ typedef struct _WendyComCommand {
         WendyComConfPushBeginParams conf_push_begin;
         WendyComConfPushDataParams conf_push_data;
         WendyComConfPushEndParams conf_push_end;
+        wendy_lite_sensorlink_GetSensorManifest sensor_link_get_manifest;
+        wendy_lite_sensorlink_Subscribe sensor_link_subscribe;
+        wendy_lite_sensorlink_Unsubscribe sensor_link_unsubscribe;
     } params;
 } WendyComCommand;
 
@@ -210,6 +214,7 @@ typedef struct _WendyComResponse {
     union {
         WendyComDeviceIdentity device_identity;
         WendyComDeviceInfo device_info;
+        wendy_lite_sensorlink_SensorManifest sensor_link_manifest;
     } data;
 } WendyComResponse;
 
@@ -280,6 +285,7 @@ typedef struct _WendyComMessage {
         WendyComCommand command;
         WendyComResponse response;
         WendyComEvent event;
+        wendy_lite_sensorlink_SensorFrame sensor_frame;
     } msg;
 } WendyComMessage;
 
@@ -460,10 +466,14 @@ extern "C" {
 #define WendyComCommand_conf_push_begin_tag      13
 #define WendyComCommand_conf_push_data_tag       14
 #define WendyComCommand_conf_push_end_tag        15
+#define WendyComCommand_sensor_link_get_manifest_tag 16
+#define WendyComCommand_sensor_link_subscribe_tag 17
+#define WendyComCommand_sensor_link_unsubscribe_tag 18
 #define WendyComResponse_request_id_tag          1
 #define WendyComResponse_result_tag              2
 #define WendyComResponse_device_identity_tag     3
 #define WendyComResponse_device_info_tag         4
+#define WendyComResponse_sensor_link_manifest_tag 5
 #define WendyComEvent_event_id_tag               1
 #define WendyComEvent_console_begin_tag          2
 #define WendyComEvent_console_data_tag           3
@@ -480,6 +490,7 @@ extern "C" {
 #define WendyComMessage_command_tag              3
 #define WendyComMessage_response_tag             4
 #define WendyComMessage_event_tag                5
+#define WendyComMessage_sensor_frame_tag         6
 
 /* Struct field encoding specification for nanopb */
 #define WendyComProtocolVersion_FIELDLIST(X, a) \
@@ -622,7 +633,10 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (params,console_attach,params.console_attach)
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,console_detach,params.console_detach),  12) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,conf_push_begin,params.conf_push_begin),  13) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,conf_push_data,params.conf_push_data),  14) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (params,conf_push_end,params.conf_push_end),  15)
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,conf_push_end,params.conf_push_end),  15) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,sensor_link_get_manifest,params.sensor_link_get_manifest),  16) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,sensor_link_subscribe,params.sensor_link_subscribe),  17) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,sensor_link_unsubscribe,params.sensor_link_unsubscribe),  18)
 #define WendyComCommand_CALLBACK NULL
 #define WendyComCommand_DEFAULT NULL
 #define WendyComCommand_params_ping_MSGTYPE WendyComPingParams
@@ -639,16 +653,21 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (params,conf_push_end,params.conf_push_end), 
 #define WendyComCommand_params_conf_push_begin_MSGTYPE WendyComConfPushBeginParams
 #define WendyComCommand_params_conf_push_data_MSGTYPE WendyComConfPushDataParams
 #define WendyComCommand_params_conf_push_end_MSGTYPE WendyComConfPushEndParams
+#define WendyComCommand_params_sensor_link_get_manifest_MSGTYPE wendy_lite_sensorlink_GetSensorManifest
+#define WendyComCommand_params_sensor_link_subscribe_MSGTYPE wendy_lite_sensorlink_Subscribe
+#define WendyComCommand_params_sensor_link_unsubscribe_MSGTYPE wendy_lite_sensorlink_Unsubscribe
 
 #define WendyComResponse_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   request_id,        1) \
 X(a, STATIC,   SINGULAR, UENUM,    result,            2) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,device_identity,data.device_identity),   3) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (data,device_info,data.device_info),   4)
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,device_info,data.device_info),   4) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,sensor_link_manifest,data.sensor_link_manifest),   5)
 #define WendyComResponse_CALLBACK NULL
 #define WendyComResponse_DEFAULT NULL
 #define WendyComResponse_data_device_identity_MSGTYPE WendyComDeviceIdentity
 #define WendyComResponse_data_device_info_MSGTYPE WendyComDeviceInfo
+#define WendyComResponse_data_sensor_link_manifest_MSGTYPE wendy_lite_sensorlink_SensorManifest
 
 #define WendyComEvent_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   event_id,          1) \
@@ -711,7 +730,8 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (msg,handshake,msg.handshake),   1) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (msg,service,msg.service),   2) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (msg,command,msg.command),   3) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (msg,response,msg.response),   4) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (msg,event,msg.event),   5)
+X(a, STATIC,   ONEOF,    MESSAGE,  (msg,event,msg.event),   5) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (msg,sensor_frame,msg.sensor_frame),   6)
 #define WendyComMessage_CALLBACK NULL
 #define WendyComMessage_DEFAULT NULL
 #define WendyComMessage_msg_handshake_MSGTYPE WendyComHandshake
@@ -719,6 +739,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (msg,event,msg.event),   5)
 #define WendyComMessage_msg_command_MSGTYPE WendyComCommand
 #define WendyComMessage_msg_response_MSGTYPE WendyComResponse
 #define WendyComMessage_msg_event_MSGTYPE WendyComEvent
+#define WendyComMessage_msg_sensor_frame_MSGTYPE wendy_lite_sensorlink_SensorFrame
 
 extern const pb_msgdesc_t WendyComProtocolVersion_msg;
 extern const pb_msgdesc_t WendyComHandshake_msg;

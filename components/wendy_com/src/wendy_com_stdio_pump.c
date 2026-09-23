@@ -170,7 +170,7 @@ static void _pump(void)
         ESP_LOGE(TAG, "client %d has no link for event", _state.client_id);
         return;
     }
-    
+
     _event_slot.busy = true;
     _event_slot.header = (struct wcom_agent_msg_header){
         .magic = WCOM_AGENT_MSG_MAGIC,
@@ -186,7 +186,7 @@ static void _pump(void)
     _event_slot.tx_chunks[1].size = out_stream.bytes_written;
     _event_slot.tx_chunks[1].done_handler = _done_sending_event;
     _event_slot.tx_chunks[1].next = NULL;
-    
+
     wcom_send(link_id, &_event_slot.tx_chunks[0]);
 }
 

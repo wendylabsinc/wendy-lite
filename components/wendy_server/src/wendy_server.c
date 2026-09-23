@@ -13,6 +13,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <errno.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -45,6 +46,8 @@ struct wendy_server_link {
 //--- globals ---//
 
 static struct wendy_server_link _links[WENDY_SERVER_MAX_LINKS];
+static struct wendy_server_caps _caps = { .sensor_link = false };
+static bool _running = false;
 
 
 //--- internal functions ---//
@@ -167,28 +170,30 @@ static void _server_task(void *arg)
 
     // The full identity, so a browser can tell which board answers without
     // opening a connection first: the ID pins it down, the names label it.
-    mdns_txt_item_t txt_items[] = {
-        {
-            .key = "id",
-            .value = wendy_conf_get_device_id()
-        },
-        {
-            .key = "name",
-            .value = wendy_conf_get_resolved_device_name()
-        },
-        {
-            .key = "displayname",
-            .value = wendy_conf_get_resolved_device_display_name()
-        },
-        {
-            .key = "mtls",
-            .value = trusted ? "true" : "false"
-        }
-    };
+    char org_id_str[12];   // int32_t range, sign + digits + NUL
+    char asset_id_str[12];
+
+    mdns_txt_item_t txt_items[7];
+    size_t txt_count = 0;
+
+    txt_items[txt_count++] = (mdns_txt_item_t){ .key = "id",          .value = wendy_conf_get_device_id() };
+    txt_items[txt_count++] = (mdns_txt_item_t){ .key = "name",        .value = wendy_conf_get_resolved_device_name() };
+    txt_items[txt_count++] = (mdns_txt_item_t){ .key = "displayname", .value = wendy_conf_get_resolved_device_display_name() };
+    txt_items[txt_count++] = (mdns_txt_item_t){ .key = "mtls",        .value = trusted ? "true" : "false" };
+
+    if (_caps.sensor_link)
+        txt_items[txt_count++] = (mdns_txt_item_t){ .key = "caps", .value = "sensors" };
+
+    if (trusted) {
+        snprintf(org_id_str, sizeof(org_id_str), "%" PRId32, wendy_conf_get_org_id());
+        snprintf(asset_id_str, sizeof(asset_id_str), "%" PRId32, wendy_conf_get_asset_id());
+        txt_items[txt_count++] = (mdns_txt_item_t){ .key = "orgid",   .value = org_id_str };
+        txt_items[txt_count++] = (mdns_txt_item_t){ .key = "assetid", .value = asset_id_str };
+    }
 
     esp_err_t mdns_err = mdns_service_add(wendy_conf_get_resolved_device_display_name(),
                                           "_wendy-lite", "_tcp", WENDY_SERVER_PORT,
-                                          txt_items, sizeof(txt_items) / sizeof(txt_items[0]));
+                                          txt_items, txt_count);
     if (mdns_err != ESP_OK) {
         ESP_LOGE(TAG, "mDNS service add failed: %s", esp_err_to_name(mdns_err));
     } else {
@@ -286,8 +291,15 @@ static void _server_task(void *arg)
 
 //--- public functions ---//
 
+void wendy_server_set_caps(const struct wendy_server_caps caps)
+{
+    assert(!_running);
+    _caps = caps;
+}
+
 void wendy_server_start(void)
 {
+    _running = true;
     xTaskCreatePinnedToCore(_server_task, "wendy_server", WENDY_SERVER_TASK_STACK, NULL,
                              CONFIG_WENDY_SERVER_TASK_PRIORITY, NULL,
                              CONFIG_WENDY_SERVER_TASK_CORE_AFFINITY);

@@ -72,7 +72,7 @@ PB_BIND(WendyComDeviceInfo, WendyComDeviceInfo, AUTO)
 PB_BIND(WendyComCommand, WendyComCommand, AUTO)
 
 
-PB_BIND(WendyComResponse, WendyComResponse, AUTO)
+PB_BIND(WendyComResponse, WendyComResponse, 2)
 
 
 PB_BIND(WendyComEvent, WendyComEvent, AUTO)
@@ -99,7 +99,7 @@ PB_BIND(WendyComChannelState, WendyComChannelState, AUTO)
 PB_BIND(WendyComService, WendyComService, AUTO)
 
 
-PB_BIND(WendyComMessage, WendyComMessage, AUTO)
+PB_BIND(WendyComMessage, WendyComMessage, 2)
 
 
 
