@@ -285,7 +285,7 @@ typedef struct _WendyComMessage {
         WendyComCommand command;
         WendyComResponse response;
         WendyComEvent event;
-        wendy_lite_sensorlink_SensorFrame sensor_frame;
+        wendy_lite_sensorlink_SensorData sensor_data;
     } msg;
 } WendyComMessage;
 
@@ -490,7 +490,7 @@ extern "C" {
 #define WendyComMessage_command_tag              3
 #define WendyComMessage_response_tag             4
 #define WendyComMessage_event_tag                5
-#define WendyComMessage_sensor_frame_tag         6
+#define WendyComMessage_sensor_data_tag          6
 
 /* Struct field encoding specification for nanopb */
 #define WendyComProtocolVersion_FIELDLIST(X, a) \
@@ -731,7 +731,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (msg,service,msg.service),   2) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (msg,command,msg.command),   3) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (msg,response,msg.response),   4) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (msg,event,msg.event),   5) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (msg,sensor_frame,msg.sensor_frame),   6)
+X(a, STATIC,   ONEOF,    MESSAGE,  (msg,sensor_data,msg.sensor_data),   6)
 #define WendyComMessage_CALLBACK NULL
 #define WendyComMessage_DEFAULT NULL
 #define WendyComMessage_msg_handshake_MSGTYPE WendyComHandshake
@@ -739,7 +739,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (msg,sensor_frame,msg.sensor_frame),   6)
 #define WendyComMessage_msg_command_MSGTYPE WendyComCommand
 #define WendyComMessage_msg_response_MSGTYPE WendyComResponse
 #define WendyComMessage_msg_event_MSGTYPE WendyComEvent
-#define WendyComMessage_msg_sensor_frame_MSGTYPE wendy_lite_sensorlink_SensorFrame
+#define WendyComMessage_msg_sensor_data_MSGTYPE wendy_lite_sensorlink_SensorData
 
 extern const pb_msgdesc_t WendyComProtocolVersion_msg;
 extern const pb_msgdesc_t WendyComHandshake_msg;

@@ -22,13 +22,6 @@ typedef enum _wendy_lite_sensorlink_AudioFormat_Codec {
     wendy_lite_sensorlink_AudioFormat_Codec_OPUS = 2
 } wendy_lite_sensorlink_AudioFormat_Codec;
 
-typedef enum _wendy_lite_sensorlink_SensorDescriptor_Kind {
-    wendy_lite_sensorlink_SensorDescriptor_Kind_KIND_UNSPECIFIED = 0,
-    wendy_lite_sensorlink_SensorDescriptor_Kind_CAMERA = 1,
-    wendy_lite_sensorlink_SensorDescriptor_Kind_MICROPHONE = 2,
-    wendy_lite_sensorlink_SensorDescriptor_Kind_SENSOR = 3
-} wendy_lite_sensorlink_SensorDescriptor_Kind;
-
 /* Struct definitions */
 typedef struct _wendy_lite_sensorlink_VideoFormat {
     wendy_lite_sensorlink_VideoFormat_Codec codec;
@@ -51,7 +44,7 @@ typedef struct _wendy_lite_sensorlink_SensorFormat {
 
 typedef struct _wendy_lite_sensorlink_SensorDescriptor {
     uint32_t channel_id;
-    wendy_lite_sensorlink_SensorDescriptor_Kind kind;
+    uint32_t input_id; /* only one channel of a given input_id can be used at a time */
     pb_callback_t name;
     pb_size_t which_format;
     union {
@@ -81,13 +74,14 @@ typedef struct _wendy_lite_sensorlink_Unsubscribe {
     uint32_t channel_id[16];
 } wendy_lite_sensorlink_Unsubscribe;
 
-typedef struct _wendy_lite_sensorlink_SensorFrame {
+typedef struct _wendy_lite_sensorlink_SensorData {
     uint32_t channel_id;
-    uint32_t seq;
+    uint32_t frame_seq; /* wraps at 32 bits */
+    uint32_t chunk_seq;
     uint64_t ts_us;
-    uint32_t flags; /* bit0 = keyframe */
+    uint32_t flags; /* bit0 = keyframe, bit1 = last chunk in frame */
     pb_callback_t payload;
-} wendy_lite_sensorlink_SensorFrame;
+} wendy_lite_sensorlink_SensorData;
 
 typedef struct _wendy_lite_sensorlink_Ping {
     uint64_t ts_us;
@@ -99,7 +93,7 @@ typedef struct _wendy_lite_sensorlink_Envelope {
     union {
         wendy_lite_sensorlink_SensorManifest manifest;
         wendy_lite_sensorlink_Subscribe subscribe;
-        wendy_lite_sensorlink_SensorFrame frame;
+        wendy_lite_sensorlink_SensorData data;
         wendy_lite_sensorlink_Ping ping;
     } msg;
 } wendy_lite_sensorlink_Envelope;
@@ -118,16 +112,11 @@ extern "C" {
 #define _wendy_lite_sensorlink_AudioFormat_Codec_MAX wendy_lite_sensorlink_AudioFormat_Codec_OPUS
 #define _wendy_lite_sensorlink_AudioFormat_Codec_ARRAYSIZE ((wendy_lite_sensorlink_AudioFormat_Codec)(wendy_lite_sensorlink_AudioFormat_Codec_OPUS+1))
 
-#define _wendy_lite_sensorlink_SensorDescriptor_Kind_MIN wendy_lite_sensorlink_SensorDescriptor_Kind_KIND_UNSPECIFIED
-#define _wendy_lite_sensorlink_SensorDescriptor_Kind_MAX wendy_lite_sensorlink_SensorDescriptor_Kind_SENSOR
-#define _wendy_lite_sensorlink_SensorDescriptor_Kind_ARRAYSIZE ((wendy_lite_sensorlink_SensorDescriptor_Kind)(wendy_lite_sensorlink_SensorDescriptor_Kind_SENSOR+1))
-
 #define wendy_lite_sensorlink_VideoFormat_codec_ENUMTYPE wendy_lite_sensorlink_VideoFormat_Codec
 
 #define wendy_lite_sensorlink_AudioFormat_codec_ENUMTYPE wendy_lite_sensorlink_AudioFormat_Codec
 
 
-#define wendy_lite_sensorlink_SensorDescriptor_kind_ENUMTYPE wendy_lite_sensorlink_SensorDescriptor_Kind
 
 
 
@@ -141,23 +130,23 @@ extern "C" {
 #define wendy_lite_sensorlink_VideoFormat_init_default {_wendy_lite_sensorlink_VideoFormat_Codec_MIN, 0, 0, 0}
 #define wendy_lite_sensorlink_AudioFormat_init_default {_wendy_lite_sensorlink_AudioFormat_Codec_MIN, 0, 0}
 #define wendy_lite_sensorlink_SensorFormat_init_default {{{NULL}, NULL}, 0, 0}
-#define wendy_lite_sensorlink_SensorDescriptor_init_default {0, _wendy_lite_sensorlink_SensorDescriptor_Kind_MIN, {{NULL}, NULL}, 0, {wendy_lite_sensorlink_VideoFormat_init_default}}
+#define wendy_lite_sensorlink_SensorDescriptor_init_default {0, 0, {{NULL}, NULL}, 0, {wendy_lite_sensorlink_VideoFormat_init_default}}
 #define wendy_lite_sensorlink_SensorManifest_init_default {0, 0, {wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default}}
 #define wendy_lite_sensorlink_GetSensorManifest_init_default {0}
 #define wendy_lite_sensorlink_Subscribe_init_default {0, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}}
 #define wendy_lite_sensorlink_Unsubscribe_init_default {0, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}}
-#define wendy_lite_sensorlink_SensorFrame_init_default {0, 0, 0, 0, {{NULL}, NULL}}
+#define wendy_lite_sensorlink_SensorData_init_default {0, 0, 0, 0, 0, {{NULL}, NULL}}
 #define wendy_lite_sensorlink_Ping_init_default  {0}
 #define wendy_lite_sensorlink_Envelope_init_default {0, {wendy_lite_sensorlink_SensorManifest_init_default}}
 #define wendy_lite_sensorlink_VideoFormat_init_zero {_wendy_lite_sensorlink_VideoFormat_Codec_MIN, 0, 0, 0}
 #define wendy_lite_sensorlink_AudioFormat_init_zero {_wendy_lite_sensorlink_AudioFormat_Codec_MIN, 0, 0}
 #define wendy_lite_sensorlink_SensorFormat_init_zero {{{NULL}, NULL}, 0, 0}
-#define wendy_lite_sensorlink_SensorDescriptor_init_zero {0, _wendy_lite_sensorlink_SensorDescriptor_Kind_MIN, {{NULL}, NULL}, 0, {wendy_lite_sensorlink_VideoFormat_init_zero}}
+#define wendy_lite_sensorlink_SensorDescriptor_init_zero {0, 0, {{NULL}, NULL}, 0, {wendy_lite_sensorlink_VideoFormat_init_zero}}
 #define wendy_lite_sensorlink_SensorManifest_init_zero {0, 0, {wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero}}
 #define wendy_lite_sensorlink_GetSensorManifest_init_zero {0}
 #define wendy_lite_sensorlink_Subscribe_init_zero {0, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}}
 #define wendy_lite_sensorlink_Unsubscribe_init_zero {0, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}}
-#define wendy_lite_sensorlink_SensorFrame_init_zero {0, 0, 0, 0, {{NULL}, NULL}}
+#define wendy_lite_sensorlink_SensorData_init_zero {0, 0, 0, 0, 0, {{NULL}, NULL}}
 #define wendy_lite_sensorlink_Ping_init_zero     {0}
 #define wendy_lite_sensorlink_Envelope_init_zero {0, {wendy_lite_sensorlink_SensorManifest_init_zero}}
 
@@ -173,7 +162,7 @@ extern "C" {
 #define wendy_lite_sensorlink_SensorFormat_rate_hz_tag 2
 #define wendy_lite_sensorlink_SensorFormat_sample_bytes_tag 3
 #define wendy_lite_sensorlink_SensorDescriptor_channel_id_tag 1
-#define wendy_lite_sensorlink_SensorDescriptor_kind_tag 2
+#define wendy_lite_sensorlink_SensorDescriptor_input_id_tag 2
 #define wendy_lite_sensorlink_SensorDescriptor_name_tag 3
 #define wendy_lite_sensorlink_SensorDescriptor_video_tag 4
 #define wendy_lite_sensorlink_SensorDescriptor_audio_tag 5
@@ -182,15 +171,16 @@ extern "C" {
 #define wendy_lite_sensorlink_SensorManifest_sensors_tag 2
 #define wendy_lite_sensorlink_Subscribe_channel_id_tag 1
 #define wendy_lite_sensorlink_Unsubscribe_channel_id_tag 1
-#define wendy_lite_sensorlink_SensorFrame_channel_id_tag 1
-#define wendy_lite_sensorlink_SensorFrame_seq_tag 2
-#define wendy_lite_sensorlink_SensorFrame_ts_us_tag 3
-#define wendy_lite_sensorlink_SensorFrame_flags_tag 4
-#define wendy_lite_sensorlink_SensorFrame_payload_tag 5
+#define wendy_lite_sensorlink_SensorData_channel_id_tag 1
+#define wendy_lite_sensorlink_SensorData_frame_seq_tag 2
+#define wendy_lite_sensorlink_SensorData_chunk_seq_tag 3
+#define wendy_lite_sensorlink_SensorData_ts_us_tag 4
+#define wendy_lite_sensorlink_SensorData_flags_tag 5
+#define wendy_lite_sensorlink_SensorData_payload_tag 6
 #define wendy_lite_sensorlink_Ping_ts_us_tag     1
 #define wendy_lite_sensorlink_Envelope_manifest_tag 1
 #define wendy_lite_sensorlink_Envelope_subscribe_tag 2
-#define wendy_lite_sensorlink_Envelope_frame_tag 3
+#define wendy_lite_sensorlink_Envelope_data_tag  3
 #define wendy_lite_sensorlink_Envelope_ping_tag  4
 
 /* Struct field encoding specification for nanopb */
@@ -218,7 +208,7 @@ X(a, STATIC,   SINGULAR, UINT32,   sample_bytes,      3)
 
 #define wendy_lite_sensorlink_SensorDescriptor_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   channel_id,        1) \
-X(a, STATIC,   SINGULAR, UENUM,    kind,              2) \
+X(a, STATIC,   SINGULAR, UINT32,   input_id,          2) \
 X(a, CALLBACK, SINGULAR, STRING,   name,              3) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (format,video,format.video),   4) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (format,audio,format.audio),   5) \
@@ -251,14 +241,15 @@ X(a, STATIC,   REPEATED, UINT32,   channel_id,        1)
 #define wendy_lite_sensorlink_Unsubscribe_CALLBACK NULL
 #define wendy_lite_sensorlink_Unsubscribe_DEFAULT NULL
 
-#define wendy_lite_sensorlink_SensorFrame_FIELDLIST(X, a) \
+#define wendy_lite_sensorlink_SensorData_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   channel_id,        1) \
-X(a, STATIC,   SINGULAR, UINT32,   seq,               2) \
-X(a, STATIC,   SINGULAR, UINT64,   ts_us,             3) \
-X(a, STATIC,   SINGULAR, UINT32,   flags,             4) \
-X(a, CALLBACK, SINGULAR, BYTES,    payload,           5)
-#define wendy_lite_sensorlink_SensorFrame_CALLBACK pb_default_field_callback
-#define wendy_lite_sensorlink_SensorFrame_DEFAULT NULL
+X(a, STATIC,   SINGULAR, UINT32,   frame_seq,         2) \
+X(a, STATIC,   SINGULAR, UINT32,   chunk_seq,         3) \
+X(a, STATIC,   SINGULAR, UINT64,   ts_us,             4) \
+X(a, STATIC,   SINGULAR, UINT32,   flags,             5) \
+X(a, CALLBACK, SINGULAR, BYTES,    payload,           6)
+#define wendy_lite_sensorlink_SensorData_CALLBACK pb_default_field_callback
+#define wendy_lite_sensorlink_SensorData_DEFAULT NULL
 
 #define wendy_lite_sensorlink_Ping_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT64,   ts_us,             1)
@@ -268,13 +259,13 @@ X(a, STATIC,   SINGULAR, UINT64,   ts_us,             1)
 #define wendy_lite_sensorlink_Envelope_FIELDLIST(X, a) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (msg,manifest,msg.manifest),   1) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (msg,subscribe,msg.subscribe),   2) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (msg,frame,msg.frame),   3) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (msg,data,msg.data),   3) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (msg,ping,msg.ping),   4)
 #define wendy_lite_sensorlink_Envelope_CALLBACK NULL
 #define wendy_lite_sensorlink_Envelope_DEFAULT NULL
 #define wendy_lite_sensorlink_Envelope_msg_manifest_MSGTYPE wendy_lite_sensorlink_SensorManifest
 #define wendy_lite_sensorlink_Envelope_msg_subscribe_MSGTYPE wendy_lite_sensorlink_Subscribe
-#define wendy_lite_sensorlink_Envelope_msg_frame_MSGTYPE wendy_lite_sensorlink_SensorFrame
+#define wendy_lite_sensorlink_Envelope_msg_data_MSGTYPE wendy_lite_sensorlink_SensorData
 #define wendy_lite_sensorlink_Envelope_msg_ping_MSGTYPE wendy_lite_sensorlink_Ping
 
 extern const pb_msgdesc_t wendy_lite_sensorlink_VideoFormat_msg;
@@ -285,7 +276,7 @@ extern const pb_msgdesc_t wendy_lite_sensorlink_SensorManifest_msg;
 extern const pb_msgdesc_t wendy_lite_sensorlink_GetSensorManifest_msg;
 extern const pb_msgdesc_t wendy_lite_sensorlink_Subscribe_msg;
 extern const pb_msgdesc_t wendy_lite_sensorlink_Unsubscribe_msg;
-extern const pb_msgdesc_t wendy_lite_sensorlink_SensorFrame_msg;
+extern const pb_msgdesc_t wendy_lite_sensorlink_SensorData_msg;
 extern const pb_msgdesc_t wendy_lite_sensorlink_Ping_msg;
 extern const pb_msgdesc_t wendy_lite_sensorlink_Envelope_msg;
 
@@ -298,7 +289,7 @@ extern const pb_msgdesc_t wendy_lite_sensorlink_Envelope_msg;
 #define wendy_lite_sensorlink_GetSensorManifest_fields &wendy_lite_sensorlink_GetSensorManifest_msg
 #define wendy_lite_sensorlink_Subscribe_fields &wendy_lite_sensorlink_Subscribe_msg
 #define wendy_lite_sensorlink_Unsubscribe_fields &wendy_lite_sensorlink_Unsubscribe_msg
-#define wendy_lite_sensorlink_SensorFrame_fields &wendy_lite_sensorlink_SensorFrame_msg
+#define wendy_lite_sensorlink_SensorData_fields &wendy_lite_sensorlink_SensorData_msg
 #define wendy_lite_sensorlink_Ping_fields &wendy_lite_sensorlink_Ping_msg
 #define wendy_lite_sensorlink_Envelope_fields &wendy_lite_sensorlink_Envelope_msg
 
@@ -306,7 +297,7 @@ extern const pb_msgdesc_t wendy_lite_sensorlink_Envelope_msg;
 /* wendy_lite_sensorlink_SensorFormat_size depends on runtime parameters */
 /* wendy_lite_sensorlink_SensorDescriptor_size depends on runtime parameters */
 /* wendy_lite_sensorlink_SensorManifest_size depends on runtime parameters */
-/* wendy_lite_sensorlink_SensorFrame_size depends on runtime parameters */
+/* wendy_lite_sensorlink_SensorData_size depends on runtime parameters */
 /* wendy_lite_sensorlink_Envelope_size depends on runtime parameters */
 #define WENDY_LITE_SENSORLINK_SENSORLINK_PB_H_MAX_SIZE wendy_lite_sensorlink_Subscribe_size
 #define wendy_lite_sensorlink_AudioFormat_size   14

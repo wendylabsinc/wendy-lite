@@ -257,7 +257,7 @@ WendyComResult wcom_cmd_sensor_link_get_manifest(wendy_lite_sensorlink_SensorMan
         const struct wcom_sensor_descriptor *src = &sensors[i];
         wendy_lite_sensorlink_SensorDescriptor *dst = &out->sensors[i];
         dst->channel_id = src->channel_id;
-        dst->kind = src->kind;
+        dst->input_id = src->input_id;
         dst->name.funcs.encode = _encode_string;
         dst->name.arg = (void *)(src->name ? src->name : "");
         switch (src->format_kind) {

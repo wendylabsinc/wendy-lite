@@ -54,7 +54,7 @@ func run(target string) error {
 	defer client.Close()
 	fmt.Fprintf(os.Stderr, "connected to %s\n", target)
 
-	var removeFrameListener func()
+	var removeSensorDataListener func()
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
@@ -191,7 +191,7 @@ func run(target string) error {
 			}
 			fmt.Printf("device_asset_id: %d\n", manifest.GetDeviceAssetId())
 			for _, s := range manifest.GetSensors() {
-				fmt.Printf("  channel %d: kind=%s name=%q\n", s.GetChannelId(), s.GetKind(), s.GetName())
+				fmt.Printf("  channel %d: input=%d name=%q\n", s.GetChannelId(), s.GetInputId(), s.GetName())
 				switch f := s.GetFormat().(type) {
 				case *sensorlinkpb.SensorDescriptor_Video:
 					v := f.Video
@@ -212,8 +212,8 @@ func run(target string) error {
 				continue
 			}
 			// Installed once: a second listener would print every frame twice.
-			if removeFrameListener == nil {
-				removeFrameListener = client.AddSensorFrameListener(dumpSensorFrame)
+			if removeSensorDataListener == nil {
+				removeSensorDataListener = client.AddSensorDataListener(sensorDataDumper())
 			}
 			if err := client.SensorLinkSubscribe(ids, 0); err != nil {
 				fmt.Fprintln(os.Stderr, "sl-subscribe:", err)
@@ -321,17 +321,48 @@ func runConsole(client *liteclient.WendyLiteClient, rolling bool, blocking bool)
 	}
 }
 
-// dumpSensorFrame prints one line per frame. The payload is only sampled: at
-// video rates the frames themselves would bury everything else. It runs on
-// the client's read loop, so it stays to printing and nothing more.
-func dumpSensorFrame(f *sensorlinkpb.SensorFrame) {
-	payload := f.GetPayload()
-	head := payload
-	if len(head) > 4 {
-		head = head[:4]
+// sensorDataLastChunk is bit1 of SensorData.flags, set on the chunk that ends
+// a frame.
+const sensorDataLastChunk = 1 << 1
+
+// sensorDataDumper returns a listener that prints one line per frame, tallying
+// the SensorData chunks the device cuts each frame into. The payload is only
+// sampled: at video rates the frames themselves would bury everything else.
+// The listener runs on the client's read loop, so it stays to counting and
+// printing, and its state needs no lock.
+func sensorDataDumper() func(*sensorlinkpb.SensorData) {
+	type frame struct {
+		seq    uint32
+		chunks uint32
+		size   int
+		head   []byte
 	}
-	fmt.Printf("frame ch=%d seq=%d size=%d %x...\n",
-		f.GetChannelId(), f.GetSeq(), len(payload), head)
+	frames := map[uint32]*frame{} // in progress, by channel
+	return func(d *sensorlinkpb.SensorData) {
+		ch := d.GetChannelId()
+		f := frames[ch]
+		if d.GetChunkSeq() == 0 {
+			if f != nil {
+				fmt.Printf("frame ch=%d seq=%d incomplete after %d chunks\n", ch, f.seq, f.chunks)
+			}
+			head := d.GetPayload()
+			if len(head) > 4 {
+				head = head[:4]
+			}
+			f = &frame{seq: d.GetFrameSeq(), head: bytes.Clone(head)}
+			frames[ch] = f
+		} else if f == nil || d.GetFrameSeq() != f.seq || d.GetChunkSeq() != f.chunks {
+			fmt.Printf("chunk ch=%d seq=%d chunk=%d out of sequence\n", ch, d.GetFrameSeq(), d.GetChunkSeq())
+			delete(frames, ch)
+			return
+		}
+		f.chunks++
+		f.size += len(d.GetPayload())
+		if d.GetFlags()&sensorDataLastChunk != 0 {
+			fmt.Printf("frame ch=%d seq=%d chunks=%d size=%d %x...\n", ch, f.seq, f.chunks, f.size, f.head)
+			delete(frames, ch)
+		}
+	}
 }
 
 // parseChannelIDs splits arg into whitespace-separated channel IDs. ok is

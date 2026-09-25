@@ -30,15 +30,13 @@ PB_BIND(wendy_lite_sensorlink_Subscribe, wendy_lite_sensorlink_Subscribe, AUTO)
 PB_BIND(wendy_lite_sensorlink_Unsubscribe, wendy_lite_sensorlink_Unsubscribe, AUTO)
 
 
-PB_BIND(wendy_lite_sensorlink_SensorFrame, wendy_lite_sensorlink_SensorFrame, AUTO)
+PB_BIND(wendy_lite_sensorlink_SensorData, wendy_lite_sensorlink_SensorData, AUTO)
 
 
 PB_BIND(wendy_lite_sensorlink_Ping, wendy_lite_sensorlink_Ping, AUTO)
 
 
 PB_BIND(wendy_lite_sensorlink_Envelope, wendy_lite_sensorlink_Envelope, 2)
-
-
 
 
 

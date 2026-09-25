@@ -39,7 +39,7 @@ enum wcom_sensor_format_kind {
 
 struct wcom_sensor_descriptor {
     uint32_t channel_id;
-    wendy_lite_sensorlink_SensorDescriptor_Kind kind;
+    uint32_t input_id; // only one channel of a given input_id can be used at a time
     const char *name;
     enum wcom_sensor_format_kind format_kind;
     union {
@@ -79,16 +79,18 @@ struct wcom_sensor_link_delegate {
                                                    size_t *sensor_count);
     // client_id identifies the requesting link/channel (same id space as
     // wcom_cmd_console_attach's client_id), so the delegate knows who to
-    // eventually stream SensorFrames to / stop streaming to. channel_ids/count
+    // eventually stream SensorData to / stop streaming to. channel_ids/count
     // come straight from the decoded (bounded) request.
     enum wcom_sensor_link_result (*on_sensor_link_subscribe)(int client_id, const uint32_t *channel_ids, size_t count);
     enum wcom_sensor_link_result (*on_sensor_link_unsubscribe)(int client_id, const uint32_t *channel_ids, size_t count);
     // Called when client_id goes away — its channel closed, or its whole link
-    // dropped. Any frame still in flight for it has already had its done
-    // callback run, the link clearing its tx queue before it reports the
-    // disconnect, so the producer's buffer is back in its hands by now. The
-    // stream is closed too: this is a cue to stop capturing, not to send
-    // anything more.
+    // dropped. The stream is closed by now, and a frame still in flight for
+    // it goes no further than the chunk already queued. If the link dropped,
+    // that chunk went with its tx queue and the frame's done callback has
+    // already run: the link clears its queue before it reports the
+    // disconnect. If only the channel closed, done runs once that chunk is
+    // out, so the producer must still wait for it before reusing its buffer.
+    // Either way this is a cue to stop capturing, not to send anything more.
     void (*on_sensor_link_disconnected)(int client_id);
 };
 
