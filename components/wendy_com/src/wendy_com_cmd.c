@@ -7,7 +7,6 @@
 #include "wendy_com_common.h"
 #include "wendy_com_stdio_pump.h"
 #include "wendy_com_sensor.h"
-#include "wendy_conf.h"
 #include "wendy_stdio.h"
 #include <pb_encode.h>
 
@@ -251,7 +250,6 @@ WendyComResult wcom_cmd_sensor_link_get_manifest(wendy_lite_sensorlink_SensorMan
     if (sensor_count > WCOM_SENSOR_LINK_MAX_SENSORS)
         sensor_count = WCOM_SENSOR_LINK_MAX_SENSORS; // defensive clamp
 
-    out->device_asset_id = wendy_conf_get_asset_id();
     out->sensors_count = (pb_size_t)sensor_count;
     for (size_t i = 0; i < sensor_count; i++) {
         const struct wcom_sensor_descriptor *src = &sensors[i];

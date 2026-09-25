@@ -189,7 +189,6 @@ func run(target string) error {
 				fmt.Fprintln(os.Stderr, "sl-manifest:", err)
 				continue
 			}
-			fmt.Printf("device_asset_id: %d\n", manifest.GetDeviceAssetId())
 			for _, s := range manifest.GetSensors() {
 				fmt.Printf("  channel %d: input=%d name=%q\n", s.GetChannelId(), s.GetInputId(), s.GetName())
 				switch f := s.GetFormat().(type) {

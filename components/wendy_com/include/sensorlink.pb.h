@@ -55,7 +55,6 @@ typedef struct _wendy_lite_sensorlink_SensorDescriptor {
 } wendy_lite_sensorlink_SensorDescriptor;
 
 typedef struct _wendy_lite_sensorlink_SensorManifest {
-    int32_t device_asset_id;
     pb_size_t sensors_count;
     wendy_lite_sensorlink_SensorDescriptor sensors[16];
 } wendy_lite_sensorlink_SensorManifest;
@@ -131,7 +130,7 @@ extern "C" {
 #define wendy_lite_sensorlink_AudioFormat_init_default {_wendy_lite_sensorlink_AudioFormat_Codec_MIN, 0, 0}
 #define wendy_lite_sensorlink_SensorFormat_init_default {{{NULL}, NULL}, 0, 0}
 #define wendy_lite_sensorlink_SensorDescriptor_init_default {0, 0, {{NULL}, NULL}, 0, {wendy_lite_sensorlink_VideoFormat_init_default}}
-#define wendy_lite_sensorlink_SensorManifest_init_default {0, 0, {wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default}}
+#define wendy_lite_sensorlink_SensorManifest_init_default {0, {wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default, wendy_lite_sensorlink_SensorDescriptor_init_default}}
 #define wendy_lite_sensorlink_GetSensorManifest_init_default {0}
 #define wendy_lite_sensorlink_Subscribe_init_default {0, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}}
 #define wendy_lite_sensorlink_Unsubscribe_init_default {0, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}}
@@ -142,7 +141,7 @@ extern "C" {
 #define wendy_lite_sensorlink_AudioFormat_init_zero {_wendy_lite_sensorlink_AudioFormat_Codec_MIN, 0, 0}
 #define wendy_lite_sensorlink_SensorFormat_init_zero {{{NULL}, NULL}, 0, 0}
 #define wendy_lite_sensorlink_SensorDescriptor_init_zero {0, 0, {{NULL}, NULL}, 0, {wendy_lite_sensorlink_VideoFormat_init_zero}}
-#define wendy_lite_sensorlink_SensorManifest_init_zero {0, 0, {wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero}}
+#define wendy_lite_sensorlink_SensorManifest_init_zero {0, {wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero, wendy_lite_sensorlink_SensorDescriptor_init_zero}}
 #define wendy_lite_sensorlink_GetSensorManifest_init_zero {0}
 #define wendy_lite_sensorlink_Subscribe_init_zero {0, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}}
 #define wendy_lite_sensorlink_Unsubscribe_init_zero {0, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}}
@@ -167,8 +166,7 @@ extern "C" {
 #define wendy_lite_sensorlink_SensorDescriptor_video_tag 4
 #define wendy_lite_sensorlink_SensorDescriptor_audio_tag 5
 #define wendy_lite_sensorlink_SensorDescriptor_sensor_tag 6
-#define wendy_lite_sensorlink_SensorManifest_device_asset_id_tag 1
-#define wendy_lite_sensorlink_SensorManifest_sensors_tag 2
+#define wendy_lite_sensorlink_SensorManifest_sensors_tag 1
 #define wendy_lite_sensorlink_Subscribe_channel_id_tag 1
 #define wendy_lite_sensorlink_Unsubscribe_channel_id_tag 1
 #define wendy_lite_sensorlink_SensorData_channel_id_tag 1
@@ -220,8 +218,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (format,sensor,format.sensor),   6)
 #define wendy_lite_sensorlink_SensorDescriptor_format_sensor_MSGTYPE wendy_lite_sensorlink_SensorFormat
 
 #define wendy_lite_sensorlink_SensorManifest_FIELDLIST(X, a) \
-X(a, STATIC,   SINGULAR, INT32,    device_asset_id,   1) \
-X(a, STATIC,   REPEATED, MESSAGE,  sensors,           2)
+X(a, STATIC,   REPEATED, MESSAGE,  sensors,           1)
 #define wendy_lite_sensorlink_SensorManifest_CALLBACK NULL
 #define wendy_lite_sensorlink_SensorManifest_DEFAULT NULL
 #define wendy_lite_sensorlink_SensorManifest_sensors_MSGTYPE wendy_lite_sensorlink_SensorDescriptor
