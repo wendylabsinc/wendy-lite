@@ -9,8 +9,9 @@
 #include <pb_encode.h>
 
 
-// SensorData.flags. Every JPEG frame stands on its own, so every chunk is
-// marked keyframe; the chunk that ends a frame is marked last.
+// SensorData.flags. A push cannot say that a frame depends on an earlier one,
+// so every frame is taken to stand on its own and every chunk is marked
+// keyframe; the chunk that ends a frame is marked last.
 #define _FLAG_KEYFRAME   (1u << 0)
 #define _FLAG_LAST_CHUNK (1u << 1)
 
@@ -209,10 +210,10 @@ WendyComResult wcom_sensor_stream_begin(int client_id, uint32_t channel_id)
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 
-WendyComResult wcom_sensor_stream_jpeg_frame(int client_id, uint32_t channel_id,
-                                             const void *data, size_t size,
-                                             uint64_t ts_us,
-                                             void (*done)(uint32_t channel_id))
+WendyComResult wcom_sensor_stream_push(int client_id, uint32_t channel_id,
+                                       const void *data, size_t size,
+                                       uint64_t ts_us,
+                                       void (*done)(uint32_t channel_id))
 {
     if (!_stream.active || client_id != _stream.client_id || channel_id != _stream.channel_id) {
         ESP_LOGW(TAG, "no stream open for client=%d channel=%" PRIu32, client_id, channel_id);

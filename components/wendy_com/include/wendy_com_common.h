@@ -7,6 +7,10 @@
 #include "wendy_com_msg.pb.h"
 #include "sensorlink.pb.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct wcom_app_delegate {
     WendyComResult (*on_app_push_begin)(size_t size, WendyComAppType app_type);
     WendyComResult (*on_app_push_data)(size_t offset, const uint8_t *data, size_t size);
@@ -102,5 +106,9 @@ struct wcom_operation {
     void(* func)(struct wcom_operation *op);
     struct wcom_operation *next;
 };
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

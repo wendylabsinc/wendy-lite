@@ -5,6 +5,10 @@
 #include <stdint.h>
 #include "wendy_com_msg.pb.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Streams the stdout/stderr data captured by wendy_com_stdio to an attached
 // client, as console_data events. All functions must be called from the com
 // task.
@@ -23,5 +27,9 @@ WendyComResult wcom_stdio_pump_detach(int client_id, uint32_t event_id);
 
 /// Drop the attachment held by client_id, if any.
 void wcom_stdio_pump_client_disconnected(int client_id);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

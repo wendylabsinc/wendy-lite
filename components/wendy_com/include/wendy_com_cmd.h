@@ -6,6 +6,10 @@
 #include "wendy_com_msg.pb.h"
 #include "wendy_com_common.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 WendyComResult wcom_cmd_ping(void);
 WendyComResult wcom_cmd_reboot(bool app_auto_start, uint32_t app_auto_start_delay_ms);
 WendyComResult wcom_cmd_app_push_begin(int client_id, size_t size, WendyComAppType app_type);
@@ -30,5 +34,9 @@ void wcom_cmd_client_disconnected(int client_id);
 
 void wcom_cmd_set_app_delegate(const struct wcom_app_delegate *delegate);
 void wcom_cmd_set_sensor_link_delegate(const struct wcom_sensor_link_delegate *delegate);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

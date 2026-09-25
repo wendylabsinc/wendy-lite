@@ -3,6 +3,10 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 
 //--- literals ---//
 
@@ -30,5 +34,9 @@ void wcom_agent_init(void);
 int wcom_get_link_id(int client_id);
 int wcom_get_channel(int client_id);
 
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

@@ -5,6 +5,10 @@
 #include <stddef.h>
 #include "esp_log.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // types
 
 typedef void (*wcom_stdio_data_handler_t)(void *ctx);
@@ -46,5 +50,9 @@ size_t wcom_stdio_read(void *buf, size_t size, bool *gap);
 /// Pass NULL to restore the default handler.
 /// Returns the previous handler.
 vprintf_like_t wcom_set_com_thread_log_vprintf(vprintf_like_t func);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
