@@ -5,9 +5,15 @@ A small client for connecting to Wendy Lite and testing the WendyCom protocol im
 This is a development tool and is not intended for production use.
 
 `conf-update <configuration.pb>` pushes a protobuf-encoded `WendyConf` using
-UPDATE mode. Omitted root fields, such as Wi-Fi when provisioning cloud credentials,
-stay unchanged. Run `reset` afterwards to apply the configuration. Use a USB serial
-connection when provisioning credentials with this development console.
+UPDATE mode. Omitted root fields stay unchanged. Run `reset` afterwards to apply
+the configuration. This is a configuration editor, not a PKI enrollment command.
+
+Real cloud enrollment must use an operator-authorized Tier C credential from
+pki-core and a private key generated and retained by the device. Importing a
+laptop-generated key and certificate through `conf-update` does not implement
+that flow. Firmware enrollment, ML-DSA issuer-chain support, and verified signed
+time are still required before a Wendy development PKI trial is ready. This work
+is tracked in [WDY-3232](https://linear.app/wendylabsinc/issue/WDY-3232).
 
 ## Connecting
 
