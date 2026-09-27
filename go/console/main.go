@@ -12,11 +12,12 @@ import (
 	"time"
 
 	"golang.org/x/term"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/wendylabsinc/wendy/go/console/liteclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/ble"
 	"github.com/wendylabsinc/wendy/go/internal/shared/ble/scan"
-	"github.com/wendylabsinc/wendy/go/proto/gen/sensorlinkpb"
+	wendypb "github.com/wendylabsinc/wendy/go/proto/gen/litepb"
 )
 
 // bleScanDuration is how long a ble:// target without an address scans for.
@@ -101,6 +102,27 @@ func run(target string) error {
 				continue
 			}
 			fmt.Println("resetting…")
+
+		case "conf-update":
+			if strings.TrimSpace(arg) == "" {
+				fmt.Fprintln(os.Stderr, "usage: conf-update <configuration.pb>")
+				continue
+			}
+			blob, err := os.ReadFile(strings.TrimSpace(arg))
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "conf-update:", err)
+				continue
+			}
+			var conf wendypb.WendyConf
+			if err := proto.Unmarshal(blob, &conf); err != nil {
+				fmt.Fprintln(os.Stderr, "conf-update:", err)
+				continue
+			}
+			if err := client.PushConf(&conf, liteclient.ConfPushModeUpdate, nil); err != nil {
+				fmt.Fprintln(os.Stderr, "conf-update:", err)
+				continue
+			}
+			fmt.Println("configuration updated; reset the device to apply")
 
 		case "push":
 			arg = strings.TrimSpace(arg)

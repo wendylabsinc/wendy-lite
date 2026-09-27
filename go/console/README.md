@@ -4,6 +4,11 @@ A small client for connecting to Wendy Lite and testing the WendyCom protocol im
 
 This is a development tool and is not intended for production use.
 
+`conf-update <configuration.pb>` pushes a protobuf-encoded `WendyConf` using
+UPDATE mode. Omitted root fields, such as Wi-Fi when provisioning cloud credentials,
+stay unchanged. Run `reset` afterwards to apply the configuration. Use a USB serial
+connection when provisioning credentials with this development console.
+
 ## Connecting
 
 ```
