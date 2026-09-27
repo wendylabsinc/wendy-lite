@@ -2,7 +2,7 @@
 
 #if CONFIG_WENDY_CLOUD
 
-#include "esp_tls.h"
+#include "wendy_pki.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -13,8 +13,6 @@
 #include <stdatomic.h>
 #include <string.h>
 
-#define _CONNECT_TIMEOUT_MS 10000
-#define _DEFAULT_PORT 5055
 
 static const char *TAG = "wendy_cloud";
 
@@ -33,12 +31,12 @@ static atomic_bool                 s_stop;
 // after wcom_remove_link. Cross-task visibility comes from the wcom op
 // queue (release/acquire) on handoff and from s_wake on hand-back.
 // s_link_id is written on the com task only.
-static esp_tls_t     *s_tls = NULL;
+static wendy_pki_connection     *s_tls = NULL;
 static atomic_int     s_link_id;
 
 struct _add_link_op {
     struct wcom_operation base;
-    esp_tls_t *tls;
+    wendy_pki_connection *tls;
 };
 
 // One connection at a time: the cloud task blocks until the previous link is
@@ -46,78 +44,28 @@ struct _add_link_op {
 static struct _add_link_op s_add_op;
 
 
+static const struct wcom_stream_ops cloud_ops = {
+    .read = wendy_pki_read, .write = wendy_pki_write,
+    .wakeup_fd = wendy_pki_fd,
+};
+
 static esp_err_t cloud_connect(void)
 {
-    s_tls = esp_tls_init();
-    if (!s_tls) {
-        ESP_LOGE(TAG, "esp_tls_init failed");
-        return ESP_ERR_NO_MEM;
-    }
-
-    struct wendy_conf_span host = wendy_conf_get_cloud_host();
-
-    int port = _DEFAULT_PORT;
-    if (host.size > 0) {
-        const char *p = host.data + host.size - 1;
-        while (p > (const char *)host.data && *p >= '0' && *p <= '9')
-            p--;
-        if (*p == ':') {
-            host.size = p - (const char *)host.data;
-            port = (int)strtol(p + 1, NULL, 10);
-        }
-    }
-
-    ESP_LOGI(TAG, "Connecting to %.*s:%d with mTLS", (int)host.size, host.data, port);
-
-    struct wendy_conf_span key = wendy_conf_get_private_key();
-    struct wendy_conf_span cert = wendy_conf_get_certificate();
-    struct wendy_conf_span chain = wendy_conf_get_chain_of_trust();
-
-    esp_tls_cfg_t cfg = {
-        .clientcert_buf   = cert.data,
-        .clientcert_bytes = cert.size,
-        .clientkey_buf    = key.data,
-        .clientkey_bytes  = key.size,
-        .cacert_buf       = chain.data,
-        .cacert_bytes     = chain.size,
-        .timeout_ms       = _CONNECT_TIMEOUT_MS,
-    };
-
-    int ret = esp_tls_conn_new_sync(
-        host.data,
-        host.size,
-        port,
-        &cfg,
-        s_tls);
-
-    if (ret != 1) {
-        int mbedtls_err = 0, flags = 0;
-        esp_tls_error_handle_t eh;
-        if (esp_tls_get_error_handle(s_tls, &eh) == ESP_OK) {
-            esp_tls_get_and_clear_last_error(eh, &mbedtls_err, &flags);
-        }
-        ESP_LOGE(TAG, "TLS connect failed ret=%d mbedtls=0x%x flags=0x%x",
-                 ret, mbedtls_err, flags);
-        esp_tls_conn_destroy(s_tls);
-        s_tls = NULL;
-        return ESP_FAIL;
-    }
-
-    return ESP_OK;
+    return wendy_pki_connect(&s_tls);
 }
 
 // Com task. Tears down the cloud link.
 static void _on_link_interruption(int link_id, enum wcom_interruption_reason reason)
 {
     ESP_LOGI(TAG, "link %d down (reason %d)", link_id, (int)reason);
-    esp_tls_t *tls = s_tls;
+    wendy_pki_connection *tls = s_tls;
     s_tls = NULL;
     // State before s_link_id: once s_link_id is 0 a stopping cloud task may
     // exit and set IDLE, which DISCONNECTED must not overwrite.
     s_state = WENDY_CLOUD_STATE_DISCONNECTED;
     s_link_id = 0;
     wcom_remove_link(link_id);
-    esp_tls_conn_destroy(tls); // client-mode destroy also closes the fd
+    wendy_pki_close(tls); // client-mode destroy also closes the fd
     xSemaphoreGive(s_wake);
 }
 
@@ -127,10 +75,16 @@ static void _on_link_interruption(int link_id, enum wcom_interruption_reason rea
 static void _add_link_exec(struct wcom_operation *op)
 {
     struct _add_link_op *aop = (struct _add_link_op *)op;
-    int link_id = wcom_add_tls_link(aop->tls, _on_link_interruption);
+    if (s_stop) {
+        wendy_pki_close(aop->tls);
+        s_tls = NULL;
+        xSemaphoreGive(s_wake);
+        return;
+    }
+    int link_id = wcom_add_socket_link(&cloud_ops, aop->tls, _on_link_interruption);
     if (link_id < 0) {
         ESP_LOGE(TAG, "no free com link, dropping cloud connection");
-        esp_tls_conn_destroy(aop->tls);
+        wendy_pki_close(aop->tls);
         s_tls = NULL;
         s_state = WENDY_CLOUD_STATE_ERROR;
         xSemaphoreGive(s_wake);
@@ -169,7 +123,7 @@ static void cloud_task(void *arg)
 
         if (s_stop) {
             // stopped during connect: not yet handed off, safe to destroy here
-            esp_tls_conn_destroy(s_tls);
+            wendy_pki_close(s_tls);
             s_tls = NULL;
             break;
         }
@@ -182,7 +136,13 @@ static void cloud_task(void *arg)
         wcom_core_exec(&s_add_op.base);
 
         // sleep until the link dies (interruption handler) or stop is requested
-        xSemaphoreTake(s_wake, portMAX_DELAY);
+        if (xSemaphoreTake(s_wake, pdMS_TO_TICKS(240000)) != pdTRUE) {
+            // Refresh signed time and renew before the current identity expires.
+            // Close through the com task so the next connection never shares TLS state.
+            static struct wcom_operation refresh_op = { .func = _close_link_exec };
+            wcom_core_exec(&refresh_op);
+            xSemaphoreTake(s_wake, portMAX_DELAY);
+        }
         if (s_stop)
             break;
 
@@ -207,19 +167,18 @@ esp_err_t wendy_cloud_start(void)
         return ESP_OK;
     }
 
-    struct wendy_conf_span host = wendy_conf_get_cloud_host();
-    struct wendy_conf_span key = wendy_conf_get_private_key();
-    struct wendy_conf_span cert = wendy_conf_get_certificate();
-    struct wendy_conf_span chain = wendy_conf_get_chain_of_trust();
-    if (host.size == 0 || key.size == 0 || cert.size == 0 || chain.size == 0) {
-        ESP_LOGE(TAG, "cloud provisioning not found in wendy_conf");
-        return ESP_FAIL;
+    if (!wendy_conf_has_enrollment()) {
+        ESP_LOGE(TAG, "pki-core enrollment configuration is missing");
+        return ESP_ERR_INVALID_STATE;
     }
 
     if (!s_stopped)
         s_stopped = xSemaphoreCreateBinary();
     if (!s_wake)
         s_wake = xSemaphoreCreateBinary();
+    if (!s_stopped || !s_wake)
+        return ESP_ERR_NO_MEM;
+    xSemaphoreTake(s_stopped, 0);
     xSemaphoreTake(s_wake, 0); // drain a stale wake left over from a previous run
     s_stop = false;
 

@@ -5,6 +5,7 @@
 #include "wendy_com_agent.h"
 #include "wendy_com_link.h"
 #include "wendy_com_cmd.h"
+#include "wendy_pki.h"
 #include "wendy_com_msg.pb.h"
 #include "esp_log.h"
 #include <pb_decode.h>
@@ -337,7 +338,22 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
 
     ESP_LOGI(TAG, "link %d received cmd id %d", link->link_id, cmd->request_id);
 
+    // Configuration writes and bootstrap challenges require physical setup.
+    // An unenrolled network peer cannot redirect a device's enrollment.
+    if ((cmd->which_params == WendyComCommand_conf_push_begin_tag ||
+         cmd->which_params == WendyComCommand_enrollment_challenge_tag) &&
+        !wcom_link_is_local(link->link_id)) {
+        resp->result = WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+        _send_message(link, &out);
+        return;
+    }
     switch (cmd->which_params) {
+    case WendyComCommand_enrollment_challenge_tag:
+        resp->which_data = WendyComResponse_enrollment_challenge_tag;
+        resp->result = wendy_pki_challenge(cmd->params.enrollment_challenge.status_only, resp->data.enrollment_challenge.nonce_hex,
+                         &resp->data.enrollment_challenge.enrolled) == ESP_OK
+            ? WendyComResult_WENDY_COM_RESULT_OK : WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+        break;
     case WendyComCommand_ping_tag:
         resp->result = wcom_cmd_ping();
         break;

@@ -11,9 +11,10 @@ the configuration. This is a configuration editor, not a PKI enrollment command.
 Real cloud enrollment must use an operator-authorized Tier C credential from
 pki-core and a private key generated and retained by the device. Importing a
 laptop-generated key and certificate through `conf-update` does not implement
-that flow. Firmware enrollment, ML-DSA issuer-chain support, and verified signed
-time are still required before a Wendy development PKI trial is ready. This work
-is tracked in [WDY-3232](https://linear.app/wendylabsinc/issue/WDY-3232).
+that flow. Use the companion Wendy CLI's `wendy cloud enroll-lite` command with
+PKI-enabled firmware. See [the enrollment guide](../../docs/cloud-enrollment.md)
+for trust bundles, builds, and the remaining Cloud tunnel work. Enrollment upload
+is restricted to physical USB/UART; network configuration pushes are rejected.
 
 ## Connecting
 

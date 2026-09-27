@@ -2,15 +2,15 @@ menu "Wendy Cloud"
     config WENDY_CLOUD
         bool "Enable cloud mTLS connection"
         default n
-        depends on ESP_TLS_USING_MBEDTLS
+        depends on WENDY_PKI
         help
             Open a persistent mTLS socket to the cloud endpoint using
-            credentials provisioned by wendy_cloud_prov.
+            a device identity enrolled directly with pki-core.
 
     config WENDY_CLOUD_TASK_STACK_SIZE
         int "Cloud task stack size (bytes)"
         depends on WENDY_CLOUD
-        default 8192
+        default 24576
 
     config WENDY_CLOUD_TASK_PRIORITY
         int "Cloud task priority"

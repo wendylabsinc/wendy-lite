@@ -1,0 +1,47 @@
+name: PKI enrollment
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - name: Verify pki-core timestamp and certificate fixtures
+        run: |
+          cmake -S components/wendy_pki/tests -B build-pki -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          cmake --build build-pki -j2
+          ctest --test-dir build-pki --output-on-failure
+
+  firmware:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    container:
+      image: espressif/idf:v5.5.4
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - name: Build ESP32-C6 with enrollment enabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          . "$IDF_PATH/export.sh"
+          # These public test certificates are only for a compile check.
+          # This firmware is never published as an installable artifact.
+          root="$GITHUB_WORKSPACE/components/wendy_pki/tests/fixtures/root.pem"
+          cat > pki-test.defaults <<EOF_CONFIG
+          CONFIG_WENDY_PKI_DEVICE_ROOTS="$root"
+          CONFIG_WENDY_PKI_TSA_ROOTS="$root"
+          CONFIG_WENDY_PKI_HTTPS_ROOTS="$root"
+          EOF_CONFIG
+          idf.py -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;boards/esp32c6_cloud.defaults;pki-test.defaults' set-target esp32c6
+          idf.py build
