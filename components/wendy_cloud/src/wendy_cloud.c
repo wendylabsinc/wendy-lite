@@ -33,6 +33,7 @@ static atomic_bool                 s_stop;
 // s_link_id is written on the com task only.
 static wendy_pki_connection     *s_tls = NULL;
 static atomic_int     s_link_id;
+static atomic_bool    s_add_pending;
 
 struct _add_link_op {
     struct wcom_operation base;
@@ -42,6 +43,11 @@ struct _add_link_op {
 // One connection at a time: the cloud task blocks until the previous link is
 // fully torn down, so a single static op instance is enough.
 static struct _add_link_op s_add_op;
+
+struct _close_link_op {
+    struct wcom_operation base;
+    int link_id;
+};
 
 
 static const struct wcom_stream_ops cloud_ops = {
@@ -78,6 +84,7 @@ static void _add_link_exec(struct wcom_operation *op)
     if (s_stop) {
         wendy_pki_close(aop->tls);
         s_tls = NULL;
+        s_add_pending = false;
         xSemaphoreGive(s_wake);
         return;
     }
@@ -87,20 +94,25 @@ static void _add_link_exec(struct wcom_operation *op)
         wendy_pki_close(aop->tls);
         s_tls = NULL;
         s_state = WENDY_CLOUD_STATE_ERROR;
+        s_add_pending = false;
         xSemaphoreGive(s_wake);
         return;
     }
     s_link_id = link_id;
     ESP_LOGI(TAG, "link %d added", link_id);
+    // Stop may have arrived while the link's state handlers ran.
+    if (s_stop)
+        wcom_close(link_id);
+    s_add_pending = false;
 }
 
 // Com task. Queued by wendy_cloud_stop after s_add_op, so it always runs
 // after a pending handoff and funnels teardown through the interruption handler.
 static void _close_link_exec(struct wcom_operation *op)
 {
-    int link_id = s_link_id;
-    if (link_id != 0)
-        wcom_close(link_id);
+    struct _close_link_op *close = (struct _close_link_op *)op;
+    if (close->link_id != 0)
+        wcom_close(close->link_id);
 }
 
 static void cloud_task(void *arg)
@@ -133,14 +145,16 @@ static void cloud_task(void *arg)
 
         s_add_op.base.func = _add_link_exec;
         s_add_op.tls = s_tls;
+        s_add_pending = true;
         wcom_core_exec(&s_add_op.base);
 
         // sleep until the link dies (interruption handler) or stop is requested
         if (xSemaphoreTake(s_wake, pdMS_TO_TICKS(240000)) != pdTRUE) {
             // Refresh signed time and renew before the current identity expires.
             // Close through the com task so the next connection never shares TLS state.
-            static struct wcom_operation refresh_op = { .func = _close_link_exec };
-            wcom_core_exec(&refresh_op);
+            static struct _close_link_op refresh_op = { .base.func = _close_link_exec };
+            refresh_op.link_id = s_link_id;
+            wcom_core_exec(&refresh_op.base);
             xSemaphoreTake(s_wake, portMAX_DELAY);
         }
         if (s_stop)
@@ -151,7 +165,7 @@ static void cloud_task(void *arg)
     }
 
     // wait for the com task to finish tearing down any live link
-    while (s_link_id != 0)
+    while (s_add_pending || s_link_id != 0)
         vTaskDelay(pdMS_TO_TICKS(20));
 
     s_state = WENDY_CLOUD_STATE_IDLE;
@@ -207,13 +221,16 @@ void wendy_cloud_stop(void)
     if (!s_task)
         return;
 
-    s_stop = true;
+    if (atomic_exchange(&s_stop, true))
+        return;
     // close a live link on the com task; teardown funnels through the state
     // handler (this op is queued after any pending handoff)
-    static struct wcom_operation close_op = {
-        .func = _close_link_exec,
+    static struct _close_link_op close_op = {
+        .base.func = _close_link_exec,
     };
-    wcom_core_exec(&close_op);
+    close_op.link_id = s_link_id;
+    if (close_op.link_id)
+        wcom_core_exec(&close_op.base);
     xSemaphoreGive(s_wake); // wake the task from any wait
 
     if (xSemaphoreTake(s_stopped, pdMS_TO_TICKS(15000)) != pdTRUE)
