@@ -1,6 +1,6 @@
 # Real PKI enrollment for Wendy Lite
 
-`wendy cloud enroll-lite` enrolls a USB-connected board with the PKI deployment
+`wendy cloud enroll-device` enrolls a USB-connected board with the PKI deployment
 selected by the operator's Wendy CLI session. A development login selects
 `identity.dev.pki.wendy.sh`; the CLI derives the sibling CSR and signed-time
 endpoints. Self-hosted deployments can override both URLs and the broker address.
@@ -62,8 +62,8 @@ and its real PKI/fabric configuration from
 
 ```sh
 wendy cloud login --email YOU@YOUR_ORGANIZATION
-wendy cloud enroll-lite \
-  --serial /dev/cu.usbmodemXXXX \
+wendy cloud enroll-device \
+  --device wendy-lite:/dev/cu.usbmodemXXXX \
   --name lite-desk \
   --broker-host YOUR_WENDYCOM_BROKER_HOST \
   --broker-port 5055
