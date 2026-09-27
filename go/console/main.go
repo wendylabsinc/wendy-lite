@@ -18,6 +18,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/ble"
 	"github.com/wendylabsinc/wendy/go/internal/shared/ble/scan"
 	wendypb "github.com/wendylabsinc/wendy/go/proto/gen/litepb"
+	"github.com/wendylabsinc/wendy/go/proto/gen/sensorlinkpb"
 )
 
 // bleScanDuration is how long a ble:// target without an address scans for.
