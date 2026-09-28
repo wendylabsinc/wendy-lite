@@ -36,7 +36,14 @@ static struct {
     struct wcom_operation base;
     int client_id;
     uint32_t channel_id;
-} s_stream_begin_op, s_stream_end_op;
+} s_stream_begin_op;
+
+static struct {
+    struct wcom_operation base;
+    int client_id;
+    uint32_t channel_id;
+    void (*done)(uint32_t channel_id);
+} s_stream_end_op;
 
 static struct {
     struct wcom_operation base;
@@ -46,11 +53,11 @@ static struct {
     size_t size;
     uint64_t ts_us;
     void (*done)(uint32_t channel_id);
-} s_frame_op;
+} s_stream_push_op;
 
 static atomic_bool s_stream_begin_pending = false;
 static atomic_bool s_stream_end_pending   = false;
-static atomic_bool s_frame_pending        = false;
+static atomic_bool s_stream_push_pending  = false;
 
 static bool take_op(atomic_bool *pending)
 {
@@ -66,20 +73,27 @@ static void stream_begin_exec(struct wcom_operation *op)
 
 static void stream_end_exec(struct wcom_operation *op)
 {
-    wcom_sensor_stream_end(s_stream_end_op.client_id, s_stream_end_op.channel_id);
+    /* The stream is closed on return, whatever the result: BAD_STATE only
+       means it already was, e.g. by a client disconnect. The flag goes before
+       done, so that done may end a stream again. */
+    void (*done)(uint32_t channel_id) = s_stream_end_op.done;
+    uint32_t channel_id = s_stream_end_op.channel_id;
+    wcom_sensor_stream_end(s_stream_end_op.client_id, channel_id);
     atomic_store(&s_stream_end_pending, false);
+    if (done)
+        done(channel_id);
 }
 
-static void frame_exec(struct wcom_operation *op)
+static void stream_push_exec(struct wcom_operation *op)
 {
     WendyComResult result = wcom_sensor_stream_push(
-        s_frame_op.client_id, s_frame_op.channel_id, s_frame_op.data,
-        s_frame_op.size, s_frame_op.ts_us, s_frame_op.done);
+        s_stream_push_op.client_id, s_stream_push_op.channel_id, s_stream_push_op.data,
+        s_stream_push_op.size, s_stream_push_op.ts_us, s_stream_push_op.done);
     /* On OK the frame owns the buffer until its own done callback runs;
        otherwise nobody else will hand it back, so do it here. */
-    void (*done)(uint32_t channel_id) = s_frame_op.done;
-    uint32_t channel_id = s_frame_op.channel_id;
-    atomic_store(&s_frame_pending, false);
+    void (*done)(uint32_t channel_id) = s_stream_push_op.done;
+    uint32_t channel_id = s_stream_push_op.channel_id;
+    atomic_store(&s_stream_push_pending, false);
     if (result != WendyComResult_WENDY_COM_RESULT_OK && done)
         done(channel_id);
 }
@@ -98,7 +112,7 @@ void wendy_core_sensor_stream_begin(int client_id, uint32_t channel_id)
 
 void wendy_core_sensor_stream_push(int client_id, uint32_t channel_id, const void *data, size_t size, uint64_t ts_us, void (* done)(uint32_t channel_id))
 {
-    if (!take_op(&s_frame_pending)) {
+    if (!take_op(&s_stream_push_pending)) {
         /* The previous frame has not reached the com task yet. Drop this one,
            but hand the buffer straight back: the caller is waiting on done. */
         ESP_LOGW(TAG, "frame dropped on channel %" PRIu32 ": previous one still pending", channel_id);
@@ -106,24 +120,28 @@ void wendy_core_sensor_stream_push(int client_id, uint32_t channel_id, const voi
             done(channel_id);
         return;
     }
-    s_frame_op.base.func = frame_exec;
-    s_frame_op.client_id = client_id;
-    s_frame_op.channel_id = channel_id;
-    s_frame_op.data = data;
-    s_frame_op.size = size;
-    s_frame_op.ts_us = ts_us;
-    s_frame_op.done = done;
-    wcom_exec(&s_frame_op.base);
+    s_stream_push_op.base.func = stream_push_exec;
+    s_stream_push_op.client_id = client_id;
+    s_stream_push_op.channel_id = channel_id;
+    s_stream_push_op.data = data;
+    s_stream_push_op.size = size;
+    s_stream_push_op.ts_us = ts_us;
+    s_stream_push_op.done = done;
+    wcom_exec(&s_stream_push_op.base);
 }
 
-void wendy_core_sensor_stream_end(int client_id, uint32_t channel_id)
+void wendy_core_sensor_stream_end(int client_id, uint32_t channel_id, void (* done)(uint32_t channel_id))
 {
     if (!take_op(&s_stream_end_pending)) {
+        /* Refused, but done still runs: the caller is waiting on it. */
         ESP_LOGW(TAG, "sensor stream end already pending");
+        if (done)
+            done(channel_id);
         return;
     }
     s_stream_end_op.base.func = stream_end_exec;
     s_stream_end_op.client_id = client_id;
     s_stream_end_op.channel_id = channel_id;
+    s_stream_end_op.done = done;
     wcom_exec(&s_stream_end_op.base);
 }

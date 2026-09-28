@@ -39,8 +39,11 @@ WendyComResult wcom_sensor_stream_push(int client_id, uint32_t channel_id,
                                        uint64_t ts_us,
                                        void (*done)(uint32_t channel_id));
 
-/// Close the stream. A frame already queued still completes, its remaining
-/// chunks going out as usual, and its done callback still runs.
+/// Close the stream. Call it only once the last frame's done has run: the
+/// stream is then fully released on return, and a new one can begin and push
+/// straight away. Called earlier, the frame still goes out and its done still
+/// runs, but the next stream's first push gets WENDY_COM_RESULT_BUSY until
+/// it has.
 WendyComResult wcom_sensor_stream_end(int client_id, uint32_t channel_id);
 
 /// Drop the stream held by client_id, if any.

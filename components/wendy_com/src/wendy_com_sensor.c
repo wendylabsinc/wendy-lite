@@ -257,6 +257,8 @@ WendyComResult wcom_sensor_stream_end(int client_id, uint32_t channel_id)
     ESP_LOGI(TAG, "STREAM_END client=%d channel=%" PRIu32, client_id, channel_id);
     if (!_stream.active || client_id != _stream.client_id || channel_id != _stream.channel_id)
         return WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+    if (_frame_slot.busy)
+        ESP_LOGW(TAG, "stream on channel %" PRIu32 " ended before its last frame's done", channel_id);
     _stream.active = false;
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
