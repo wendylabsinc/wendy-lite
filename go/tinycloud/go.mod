@@ -10,6 +10,7 @@ require (
 )
 
 require (
+	github.com/wendylabsinc/wendy/go/proto/gen/sensorlinkpb v0.0.0-00010101000000-000000000000 // indirect
 	golang.org/x/net v0.34.0 // indirect
 	golang.org/x/sys v0.29.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
@@ -17,5 +18,7 @@ require (
 )
 
 replace github.com/wendylabsinc/wendy/go/proto/gen/litepb => ../console/wendypb
+
+replace github.com/wendylabsinc/wendy/go/proto/gen/sensorlinkpb => ../console/sensorlinkpb
 
 replace github.com/wendylabsinc/wendy/go/proto/gen/tunnelpb => ../tunnelpb

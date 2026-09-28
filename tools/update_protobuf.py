@@ -45,27 +45,52 @@ PROTO_TARGETS = [
         "components/wendy_com/src/wendy_com_msg.pb.c",
     ),
     (
+        "components/wendy_com/proto/sensorlink.proto",
+        "components/wendy_com/include/sensorlink.pb.h",
+        "components/wendy_com/src/sensorlink.pb.c",
+    ),
+    (
         "components/wendy_conf/proto/wendy_conf.proto",
         "components/wendy_conf/include/wendy_conf.pb.h",
         "components/wendy_conf/src/wendy_conf.pb.c",
     ),
 ]
 
-# (proto paths, Go output directory, Go package path, gRPC service stubs)
+# sensorlink.proto is generated on its own, into the package the WendyOS
+# project also generates it into, so the console client code shared between the
+# two projects can spell these types the same way in both.
+SENSORLINK_GO_PKG = (
+    "github.com/wendylabsinc/wendy/go/proto/gen/sensorlinkpb;sensorlinkpb"
+)
+
+# (proto paths, Go output directory, Go package path, gRPC service stubs,
+#  imported protos -> their Go package)
 # — paths relative to repo root; protos in one entry must live in the same
-# directory and are compiled together (so imports between them resolve)
+# directory and are compiled together (so imports between them resolve).
+# The last element names the Go package of protos that are imported but not
+# generated here: no code is emitted for them, but protoc-gen-go still has to
+# know which package the generated code should import them from.
 GO_TARGETS = [
     (
         ["components/wendy_com/proto/wendy_com_msg.proto"],
         "go/console/wendypb",
-        "wendy-console/wendypb",
+        "wendy-console/wendypb;wendypb",
         False,
+        {"sensorlink.proto": SENSORLINK_GO_PKG},
+    ),
+    (
+        ["components/wendy_com/proto/sensorlink.proto"],
+        "go/console/sensorlinkpb",
+        SENSORLINK_GO_PKG,
+        False,
+        {},
     ),
     (
         ["components/wendy_conf/proto/wendy_conf.proto"],
         "go/console/wendypb",
         "wendy-console/wendypb",
         False,
+        {},
     ),
     (
         [
@@ -75,6 +100,7 @@ GO_TARGETS = [
         "go/tunnelpb",
         "github.com/wendylabsinc/wendy/go/proto/gen/tunnelpb",
         True,
+        {},
     ),
 ]
 
@@ -181,7 +207,7 @@ def generate(buf, version, proto_rel, out_h_rel, out_c_rel, root):
         print(f"    → {out_c_rel}")
 
 
-def generate_go(proto_rels, out_dir_rel, go_package, grpc, root):
+def generate_go(proto_rels, out_dir_rel, go_package, grpc, import_pkgs, root):
     """Run protoc with protoc-gen-go (and protoc-gen-go-grpc for services)."""
     proto_names = [os.path.basename(p) for p in proto_rels]
     proto_dir   = os.path.dirname(os.path.join(root, proto_rels[0]))
@@ -203,12 +229,14 @@ def generate_go(proto_rels, out_dir_rel, go_package, grpc, root):
         "--go_opt=paths=source_relative",
     ]
     cmd += [f"--go_opt=M{name}={go_package}" for name in proto_names]
+    cmd += [f"--go_opt=M{name}={pkg}" for name, pkg in import_pkgs.items()]
     if grpc:
         cmd += [
             f"--go-grpc_out={out_dir}",
             "--go-grpc_opt=paths=source_relative",
         ]
         cmd += [f"--go-grpc_opt=M{name}={go_package}" for name in proto_names]
+        cmd += [f"--go-grpc_opt=M{name}={pkg}" for name, pkg in import_pkgs.items()]
     cmd += proto_names
 
     print(f"  Generating Go code from {', '.join(proto_names)} …")
@@ -259,8 +287,8 @@ def main():
         generate(buf, args.version, proto, out_h, out_c, root)
 
     print("\n--- Go code generation ---")
-    for protos, out_dir, go_package, grpc in GO_TARGETS:
-        generate_go(protos, out_dir, go_package, grpc, root)
+    for protos, out_dir, go_package, grpc, import_pkgs in GO_TARGETS:
+        generate_go(protos, out_dir, go_package, grpc, import_pkgs, root)
 
     print("\nDone. Commit the generated files under components/ and go/.")
 

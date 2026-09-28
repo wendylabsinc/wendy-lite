@@ -16,6 +16,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/console/liteclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/ble"
 	"github.com/wendylabsinc/wendy/go/internal/shared/ble/scan"
+	"github.com/wendylabsinc/wendy/go/proto/gen/sensorlinkpb"
 )
 
 // bleScanDuration is how long a ble:// target without an address scans for.
@@ -52,6 +53,8 @@ func run(target string) error {
 	}
 	defer client.Close()
 	fmt.Fprintf(os.Stderr, "connected to %s\n", target)
+
+	var removeSensorDataListener func()
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
@@ -180,12 +183,61 @@ func run(target string) error {
 			}
 			runConsole(client, rolling, blocking)
 
+		case "sl-manifest":
+			manifest, err := client.GetSensorManifest(0)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "sl-manifest:", err)
+				continue
+			}
+			for _, s := range manifest.GetSensors() {
+				fmt.Printf("  channel %d: input=%d name=%q\n", s.GetChannelId(), s.GetInputId(), s.GetName())
+				switch f := s.GetFormat().(type) {
+				case *sensorlinkpb.SensorDescriptor_Video:
+					v := f.Video
+					fmt.Printf("    video: codec=%s %dx%d @%dfps\n", v.GetCodec(), v.GetWidth(), v.GetHeight(), v.GetFps())
+				case *sensorlinkpb.SensorDescriptor_Audio:
+					a := f.Audio
+					fmt.Printf("    audio: codec=%s rate=%d channels=%d\n", a.GetCodec(), a.GetSampleRate(), a.GetChannels())
+				case *sensorlinkpb.SensorDescriptor_Sensor:
+					sf := f.Sensor
+					fmt.Printf("    sensor: schema=%s rate_hz=%d sample_bytes=%d\n", sf.GetSchema(), sf.GetRateHz(), sf.GetSampleBytes())
+				}
+			}
+
+		case "sl-subscribe":
+			ids, ok := parseChannelIDs(arg)
+			if !ok {
+				fmt.Fprintln(os.Stderr, "usage: sl-subscribe <channel-id> [channel-id ...]")
+				continue
+			}
+			// Installed once: a second listener would print every frame twice.
+			if removeSensorDataListener == nil {
+				removeSensorDataListener = client.AddSensorDataListener(sensorDataDumper())
+			}
+			if err := client.SensorLinkSubscribe(ids, 0); err != nil {
+				fmt.Fprintln(os.Stderr, "sl-subscribe:", err)
+				continue
+			}
+			fmt.Println("subscribed")
+
+		case "sl-unsubscribe":
+			ids, ok := parseChannelIDs(arg)
+			if !ok {
+				fmt.Fprintln(os.Stderr, "usage: sl-unsubscribe <channel-id> [channel-id ...]")
+				continue
+			}
+			if err := client.SensorLinkUnsubscribe(ids, 0); err != nil {
+				fmt.Fprintln(os.Stderr, "sl-unsubscribe:", err)
+				continue
+			}
+			fmt.Println("unsubscribed")
+
 		case "quit", "exit":
 			return nil
 
 		default:
 			fmt.Fprintf(os.Stderr, "unknown command: %q\n", cmd)
-			fmt.Fprintln(os.Stderr, "commands: ping, reset, push, start, stop, identity, info, console, quit")
+			fmt.Fprintln(os.Stderr, "commands: ping, reset, push, start, stop, identity, info, console, sl-manifest, sl-subscribe, sl-unsubscribe, quit")
 		}
 	}
 	return scanner.Err()
@@ -266,6 +318,68 @@ func runConsole(client *liteclient.WendyLiteClient, rolling bool, blocking bool)
 			return
 		}
 	}
+}
+
+// sensorDataLastChunk is bit1 of SensorData.flags, set on the chunk that ends
+// a frame.
+const sensorDataLastChunk = 1 << 1
+
+// sensorDataDumper returns a listener that prints one line per frame, tallying
+// the SensorData chunks the device cuts each frame into. The payload is only
+// sampled: at video rates the frames themselves would bury everything else.
+// The listener runs on the client's read loop, so it stays to counting and
+// printing, and its state needs no lock.
+func sensorDataDumper() func(*sensorlinkpb.SensorData) {
+	type frame struct {
+		seq    uint32
+		chunks uint32
+		size   int
+		head   []byte
+	}
+	frames := map[uint32]*frame{} // in progress, by channel
+	return func(d *sensorlinkpb.SensorData) {
+		ch := d.GetChannelId()
+		f := frames[ch]
+		if d.GetChunkSeq() == 0 {
+			if f != nil {
+				fmt.Printf("frame ch=%d seq=%d incomplete after %d chunks\n", ch, f.seq, f.chunks)
+			}
+			head := d.GetPayload()
+			if len(head) > 4 {
+				head = head[:4]
+			}
+			f = &frame{seq: d.GetFrameSeq(), head: bytes.Clone(head)}
+			frames[ch] = f
+		} else if f == nil || d.GetFrameSeq() != f.seq || d.GetChunkSeq() != f.chunks {
+			fmt.Printf("chunk ch=%d seq=%d chunk=%d out of sequence\n", ch, d.GetFrameSeq(), d.GetChunkSeq())
+			delete(frames, ch)
+			return
+		}
+		f.chunks++
+		f.size += len(d.GetPayload())
+		if d.GetFlags()&sensorDataLastChunk != 0 {
+			fmt.Printf("frame ch=%d seq=%d chunks=%d size=%d %x...\n", ch, f.seq, f.chunks, f.size, f.head)
+			delete(frames, ch)
+		}
+	}
+}
+
+// parseChannelIDs splits arg into whitespace-separated channel IDs. ok is
+// false if arg is empty or any token fails to parse.
+func parseChannelIDs(arg string) ([]uint32, bool) {
+	fields := strings.Fields(arg)
+	if len(fields) == 0 {
+		return nil, false
+	}
+	ids := make([]uint32, 0, len(fields))
+	for _, f := range fields {
+		n, err := strconv.ParseUint(f, 10, 32)
+		if err != nil {
+			return nil, false
+		}
+		ids = append(ids, uint32(n))
+	}
+	return ids, true
 }
 
 // resolveBLETarget turns a ble:// target into an address and a PSM.

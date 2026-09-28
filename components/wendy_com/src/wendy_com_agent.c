@@ -398,6 +398,20 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
         resp->result = wcom_cmd_console_detach(client_id,
                                                cmd->params.console_detach.event_id);
         break;
+    case WendyComCommand_sensor_link_get_manifest_tag:
+        resp->which_data = WendyComResponse_sensor_link_manifest_tag;
+        resp->result = wcom_cmd_sensor_link_get_manifest(&resp->data.sensor_link_manifest);
+        break;
+    case WendyComCommand_sensor_link_subscribe_tag:
+        resp->result = wcom_cmd_sensor_link_subscribe(client_id,
+            cmd->params.sensor_link_subscribe.channel_id,
+            cmd->params.sensor_link_subscribe.channel_id_count);
+        break;
+    case WendyComCommand_sensor_link_unsubscribe_tag:
+        resp->result = wcom_cmd_sensor_link_unsubscribe(client_id,
+            cmd->params.sensor_link_unsubscribe.channel_id,
+            cmd->params.sensor_link_unsubscribe.channel_id_count);
+        break;
     default:
         ESP_LOGW(TAG, "link %d unknown cmd (which_params=%d)", link->link_id, cmd->which_params);
         resp->result = WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;

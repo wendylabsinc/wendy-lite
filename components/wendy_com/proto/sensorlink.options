@@ -1,0 +1,9 @@
+# nanopb field options — mirrors components/wendy_conf/proto/wendy_conf.options:
+# bound repeated fields to plain STATIC C arrays for allocation-free
+# decode/encode; string fields (SensorDescriptor.name, SensorFormat.schema)
+# stay CALLBACK, same as WendyConfWifiNetwork.ssid/password inside
+# WendyConfWifi's bounded array.
+
+wendy.lite.sensorlink.SensorManifest.sensors   max_count:16
+wendy.lite.sensorlink.Subscribe.channel_id     max_count:16
+wendy.lite.sensorlink.Unsubscribe.channel_id   max_count:16

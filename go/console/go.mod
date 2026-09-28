@@ -6,6 +6,7 @@ require (
 	github.com/wendylabsinc/wendy/go/internal/shared/ble v0.0.0-00010101000000-000000000000
 	github.com/wendylabsinc/wendy/go/internal/shared/seriallock v0.0.0-00010101000000-000000000000
 	github.com/wendylabsinc/wendy/go/proto/gen/litepb v0.0.0-00010101000000-000000000000
+	github.com/wendylabsinc/wendy/go/proto/gen/sensorlinkpb v0.0.0-00010101000000-000000000000
 	github.com/wendylabsinc/wendy/go/proto/gen/tunnelpb v0.0.0-00010101000000-000000000000
 	go.bug.st/serial v1.6.4
 	golang.org/x/term v0.44.0
@@ -14,6 +15,8 @@ require (
 )
 
 replace github.com/wendylabsinc/wendy/go/proto/gen/litepb => ./wendypb
+
+replace github.com/wendylabsinc/wendy/go/proto/gen/sensorlinkpb => ./sensorlinkpb
 
 replace github.com/wendylabsinc/wendy/go/proto/gen/tunnelpb => ../tunnelpb
 
