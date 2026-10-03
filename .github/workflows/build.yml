@@ -1,6 +1,7 @@
 name: Build Firmware
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     tags: ['v*']
@@ -153,6 +154,7 @@ jobs:
           # Create new nightly pre-release at current commit. catalog.json ships
           # alongside the binaries so consumers can discover the variants.
           gh release create nightly \
+            --target "${{ github.sha }}" \
             --prerelease \
             --title "Nightly" \
             --notes "Automated nightly build from \`main\` ($(date -u '+%Y-%m-%d %H:%M UTC')), commit ${{ github.sha }}" \
