@@ -5,6 +5,14 @@
 #include <string.h>
 #include <wolfssl/ssl.h>
 #include <wolfssl/wolfcrypt/settings.h>
+/* Override only this test executable's wall clock, including wolfSSL calls. */
+static time_t wall_clock;
+time_t time(time_t *out)
+{
+    if (out)
+        *out = wall_clock;
+    return wall_clock;
+}
 static unsigned char *load(const char *dir, const char *name, size_t *n)
 {
     char path[4096];
@@ -34,7 +42,8 @@ int main(int argc, char **argv)
         wolfSSL_Cleanup();
         return 0;
     }
-    assert(argc == 2);
+    assert(argc == 2 || argc == 3);
+    wall_clock = argc == 3 ? (time_t)strtoll(argv[2], NULL, 10) : 0;
     int init = wolfSSL_Init();
     printf("init=%d success=%d\n", init, WOLFSSL_SUCCESS);
     fflush(stdout);

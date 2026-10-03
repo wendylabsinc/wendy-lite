@@ -380,10 +380,20 @@ esp_err_t wendy_pki_connect(wendy_pki_connection **connection)
     {
         if (issue(h, &cfg, key, key_size, (char *)stored, principal, &fresh, &expires))
         {
-            ESP_LOGE(TAG, "pki-core enrollment or renewal failed");
-            goto done;
+            /* Renewal can fail transiently. Recheck the stored identity after
+             * the request, since it may have expired while the request ran. */
+            if (!stored ||
+                wendy_pki_verify_identity(stored, stored_size, wendy_pki_device_roots_start,
+                                          ROOT_SIZE(device), key, key_size, principal,
+                                          time(NULL), &expires))
+            {
+                ESP_LOGE(TAG, "pki-core issuance failed; no valid stored identity");
+                goto done;
+            }
+            ESP_LOGW(TAG, "pki-core renewal failed; using still-valid stored identity");
         }
-        ESP_LOGI(TAG, "pki-core issued identity for %s", cfg.device_id);
+        else
+            ESP_LOGI(TAG, "pki-core issued identity for %s", cfg.device_id);
     }
     if (pki_tls_connect(cfg.broker_host, cfg.broker_port, key, key_size,
                         fresh ? fresh : (char *)stored, connection))

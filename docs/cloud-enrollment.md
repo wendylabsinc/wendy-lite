@@ -77,8 +77,10 @@ a WendyCom listener. Set `--csr-url https://csr.example/v1/TENANT_UUID` and
 The command obtains a device-generated nonce and a signed time response before
 minting the credential. It sends configuration through physical USB, reboots the
 board, and waits up to two minutes for certificate installation. The board checks
-the seed against its pinned TSA bundle, retrieves fresh nonce-bound signed time,
-and only then redeems its token. Issued certificates must match the device's key
+the seed against its pinned TSA bundle using the signed timestamp for certificate
+validity checks, so verification works even when the boot clock is still in 1970.
+It retrieves fresh nonce-bound signed time and only then redeems its token.
+Issued certificates must match the device's key
 and exact tenant/device SPIFFE URI and allow both TLS client and server use.
 
 An installed certificate is distinct from broker presence. The broker establishes
@@ -92,8 +94,12 @@ recovery. A fresh token is not silently substituted for an expired certificate.
 Lite opens an outbound TLS 1.3 connection authenticated with its issued identity.
 It refreshes signed time and reconnects every four minutes. A currently valid
 certificate with less than one day remaining is renewed over mTLS. The device
-persists the signed-time floor and rejects rollback, invalid certificates, and
-unverified timestamps. A delayed fresh-time exchange over 30 seconds fails.
+continues using its stored certificate if renewal fails and that certificate
+still passes validation after the request. It retries renewal on the next
+connection. An expired or invalid certificate cannot be used as a fallback.
+The device persists the signed-time floor and rejects rollback, invalid
+certificates, and unverified timestamps. A delayed fresh-time exchange over
+30 seconds fails.
 
 Configuration upload and enrollment challenges are restricted to the physical
 UART/USB link. The new PKI identity is used for the Cloud connection; existing LAN

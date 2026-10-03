@@ -193,16 +193,26 @@ static int verify_chain(WOLFSSL_X509 *leaf, WOLFSSL_STACK *untrusted, const uint
     WOLFSSL_BIO *bio = wolfSSL_BIO_new_mem_buf(roots, (int)size);
     if (!store || !ctx || !bio)
         goto done;
+    /* Root insertion otherwise checks the untrusted wall clock before the
+     * context's verification time takes effect. Check pinned roots explicitly
+     * at the supplied time, then restore date checks for chain verification. */
+    WOLFSSL_X509_VERIFY_PARAM *param = wolfSSL_X509_STORE_get0_param(store);
+    if (!param || wolfSSL_X509_VERIFY_PARAM_set_flags(param, WOLFSSL_NO_CHECK_TIME) != WOLFSSL_SUCCESS)
+        goto done;
     WOLFSSL_X509 *root;
     while ((root = wolfSSL_PEM_read_bio_X509(bio, NULL, NULL, NULL)))
     {
-        int ok = wolfSSL_X509_STORE_add_cert(store, root);
+        int ok = wolfSSL_X509_cmp_time(wolfSSL_X509_get_notBefore(root), &now) == -1 &&
+                 wolfSSL_X509_cmp_time(wolfSSL_X509_get_notAfter(root), &now) == 1 &&
+                 wolfSSL_X509_STORE_add_cert(store, root) == WOLFSSL_SUCCESS;
         wolfSSL_X509_free(root);
-        if (ok != WOLFSSL_SUCCESS)
+        if (!ok)
             goto done;
         count++;
     }
-    if (!count || wolfSSL_X509_STORE_CTX_init(ctx, store, leaf, untrusted) != WOLFSSL_SUCCESS)
+    if (!count ||
+        wolfSSL_X509_VERIFY_PARAM_clear_flags(param, WOLFSSL_NO_CHECK_TIME) != WOLFSSL_SUCCESS ||
+        wolfSSL_X509_STORE_CTX_init(ctx, store, leaf, untrusted) != WOLFSSL_SUCCESS)
         goto done;
     wolfSSL_X509_STORE_CTX_set_time(ctx, 0, now);
     if (wolfSSL_X509_verify_cert(ctx) == WOLFSSL_SUCCESS)

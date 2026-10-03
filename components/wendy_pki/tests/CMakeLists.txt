@@ -11,6 +11,12 @@ target_include_directories(pki PUBLIC ../include)
 target_link_libraries(pki PUBLIC wolf)
 add_executable(verify_test verify_test.c)
 target_link_libraries(verify_test PRIVATE pki)
+add_executable(renewal_test renewal_test.c)
+target_include_directories(renewal_test PRIVATE stubs ../include ../src
+    ../../wendy_conf/include ../../nanopb)
+target_link_libraries(renewal_test PRIVATE wolf)
 
 enable_testing()
 add_test(NAME pki_verification COMMAND verify_test "${CMAKE_CURRENT_LIST_DIR}/fixtures")
+add_test(NAME pki_verification_future_clock COMMAND verify_test "${CMAKE_CURRENT_LIST_DIR}/fixtures" 4102444800)
+add_test(NAME pki_renewal_fallback COMMAND renewal_test "${CMAKE_CURRENT_LIST_DIR}/fixtures/device-key.der")
