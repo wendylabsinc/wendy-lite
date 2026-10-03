@@ -438,3 +438,8 @@ The full list of host functions is defined in [`wasm_apps/include/wendy.h`](wasm
 - **TLS** — encrypted connect, send, recv
 - **OpenTelemetry** — structured logging, counters, gauges, histograms, tracing spans
 - **USB** — CDC read/write, HID reports
+
+## Cloud enrollment
+
+See [real PKI enrollment](docs/cloud-enrollment.md) for the PKI-enabled ESP32-C6 build,
+USB setup with the Wendy CLI, and broker presence.

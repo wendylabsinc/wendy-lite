@@ -51,6 +51,12 @@ PB_BIND(WendyComDeviceIdentity, WendyComDeviceIdentity, AUTO)
 PB_BIND(WendyComGetDeviceInfoParams, WendyComGetDeviceInfoParams, AUTO)
 
 
+PB_BIND(WendyComEnrollmentChallengeParams, WendyComEnrollmentChallengeParams, AUTO)
+
+
+PB_BIND(WendyComEnrollmentChallenge, WendyComEnrollmentChallenge, AUTO)
+
+
 PB_BIND(WendyComConsoleAttachParams, WendyComConsoleAttachParams, AUTO)
 
 

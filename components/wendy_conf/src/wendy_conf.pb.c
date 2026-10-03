@@ -15,7 +15,10 @@ PB_BIND(WendyConfWifi, WendyConfWifi, AUTO)
 PB_BIND(WendyConfCloudProvisioning, WendyConfCloudProvisioning, AUTO)
 
 
-PB_BIND(WendyConf, WendyConf, AUTO)
+PB_BIND(WendyConfEnrollment, WendyConfEnrollment, 2)
+
+
+PB_BIND(WendyConf, WendyConf, 2)
 
 
 

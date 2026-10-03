@@ -1,0 +1,2 @@
+components/wendy_pki/tests/fixtures/*.bin binary
+components/wendy_pki/tests/fixtures/*.der binary

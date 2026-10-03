@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include <stdio.h>
+#include <pthread.h>
 
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -46,11 +47,13 @@ struct conf_cache {
     struct wendy_conf_span      key_der;
     struct wendy_conf_span      cert_der;
     struct wendy_conf_span      chain_der;
+    struct wendy_conf_span      enrollment_time;
 };
 
 
 //--- globals ---///
 
+static pthread_mutex_t s_cache_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct conf_cache s_cache = CONF_CACHE_INIT;
 
 /* 12 hex digits plus the terminator. Empty until built. */
@@ -207,6 +210,8 @@ static void _load_conf(void)
     s_cache.conf.provisioning.chain.funcs.decode = _capture_span;
     s_cache.conf.provisioning.chain.arg          = &s_cache.chain_der;
 
+    s_cache.conf.enrollment.signed_time.funcs.decode = _capture_span;
+    s_cache.conf.enrollment.signed_time.arg = &s_cache.enrollment_time;
     pb_istream_t stream = pb_istream_from_buffer(data + HEADER_LEN, pb_size);
     bool ok = pb_decode_noinit(&stream, WendyConf_fields, &s_cache.conf);
 
@@ -296,7 +301,7 @@ static bool _copy_kept_fields(const uint8_t *in_data, size_t in_size,
     return true;
 }
 
-esp_err_t wendy_conf_write(const void *pb_data, size_t pb_size, enum wendy_conf_write_mode mode)
+static esp_err_t _write_conf(const void *pb_data, size_t pb_size, enum wendy_conf_write_mode mode)
 {
     if (!pb_data || pb_size == 0)
         return ESP_ERR_INVALID_ARG;
@@ -502,4 +507,44 @@ void wendy_conf_copy_span(char *dest, size_t dest_size, struct wendy_conf_span s
     size_t copy_size = src.size < dest_size - 1 ? src.size : dest_size - 1;
     memcpy(dest, src.data, copy_size);
     dest[copy_size] = '\0';
+}
+
+esp_err_t wendy_conf_write(const void *data, size_t size, enum wendy_conf_write_mode mode)
+{
+    pthread_mutex_lock(&s_cache_lock);
+    esp_err_t result = _write_conf(data, size, mode);
+    pthread_mutex_unlock(&s_cache_lock);
+    return result;
+}
+
+esp_err_t wendy_conf_copy_enrollment(WendyConfEnrollment *config, uint8_t **seed, size_t *size)
+{
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    *seed = NULL;
+    *size = 0;
+    pthread_mutex_lock(&s_cache_lock);
+    if (s_cache.valid && s_cache.conf.has_enrollment) {
+        *config = s_cache.conf.enrollment;
+        memset(&config->signed_time, 0, sizeof config->signed_time);
+        if (s_cache.enrollment_time.size > 65536) {
+            result = ESP_ERR_INVALID_SIZE;
+        } else if (s_cache.enrollment_time.size) {
+            *seed = malloc(s_cache.enrollment_time.size);
+            if (*seed) {
+                *size = s_cache.enrollment_time.size;
+                memcpy(*seed, s_cache.enrollment_time.data, *size);
+                result = ESP_OK;
+            } else result = ESP_ERR_NO_MEM;
+        } else result = ESP_OK;
+    }
+    pthread_mutex_unlock(&s_cache_lock);
+    return result;
+}
+
+bool wendy_conf_has_enrollment(void)
+{
+    pthread_mutex_lock(&s_cache_lock);
+    bool present = s_cache.valid && s_cache.conf.has_enrollment;
+    pthread_mutex_unlock(&s_cache_lock);
+    return present;
 }

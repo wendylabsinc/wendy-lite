@@ -29,8 +29,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Binary test fixtures can contain escape bytes. The diff is written
+          # to a file for review, never displayed in the runner's terminal.
           gh pr diff ${{ github.event.pull_request.number }} \
-            --repo ${{ github.repository }} > pr.diff
+            --repo ${{ github.repository }} --allow-escape-sequences > pr.diff
 
       - name: Export PR metadata
         env:
