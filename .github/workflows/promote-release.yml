@@ -12,41 +12,35 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
     steps:
-      # Checked out with a PAT (not the default GITHUB_TOKEN) so the tag
-      # push below is authenticated as a real actor. GitHub never fires
-      # `on: push` workflow triggers for pushes made with the Actions
-      # GITHUB_TOKEN -- that's an anti-recursion guardrail, not a bug --
-      # so build.yml's tag-triggered build -> release -> publish jobs
-      # would silently never run otherwise.
       - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.RELEASE_TOKEN }}
 
       - name: Validate version format
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
-          if [[ ! "${{ github.event.inputs.version }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Error: version must match vX.Y.Z"
             exit 1
           fi
 
       - name: Push release tag at nightly's commit
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          VERSION: ${{ github.event.inputs.version }}
+          VERSION: ${{ inputs.version }}
         run: |
-          # Tag the exact commit the `nightly` pre-release was built from,
-          # so promotion always ships what nightly already validated,
-          # regardless of what has landed on main since.
-          #
-          # This must be a real `git push`, not `gh release create` /
-          # the REST API's implicit tag creation: GitHub does not fire
-          # `on: push: tags:` workflows for tags created through the API,
-          # only for actual pushed refs. Pushing the tag here is what makes
-          # build.yml's tag-triggered build -> release -> publish jobs run,
-          # which build fresh binaries from this commit, attach them to a
-          # new GitHub release, and publish firmware to the GCS bucket
-          # `wendy os install` reads from.
-          COMMIT=$(gh release view nightly --json targetCommitish --jq .targetCommitish)
+          set -euo pipefail
+          # targetCommitish may be "main". Resolve the actual nightly tag
+          # and fetch its commit, which may be absent from a shallow checkout.
+          git fetch --no-tags origin refs/tags/nightly
+          COMMIT=$(git rev-parse 'FETCH_HEAD^{commit}')
           git tag "$VERSION" "$COMMIT"
-          git push origin "$VERSION"
+          git push origin "refs/tags/$VERSION"
+
+      # GITHUB_TOKEN pushes do not trigger push workflows. Explicit dispatch
+      # does, and uses the release tag for checkout, versioning, and publishing.
+      - name: Start release build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: gh workflow run build.yml --ref "$VERSION"
