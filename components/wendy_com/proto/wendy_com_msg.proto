@@ -88,7 +88,11 @@ message WendyComGetDeviceInfoParams {}
 message WendyComEnrollmentChallengeParams {
     bool status_only = 1;
 }
-message WendyComEnrollmentChallenge { string nonce_hex = 1; bool enrolled = 2; }
+message WendyComEnrollmentChallenge {
+    string nonce_hex = 1;
+    bool enrolled = 2;
+    bool usb_trust_supported = 3; // accepts explicitly provisioned CA bundles
+}
 
 
 // Params for WENDY_COM_CMD_CONSOLE_ATTACH — start streaming console output as

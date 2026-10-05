@@ -105,7 +105,7 @@ static int set_floor(nvs_handle_t h, time_t value)
     struct timeval tv = {.tv_sec = value};
     return settimeofday(&tv, NULL);
 }
-static int seed_clock(nvs_handle_t h, struct wendy_conf_span seed)
+static int seed_clock(nvs_handle_t h, struct wendy_conf_span seed, struct wendy_conf_span roots)
 {
     int64_t floor = 0;
     esp_err_t e = nvs_get_i64(h, "floor", &floor);
@@ -117,8 +117,8 @@ static int seed_clock(nvs_handle_t h, struct wendy_conf_span seed)
         size_t n = sizeof nonce;
         time_t when;
         if (nvs_get_blob(h, "nonce", nonce, &n) == ESP_OK && n == sizeof nonce &&
-            !wendy_pki_verify_time(seed.data, seed.size, nonce, wendy_pki_tsa_roots_start,
-                                   ROOT_SIZE(tsa), floor, &when))
+            !wendy_pki_verify_time(seed.data, seed.size, nonce, roots.data,
+                                   roots.size, floor, &when))
         {
             if (set_floor(h, when))
                 return -1;
@@ -133,7 +133,8 @@ static int seed_clock(nvs_handle_t h, struct wendy_conf_span seed)
      * No enrollment credential or broker session is used until refresh_time succeeds. */
     return set_floor(h, floor);
 }
-static int refresh_time(nvs_handle_t h, const char *url)
+static int refresh_time(nvs_handle_t h, const char *url,
+                        const struct wendy_conf_enrollment_data *data)
 {
     uint8_t nonce[32], request[128], *response = NULL;
     size_t response_size = 0;
@@ -144,14 +145,14 @@ static int refresh_time(nvs_handle_t h, const char *url)
         return -1;
     int64_t started = esp_timer_get_time();
     if (pki_http_post(url, "application/timestamp-query", NULL, request, n, NULL, 0, NULL,
-                      &response, &response_size))
+                      data->https_roots, &response, &response_size))
         return -1;
     int64_t floor = 0;
     time_t when = 0;
     int result = -1;
     if (esp_timer_get_time() - started <= 30000000 && nvs_get_i64(h, "floor", &floor) == ESP_OK &&
-        !wendy_pki_verify_time(response, response_size, nonce, wendy_pki_tsa_roots_start,
-                               ROOT_SIZE(tsa), floor, &when))
+        !wendy_pki_verify_time(response, response_size, nonce, data->tsa_roots.data,
+                               data->tsa_roots.size, floor, &when))
         result = set_floor(h, when);
     free(response);
     return result;
@@ -247,7 +248,8 @@ done:
     wc_FreeRng(&rng);
     return pem;
 }
-static int issue(nvs_handle_t h, const WendyConfEnrollment *cfg, const uint8_t *key,
+static int issue(nvs_handle_t h, const WendyConfEnrollment *cfg,
+                 const struct wendy_conf_enrollment_data *data, const uint8_t *key,
                  size_t key_size, const char *old, const char *principal, char **issued,
                  time_t *expires)
 {
@@ -269,7 +271,8 @@ static int issue(nvs_handle_t h, const WendyConfEnrollment *cfg, const uint8_t *
         goto done;
     snprintf(url, sizeof url, "%s/%s", cfg->csr_url, old ? "renew" : "enroll");
     if (pki_http_post(url, "application/json", old ? NULL : cfg->token, json, strlen(json),
-                      old ? key : NULL, old ? key_size : 0, old, &response, &response_size))
+                      old ? key : NULL, old ? key_size : 0, old, data->https_roots,
+                      &response, &response_size))
         goto done;
     reply = cJSON_ParseWithLength((char *)response, response_size);
     if (!reply)
@@ -278,8 +281,9 @@ static int issue(nvs_handle_t h, const WendyConfEnrollment *cfg, const uint8_t *
     if (!cJSON_IsString(cert) || !cert->valuestring)
         goto done;
     size_t n = strlen(cert->valuestring);
-    if (wendy_pki_verify_identity((uint8_t *)cert->valuestring, n, wendy_pki_device_roots_start,
-                                  ROOT_SIZE(device), key, key_size, principal, time(NULL), expires))
+    if (wendy_pki_verify_identity((uint8_t *)cert->valuestring, n, data->device_roots.data,
+                                  data->device_roots.size, key, key_size, principal, time(NULL),
+                                  expires))
         goto done;
     if (nvs_set_blob(h, "certificate", cert->valuestring, n) != ESP_OK || nvs_commit(h) != ESP_OK)
         goto done;
@@ -317,27 +321,45 @@ static int valid_config(const WendyConfEnrollment *c)
     return n > s && !strcmp(c->csr_url + n - s, suffix) && !strncmp(c->csr_url, "https://", 8) &&
            !strncmp(c->time_url, "https://", 8);
 }
+/* A USB-authorized configuration is the only runtime source of trust.
+ * Never substitute a chain returned by an enrollment or timestamp endpoint. */
+static int select_trust(const WendyConfEnrollment *cfg, struct wendy_conf_enrollment_data *data)
+{
+    if (!cfg->provision_trust)
+    {
+        if (data->device_roots.size || data->tsa_roots.size || data->https_roots.size)
+            return -1;
+        data->device_roots = (struct wendy_conf_span){wendy_pki_device_roots_start, ROOT_SIZE(device)};
+        data->tsa_roots = (struct wendy_conf_span){wendy_pki_tsa_roots_start, ROOT_SIZE(tsa)};
+        data->https_roots = (struct wendy_conf_span){wendy_pki_https_roots_start, ROOT_SIZE(https)};
+    }
+    return wendy_pki_verify_roots(data->device_roots.data, data->device_roots.size) ||
+           wendy_pki_verify_roots(data->tsa_roots.data, data->tsa_roots.size) ||
+           wendy_pki_verify_roots(data->https_roots.data, data->https_roots.size) ? -1 : 0;
+}
 esp_err_t wendy_pki_connect(wendy_pki_connection **connection)
 {
     pthread_once(&crypto_once, init_crypto);
     if (!crypto_ok)
         return ESP_FAIL;
-    WendyConfEnrollment cfg;
-    uint8_t *seed = NULL;
-    size_t seed_size = 0;
-    esp_err_t copy_result = wendy_conf_copy_enrollment(&cfg, &seed, &seed_size);
+    WendyConfEnrollment cfg = WendyConfEnrollment_init_zero;
+    struct wendy_conf_enrollment_data data;
+    esp_err_t copy_result = wendy_conf_copy_enrollment(&cfg, &data);
     if (copy_result != ESP_OK)
-        return copy_result;
-    if (!valid_config(&cfg))
     {
-        free(seed);
+        erase(cfg.token, sizeof cfg.token);
+        return copy_result;
+    }
+    if (!valid_config(&cfg) || select_trust(&cfg, &data))
+    {
+        free(data.storage);
         erase(cfg.token, sizeof cfg.token);
         return ESP_ERR_INVALID_ARG;
     }
     nvs_handle_t h;
     if (open_identity(&h) != ESP_OK)
     {
-        free(seed);
+        free(data.storage);
         erase(cfg.token, sizeof cfg.token);
         return ESP_FAIL;
     }
@@ -349,14 +371,13 @@ esp_err_t wendy_pki_connect(wendy_pki_connection **connection)
     char principal[160];
     snprintf(principal, sizeof principal, "spiffe://wendy.sh/tenant/%s/device/%s", cfg.tenant_id,
              cfg.device_id);
-    if (seed_clock(h, (struct wendy_conf_span){.data = seed, .size = seed_size}) ||
-        refresh_time(h, cfg.time_url))
+    if (seed_clock(h, data.signed_time, data.tsa_roots) ||
+        refresh_time(h, cfg.time_url, &data))
     {
         ESP_LOGE(TAG, "verified current PKI time unavailable; cloud connection held");
         goto done;
     }
-    free(seed);
-    seed = NULL;
+
     if (identity_key(h, &cfg, &key, &key_size))
     {
         ESP_LOGE(TAG, "identity key unavailable or enrollment binding changed");
@@ -368,8 +389,8 @@ esp_err_t wendy_pki_connect(wendy_pki_connection **connection)
         goto done;
     if (stored)
     {
-        if (wendy_pki_verify_identity(stored, stored_size, wendy_pki_device_roots_start,
-                                      ROOT_SIZE(device), key, key_size, principal, time(NULL),
+        if (wendy_pki_verify_identity(stored, stored_size, data.device_roots.data,
+                                      data.device_roots.size, key, key_size, principal, time(NULL),
                                       &expires))
         {
             ESP_LOGE(TAG, "stored identity invalid or expired; operator recovery required");
@@ -378,13 +399,13 @@ esp_err_t wendy_pki_connect(wendy_pki_connection **connection)
     }
     if (!stored || expires - time(NULL) < 86400)
     {
-        if (issue(h, &cfg, key, key_size, (char *)stored, principal, &fresh, &expires))
+        if (issue(h, &cfg, &data, key, key_size, (char *)stored, principal, &fresh, &expires))
         {
             /* Renewal can fail transiently. Recheck the stored identity after
              * the request, since it may have expired while the request ran. */
             if (!stored ||
-                wendy_pki_verify_identity(stored, stored_size, wendy_pki_device_roots_start,
-                                          ROOT_SIZE(device), key, key_size, principal,
+                wendy_pki_verify_identity(stored, stored_size, data.device_roots.data,
+                                          data.device_roots.size, key, key_size, principal,
                                           time(NULL), &expires))
             {
                 ESP_LOGE(TAG, "pki-core issuance failed; no valid stored identity");
@@ -396,7 +417,7 @@ esp_err_t wendy_pki_connect(wendy_pki_connection **connection)
             ESP_LOGI(TAG, "pki-core issued identity for %s", cfg.device_id);
     }
     if (pki_tls_connect(cfg.broker_host, cfg.broker_port, key, key_size,
-                        fresh ? fresh : (char *)stored, connection))
+                        fresh ? fresh : (char *)stored, data.https_roots, connection))
         goto done;
     result = ESP_OK;
 done:
@@ -406,7 +427,7 @@ done:
         free(key);
     }
     erase(cfg.token, sizeof cfg.token);
-    free(seed);
+    free(data.storage);
     free(stored);
     free(fresh);
     nvs_close(h);

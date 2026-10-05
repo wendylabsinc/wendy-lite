@@ -12,6 +12,45 @@
 #include <wolfssl/wolfcrypt/hash.h>
 #include <wolfssl/wolfcrypt/settings.h>
 
+int wendy_pki_verify_roots(const uint8_t *pem, size_t size)
+{
+    if (!pem || !size || size > 16384 || memchr(pem, 0, size))
+        return -1;
+    char *copy = calloc(1, size + 1);
+    if (!copy)
+        return -1;
+    memcpy(copy, pem, size);
+    char *p = copy;
+    int count = 0, result = -1;
+    while (*p)
+    {
+        while (*p && strchr(" \t\r\n", *p))
+            p++;
+        if (!*p)
+            break;
+        if (count == 8 || strncmp(p, "-----BEGIN CERTIFICATE-----", 27))
+            goto done;
+        char *end = strstr(p, "-----END CERTIFICATE-----");
+        if (!end)
+            goto done;
+        end += 25;
+        WOLFSSL_X509 *cert = wolfSSL_X509_load_certificate_buffer(
+            (const uint8_t *)p, (int)(end - p), WOLFSSL_FILETYPE_PEM);
+        if (!cert)
+            goto done;
+        int ca = wolfSSL_X509_get_isCA(cert);
+        wolfSSL_X509_free(cert);
+        if (!ca)
+            goto done;
+        count++;
+        p = end;
+    }
+    result = count ? 0 : -1;
+done:
+    free(copy);
+    return result;
+}
+
 /* Bounded DER reader. Indefinite/nonminimal lengths, high tags, integer padding,
  * trailing bytes, duplicate security attributes and ambiguous signers fail. */
 typedef struct

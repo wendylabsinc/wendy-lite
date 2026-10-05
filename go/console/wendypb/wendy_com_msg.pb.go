@@ -1014,11 +1014,12 @@ func (x *WendyComEnrollmentChallengeParams) GetStatusOnly() bool {
 }
 
 type WendyComEnrollmentChallenge struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	NonceHex      string                 `protobuf:"bytes,1,opt,name=nonce_hex,json=nonceHex,proto3" json:"nonce_hex,omitempty"`
-	Enrolled      bool                   `protobuf:"varint,2,opt,name=enrolled,proto3" json:"enrolled,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	NonceHex          string                 `protobuf:"bytes,1,opt,name=nonce_hex,json=nonceHex,proto3" json:"nonce_hex,omitempty"`
+	Enrolled          bool                   `protobuf:"varint,2,opt,name=enrolled,proto3" json:"enrolled,omitempty"`
+	UsbTrustSupported bool                   `protobuf:"varint,3,opt,name=usb_trust_supported,json=usbTrustSupported,proto3" json:"usb_trust_supported,omitempty"` // accepts explicitly provisioned CA bundles
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *WendyComEnrollmentChallenge) Reset() {
@@ -1061,6 +1062,13 @@ func (x *WendyComEnrollmentChallenge) GetNonceHex() string {
 func (x *WendyComEnrollmentChallenge) GetEnrolled() bool {
 	if x != nil {
 		return x.Enrolled
+	}
+	return false
+}
+
+func (x *WendyComEnrollmentChallenge) GetUsbTrustSupported() bool {
+	if x != nil {
+		return x.UsbTrustSupported
 	}
 	return false
 }
@@ -2571,10 +2579,11 @@ const file_wendy_com_msg_proto_rawDesc = "" +
 	"\x1bWendyComGetDeviceInfoParams\"D\n" +
 	"!WendyComEnrollmentChallengeParams\x12\x1f\n" +
 	"\vstatus_only\x18\x01 \x01(\bR\n" +
-	"statusOnly\"V\n" +
+	"statusOnly\"\x86\x01\n" +
 	"\x1bWendyComEnrollmentChallenge\x12\x1b\n" +
 	"\tnonce_hex\x18\x01 \x01(\tR\bnonceHex\x12\x1a\n" +
-	"\benrolled\x18\x02 \x01(\bR\benrolled\"p\n" +
+	"\benrolled\x18\x02 \x01(\bR\benrolled\x12.\n" +
+	"\x13usb_trust_supported\x18\x03 \x01(\bR\x11usbTrustSupported\"p\n" +
 	"\x1bWendyComConsoleAttachParams\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\rR\aeventId\x12\x1a\n" +
 	"\bduration\x18\x02 \x01(\rR\bduration\x12\x1a\n" +

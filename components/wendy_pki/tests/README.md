@@ -12,7 +12,11 @@ validity period at the authenticated verification time.
 `renewal_test` runs the production connection flow with in-memory NVS and HTTP
 stubs. It checks fallback after failed renewal, retries on the next connection,
 expiry during renewal, rejection of expired or invalid stored identities, failed
-initial enrollment, and connections that do not yet need renewal.
+initial enrollment, and connections that do not yet need renewal. It also checks
+explicit USB trust selection and rejects partial or unauthorized bundles.
+`conf_test` uses the real nanopb decoder and configuration writer with an in-memory
+flash partition to check persistence, snapshot ownership across writes, and size
+limits. The verifier rejects malformed bundles and leaf certificates as roots.
 
 To regenerate with a local pki-core checkout, build the native verifier first,
 then run:

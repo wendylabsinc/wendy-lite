@@ -2,12 +2,21 @@
  * renewal. Cryptographic validation itself is covered by verify_test. */
 #include "wendy_pki_internal.h"
 #undef ROOT_SIZE
-#define ROOT_SIZE(kind) 1
+#define ROOT_SIZE(kind) build_roots_size
+static size_t build_roots_size = 1;
 #include "../src/wendy_pki.c"
 #include <assert.h>
 
 const uint8_t wendy_pki_device_roots_start[] = {0};
 const uint8_t wendy_pki_tsa_roots_start[] = {0};
+const uint8_t wendy_pki_https_roots_start[] = {0};
+static struct wendy_conf_enrollment_data usb_data;
+static const uint8_t usb_roots[] = {1};
+static int bad_roots;
+int wendy_pki_verify_roots(const uint8_t *pem, size_t size)
+{
+    return !pem || !size || bad_roots ? -1 : 0;
+}
 static const time_t signed_now = 1800000000;
 static time_t clock_now, stored_expiry;
 static bool have_certificate, invalid_certificate, expire_during_renewal;
@@ -92,17 +101,19 @@ esp_err_t nvs_get_str(nvs_handle_t h, const char *name, char *out, size_t *size)
     return ESP_OK;
 }
 esp_err_t nvs_set_str(nvs_handle_t h, const char *name, const char *value) { return ESP_OK; }
-esp_err_t wendy_conf_copy_enrollment(WendyConfEnrollment *out, uint8_t **seed, size_t *size)
+esp_err_t wendy_conf_copy_enrollment(WendyConfEnrollment *out,
+                                     struct wendy_conf_enrollment_data *data)
 {
     *out = config;
-    *seed = NULL;
-    *size = 0;
+    *data = usb_data;
     return ESP_OK;
 }
+
 size_t wendy_pki_time_request(uint8_t out[128], const uint8_t nonce[32]) { return 1; }
 int wendy_pki_verify_time(const uint8_t *input, size_t size, const uint8_t nonce[32],
                           const uint8_t *roots, size_t roots_size, time_t floor, time_t *out)
 {
+    assert(roots == (config.provision_trust ? usb_roots : wendy_pki_tsa_roots_start));
     *out = signed_now;
     return 0;
 }
@@ -111,13 +122,14 @@ int wendy_pki_verify_identity(const uint8_t *pem, size_t size, const uint8_t *ro
                               const char *principal, time_t now, time_t *expires)
 {
     identity_checks++;
+    assert(roots == (config.provision_trust ? usb_roots : wendy_pki_device_roots_start));
     assert(size == 6 && !memcmp(pem, "stored", 6));
     *expires = stored_expiry;
     return invalid_certificate || now >= stored_expiry ? -1 : 0;
 }
 int pki_http_post(const char *url, const char *type, const char *token, const void *body,
                   size_t body_size, const uint8_t *key, size_t key_size, const char *cert,
-                  uint8_t **response, size_t *response_size)
+                  struct wendy_conf_span roots, uint8_t **response, size_t *response_size)
 {
     if (!strcmp(type, "application/timestamp-query"))
     {
@@ -139,9 +151,10 @@ int pki_http_post(const char *url, const char *type, const char *token, const vo
     return -1;
 }
 int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t key_size,
-                    const char *cert, wendy_pki_connection **out)
+                    const char *cert, struct wendy_conf_span roots, wendy_pki_connection **out)
 {
     broker_calls++;
+    assert(roots.data == (config.provision_trust ? usb_roots : wendy_pki_https_roots_start));
     assert(cert && !strcmp(cert, "stored"));
     assert(clock_now < stored_expiry && !invalid_certificate);
     return 0;
@@ -157,6 +170,10 @@ void cJSON_Delete(cJSON *o) { free(o); }
 static void reset(void)
 {
     clock_now = signed_now;
+    config.provision_trust = false;
+    usb_data = (struct wendy_conf_enrollment_data){0};
+    bad_roots = 0;
+    build_roots_size = 1;
     stored_expiry = signed_now + 3600;
     have_certificate = true;
     invalid_certificate = expire_during_renewal = false;
@@ -203,6 +220,27 @@ int main(int argc, char **argv)
     stored_expiry = signed_now + 172800;
     assert(wendy_pki_connect(&connection) == ESP_OK);
     assert(renewal_calls == 0 && broker_calls == 1 && identity_checks == 1);
+    reset();
+    config.provision_trust = true;
+    usb_data.device_roots = usb_data.tsa_roots = usb_data.https_roots =
+        (struct wendy_conf_span){usb_roots, sizeof usb_roots};
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(broker_calls == 1);
+    config.provision_trust = false;
+    assert(wendy_pki_connect(&connection) != ESP_OK);
+    assert(broker_calls == 1);
+    config.provision_trust = true;
+    usb_data.tsa_roots.size = 0;
+    assert(wendy_pki_connect(&connection) != ESP_OK);
+    assert(broker_calls == 1);
+    usb_data.tsa_roots.size = sizeof usb_roots;
+    bad_roots = 1;
+    assert(wendy_pki_connect(&connection) != ESP_OK);
+    assert(broker_calls == 1);
+    reset();
+    build_roots_size = 0;
+    assert(wendy_pki_connect(&connection) != ESP_OK);
+    assert(broker_calls == 0 && renewal_calls == 0);
     wolfSSL_Cleanup();
     puts("renewal fallback tests passed");
 }

@@ -21,6 +21,9 @@ jobs:
           ctest --test-dir build-pki --output-on-failure
 
   firmware:
+    strategy:
+      matrix:
+        trust: [usb, embedded]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -37,7 +40,10 @@ jobs:
           . "$IDF_PATH/export.sh"
           # These public test certificates are only for a compile check.
           # This firmware is never published as an installable artifact.
-          root="$GITHUB_WORKSPACE/components/wendy_pki/tests/fixtures/root.pem"
+          root=""
+          if [ "${{ matrix.trust }}" = embedded ]; then
+            root="$GITHUB_WORKSPACE/components/wendy_pki/tests/fixtures/root.pem"
+          fi
           cat > pki-test.defaults <<EOF_CONFIG
           CONFIG_WENDY_PKI_DEVICE_ROOTS="$root"
           CONFIG_WENDY_PKI_TSA_ROOTS="$root"

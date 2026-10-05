@@ -142,6 +142,7 @@ typedef struct _WendyComEnrollmentChallengeParams {
 typedef struct _WendyComEnrollmentChallenge {
     char nonce_hex[65];
     bool enrolled;
+    bool usb_trust_supported; /* accepts explicitly provisioned CA bundles */
 } WendyComEnrollmentChallenge;
 
 /* Params for WENDY_COM_CMD_CONSOLE_ATTACH — start streaming console output as
@@ -384,7 +385,7 @@ extern "C" {
 #define WendyComDeviceIdentity_init_default      {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define WendyComGetDeviceInfoParams_init_default {0}
 #define WendyComEnrollmentChallengeParams_init_default {0}
-#define WendyComEnrollmentChallenge_init_default {"", 0}
+#define WendyComEnrollmentChallenge_init_default {"", 0, 0}
 #define WendyComConsoleAttachParams_init_default {0, 0, 0}
 #define WendyComConsoleDetachParams_init_default {0}
 #define WendyComConsoleBegin_init_default        {0}
@@ -418,7 +419,7 @@ extern "C" {
 #define WendyComDeviceIdentity_init_zero         {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define WendyComGetDeviceInfoParams_init_zero    {0}
 #define WendyComEnrollmentChallengeParams_init_zero {0}
-#define WendyComEnrollmentChallenge_init_zero    {"", 0}
+#define WendyComEnrollmentChallenge_init_zero    {"", 0, 0}
 #define WendyComConsoleAttachParams_init_zero    {0, 0, 0}
 #define WendyComConsoleDetachParams_init_zero    {0}
 #define WendyComConsoleBegin_init_zero           {0}
@@ -458,6 +459,7 @@ extern "C" {
 #define WendyComEnrollmentChallengeParams_status_only_tag 1
 #define WendyComEnrollmentChallenge_nonce_hex_tag 1
 #define WendyComEnrollmentChallenge_enrolled_tag 2
+#define WendyComEnrollmentChallenge_usb_trust_supported_tag 3
 #define WendyComConsoleAttachParams_event_id_tag 1
 #define WendyComConsoleAttachParams_duration_tag 2
 #define WendyComConsoleAttachParams_blocking_tag 3
@@ -608,7 +610,8 @@ X(a, STATIC,   SINGULAR, BOOL,     status_only,       1)
 
 #define WendyComEnrollmentChallenge_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, STRING,   nonce_hex,         1) \
-X(a, STATIC,   SINGULAR, BOOL,     enrolled,          2)
+X(a, STATIC,   SINGULAR, BOOL,     enrolled,          2) \
+X(a, STATIC,   SINGULAR, BOOL,     usb_trust_supported,   3)
 #define WendyComEnrollmentChallenge_CALLBACK NULL
 #define WendyComEnrollmentChallenge_DEFAULT NULL
 
@@ -877,7 +880,7 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComConsoleDetachParams_size         6
 #define WendyComConsoleEnd_size                  0
 #define WendyComEnrollmentChallengeParams_size   2
-#define WendyComEnrollmentChallenge_size         68
+#define WendyComEnrollmentChallenge_size         70
 #define WendyComGetDeviceIdentityParams_size     0
 #define WendyComGetDeviceInfoParams_size         0
 #define WendyComHandshake_size                   20

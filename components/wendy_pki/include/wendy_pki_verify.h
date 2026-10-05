@@ -3,6 +3,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <time.h>
+/* Strict, bounded PEM CA bundle validation, independent of the boot clock. */
+int wendy_pki_verify_roots(const uint8_t *pem, size_t size);
 /* Verify a nonce-bound RFC 3161 response. Nothing changes the system clock here.
  * The trust bundle must be pinned before enrollment. Returns 0 on success. */
 int wendy_pki_verify_time(const uint8_t *der, size_t size, const uint8_t nonce[32],

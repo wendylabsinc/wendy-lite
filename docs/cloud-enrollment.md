@@ -18,30 +18,26 @@ Use ESP-IDF 5.5.4 and initialize the pinned wolfSSL dependency:
 git submodule update --init components/wendy_wolfssl/wolfssl
 ```
 
-Obtain the deployment's trust bundles through your existing authenticated PKI
-administration process. The firmware pins these before enrollment. A certificate
-returned by the enrollment endpoint does not become a trust anchor.
-
-Create an untracked `pki-trust.defaults` file with absolute PEM paths:
-
-```ini
-CONFIG_WENDY_PKI_DEVICE_ROOTS="/absolute/path/to/development-device-roots.pem"
-CONFIG_WENDY_PKI_TSA_ROOTS="/absolute/path/to/development-tsa-bundle.pem"
-CONFIG_WENDY_PKI_HTTPS_ROOTS="/absolute/path/to/development-server-roots.pem"
-```
-
-The device bundle anchors pki-core identities. The TSA bundle must include the
-pinned TSA issuer chain needed to validate its signer, since pki-core's timestamp
-response currently embeds only the signer. The HTTPS bundle must trust the CSR,
-signed-time, and broker server certificates. Server hostname checks are mandatory.
-Do not use `components/wendy_pki/tests/fixtures/root.pem` for a development deployment.
-
-For the ESP32-C6 4 MB trial layout:
+For the ESP32-C6 4 MB trial layout, build without deployment-specific roots:
 
 ```sh
-idf.py -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;boards/esp32c6_cloud.defaults;pki-trust.defaults' set-target esp32c6
+idf.py -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;boards/esp32c6_cloud.defaults' set-target esp32c6
 idf.py build
 ```
+
+Provision trust during USB enrollment using three PEM CA bundles obtained through
+an authenticated PKI administration process. The device bundle anchors pki-core
+identities. The TSA bundle includes the pinned TSA root and issuer chain needed
+to validate the timestamp signer. The HTTPS bundle trusts the CSR endpoint,
+signed-time endpoint, and broker server. Hostname checks remain mandatory.
+A certificate returned by an enrollment or timestamp endpoint does not become a
+trust anchor. Do not use the repository's disposable fixture roots for deployment.
+
+Build-pinned trust remains available for existing deployments. Set
+`CONFIG_WENDY_PKI_DEVICE_ROOTS`, `CONFIG_WENDY_PKI_TSA_ROOTS`, and
+`CONFIG_WENDY_PKI_HTTPS_ROOTS` to absolute PEM paths in `pki-trust.defaults`, then
+append that file to `SDKCONFIG_DEFAULTS`. Omitting the USB bundle flags uses those
+embedded roots. Without either source of trust, the device refuses to connect.
 
 This layout adds a 192 KiB `wendy_pki` NVS partition and an 80 KiB configuration
 partition. It changes the WASM/configuration layout and is not an OTA-compatible
@@ -66,7 +62,10 @@ wendy cloud enroll-device \
   --device wendy-lite:/dev/cu.usbmodemXXXX \
   --name lite-desk \
   --broker-host YOUR_WENDYCOM_BROKER_HOST \
-  --broker-port 5055
+  --broker-port 5055 \
+  --device-roots /path/to/device-ca-bundle.pem \
+  --tsa-roots /path/to/tsa-ca-bundle.pem \
+  --https-roots /path/to/server-ca-bundle.pem
 wendy cloud discover
 ```
 
@@ -74,10 +73,25 @@ The broker hostname is explicit because the Cloud API endpoint does not identify
 a WendyCom listener. Set `--csr-url https://csr.example/v1/TENANT_UUID` and
 `--time-url https://codesign.example/v1/time` for custom PKI routing.
 
+All three root flags must be provided together. They explicitly authorize the
+CLI to provision those bundles over the physical USB link. The CLI checks that
+the files contain currently valid CA certificates and checks firmware support
+before reserving an asset. It also uses the HTTPS bundle to validate the signed-time
+endpoint. The firmware accepts at most eight CA certificates and 16 KiB per
+bundle; signed time plus all bundles must fit within 64 KiB.
+
+The bundles persist with the enrollment configuration in the `wendy_conf` flash
+partition and survive reboot. USB-provisioned trust takes precedence over embedded
+roots. Missing, partial, or malformed provisioned trust fails closed, with no
+fallback to a different trust source. Network peers cannot write this configuration.
+Wi-Fi-only configuration updates preserve it; replacing or erasing the entire
+configuration removes it. Existing enrolled boards require operator recovery to
+change enrollment through the CLI. This does not add remote trust rotation.
+
 The command obtains a device-generated nonce and a signed time response before
 minting the credential. It sends configuration through physical USB, reboots the
 board, and waits up to two minutes for certificate installation. The board checks
-the seed against its pinned TSA bundle using the signed timestamp for certificate
+the seed against its configured TSA bundle using the signed timestamp for certificate
 validity checks, so verification works even when the boot clock is still in 1970.
 It retrieves fresh nonce-bound signed time and only then redeems its token.
 Issued certificates must match the device's key
@@ -121,6 +135,6 @@ ctest --test-dir build-pki --output-on-failure
 The committed fixtures were generated with pki-core's `ca.Engine.IssueTimestamp`
 and mixed-family certificate builder. They contain public test credentials only.
 See [the test instructions](../components/wendy_pki/tests/README.md) to regenerate
-them. CI also compiles the PKI-enabled C6 image using test roots and does not
-publish that image. Hardware enrollment and memory behavior still need a connected
+them. CI compiles the PKI-enabled C6 image both without embedded roots and with
+disposable test roots. Neither image is published by the PKI workflow. Hardware enrollment and memory behavior still need a connected
 board and the development trust bundles.

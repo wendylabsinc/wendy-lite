@@ -52,6 +52,17 @@ int main(int argc, char **argv)
     unsigned char *root = load(argv[1], "root.pem", &root_n),
                   *nonce = load(argv[1], "nonce.bin", &nonce_n);
     assert(nonce_n == 32);
+    assert(wendy_pki_verify_roots(root, root_n) == 0);
+    assert(wendy_pki_verify_roots(NULL, 0) != 0);
+    assert(wendy_pki_verify_roots(root, 16385) != 0);
+    assert(wendy_pki_verify_roots((const uint8_t *)"garbage", 7) != 0);
+    unsigned char *bad_root = malloc(root_n + 1);
+    memcpy(bad_root, root, root_n);
+    bad_root[root_n] = 'x';
+    assert(wendy_pki_verify_roots(bad_root, root_n + 1) != 0);
+    bad_root[root_n] = 0;
+    assert(wendy_pki_verify_roots(bad_root, root_n + 1) != 0);
+    free(bad_root);
     const char *names[] = {"valid",         "wrong-eku",   "expired",
                            "wrong-imprint", "wrong-nonce", "valid-ecdsa"};
     time_t t = 0;
@@ -89,6 +100,7 @@ int main(int argc, char **argv)
         char name[64];
         snprintf(name, sizeof name, "%s.pem", identities[i]);
         unsigned char *p = load(argv[1], name, &n);
+        assert(wendy_pki_verify_roots(p, n) != 0); /* A leaf is not a trust anchor. */
         time_t expires = 0;
         int r = wendy_pki_verify_identity(p, n, root, root_n, key, key_n, principal, t, &expires);
         printf("%s: %d\n", name, r);

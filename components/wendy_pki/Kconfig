@@ -6,15 +6,15 @@ menu "Wendy PKI"
             Generate the identity key on-device, redeem a real pki-core credential,
             and verify signed time before making cloud mTLS connections.
     config WENDY_PKI_DEVICE_ROOTS
-        string "PEM device identity trust bundle, pinned at build time"
+        string "PEM device identity trust bundle, optional build-time fallback"
         depends on WENDY_PKI
         default ""
     config WENDY_PKI_TSA_ROOTS
-        string "PEM TSA trust bundle, pinned at build time"
+        string "PEM TSA trust bundle, optional build-time fallback"
         depends on WENDY_PKI
         default ""
     config WENDY_PKI_HTTPS_ROOTS
-        string "PEM server HTTPS/TLS trust bundle, pinned at build time"
+        string "PEM server HTTPS/TLS trust bundle, optional build-time fallback"
         depends on WENDY_PKI
         default ""
 endmenu

@@ -55,9 +55,9 @@ static int wait_socket(wendy_pki_connection *c, int error, int64_t deadline)
     return select(c->fd + 1, &rd, &wr, NULL, &tv) > 0 ? 0 : -1;
 }
 int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t key_size,
-                    const char *cert, wendy_pki_connection **out)
+                    const char *cert, struct wendy_conf_span roots, wendy_pki_connection **out)
 {
-    if (!host || !host[0] || strlen(host) > 253 || !port || port > 65535)
+    if (!roots.data || !roots.size || !host || !host[0] || strlen(host) > 253 || !port || port > 65535)
         return -1;
     wendy_pki_connection *c = calloc(1, sizeof *c);
     if (!c)
@@ -102,7 +102,7 @@ int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t 
     if (!c->ctx)
         goto fail;
     wolfSSL_CTX_set_verify(c->ctx, WOLFSSL_VERIFY_PEER, NULL);
-    if (wolfSSL_CTX_load_verify_buffer(c->ctx, wendy_pki_https_roots_start, ROOT_SIZE(https),
+    if (wolfSSL_CTX_load_verify_buffer(c->ctx, roots.data, roots.size,
                                        WOLFSSL_FILETYPE_PEM) != WOLFSSL_SUCCESS)
         goto fail;
     if (key && cert)
@@ -192,7 +192,7 @@ static int write_all(wendy_pki_connection *c, const void *b, size_t n, int64_t d
 }
 int pki_http_post(const char *url, const char *type, const char *token, const void *body,
                   size_t body_size, const uint8_t *key, size_t key_size, const char *cert,
-                  uint8_t **response, size_t *response_size)
+                  struct wendy_conf_span roots, uint8_t **response, size_t *response_size)
 {
     struct http_parser_url u;
     http_parser_url_init(&u);
@@ -214,7 +214,7 @@ int pki_http_post(const char *url, const char *type, const char *token, const vo
     if (strpbrk(host, "\r\n") || strpbrk(path, "\r\n") || (token && strpbrk(token, "\r\n")))
         return -1;
     wendy_pki_connection *c = NULL;
-    if (pki_tls_connect(host, u.field_set & (1 << UF_PORT) ? u.port : 443, key, key_size, cert, &c))
+    if (pki_tls_connect(host, u.field_set & (1 << UF_PORT) ? u.port : 443, key, key_size, cert, roots, &c))
         return -1;
     char authority[264];
     unsigned port = u.field_set & (1 << UF_PORT) ? u.port : 443;

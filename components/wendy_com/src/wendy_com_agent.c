@@ -350,6 +350,7 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
     switch (cmd->which_params) {
     case WendyComCommand_enrollment_challenge_tag:
         resp->which_data = WendyComResponse_enrollment_challenge_tag;
+        resp->data.enrollment_challenge.usb_trust_supported = true;
         resp->result = wendy_pki_challenge(cmd->params.enrollment_challenge.status_only, resp->data.enrollment_challenge.nonce_hex,
                          &resp->data.enrollment_challenge.enrolled) == ESP_OK
             ? WendyComResult_WENDY_COM_RESULT_OK : WendyComResult_WENDY_COM_RESULT_BAD_STATE;
