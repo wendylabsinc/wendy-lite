@@ -32,3 +32,7 @@ add_test(NAME pki_verification COMMAND verify_test "${CMAKE_CURRENT_LIST_DIR}/fi
 add_test(NAME pki_verification_future_clock COMMAND verify_test "${CMAKE_CURRENT_LIST_DIR}/fixtures" 4102444800)
 add_test(NAME pki_renewal_fallback COMMAND renewal_test "${CMAKE_CURRENT_LIST_DIR}/fixtures/device-key.der")
 add_test(NAME pki_configuration_persistence COMMAND conf_test)
+
+add_executable(operator_test operator_test.c)
+target_link_libraries(operator_test PRIVATE pki)
+add_test(NAME pki_operator_identity COMMAND operator_test "${CMAKE_CURRENT_LIST_DIR}/operator-fixtures")

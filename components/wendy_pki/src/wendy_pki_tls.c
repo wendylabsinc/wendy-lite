@@ -2,6 +2,7 @@
 #include "esp_log.h"
 #include "http_parser.h"
 #include "wendy_pki_internal.h"
+#include "wendy_pki_verify.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
@@ -267,4 +268,48 @@ done:
     free(r.bytes);
     wendy_pki_close(c);
     return answer;
+}
+
+
+/* TLS validates the chain, dates and clientAuth usage. Also require exactly
+ * one operator URI in this device's tenant, never another device's identity. */
+
+int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, const char *cert,
+                   struct wendy_conf_span roots, const char *tenant, wendy_pki_connection **out)
+{
+    wendy_pki_connection *c = calloc(1, sizeof *c);
+    if (!c) { close(fd); return -1; }
+    c->fd = fd;
+    if (fd < 0 || fd >= FD_SETSIZE || fcntl(fd, F_SETFL, O_NONBLOCK) < 0) goto fail;
+    c->ctx = wolfSSL_CTX_new(wolfTLSv1_3_server_method());
+    if (!c->ctx) goto fail;
+    // Build the complete certificate flight before nonblocking socket writes.
+    // Retrying wolfSSL 5.9.1 mid-certificate resets its chain-fragment cursor.
+    wolfSSL_CTX_set_group_messages(c->ctx);
+    wolfSSL_CTX_set_verify(c->ctx, WOLFSSL_VERIFY_PEER | WOLFSSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
+    if (wolfSSL_CTX_load_verify_buffer(c->ctx, roots.data, roots.size, WOLFSSL_FILETYPE_PEM) != WOLFSSL_SUCCESS ||
+        wolfSSL_CTX_use_certificate_chain_buffer_format(c->ctx, (const uint8_t *)cert, strlen(cert), WOLFSSL_FILETYPE_PEM) != WOLFSSL_SUCCESS ||
+        wolfSSL_CTX_use_PrivateKey_buffer(c->ctx, key, key_size, WOLFSSL_FILETYPE_ASN1) != WOLFSSL_SUCCESS ||
+        wolfSSL_CTX_check_private_key(c->ctx) != WOLFSSL_SUCCESS) goto fail;
+    wolfSSL_CTX_SetIORecv(c->ctx, io_recv);
+    wolfSSL_CTX_SetIOSend(c->ctx, io_send);
+    c->ssl = wolfSSL_new(c->ctx);
+    if (!c->ssl) goto fail;
+    wolfSSL_SetIOReadCtx(c->ssl, &c->fd);
+    wolfSSL_SetIOWriteCtx(c->ssl, &c->fd);
+    int64_t deadline = esp_timer_get_time() + 15000000;
+    int r;
+    while ((r = wolfSSL_accept(c->ssl)) != WOLFSSL_SUCCESS)
+        if (wait_socket(c, wolfSSL_get_error(c->ssl, r), deadline)) goto fail;
+    WOLFSSL_X509 *peer = wolfSSL_get_peer_certificate(c->ssl);
+    int peer_size = 0;
+    const uint8_t *peer_der = peer ? wolfSSL_X509_get_der(peer, &peer_size) : NULL;
+    int valid_operator = wendy_pki_verify_operator(peer_der, peer_size, tenant);
+    wolfSSL_X509_free(peer);
+    if (valid_operator) goto fail;
+    *out = c;
+    return 0;
+fail:
+    wendy_pki_close(c);
+    return -1;
 }

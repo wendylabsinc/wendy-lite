@@ -280,3 +280,5 @@ int main(int argc, char **argv)
     wolfSSL_Cleanup();
     puts("renewal fallback tests passed");
 }
+
+int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, const char *cert, struct wendy_conf_span roots, const char *tenant, wendy_pki_connection **out) { (void)fd; (void)key; (void)key_size; (void)cert; (void)roots; (void)tenant; (void)out; return -1; }

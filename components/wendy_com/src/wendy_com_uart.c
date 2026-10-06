@@ -8,6 +8,7 @@
 void wendy_com_uart_init(wendy_com_uart_t *uart, int fd)
 {
     uart->fd = fd;
+    uart->write_bytes = NULL;
     uart->raw_pos = 0;
     uart->raw_len = 0;
     uart->pending_esc = false;
@@ -85,6 +86,8 @@ ssize_t wendy_com_uart_read(wendy_com_uart_t *uart, void *data, size_t datalen)
 
 ssize_t wendy_com_uart_write(wendy_com_uart_t *uart, const void *data, size_t datalen)
 {
+    if (uart->write_bytes)
+        return uart->write_bytes(data, datalen);
     ssize_t n = write(uart->fd, data, datalen);
     if (n < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK)

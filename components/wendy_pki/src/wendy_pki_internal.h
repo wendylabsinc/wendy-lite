@@ -22,3 +22,6 @@ int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t 
 int pki_http_post(const char *url, const char *type, const char *token, const void *body,
                   size_t body_size, const uint8_t *key, size_t key_size, const char *cert,
                   struct wendy_conf_span roots, uint8_t **response, size_t *response_size);
+
+int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, const char *cert,
+                   struct wendy_conf_span roots, const char *tenant, wendy_pki_connection **out);

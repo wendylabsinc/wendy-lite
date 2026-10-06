@@ -18,3 +18,6 @@ int wendy_pki_verify_identity(const uint8_t *pem, size_t size, const uint8_t *ro
 
 /* RFC 3161 request for a positive, nonzero 32-byte device nonce. */
 size_t wendy_pki_time_request(uint8_t out[128], const uint8_t nonce[32]);
+
+/* After TLS chain verification: require one same-tenant operator URI and clientAuth. */
+int wendy_pki_verify_operator(const uint8_t *der, size_t size, const char *tenant);

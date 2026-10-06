@@ -6,6 +6,7 @@
 #include "nvs_flash.h"
 #include "wendy_conf.h"
 #include "wendy_pki_internal.h"
+#include <unistd.h>
 #include "wendy_pki_verify.h"
 #include "wendy_roughtime.h"
 #include <pthread.h>
@@ -537,5 +538,43 @@ done:
     free(stored);
     free(fresh);
     nvs_close(h);
+    return result;
+}
+
+
+esp_err_t wendy_pki_accept(int fd, wendy_pki_connection **connection)
+{
+    pthread_once(&crypto_once, init_crypto);
+    WendyConfEnrollment cfg = WendyConfEnrollment_init_zero;
+    struct wendy_conf_enrollment_data data = {0};
+    nvs_handle_t h = 0;
+    bool opened = false;
+    uint8_t *key = NULL, *cert = NULL;
+    size_t key_size = 0, cert_size = 0;
+    time_t expires;
+    esp_err_t result = ESP_FAIL;
+    if (!crypto_ok || wendy_conf_copy_enrollment(&cfg, &data) != ESP_OK ||
+        !valid_config(&cfg) || select_trust(&cfg, &data) || open_identity(&h) != ESP_OK)
+        goto done;
+    opened = true;
+    char principal[160];
+    snprintf(principal, sizeof principal, "spiffe://wendy.sh/tenant/%s/device/%s",
+             cfg.tenant_id, cfg.device_id);
+    if (identity_key(h, &cfg, &key, &key_size) ||
+        load_blob(h, "certificate", &cert, &cert_size) ||
+        wendy_pki_verify_identity(cert, cert_size, data.device_roots.data,
+            data.device_roots.size, key, key_size, principal, time(NULL), &expires))
+        goto done;
+    int accepted = pki_tls_accept(fd, key, key_size, (char *)cert,
+                                 data.device_roots, cfg.tenant_id, connection);
+    fd = -1; /* pki_tls_accept owns the socket, including failures. */
+    if (!accepted) result = ESP_OK;
+done:
+    if (fd >= 0) close(fd);
+    if (key) { erase(key, key_size); free(key); }
+    free(cert);
+    free(data.storage);
+    erase(cfg.token, sizeof cfg.token);
+    if (opened) nvs_close(h);
     return result;
 }

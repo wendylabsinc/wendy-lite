@@ -17,3 +17,6 @@ void wendy_pki_close(wendy_pki_connection *connection);
 int wendy_pki_fd(void *connection);
 ssize_t wendy_pki_read(void *connection, void *data, size_t size);
 ssize_t wendy_pki_write(void *connection, const void *data, size_t size);
+
+/* Takes ownership of fd on every outcome. No issuance or network time fetch. */
+esp_err_t wendy_pki_accept(int fd, wendy_pki_connection **connection);

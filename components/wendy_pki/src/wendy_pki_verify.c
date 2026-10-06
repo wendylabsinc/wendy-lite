@@ -519,3 +519,48 @@ size_t wendy_pki_time_request(uint8_t out[128], const uint8_t nonce[32])
     out[n++] = 0xff;
     return n;
 }
+
+/* Chain verification is performed by TLS before this identity check. */
+int wendy_pki_verify_operator(const uint8_t *der, size_t size, const char *tenant)
+{
+    if (!der || !size || size > 65536 || !tenant || strlen(tenant) != 36)
+        return -1;
+    int ok = 0, uris = 0;
+    DecodedCert *decoded = malloc(sizeof *decoded);
+    if (!decoded)
+        return -1;
+    wc_InitDecodedCert(decoded, der, size, NULL);
+    if (wc_ParseCert(decoded, CERT_TYPE, NO_VERIFY, NULL) == 0 && !decoded->isCA &&
+        decoded->extExtKeyUsageSet && (decoded->extExtKeyUsage & EXTKEYUSE_CLIENT_AUTH))
+    {
+        char prefix[96];
+        snprintf(prefix, sizeof prefix, "spiffe://wendy.sh/tenant/%s/operator/", tenant);
+        size_t n = strlen(prefix);
+        ok = 1;
+        for (DNS_entry *alt = decoded->altNames; alt; alt = alt->next)
+        {
+            if (alt->type != ASN_URI_TYPE)
+                continue;
+            uris++;
+            if ((size_t)alt->len != n + 36 || memcmp(alt->name, prefix, n))
+            {
+                ok = 0;
+                continue;
+            }
+            for (size_t i = 0; i < 36; i++)
+            {
+                char c = alt->name[n + i];
+                if (i == 8 || i == 13 || i == 18 || i == 23)
+                {
+                    if (c != '-')
+                        ok = 0;
+                }
+                else if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+                    ok = 0;
+            }
+        }
+    }
+    wc_FreeDecodedCert(decoded);
+    free(decoded);
+    return ok && uris == 1 ? 0 : -1;
+}

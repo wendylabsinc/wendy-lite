@@ -1,5 +1,6 @@
 #include "wendy_server.h"
 #include "wendy_conf.h"
+#include "wendy_pki.h"
 #include "wendy_com_link.h"
 #include "esp_tls.h"
 #include "mbedtls/ssl.h"
@@ -11,6 +12,7 @@
 #include "freertos/task.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <inttypes.h>
@@ -26,7 +28,11 @@
 #define TAG                       "wendy_server"
 #define WENDY_SERVER_PORT         5054
 #define WENDY_SERVER_BACKLOG      4
+#if CONFIG_WENDY_PKI
+#define WENDY_SERVER_TASK_STACK   24576
+#else
 #define WENDY_SERVER_TASK_STACK   8192
+#endif
 #define WENDY_SERVER_MAX_LINKS    4
 
 
@@ -35,10 +41,12 @@
 struct _add_link_op {
     struct wcom_operation base;
     esp_tls_t *tls;
+    wendy_pki_connection *pki;
 };
 
 struct wendy_server_link {
     esp_tls_t *tls;
+    wendy_pki_connection *pki;
     int link_id;
 };
 
@@ -62,11 +70,26 @@ static int _tls_verify_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t 
     return 0;
 }
 
+#if CONFIG_WENDY_PKI
+static const struct wcom_stream_ops pki_ops = {
+    .read = wendy_pki_read, .write = wendy_pki_write, .wakeup_fd = wendy_pki_fd,
+};
+#endif
+
 static void _on_interruption(int link_id, enum wcom_interruption_reason reason)
 {
     for (int i = 0; i < WENDY_SERVER_MAX_LINKS; i++) {
-        if (_links[i].tls != NULL && _links[i].link_id == link_id) {
+        if ((_links[i].tls != NULL || _links[i].pki != NULL) && _links[i].link_id == link_id) {
             ESP_LOGI(TAG, "remove link %d (reason %d)", link_id, (int)reason);
+#if CONFIG_WENDY_PKI
+            if (_links[i].pki) {
+                wcom_remove_link(link_id);
+                wendy_pki_close(_links[i].pki);
+                _links[i].pki = NULL;
+                _links[i].link_id = 0;
+                return;
+            }
+#endif
             esp_tls_t *tls = _links[i].tls;
             _links[i].tls = NULL;
             _links[i].link_id = 0;
@@ -85,9 +108,25 @@ static void _add_link_exec(struct wcom_operation *op)
 {
     struct _add_link_op *aop = (struct _add_link_op *)op;
 
+#if CONFIG_WENDY_PKI
+    if (aop->pki) {
+        for (int i = 0; i < WENDY_SERVER_MAX_LINKS; i++) {
+            if (_links[i].tls || _links[i].pki) continue;
+            int id = wcom_add_socket_link(&pki_ops, aop->pki, _on_interruption);
+            if (id < 0) break;
+            _links[i].pki = aop->pki;
+            _links[i].link_id = id;
+            free(aop);
+            return;
+        }
+        wendy_pki_close(aop->pki);
+        free(aop);
+        return;
+    }
+#endif
     int slot = -1;
     for (int i = 0; i < WENDY_SERVER_MAX_LINKS; i++) {
-        if (_links[i].tls == NULL) {
+        if (_links[i].tls == NULL && _links[i].pki == NULL) {
             slot = i;
             break;
         }
@@ -129,7 +168,8 @@ static void _server_task(void *arg)
     struct wendy_conf_span chain = wendy_conf_get_chain_of_trust();
     struct wendy_conf_span default_cert = wendy_conf_get_default_certificate();
     struct wendy_conf_span default_key = wendy_conf_get_default_private_key();
-    bool trusted = wendy_conf_is_provisioned();
+    bool pki_configured = wendy_conf_has_enrollment();
+    bool trusted = pki_configured || wendy_conf_is_provisioned();
 
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd < 0) {
@@ -184,7 +224,7 @@ static void _server_task(void *arg)
     if (_caps.sensor_link)
         txt_items[txt_count++] = (mdns_txt_item_t){ .key = "caps", .value = "sensors" };
 
-    if (trusted) {
+    if (trusted && !pki_configured) {
         snprintf(org_id_str, sizeof(org_id_str), "%" PRId32, wendy_conf_get_org_id());
         snprintf(asset_id_str, sizeof(asset_id_str), "%" PRId32, wendy_conf_get_asset_id());
         txt_items[txt_count++] = (mdns_txt_item_t){ .key = "orgid",   .value = org_id_str };
@@ -200,6 +240,17 @@ static void _server_task(void *arg)
         ESP_LOGI(TAG, "registered mDNS service _wendy-lite._tcp on port %d", WENDY_SERVER_PORT);
     }
 
+    if (pki_configured) {
+        WendyConfEnrollment enrollment = WendyConfEnrollment_init_zero;
+        struct wendy_conf_enrollment_data enrollment_data = {0};
+        if (wendy_conf_copy_enrollment(&enrollment, &enrollment_data) == ESP_OK) {
+            mdns_service_txt_item_set("_wendy-lite", "_tcp", "tenant", enrollment.tenant_id);
+        }
+        free(enrollment_data.storage);
+        memset(&enrollment, 0, sizeof enrollment);
+    }
+
+
     for (;;) {
         struct sockaddr_in client_addr;
         socklen_t client_len = sizeof(client_addr);
@@ -209,6 +260,32 @@ static void _server_task(void *arg)
             continue;
         }
 
+        // SensorLink sends small headers followed by payloads. Do not wait
+        // for a delayed ACK before transmitting the next TLS record.
+        int no_delay = 1;
+        if (setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &no_delay, sizeof no_delay) < 0) {
+            ESP_LOGW(TAG, "setting TCP_NODELAY failed: %d", errno);
+            close(client_fd);
+            continue;
+        }
+
+        // Once enrollment is configured, never fall back to legacy or anonymous TLS.
+        if (wendy_conf_has_enrollment()) {
+#if CONFIG_WENDY_PKI
+            struct _add_link_op *op = calloc(1, sizeof *op);
+            if (!op) { close(client_fd); continue; }
+            if (wendy_pki_accept(client_fd, &op->pki) != ESP_OK) {
+                ESP_LOGW(TAG, "PKI LAN authentication failed");
+                free(op);
+                continue;
+            }
+            op->base.func = _add_link_exec;
+            wcom_core_exec(&op->base);
+#else
+            close(client_fd);
+#endif
+            continue;
+        }
         esp_tls_t *tls = esp_tls_init();
         if (!tls) {
             ESP_LOGE(TAG, "esp_tls_init() failed");
@@ -275,7 +352,7 @@ static void _server_task(void *arg)
 
         ESP_LOGI(TAG, "accepted TLS connection from %s", inet_ntoa(client_addr.sin_addr));
 
-        struct _add_link_op *op = malloc(sizeof(*op));
+        struct _add_link_op *op = calloc(1, sizeof(*op));
         if (!op) {
             ESP_LOGE(TAG, "malloc failed");
             close(client_fd);

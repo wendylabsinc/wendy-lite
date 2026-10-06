@@ -107,8 +107,17 @@ certificates, and unverified timestamps. A delayed fresh-time exchange over
 30 seconds fails.
 
 Configuration upload and enrollment challenges are restricted to the physical
-UART/USB link. The new PKI identity is used for the Cloud connection; existing LAN
-and BLE TLS servers are not migrated by this change.
+UART/USB link. The new PKI identity is used for Cloud and LAN connections. Once
+enrollment is configured, the LAN server uses the verified stored identity and
+requires a clientAuth certificate with exactly one operator SPIFFE URI in the
+same tenant. Missing, invalid, or expired enrollment credentials fail closed;
+the LAN server does not fall back to legacy or anonymous TLS. BLE still uses the
+legacy provisioning credentials.
+
+LAN discovery advertises the tenant to select an appropriate CLI identity.
+This is only a selection hint: TLS still verifies the certificate chain and the
+CLI checks the device principal. The CLI sends its operator certificate chain,
+including intermediates, and supports the deployment's ML-DSA certificate chain.
 
 CLI access through Cloud still requires an authorized tunnel and a separate
 end-to-end CLI/device mTLS handshake. This change supplies device enrollment and

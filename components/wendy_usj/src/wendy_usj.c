@@ -63,6 +63,20 @@ static void _on_com_interruption(int link_id, enum wcom_interruption_reason reas
     }
 }
 
+// The console VFS writes one byte at a time and reports the full requested
+// size even if its transmit timeout drops bytes. Protocol data must preserve
+// partial writes and retry when the driver ring buffer has room again.
+static ssize_t _com_write_bytes(const void *data, size_t size)
+{
+    // The driver enqueues the whole request or none of it. Keep each write
+    // within one USB packet, and shrink it if only part of the ring is free.
+    if (size > 64) size = 64;
+    int n;
+    while ((n = usb_serial_jtag_write_bytes(data, size, 0)) == 0 && size > 1)
+        size /= 2;
+    return n > 0 ? n : n == 0 ? WENDY_COM_UART_ERR_WANT_WRITE : WENDY_COM_UART_ERR_UNKNOWN;
+}
+
 static void _enter_com_exec(struct wcom_operation *op)
 {
     usb_serial_jtag_vfs_set_tx_line_endings(ESP_LINE_ENDINGS_LF);
@@ -88,6 +102,7 @@ static void _enter_com_exec(struct wcom_operation *op)
 #endif
 
     wendy_com_uart_init(&s_com_uart, fd);
+    s_com_uart.write_bytes = _com_write_bytes;
 
     if (wcom_add_uart_link(&s_com_uart, _on_com_interruption) < 0) {
         close(fd);
