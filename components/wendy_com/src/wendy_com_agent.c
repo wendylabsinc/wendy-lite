@@ -341,7 +341,8 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
     // Configuration writes and bootstrap challenges require physical setup.
     // An unenrolled network peer cannot redirect a device's enrollment.
     if ((cmd->which_params == WendyComCommand_conf_push_begin_tag ||
-         cmd->which_params == WendyComCommand_enrollment_challenge_tag) &&
+         cmd->which_params == WendyComCommand_enrollment_challenge_tag ||
+         cmd->which_params == WendyComCommand_sync_time_tag) &&
         !wcom_link_is_local(link->link_id)) {
         resp->result = WendyComResult_WENDY_COM_RESULT_BAD_STATE;
         _send_message(link, &out);
@@ -351,8 +352,20 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
     case WendyComCommand_enrollment_challenge_tag:
         resp->which_data = WendyComResponse_enrollment_challenge_tag;
         resp->data.enrollment_challenge.usb_trust_supported = true;
+        wendy_pki_builtin_trust(&resp->data.enrollment_challenge.builtin_roots_ready,
+                               &resp->data.enrollment_challenge.builtin_tsa_roots_ready);
+#if CONFIG_WENDY_PKI
+        resp->data.enrollment_challenge.roughtime_supported = true;
+#endif
         resp->result = wendy_pki_challenge(cmd->params.enrollment_challenge.status_only, resp->data.enrollment_challenge.nonce_hex,
                          &resp->data.enrollment_challenge.enrolled) == ESP_OK
+            ? WendyComResult_WENDY_COM_RESULT_OK : WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+        break;
+    case WendyComCommand_sync_time_tag:
+        resp->which_data = WendyComResponse_sync_time_tag;
+        resp->result = wendy_pki_sync_time(cmd->params.sync_time.server_index,
+            data_span->data, data_span->size, &resp->data.sync_time.synchronized,
+            &resp->data.sync_time.unix_seconds) == ESP_OK
             ? WendyComResult_WENDY_COM_RESULT_OK : WendyComResult_WENDY_COM_RESULT_BAD_STATE;
         break;
     case WendyComCommand_ping_tag:
@@ -495,6 +508,21 @@ static void _process_message(struct _agent_link *link, const uint8_t *body, size
         stream = pb_istream_from_buffer(body, size);
         if (!pb_decode_noinit(&stream, WendyComMessage_fields, &req)) {
             ESP_LOGE(TAG, "link %d pb_decode: %s", link->link_id, PB_GET_ERROR(&stream));
+            wcom_close(link->link_id);
+            return;
+        }
+    }
+
+    if (req.which_msg == WendyComMessage_command_tag &&
+        req.msg.command.which_params == WendyComCommand_sync_time_tag) {
+        data_span = (struct _span){NULL, 0};
+        req = (WendyComMessage)WendyComMessage_init_zero;
+        req.which_msg = WendyComMessage_command_tag;
+        req.msg.command.which_params = WendyComCommand_sync_time_tag;
+        req.msg.command.params.sync_time.response.funcs.decode = _capture_span;
+        req.msg.command.params.sync_time.response.arg = &data_span;
+        stream = pb_istream_from_buffer(body, size);
+        if (!pb_decode_noinit(&stream, WendyComMessage_fields, &req)) {
             wcom_close(link->link_id);
             return;
         }

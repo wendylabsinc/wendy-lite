@@ -55,6 +55,7 @@ static inline int wendy_pki_host_random(unsigned char *p, unsigned int n)
 #define WC_RSA_PSS
 #define WOLFSSL_SHA384
 #define WOLFSSL_SHA512
+#define HAVE_ED25519
 #define WOLFSSL_SHA3
 #define WOLFSSL_SHAKE128
 #define WOLFSSL_SHAKE256

@@ -333,7 +333,8 @@ static esp_err_t _write_conf(const void *pb_data, size_t pb_size, enum wendy_con
             spans[i].size > WENDY_CONF_MAX_ENROLLMENT_DATA - enrollment_size)
             return ESP_ERR_INVALID_SIZE;
         enrollment_size += spans[i].size;
-        if (i && ((spans[i].size != 0) != tmp.enrollment.provision_trust))
+        bool optional_tsa = i == 2 && !strcmp(tmp.enrollment.time_url, "roughtime") && !spans[i].size;
+        if (i && !optional_tsa && ((spans[i].size != 0) != tmp.enrollment.provision_trust))
             return ESP_ERR_INVALID_ARG;
     }
 

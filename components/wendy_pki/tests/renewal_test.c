@@ -6,6 +6,7 @@
 static size_t build_roots_size = 1;
 #include "../src/wendy_pki.c"
 #include <assert.h>
+int wendy_rt_query(struct wendy_rt_interval *out) { (void)out; return -1; }
 
 const uint8_t wendy_pki_device_roots_start[] = {0};
 const uint8_t wendy_pki_tsa_roots_start[] = {0};
@@ -21,6 +22,7 @@ static const time_t signed_now = 1800000000;
 static time_t clock_now, stored_expiry;
 static bool have_certificate, invalid_certificate, expire_during_renewal;
 static int renewal_calls, broker_calls, identity_checks;
+static bool pending_certificate, issuance_success;
 static uint8_t key_der[256];
 static size_t key_der_size;
 static WendyConfEnrollment config = {
@@ -61,7 +63,11 @@ esp_err_t nvs_get_i64(nvs_handle_t h, const char *name, int64_t *out)
 }
 esp_err_t nvs_set_i64(nvs_handle_t h, const char *name, int64_t value) { return ESP_OK; }
 esp_err_t nvs_commit(nvs_handle_t h) { return ESP_OK; }
-esp_err_t nvs_erase_key(nvs_handle_t h, const char *name) { return ESP_OK; }
+esp_err_t nvs_erase_key(nvs_handle_t h, const char *name)
+{
+    if (!strcmp(name, "pending")) pending_certificate = false;
+    return ESP_OK;
+}
 esp_err_t nvs_get_blob(nvs_handle_t h, const char *name, void *out, size_t *size)
 {
     const void *data;
@@ -71,7 +77,8 @@ esp_err_t nvs_get_blob(nvs_handle_t h, const char *name, void *out, size_t *size
         data = key_der;
         n = key_der_size;
     }
-    else if (!strcmp(name, "certificate") && have_certificate)
+    else if ((!strcmp(name, "certificate") && have_certificate) ||
+             (!strcmp(name, "pending") && pending_certificate))
     {
         data = "stored";
         n = 6;
@@ -88,8 +95,12 @@ esp_err_t nvs_get_blob(nvs_handle_t h, const char *name, void *out, size_t *size
 }
 esp_err_t nvs_set_blob(nvs_handle_t h, const char *name, const void *data, size_t size)
 {
-    /* A failed renewal must never replace the stored identity. */
-    assert(strcmp(name, "certificate"));
+    if (!strcmp(name, "pending")) pending_certificate = true;
+    if (!strcmp(name, "certificate"))
+    {
+        assert(issuance_success && !invalid_certificate);
+        have_certificate = true;
+    }
     return ESP_OK;
 }
 esp_err_t nvs_get_str(nvs_handle_t h, const char *name, char *out, size_t *size)
@@ -146,6 +157,12 @@ int pki_http_post(const char *url, const char *type, const char *token, const vo
     {
         assert(!cert && !key && token);
     }
+    if (issuance_success)
+    {
+        *response = (uint8_t *)strdup("issued");
+        *response_size = 6;
+        return 0;
+    }
     if (expire_during_renewal)
         clock_now = stored_expiry;
     return -1;
@@ -162,13 +179,19 @@ int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t 
 cJSON *cJSON_CreateObject(void) { return calloc(1, sizeof(cJSON)); }
 cJSON *cJSON_AddStringToObject(cJSON *o, const char *k, const char *v) { return o; }
 char *cJSON_PrintUnformatted(const cJSON *o) { return strdup("{}"); }
-cJSON *cJSON_ParseWithLength(const char *s, size_t n) { return NULL; }
-cJSON *cJSON_GetObjectItemCaseSensitive(const cJSON *o, const char *k) { return NULL; }
-int cJSON_IsString(const cJSON *o) { return 0; }
+cJSON *cJSON_ParseWithLength(const char *s, size_t n)
+{
+    cJSON *o = calloc(1, sizeof *o);
+    o->valuestring = "stored";
+    return o;
+}
+cJSON *cJSON_GetObjectItemCaseSensitive(const cJSON *o, const char *k) { return (cJSON *)o; }
+int cJSON_IsString(const cJSON *o) { return o && o->valuestring; }
 void cJSON_Delete(cJSON *o) { free(o); }
 
 static void reset(void)
 {
+    pending_certificate = issuance_success = false;
     clock_now = signed_now;
     config.provision_trust = false;
     usb_data = (struct wendy_conf_enrollment_data){0};
@@ -241,6 +264,19 @@ int main(int argc, char **argv)
     build_roots_size = 0;
     assert(wendy_pki_connect(&connection) != ESP_OK);
     assert(broker_calls == 0 && renewal_calls == 0);
+    /* A failed verification retains only a pending response. The retry must
+     * verify again and must not spend the one-use enrollment token twice. */
+    reset();
+    have_certificate = false;
+    issuance_success = invalid_certificate = true;
+    stored_expiry = signed_now + 172800;
+    assert(wendy_pki_connect(&connection) != ESP_OK);
+    assert(pending_certificate && !have_certificate && broker_calls == 0);
+    assert(renewal_calls == 1 && identity_checks == 1);
+    invalid_certificate = false;
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(!pending_certificate && have_certificate && broker_calls == 1);
+    assert(renewal_calls == 1 && identity_checks == 2);
     wolfSSL_Cleanup();
     puts("renewal fallback tests passed");
 }

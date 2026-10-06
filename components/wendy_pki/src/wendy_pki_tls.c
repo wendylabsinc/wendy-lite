@@ -1,4 +1,5 @@
 #include "esp_timer.h"
+#include "esp_log.h"
 #include "http_parser.h"
 #include "wendy_pki_internal.h"
 #include <errno.h>
@@ -254,8 +255,10 @@ int pki_http_post(const char *url, const char *type, const char *token, const vo
         if (used != (size_t)got || HTTP_PARSER_ERRNO(&parser) != HPE_OK || (!got && !r.complete))
             goto done;
     }
-    if (parser.status_code != 200)
+    if (parser.status_code != 200) {
+        ESP_LOGE("wendy_pki", "PKI HTTP request returned status %u", parser.status_code);
         goto done;
+    }
     *response = r.bytes;
     *response_size = r.size;
     r.bytes = NULL;

@@ -256,6 +256,9 @@ static int verify_chain(WOLFSSL_X509 *leaf, WOLFSSL_STACK *untrusted, const uint
     wolfSSL_X509_STORE_CTX_set_time(ctx, 0, now);
     if (wolfSSL_X509_verify_cert(ctx) == WOLFSSL_SUCCESS)
         result = 0;
+    else
+        printf("PKI chain verification error %d at depth %d\n",
+               wolfSSL_X509_STORE_CTX_get_error(ctx), wolfSSL_X509_STORE_CTX_get_error_depth(ctx));
 done:
     wolfSSL_BIO_free(bio);
     wolfSSL_X509_STORE_CTX_free(ctx);
@@ -276,13 +279,17 @@ static int tsa_eku(der cert)
     free(d);
     return result;
 }
+#ifdef ESP_PLATFORM
+#include "esp_log.h"
+#define PKI_VERIFY_DIAGNOSTICS
+#endif
 #ifdef PKI_VERIFY_DIAGNOSTICS
 #define REQUIRE(x)                                                                                 \
     do                                                                                             \
     {                                                                                              \
         if (!(x))                                                                                  \
         {                                                                                          \
-            fprintf(stderr, "verify failed at line %d\n", __LINE__);                               \
+            printf("PKI verification failed at line %d\n", __LINE__);                               \
             goto done;                                                                             \
         }                                                                                          \
     } while (0)

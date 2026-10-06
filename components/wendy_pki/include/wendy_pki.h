@@ -6,8 +6,11 @@
 #include <stdint.h>
 #include <sys/types.h>
 typedef struct wendy_pki_connection wendy_pki_connection;
+void wendy_pki_builtin_trust(bool *ready, bool *tsa_ready);
 /* A challenge discloses no key material. Only the USB command calls this. */
 esp_err_t wendy_pki_challenge(bool status_only, char nonce_hex[65], bool *enrolled);
+esp_err_t wendy_pki_sync_time(unsigned server, const uint8_t *reply, size_t size,
+                            bool *synchronized, int64_t *seconds);
 /* Called by the cloud task after Wi-Fi is up; all network operations are bounded. */
 esp_err_t wendy_pki_connect(wendy_pki_connection **connection);
 void wendy_pki_close(wendy_pki_connection *connection);
