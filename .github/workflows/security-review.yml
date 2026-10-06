@@ -60,7 +60,8 @@ jobs:
 
           client = anthropic.Anthropic()
 
-          with open('pr.diff') as f:
+          # Preserve non-UTF-8 fixture bytes as visible escapes for review.
+          with open('pr.diff', encoding='utf-8', errors='backslashreplace') as f:
               diff = f.read()
 
           if not diff.strip():

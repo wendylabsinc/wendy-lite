@@ -35,6 +35,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: true
+      - name: Trust checkout paths in the build container
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/components/wendy_wolfssl/wolfssl"
       - name: Verify reviewed wolfSSL revision
         run: bash tools/verify_wolfssl.sh
       - name: Build ESP32-C6 with enrollment enabled
