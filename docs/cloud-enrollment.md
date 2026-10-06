@@ -2,8 +2,8 @@
 
 `wendy cloud enroll-device` enrolls a USB-connected board with the PKI deployment
 selected by the operator's Wendy CLI session. A development login selects
-`identity.dev.pki.wendy.sh`; the CLI derives the sibling CSR and signed-time
-endpoints. Self-hosted deployments can override both URLs and the broker address.
+`identity.dev.pki.wendy.sh`; the CLI derives the sibling CSR and EST CA-discovery
+endpoints. Self-hosted deployments can override these URLs and the broker address.
 
 The device generates its P-256 private key, creates a CSR, and redeems a single-use
 Tier C token directly at pki-core over HTTPS. Cloud authorizes that token using the
@@ -25,19 +25,18 @@ idf.py -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;boards/esp32c6_cloud.defaults' 
 idf.py build
 ```
 
-Provision trust during USB enrollment using three PEM CA bundles obtained through
-an authenticated PKI administration process. The device bundle anchors pki-core
-identities. The TSA bundle includes the pinned TSA root and issuer chain needed
-to validate the timestamp signer. The HTTPS bundle trusts the CSR endpoint,
-signed-time endpoint, and broker server. Hostname checks remain mandatory.
-A certificate returned by an enrollment or timestamp endpoint does not become a
-trust anchor. Do not use the repository's disposable fixture roots for deployment.
+The companion CLI discovers device CA roots over HTTPS verified by the enrolling
+computer and provisions them over USB, together with verified HTTPS trust anchors.
+Use `--ca-certs-url` for a custom CA-discovery endpoint. No deployment-specific
+roots need embedding in the firmware. Private HTTPS CAs must already be trusted
+by the computer, or supplied explicitly with `--device-roots` and `--https-roots`.
+The HTTPS bundle must cover the broker too if it uses a different CA.
 
-Build-pinned trust remains available for existing deployments. Set
-`CONFIG_WENDY_PKI_DEVICE_ROOTS`, `CONFIG_WENDY_PKI_TSA_ROOTS`, and
-`CONFIG_WENDY_PKI_HTTPS_ROOTS` to absolute PEM paths in `pki-trust.defaults`, then
-append that file to `SDKCONFIG_DEFAULTS`. Omitting the USB bundle flags uses those
-embedded roots. Without either source of trust, the device refuses to connect.
+Roughtime is the default time source and requires two agreeing pinned servers.
+RFC 3161 remains available with `--time-url` and explicit `--tsa-roots` as well as
+the device and HTTPS bundles. Optional build-time bundles remain supported by the
+firmware, but the CLI provisions trust at enrollment by default. Without trust,
+the device refuses to connect. Never use disposable fixture roots for deployment.
 
 This layout adds a 192 KiB `wendy_pki` NVS partition and an 80 KiB configuration
 partition. It changes the WASM/configuration layout and is not an OTA-compatible
@@ -61,24 +60,18 @@ wendy cloud login --email YOU@YOUR_ORGANIZATION
 wendy cloud enroll-device \
   --device wendy-lite:/dev/cu.usbmodemXXXX \
   --name lite-desk \
-  --broker-host YOUR_WENDYCOM_BROKER_HOST \
-  --broker-port 5055 \
-  --device-roots /path/to/device-ca-bundle.pem \
-  --tsa-roots /path/to/tsa-ca-bundle.pem \
-  --https-roots /path/to/server-ca-bundle.pem
+  --broker-port 5055
 wendy cloud discover
 ```
 
-The broker hostname is explicit because the Cloud API endpoint does not identify
-a WendyCom listener. Set `--csr-url https://csr.example/v1/TENANT_UUID` and
-`--time-url https://codesign.example/v1/time` for custom PKI routing.
+The broker hostname defaults to the devices hostname used by wendy-agent for the
+selected Cloud session. Override it with `--broker-host`. Set
+`--csr-url https://csr.example/v1/TENANT_UUID` for custom CSR routing and
+`--time-url https://codesign.example/v1/time` to use RFC 3161.
 
-All three root flags must be provided together. They explicitly authorize the
-CLI to provision those bundles over the physical USB link. The CLI checks that
-the files contain currently valid CA certificates and checks firmware support
-before reserving an asset. It also uses the HTTPS bundle to validate the signed-time
-endpoint. The firmware accepts at most eight CA certificates and 16 KiB per
-bundle; signed time plus all bundles must fit within 64 KiB.
+The CLI validates discovered or supplied roots and checks USB trust support
+before reserving an asset. The firmware accepts at most eight CA certificates
+and 16 KiB per bundle; signed time plus all bundles must fit within 64 KiB.
 
 The bundles persist with the enrollment configuration in the `wendy_conf` flash
 partition and survive reboot. USB-provisioned trust takes precedence over embedded
@@ -88,14 +81,12 @@ Wi-Fi-only configuration updates preserve it; replacing or erasing the entire
 configuration removes it. Existing enrolled boards require operator recovery to
 change enrollment through the CLI. This does not add remote trust rotation.
 
-The command obtains a device-generated nonce and a signed time response before
-minting the credential. It sends configuration through physical USB, reboots the
-board, and waits up to two minutes for certificate installation. The board checks
-the seed against its configured TSA bundle using the signed timestamp for certificate
-validity checks, so verification works even when the boot clock is still in 1970.
-It retrieves fresh nonce-bound signed time and only then redeems its token.
-Issued certificates must match the device's key
-and exact tenant/device SPIFFE URI and allow both TLS client and server use.
+The command obtains a device-generated nonce and relays signed Roughtime replies
+before minting the credential. The board verifies their signatures and consensus.
+It receives configuration through USB, reboots, refreshes verified time, and
+obtains its certificate. The CLI waits up to two minutes for installation.
+The firmware retains an unverified issuance response separately from its usable
+identity so verification can retry without spending the one-use token again.
 
 An installed certificate is distinct from broker presence. The broker establishes
 presence after mTLS authentication, asset lookup, revocation checks, and the
