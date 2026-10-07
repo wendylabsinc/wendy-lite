@@ -8,7 +8,7 @@ import (
 	"time"
 
 	wendypb "github.com/wendylabsinc/wendy/go/proto/gen/litepb"
-	"github.com/wendylabsinc/wendy/go/proto/gen/tunnelpb"
+	"github.com/wendylabsinc/wendy/go/proto/gen/wcomrelaypb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -21,7 +21,7 @@ import (
 
 type testEnv struct {
 	broker *Broker
-	client tunnelpb.WendyComTunnelBrokerServiceClient
+	client wcomrelaypb.WendyComRelayServiceClient
 	device net.Conn // fake-device side of the pipe
 	dev    *deviceConn
 }
@@ -37,7 +37,7 @@ func newTestEnv(t *testing.T) *testEnv {
 
 	ln := bufconn.Listen(1 << 20)
 	s := grpc.NewServer()
-	tunnelpb.RegisterWendyComTunnelBrokerServiceServer(s, NewTunnelServer(b))
+	wcomrelaypb.RegisterWendyComRelayServiceServer(s, NewTunnelServer(b))
 	go s.Serve(ln)
 	t.Cleanup(s.Stop)
 
@@ -53,7 +53,7 @@ func newTestEnv(t *testing.T) *testEnv {
 
 	return &testEnv{
 		broker: b,
-		client: tunnelpb.NewWendyComTunnelBrokerServiceClient(conn),
+		client: wcomrelaypb.NewWendyComRelayServiceClient(conn),
 		device: devSide,
 		dev:    d,
 	}
@@ -138,15 +138,15 @@ func errorStateBody(t *testing.T, reason wendypb.WendyComChannelErrorReason) []b
 // sendTunnelOpen starts a stream, sends the tunnel Open, and returns the
 // stream plus the channel on which the device received OpenChannel. It does
 // NOT send the device's ChannelState reply — the broker is still gating.
-func sendTunnelOpen(t *testing.T, env *testEnv, ctx context.Context) (tunnelpb.WendyComTunnelBrokerService_WendyComTunnelClient, uint8) {
+func sendTunnelOpen(t *testing.T, env *testEnv, ctx context.Context) (wcomrelaypb.WendyComRelayService_WendyComRelayClient, uint8) {
 	t.Helper()
-	stream, err := env.client.WendyComTunnel(ctx)
+	stream, err := env.client.WendyComRelay(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = stream.Send(&tunnelpb.WendyComTunnelMessage{
-		Msg: &tunnelpb.WendyComTunnelMessage_Open{
-			Open: &tunnelpb.WendyComTunnelOpen{AssetId: hardcodedAssetID},
+	err = stream.Send(&wcomrelaypb.WendyComRelayMessage{
+		Msg: &wcomrelaypb.WendyComRelayMessage_Open{
+			Open: &wcomrelaypb.WendyComRelayOpen{AssetId: hardcodedAssetID},
 		},
 	})
 	if err != nil {
@@ -162,7 +162,7 @@ func sendTunnelOpen(t *testing.T, env *testEnv, ctx context.Context) (tunnelpb.W
 	return stream, h.Channel
 }
 
-func openTunnel(t *testing.T, env *testEnv, ctx context.Context) (tunnelpb.WendyComTunnelBrokerService_WendyComTunnelClient, uint8) {
+func openTunnel(t *testing.T, env *testEnv, ctx context.Context) (wcomrelaypb.WendyComRelayService_WendyComRelayClient, uint8) {
 	t.Helper()
 	stream, ch := sendTunnelOpen(t, env, ctx)
 	writeFrame(t, env.device, ch, openAckBody(t)) // device confirms the channel
@@ -180,10 +180,10 @@ func drainCloseChannel(t *testing.T, env *testEnv, ch uint8) {
 	}
 }
 
-func payloadMsg(b []byte) *tunnelpb.WendyComTunnelMessage {
-	return &tunnelpb.WendyComTunnelMessage{
-		Msg: &tunnelpb.WendyComTunnelMessage_Payload{
-			Payload: &tunnelpb.WendyComTunnelPayload{Bytes: b},
+func payloadMsg(b []byte) *wcomrelaypb.WendyComRelayMessage {
+	return &wcomrelaypb.WendyComRelayMessage{
+		Msg: &wcomrelaypb.WendyComRelayMessage_Payload{
+			Payload: &wcomrelaypb.WendyComRelayPayload{Bytes: b},
 		},
 	}
 }
@@ -262,25 +262,36 @@ func TestTwoTunnelsDistinctChannels(t *testing.T) {
 	}
 }
 
-func TestOpenUnknownAsset(t *testing.T) {
-	env := newTestEnv(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+func TestOpenFailures(t *testing.T) {
+	for _, tc := range []struct {
+		assetID string
+		want    codes.Code
+	}{
+		{"00000000-0000-0000-0000-000000000999", codes.NotFound},
+		{"23", codes.InvalidArgument},
+		{"", codes.InvalidArgument},
+	} {
+		t.Run(tc.assetID, func(t *testing.T) {
+			env := newTestEnv(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
 
-	stream, err := env.client.WendyComTunnel(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = stream.Send(&tunnelpb.WendyComTunnelMessage{
-		Msg: &tunnelpb.WendyComTunnelMessage_Open{
-			Open: &tunnelpb.WendyComTunnelOpen{AssetId: 999},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = stream.Recv(); status.Code(err) != codes.NotFound {
-		t.Fatalf("expected NotFound, got %v", err)
+			stream, err := env.client.WendyComRelay(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = stream.Send(&wcomrelaypb.WendyComRelayMessage{
+				Msg: &wcomrelaypb.WendyComRelayMessage_Open{
+					Open: &wcomrelaypb.WendyComRelayOpen{AssetId: tc.assetID},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = stream.Recv(); status.Code(err) != tc.want {
+				t.Fatalf("expected %v, got %v", tc.want, err)
+			}
+		})
 	}
 }
 
@@ -289,7 +300,7 @@ func TestFirstMessageMustBeOpen(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	stream, err := env.client.WendyComTunnel(ctx)
+	stream, err := env.client.WendyComRelay(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

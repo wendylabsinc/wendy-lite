@@ -5,8 +5,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	wendypb "github.com/wendylabsinc/wendy/go/proto/gen/litepb"
-	"github.com/wendylabsinc/wendy/go/proto/gen/tunnelpb"
+	"github.com/wendylabsinc/wendy/go/proto/gen/wcomrelaypb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -17,11 +18,11 @@ import (
 const openAckTimeout = 10 * time.Second
 
 type tunnelServer struct {
-	tunnelpb.UnimplementedWendyComTunnelBrokerServiceServer
+	wcomrelaypb.UnimplementedWendyComRelayServiceServer
 	broker *Broker
 }
 
-func NewTunnelServer(b *Broker) tunnelpb.WendyComTunnelBrokerServiceServer {
+func NewTunnelServer(b *Broker) wcomrelaypb.WendyComRelayServiceServer {
 	return &tunnelServer{broker: b}
 }
 
@@ -72,7 +73,7 @@ func channelState(body []byte) *wendypb.WendyComChannelState {
 	return msg.GetService().GetChannelState()
 }
 
-func (s *tunnelServer) WendyComTunnel(stream tunnelpb.WendyComTunnelBrokerService_WendyComTunnelServer) error {
+func (s *tunnelServer) WendyComRelay(stream wcomrelaypb.WendyComRelayService_WendyComRelayServer) error {
 	first, err := stream.Recv()
 	if err != nil {
 		return err
@@ -82,9 +83,15 @@ func (s *tunnelServer) WendyComTunnel(stream tunnelpb.WendyComTunnelBrokerServic
 		return status.Error(codes.InvalidArgument, "first message must be open")
 	}
 
-	dev := s.broker.device(open.AssetId)
+	// The canonical form keys the registry, so any spelling of the UUID
+	// (e.g. Swift's uppercase uuidString) reaches the same device.
+	assetID, err := uuid.Parse(open.AssetId)
+	if err != nil {
+		return status.Error(codes.InvalidArgument, "asset_id must be a UUID")
+	}
+	dev := s.broker.device(assetID.String())
 	if dev == nil {
-		return status.Errorf(codes.NotFound, "device %d not connected", open.AssetId)
+		return status.Errorf(codes.NotFound, "device %s not connected", assetID)
 	}
 	ch, err := dev.alloc.allocate()
 	if err != nil {
@@ -100,14 +107,14 @@ func (s *tunnelServer) WendyComTunnel(stream tunnelpb.WendyComTunnelBrokerServic
 		dev.alloc.release(ch)
 		return status.Error(codes.Unavailable, err.Error())
 	}
-	log.Printf("device %d: tunnel opened on channel %d", dev.assetID, ch)
+	log.Printf("device %s: tunnel opened on channel %d", dev.assetID, ch)
 
 	defer func() {
 		t.closeDone()
 		dev.removeTunnel(ch, t)
 		// best effort: the device may already be gone
 		if err := dev.writeFrame(ch, closeChannelBody); err == nil {
-			log.Printf("device %d: tunnel closed on channel %d", dev.assetID, ch)
+			log.Printf("device %s: tunnel closed on channel %d", dev.assetID, ch)
 		}
 		dev.alloc.release(ch) // quarantined for a minute
 	}()
@@ -128,7 +135,7 @@ waitAck:
 		case body := <-t.fromDevice:
 			st := channelState(body)
 			if st == nil {
-				log.Printf("device %d: dropping frame on channel %d received before open ack", dev.assetID, ch)
+				log.Printf("device %s: dropping frame on channel %d received before open ack", dev.assetID, ch)
 				continue
 			}
 			if st.GetOpen() != nil {
@@ -185,7 +192,7 @@ waitAck:
 			// broker's business, the gRPC client never sees them.
 			if st := channelState(body); st != nil {
 				if st.GetClose() != nil {
-					log.Printf("device %d: channel %d closed by device", dev.assetID, ch)
+					log.Printf("device %s: channel %d closed by device", dev.assetID, ch)
 					return nil
 				}
 				if e := st.GetError(); e != nil {
@@ -193,9 +200,9 @@ waitAck:
 				}
 				continue
 			}
-			err := stream.Send(&tunnelpb.WendyComTunnelMessage{
-				Msg: &tunnelpb.WendyComTunnelMessage_Payload{
-					Payload: &tunnelpb.WendyComTunnelPayload{Bytes: body},
+			err := stream.Send(&wcomrelaypb.WendyComRelayMessage{
+				Msg: &wcomrelaypb.WendyComRelayMessage_Payload{
+					Payload: &wcomrelaypb.WendyComRelayPayload{Bytes: body},
 				},
 			})
 			if err != nil {

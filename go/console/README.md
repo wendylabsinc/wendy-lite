@@ -18,7 +18,7 @@ console <target>
 | `ble://<name>` | BLE — match the advertised name |
 | `ble://<address>` | BLE — a CoreBluetooth peripheral UUID |
 | `ble://<target>?psm=129` | BLE — override the L2CAP PSM instead of reading it over GATT |
-| `cloud://host:port[/asset-id]` | Through a tinycloud tunnel broker |
+| `cloud://host:port[/asset-uuid]` | Through a cloud tunnel broker (tinycloud or the cloud's dev tunnel); the asset defaults to tinycloud's `00000000-0000-0000-0000-000000000023` |
 
 BLE carries the same session as the other transports — WendyCom over mTLS, with the
 device as peripheral. It is the only one that works on a board with no Wi-Fi

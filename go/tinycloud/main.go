@@ -1,6 +1,6 @@
 // tinycloud is a development tunnel-broker server: devices (wendy_cloud)
 // dial in on the device port, gRPC tunnel clients connect on the gRPC port
-// and reach a device through WendyComTunnelBrokerService.WendyComTunnel. TLS only —
+// and reach a device through WendyComRelayService.WendyComRelay. TLS only —
 // no authentication, no certificate checks.
 package main
 
@@ -10,7 +10,7 @@ import (
 	"log"
 	"net"
 
-	"github.com/wendylabsinc/wendy/go/proto/gen/tunnelpb"
+	"github.com/wendylabsinc/wendy/go/proto/gen/wcomrelaypb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
@@ -51,7 +51,7 @@ func main() {
 		Certificates: []tls.Certificate{cert},
 		MinVersion:   tls.VersionTLS12,
 	})))
-	tunnelpb.RegisterWendyComTunnelBrokerServiceServer(s, broker.NewTunnelServer(b))
+	wcomrelaypb.RegisterWendyComRelayServiceServer(s, broker.NewTunnelServer(b))
 	log.Printf("gRPC listener on %s", *grpcAddr)
 	log.Fatal(s.Serve(grpcLn))
 }

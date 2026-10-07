@@ -25,6 +25,10 @@ import (
 // again, and missing it costs a confusing "no device found".
 const bleScanDuration = 4 * time.Second
 
+// defaultCloudAssetID is tinycloud's hardcoded device asset UUID, used when a
+// cloud:// target names no asset.
+const defaultCloudAssetID = "00000000-0000-0000-0000-000000000023"
+
 func run(target string) error {
 	client := liteclient.NewWendyLiteClient()
 	var err error
@@ -40,7 +44,7 @@ func run(target string) error {
 		}
 	case strings.HasPrefix(target, "cloud://"):
 		var addr string
-		var assetID uint32
+		var assetID string
 		addr, assetID, err = parseCloudTarget(target)
 		if err == nil {
 			err = client.ConnectViaCloudInsecure(addr, assetID)
@@ -481,28 +485,24 @@ func looksLikeBLEAddress(s string) bool {
 	return len(s) == 36 && strings.Count(s, "-") == 4
 }
 
-// parseCloudTarget splits cloud://host:port[/asset-id] into the tinycloud
-// gRPC address and the target asset id (default 23).
-func parseCloudTarget(target string) (string, uint32, error) {
+// parseCloudTarget splits cloud://host:port[/asset-uuid] into the tunnel
+// broker's gRPC address and the target asset UUID (default
+// defaultCloudAssetID). The broker validates the UUID.
+func parseCloudTarget(target string) (string, string, error) {
 	rest := strings.TrimPrefix(target, "cloud://")
-	addr, assetPart, hasAsset := strings.Cut(rest, "/")
+	addr, assetID, _ := strings.Cut(rest, "/")
 	if addr == "" {
-		return "", 0, fmt.Errorf("usage: cloud://host:port[/asset-id]")
+		return "", "", fmt.Errorf("usage: cloud://host:port[/asset-uuid]")
 	}
-	assetID := uint64(23)
-	if hasAsset && assetPart != "" {
-		var err error
-		assetID, err = strconv.ParseUint(assetPart, 10, 32)
-		if err != nil {
-			return "", 0, fmt.Errorf("bad asset id %q: %w", assetPart, err)
-		}
+	if assetID == "" {
+		assetID = defaultCloudAssetID
 	}
-	return addr, uint32(assetID), nil
+	return addr, assetID, nil
 }
 
 func main() {
 	if len(os.Args) != 2 {
-		fmt.Fprintf(os.Stderr, "usage: %s host:port | /dev/ttyXXX | ble://[name-or-address] | cloud://host:port[/asset-id]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "usage: %s host:port | /dev/ttyXXX | ble://[name-or-address] | cloud://host:port[/asset-uuid]\n", os.Args[0])
 		os.Exit(1)
 	}
 	if err := run(os.Args[1]); err != nil {

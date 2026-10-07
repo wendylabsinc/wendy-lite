@@ -14,7 +14,7 @@ import (
 // (allocator + routing table) lives and dies with the link: a reconnect
 // starts fresh.
 type deviceConn struct {
-	assetID uint32
+	assetID string
 	conn    net.Conn
 	broker  *Broker
 	alloc   *channelAllocator
@@ -45,18 +45,18 @@ func (d *deviceConn) readLoop() {
 	hdr := make([]byte, wcomframe.HeaderSize)
 	for {
 		if _, err := io.ReadFull(d.conn, hdr); err != nil {
-			log.Printf("device %d: read: %v", d.assetID, err)
+			log.Printf("device %s: read: %v", d.assetID, err)
 			return
 		}
 		h, err := wcomframe.DecodeHeader(hdr)
 		if err != nil {
 			// link-level corruption: no way to resync, drop the connection
-			log.Printf("device %d: %v", d.assetID, err)
+			log.Printf("device %s: %v", d.assetID, err)
 			return
 		}
 		body := make([]byte, h.BodyLen)
 		if _, err := io.ReadFull(d.conn, body); err != nil {
-			log.Printf("device %d: read body: %v", d.assetID, err)
+			log.Printf("device %s: read body: %v", d.assetID, err)
 			return
 		}
 
@@ -65,7 +65,7 @@ func (d *deviceConn) readLoop() {
 		d.mu.Unlock()
 		if t == nil {
 			// includes channel 0 (no server-side peer) and quarantined ids
-			log.Printf("device %d: dropping frame on unknown channel %d (%d bytes)",
+			log.Printf("device %s: dropping frame on unknown channel %d (%d bytes)",
 				d.assetID, h.Channel, len(body))
 			continue
 		}
@@ -83,7 +83,7 @@ func (d *deviceConn) addTunnel(t *tunnel) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.closed {
-		return fmt.Errorf("device %d disconnected", d.assetID)
+		return fmt.Errorf("device %s disconnected", d.assetID)
 	}
 	d.tunnels[t.channel] = t
 	return nil
@@ -117,5 +117,5 @@ func (d *deviceConn) shutdown() {
 	for _, t := range tunnels {
 		t.closeDone()
 	}
-	log.Printf("device %d disconnected", d.assetID)
+	log.Printf("device %s disconnected", d.assetID)
 }

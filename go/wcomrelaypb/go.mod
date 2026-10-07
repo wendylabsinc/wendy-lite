@@ -1,4 +1,4 @@
-module github.com/wendylabsinc/wendy/go/proto/gen/tunnelpb
+module github.com/wendylabsinc/wendy/go/proto/gen/wcomrelaypb
 
 go 1.26.4
 

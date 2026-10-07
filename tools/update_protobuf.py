@@ -94,11 +94,11 @@ GO_TARGETS = [
     ),
     (
         [
-            "go/proto/wendy_com_tunnel_msg.proto",
-            "go/proto/wendy_com_tunnel_service.proto",
+            "go/proto/wendy_com_relay_msg.proto",
+            "go/proto/wendy_com_relay_service.proto",
         ],
-        "go/tunnelpb",
-        "github.com/wendylabsinc/wendy/go/proto/gen/tunnelpb",
+        "go/wcomrelaypb",
+        "github.com/wendylabsinc/wendy/go/proto/gen/wcomrelaypb",
         True,
         {},
     ),
