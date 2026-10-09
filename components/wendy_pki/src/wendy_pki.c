@@ -144,22 +144,23 @@ done:
     nvs_close(h);
     return result;
 }
-esp_err_t wendy_pki_sync_time(unsigned server, const uint8_t *reply, size_t size,
+esp_err_t wendy_pki_sync_time(const char *server, const uint8_t *reply, size_t size,
                               bool *synchronized, int64_t *seconds)
 {
     *synchronized = false; *seconds = 0;
-    if (server >= WENDY_RT_SERVERS) return ESP_ERR_INVALID_ARG;
+    int index = wendy_rt_find_server(server);
+    if (index < 0) return ESP_ERR_INVALID_ARG;
     pthread_once(&crypto_once, init_crypto);
     if (!crypto_ok) return ESP_FAIL;
     pthread_mutex_lock(&clock_mutex);
     int64_t now = esp_timer_get_time();
     esp_err_t result = ESP_FAIL;
-    if (!relay_active || now - relay_started > 30000000 || (relay_mask & (1u << server))) goto done;
+    if (!relay_active || now - relay_started > 30000000 || (relay_mask & (1u << index))) goto done;
     struct wendy_rt_interval interval;
-    if (wendy_rt_verify(reply, size, relay_nonce, wendy_rt_servers[server].key, &interval)) goto done;
+    if (wendy_rt_verify(reply, size, relay_nonce, wendy_rt_servers[index].key, &interval)) goto done;
     interval.lower -= now; interval.upper -= relay_started;
-    relay_evidence[server] = interval;
-    relay_mask |= 1u << server;
+    relay_evidence[index] = interval;
+    relay_mask |= 1u << index;
     result = ESP_OK;
     if (!wendy_rt_consensus(relay_evidence, relay_mask, &interval)) {
         now = esp_timer_get_time(); interval.lower += now; interval.upper += now;

@@ -1,6 +1,7 @@
 #include <stdbool.h>
 #include <assert.h>
 #include <limits.h>
+#include <string.h>
 #include <arpa/inet.h>
 #include "wendy_com_agent.h"
 #include "wendy_com_link.h"
@@ -18,6 +19,10 @@
 #define _PROTOCOL_VERSION_MINOR 0
 
 #define _CHANNELS_PER_LINK_COUNT 4
+
+// Sync-time server buffer: "hostname:port" plus NUL. A longer server is
+// rejected, never truncated.
+#define _SYNC_TIME_SERVER_SIZE 128
 
 
 //--- types ---//
@@ -141,6 +146,18 @@ static bool _capture_span(pb_istream_t *stream, const pb_field_t *field, void **
     out->data = stream->state;
     out->size = stream->bytes_left;
     return pb_read(stream, NULL, stream->bytes_left);
+}
+
+// Copy a captured span into out as a NUL-terminated string. A span that
+// doesn't fit is refused rather than truncated.
+static bool _span_to_string(const struct _span *span, char *out, size_t size)
+{
+    if (span->size >= size)
+        return false;
+    if (span->size)
+        memcpy(out, span->data, span->size);
+    out[span->size] = '\0';
+    return true;
 }
 
 static void _done_sending_msg(int link_id, const struct wcom_tx_chunk *chunk, bool success)
@@ -318,7 +335,8 @@ static void _process_service_message(struct _agent_link *link, const WendyComSer
     }
 }
 
-static void _process_command(struct _agent_link *link, const WendyComCommand *cmd, const struct _span *data_span)
+static void _process_command(struct _agent_link *link, const WendyComCommand *cmd, const struct _span *data_span,
+                             const struct _span *server_span)
 {
     struct _agent_channel *channel = _find_channel(link, link->rx_channel);
     if (!channel) {
@@ -361,13 +379,16 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
                          &resp->data.enrollment_challenge.enrolled) == ESP_OK
             ? WendyComResult_WENDY_COM_RESULT_OK : WendyComResult_WENDY_COM_RESULT_BAD_STATE;
         break;
-    case WendyComCommand_sync_time_tag:
+    case WendyComCommand_sync_time_tag: {
+        char server[_SYNC_TIME_SERVER_SIZE];
         resp->which_data = WendyComResponse_sync_time_tag;
-        resp->result = wendy_pki_sync_time(cmd->params.sync_time.server_index,
-            data_span->data, data_span->size, &resp->data.sync_time.synchronized,
-            &resp->data.sync_time.unix_seconds) == ESP_OK
+        resp->result = _span_to_string(server_span, server, sizeof server) &&
+                       wendy_pki_sync_time(server, data_span->data, data_span->size,
+                                           &resp->data.sync_time.synchronized,
+                                           &resp->data.sync_time.unix_seconds) == ESP_OK
             ? WendyComResult_WENDY_COM_RESULT_OK : WendyComResult_WENDY_COM_RESULT_BAD_STATE;
         break;
+    }
     case WendyComCommand_ping_tag:
         resp->result = wcom_cmd_ping();
         break;
@@ -478,6 +499,7 @@ static void _process_event(struct _agent_link *link, const WendyComEvent *evt, c
 static void _process_message(struct _agent_link *link, const uint8_t *body, size_t size)
 {
     struct _span data_span = {NULL, 0};
+    struct _span server_span = {NULL, 0};
     WendyComMessage req = WendyComMessage_init_zero;
     // Pre-set the oneof discriminators along the app_push_data path so nanopb
     // preserves our callback when it encounters those fields: it only resets
@@ -513,12 +535,16 @@ static void _process_message(struct _agent_link *link, const uint8_t *body, size
         }
     }
 
+    // The server is captured as a span too, so that an oversized one gets an
+    // error reply instead of failing the decode, which would close the link.
     if (req.which_msg == WendyComMessage_command_tag &&
         req.msg.command.which_params == WendyComCommand_sync_time_tag) {
         data_span = (struct _span){NULL, 0};
         req = (WendyComMessage)WendyComMessage_init_zero;
         req.which_msg = WendyComMessage_command_tag;
         req.msg.command.which_params = WendyComCommand_sync_time_tag;
+        req.msg.command.params.sync_time.server.funcs.decode = _capture_span;
+        req.msg.command.params.sync_time.server.arg = &server_span;
         req.msg.command.params.sync_time.response.funcs.decode = _capture_span;
         req.msg.command.params.sync_time.response.arg = &data_span;
         stream = pb_istream_from_buffer(body, size);
@@ -556,7 +582,7 @@ static void _process_message(struct _agent_link *link, const uint8_t *body, size
             wcom_close(link->link_id);
             return;
         }
-        _process_command(link, &req.msg.command, &data_span);
+        _process_command(link, &req.msg.command, &data_span, &server_span);
         break;
     case WendyComMessage_service_tag:
         _process_service_message(link, &req.msg.service);

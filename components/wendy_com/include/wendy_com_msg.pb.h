@@ -150,7 +150,7 @@ typedef struct _WendyComEnrollmentChallenge {
 
 /* USB relay of one pinned server's reply to the current device challenge. */
 typedef struct _WendyComSyncTimeParams {
-    uint32_t server_index;
+    pb_callback_t server; /* pinned server that produced the reply, as "hostname:port" */
     pb_callback_t response;
 } WendyComSyncTimeParams;
 
@@ -404,7 +404,7 @@ extern "C" {
 #define WendyComGetDeviceInfoParams_init_default {0}
 #define WendyComEnrollmentChallengeParams_init_default {0}
 #define WendyComEnrollmentChallenge_init_default {"", 0, 0, 0, 0, 0}
-#define WendyComSyncTimeParams_init_default      {0, {{NULL}, NULL}}
+#define WendyComSyncTimeParams_init_default      {{{NULL}, NULL}, {{NULL}, NULL}}
 #define WendyComSyncTimeResult_init_default      {0, 0}
 #define WendyComConsoleAttachParams_init_default {0, 0, 0}
 #define WendyComConsoleDetachParams_init_default {0}
@@ -440,7 +440,7 @@ extern "C" {
 #define WendyComGetDeviceInfoParams_init_zero    {0}
 #define WendyComEnrollmentChallengeParams_init_zero {0}
 #define WendyComEnrollmentChallenge_init_zero    {"", 0, 0, 0, 0, 0}
-#define WendyComSyncTimeParams_init_zero         {0, {{NULL}, NULL}}
+#define WendyComSyncTimeParams_init_zero         {{{NULL}, NULL}, {{NULL}, NULL}}
 #define WendyComSyncTimeResult_init_zero         {0, 0}
 #define WendyComConsoleAttachParams_init_zero    {0, 0, 0}
 #define WendyComConsoleDetachParams_init_zero    {0}
@@ -485,7 +485,7 @@ extern "C" {
 #define WendyComEnrollmentChallenge_roughtime_supported_tag 4
 #define WendyComEnrollmentChallenge_builtin_roots_ready_tag 5
 #define WendyComEnrollmentChallenge_builtin_tsa_roots_ready_tag 6
-#define WendyComSyncTimeParams_server_index_tag  1
+#define WendyComSyncTimeParams_server_tag        1
 #define WendyComSyncTimeParams_response_tag      2
 #define WendyComSyncTimeResult_synchronized_tag  1
 #define WendyComSyncTimeResult_unix_seconds_tag  2
@@ -650,7 +650,7 @@ X(a, STATIC,   SINGULAR, BOOL,     builtin_tsa_roots_ready,   6)
 #define WendyComEnrollmentChallenge_DEFAULT NULL
 
 #define WendyComSyncTimeParams_FIELDLIST(X, a) \
-X(a, STATIC,   SINGULAR, UINT32,   server_index,      1) \
+X(a, CALLBACK, SINGULAR, STRING,   server,            1) \
 X(a, CALLBACK, SINGULAR, BYTES,    response,          2)
 #define WendyComSyncTimeParams_CALLBACK pb_default_field_callback
 #define WendyComSyncTimeParams_DEFAULT NULL

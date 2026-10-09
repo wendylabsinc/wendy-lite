@@ -4,7 +4,7 @@ void wendy_pki_builtin_trust(bool *ready, bool *tsa_ready)
     *ready = false;
     *tsa_ready = false;
 }
-esp_err_t wendy_pki_sync_time(unsigned server, const uint8_t *reply, size_t size,
+esp_err_t wendy_pki_sync_time(const char *server, const uint8_t *reply, size_t size,
                             bool *synchronized, int64_t *seconds)
 {
     (void)server; (void)reply; (void)size;
