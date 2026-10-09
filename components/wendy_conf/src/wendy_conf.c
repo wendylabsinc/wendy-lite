@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include <stdio.h>
+#include <pthread.h>
 
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -46,11 +47,14 @@ struct conf_cache {
     struct wendy_conf_span      key_der;
     struct wendy_conf_span      cert_der;
     struct wendy_conf_span      chain_der;
+    struct wendy_conf_span      enrollment_time;
+    struct wendy_conf_span      device_roots, tsa_roots, https_roots;
 };
 
 
 //--- globals ---///
 
+static pthread_mutex_t s_cache_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct conf_cache s_cache = CONF_CACHE_INIT;
 
 /* 12 hex digits plus the terminator. Empty until built. */
@@ -207,6 +211,14 @@ static void _load_conf(void)
     s_cache.conf.provisioning.chain.funcs.decode = _capture_span;
     s_cache.conf.provisioning.chain.arg          = &s_cache.chain_der;
 
+    s_cache.conf.enrollment.signed_time.funcs.decode = _capture_span;
+    s_cache.conf.enrollment.signed_time.arg = &s_cache.enrollment_time;
+    s_cache.conf.enrollment.device_roots.funcs.decode = _capture_span;
+    s_cache.conf.enrollment.device_roots.arg = &s_cache.device_roots;
+    s_cache.conf.enrollment.tsa_roots.funcs.decode = _capture_span;
+    s_cache.conf.enrollment.tsa_roots.arg = &s_cache.tsa_roots;
+    s_cache.conf.enrollment.https_roots.funcs.decode = _capture_span;
+    s_cache.conf.enrollment.https_roots.arg = &s_cache.https_roots;
     pb_istream_t stream = pb_istream_from_buffer(data + HEADER_LEN, pb_size);
     bool ok = pb_decode_noinit(&stream, WendyConf_fields, &s_cache.conf);
 
@@ -296,18 +308,34 @@ static bool _copy_kept_fields(const uint8_t *in_data, size_t in_size,
     return true;
 }
 
-esp_err_t wendy_conf_write(const void *pb_data, size_t pb_size, enum wendy_conf_write_mode mode)
+static esp_err_t _write_conf(const void *pb_data, size_t pb_size, enum wendy_conf_write_mode mode)
 {
     if (!pb_data || pb_size == 0)
         return ESP_ERR_INVALID_ARG;
 
-    // Validate that the blob decodes as a WendyConf message.  Callback fields
-    // with no decode function are simply skipped, so no callbacks are needed.
-    WendyConf    tmp    = WendyConf_init_zero;
+    // Check enrollment sizes and authorization before replacing persisted data.
+    WendyConf tmp = WendyConf_init_zero;
+    struct wendy_conf_span spans[4] = {0};
+    tmp.enrollment.signed_time = (pb_callback_t){.funcs.decode = _capture_span, .arg = &spans[0]};
+    tmp.enrollment.device_roots = (pb_callback_t){.funcs.decode = _capture_span, .arg = &spans[1]};
+    tmp.enrollment.tsa_roots = (pb_callback_t){.funcs.decode = _capture_span, .arg = &spans[2]};
+    tmp.enrollment.https_roots = (pb_callback_t){.funcs.decode = _capture_span, .arg = &spans[3]};
     pb_istream_t stream = pb_istream_from_buffer(pb_data, pb_size);
-    if (!pb_decode(&stream, WendyConf_fields, &tmp)) {
+    if (!pb_decode_noinit(&stream, WendyConf_fields, &tmp)) {
         ESP_LOGE(TAG, "invalid conf: %s", PB_GET_ERROR(&stream));
         return ESP_ERR_INVALID_ARG;
+    }
+
+    size_t enrollment_size = 0;
+    for (size_t i = 0; i < 4; i++) {
+        size_t limit = i ? WENDY_CONF_MAX_TRUST_BUNDLE : WENDY_CONF_MAX_ENROLLMENT_DATA;
+        if (spans[i].size > limit ||
+            spans[i].size > WENDY_CONF_MAX_ENROLLMENT_DATA - enrollment_size)
+            return ESP_ERR_INVALID_SIZE;
+        enrollment_size += spans[i].size;
+        bool optional_tsa = i == 2 && !strcmp(tmp.enrollment.time_url, "roughtime") && !spans[i].size;
+        if (i && !optional_tsa && ((spans[i].size != 0) != tmp.enrollment.provision_trust))
+            return ESP_ERR_INVALID_ARG;
     }
 
     const esp_partition_t *part = esp_partition_find_first(
@@ -502,4 +530,65 @@ void wendy_conf_copy_span(char *dest, size_t dest_size, struct wendy_conf_span s
     size_t copy_size = src.size < dest_size - 1 ? src.size : dest_size - 1;
     memcpy(dest, src.data, copy_size);
     dest[copy_size] = '\0';
+}
+
+esp_err_t wendy_conf_write(const void *data, size_t size, enum wendy_conf_write_mode mode)
+{
+    pthread_mutex_lock(&s_cache_lock);
+    esp_err_t result = _write_conf(data, size, mode);
+    pthread_mutex_unlock(&s_cache_lock);
+    return result;
+}
+
+esp_err_t wendy_conf_copy_enrollment(WendyConfEnrollment *config,
+                                     struct wendy_conf_enrollment_data *data)
+{
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    memset(data, 0, sizeof *data);
+    pthread_mutex_lock(&s_cache_lock);
+    if (s_cache.valid && s_cache.conf.has_enrollment) {
+        *config = s_cache.conf.enrollment;
+        memset(&config->signed_time, 0, sizeof config->signed_time);
+        memset(&config->device_roots, 0, sizeof config->device_roots);
+        memset(&config->tsa_roots, 0, sizeof config->tsa_roots);
+        memset(&config->https_roots, 0, sizeof config->https_roots);
+        struct wendy_conf_span spans[] = {s_cache.enrollment_time, s_cache.device_roots,
+                                         s_cache.tsa_roots, s_cache.https_roots};
+        struct wendy_conf_span *copies[] = {&data->signed_time, &data->device_roots,
+                                            &data->tsa_roots, &data->https_roots};
+        size_t total = 0;
+        result = ESP_ERR_INVALID_SIZE;
+        for (size_t i = 0; i < 4; i++) {
+            size_t limit = i ? WENDY_CONF_MAX_TRUST_BUNDLE : WENDY_CONF_MAX_ENROLLMENT_DATA;
+            if (spans[i].size > limit ||
+                spans[i].size > WENDY_CONF_MAX_ENROLLMENT_DATA - total)
+                goto done;
+            total += spans[i].size;
+        }
+        data->storage = total ? malloc(total) : NULL;
+        if (total && !data->storage) {
+            result = ESP_ERR_NO_MEM;
+            goto done;
+        }
+        size_t offset = 0;
+        for (size_t i = 0; i < 4; i++) {
+            if (spans[i].size) {
+                memcpy(data->storage + offset, spans[i].data, spans[i].size);
+                *copies[i] = (struct wendy_conf_span){data->storage + offset, spans[i].size};
+                offset += spans[i].size;
+            }
+        }
+        result = ESP_OK;
+    }
+done:
+    pthread_mutex_unlock(&s_cache_lock);
+    return result;
+}
+
+bool wendy_conf_has_enrollment(void)
+{
+    pthread_mutex_lock(&s_cache_lock);
+    bool present = s_cache.valid && s_cache.conf.has_enrollment;
+    pthread_mutex_unlock(&s_cache_lock);
+    return present;
 }

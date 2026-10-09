@@ -32,6 +32,7 @@ enum link_type {
     LINK_TYPE_TLS,
     LINK_TYPE_UART,
     LINK_TYPE_STREAM,
+    LINK_TYPE_SOCKET,
 };
 
 struct wcom_link {
@@ -75,7 +76,7 @@ static struct wcom_state_change_handler *_state_change_handler_last;
 static ssize_t _link_read(struct wcom_link *ch, void *buf, size_t len)
 {
     ssize_t n;
-    if (ch->type == LINK_TYPE_STREAM) {
+    if (ch->type == LINK_TYPE_STREAM || ch->type == LINK_TYPE_SOCKET) {
         n = ch->ops->read(ch->stream_ctx, buf, len);
         if (n == WCOM_STREAM_ERR_WANT_READ)  return WENDY_COM_LINK_ERR_WANT_READ;
         if (n == WCOM_STREAM_ERR_WANT_WRITE) return WENDY_COM_LINK_ERR_WANT_WRITE;
@@ -97,7 +98,7 @@ static ssize_t _link_read(struct wcom_link *ch, void *buf, size_t len)
 static ssize_t _link_write(struct wcom_link *ch, const void *data, size_t len)
 {
     ssize_t n;
-    if (ch->type == LINK_TYPE_STREAM) {
+    if (ch->type == LINK_TYPE_STREAM || ch->type == LINK_TYPE_SOCKET) {
         n = ch->ops->write(ch->stream_ctx, data, len);
         if (n == WCOM_STREAM_ERR_WANT_READ)  return WENDY_COM_LINK_ERR_WANT_READ;
         if (n == WCOM_STREAM_ERR_WANT_WRITE) return WENDY_COM_LINK_ERR_WANT_WRITE;
@@ -632,15 +633,12 @@ int wcom_add_uart_link(wendy_com_uart_t *uart, wcom_interruption_handler_t inter
     return -1;
 }
 
-/// Register a transport that drives itself through wcom_stream_ops rather
-/// than a file descriptor. Same contract as wcom_add_tls_link: a positive,
-/// non-reused link ID, or -1 when the link table is full.
-int wcom_add_stream_link(const struct wcom_stream_ops *ops, void *ctx,
-                         wcom_interruption_handler_t interruption_handler)
+static int _add_custom_link(enum link_type type, const struct wcom_stream_ops *ops,
+                            void *ctx, wcom_interruption_handler_t interruption_handler)
 {
     assert(xTaskGetCurrentTaskHandle() == _main_task);
-    assert(ops && ops->read && ops->write && ops->wakeup_fd
-           && ops->can_read && ops->can_write);
+    assert(ops && ops->read && ops->write && ops->wakeup_fd);
+    assert(type != LINK_TYPE_STREAM || (ops->can_read && ops->can_write));
 
     for (int i = 0; i < WCOM_LINK_COUNT; i++) {
         struct wcom_link *ch = &_links[i];
@@ -650,13 +648,12 @@ int wcom_add_stream_link(const struct wcom_stream_ops *ops, void *ctx,
                 _link_id_generator = 1;
             ch->id = _link_id_generator * WCOM_LINK_COUNT + i;
             ch->state = WCOM_LINK_STATE_CONNECTED;
-            ch->type = LINK_TYPE_STREAM;
+            ch->type = type;
             ch->ops = ops;
             ch->stream_ctx = ctx;
             ch->interruption_handler = interruption_handler;
-            // The transport owns this fd; wcom only ever drains it, and only
-            // after select() reports it readable — an eventfd cannot be made
-            // non-blocking on ESP-IDF, so that ordering is load-bearing.
+            // The transport owns this fd. Streams expose a readiness eventfd;
+            // socket transports expose their socket, which must never be drained.
             ch->fd = ops->wakeup_fd(ctx);
             ch->tx_chunk_first = NULL;
             ch->tx_chunk_last = NULL;
@@ -672,6 +669,24 @@ int wcom_add_stream_link(const struct wcom_stream_ops *ops, void *ctx,
         }
     }
     return -1;
+}
+
+int wcom_add_stream_link(const struct wcom_stream_ops *ops, void *ctx,
+                         wcom_interruption_handler_t handler)
+{
+    return _add_custom_link(LINK_TYPE_STREAM, ops, ctx, handler);
+}
+
+int wcom_add_socket_link(const struct wcom_stream_ops *ops, void *ctx,
+                         wcom_interruption_handler_t handler)
+{
+    return _add_custom_link(LINK_TYPE_SOCKET, ops, ctx, handler);
+}
+
+bool wcom_link_is_local(int link_id)
+{
+    struct wcom_link *link = _get_link(link_id);
+    return link && link->type == LINK_TYPE_UART;
 }
 
 void wcom_remove_link(int link_id)
