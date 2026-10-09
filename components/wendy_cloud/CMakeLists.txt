@@ -12,5 +12,5 @@ endif()
 idf_component_register(
     SRCS ${srcs}
     INCLUDE_DIRS "include"
-    REQUIRES esp-tls freertos wendy_conf wendy_com
+    REQUIRES esp-tls freertos wendy_conf wendy_server esp_timer mbedtls
 )

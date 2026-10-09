@@ -438,3 +438,5 @@ The full list of host functions is defined in [`wasm_apps/include/wendy.h`](wasm
 - **TLS** — encrypted connect, send, recv
 - **OpenTelemetry** — structured logging, counters, gauges, histograms, tracing spans
 - **USB** — CDC read/write, HID reports
+
+Cloud connections use the [TLS handoff and reconnect loop](docs/cloud-relay.md).

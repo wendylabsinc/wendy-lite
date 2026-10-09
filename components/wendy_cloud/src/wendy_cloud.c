@@ -8,7 +8,10 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "wendy_conf.h"
-#include "wendy_com_link.h"
+#include "wendy_server.h"
+#include "mbedtls/ssl.h"
+#include "esp_timer.h"
+#include <unistd.h>
 
 #include <stdatomic.h>
 #include <string.h>
@@ -28,23 +31,8 @@ static SemaphoreHandle_t           s_stopped;
 static SemaphoreHandle_t           s_wake;
 static atomic_bool                 s_stop;
 
-// The TLS handle is owned by this module, but once handed off to the com
-// core it may only be touched (read/written/destroyed) on the com task,
-// after wcom_remove_link. Cross-task visibility comes from the wcom op
-// queue (release/acquire) on handoff and from s_wake on hand-back.
-// s_link_id is written on the com task only.
-static esp_tls_t     *s_tls = NULL;
-static atomic_int     s_link_id;
-
-struct _add_link_op {
-    struct wcom_operation base;
-    esp_tls_t *tls;
-};
-
-// One connection at a time: the cloud task blocks until the previous link is
-// fully torn down, so a single static op instance is enough.
-static struct _add_link_op s_add_op;
-
+// Owned exclusively by the cloud task until the authenticated socket handoff.
+static esp_tls_t *s_tls;
 
 static esp_err_t cloud_connect(void)
 {
@@ -106,47 +94,70 @@ static esp_err_t cloud_connect(void)
     return ESP_OK;
 }
 
-// Com task. Tears down the cloud link.
-static void _on_link_interruption(int link_id, enum wcom_interruption_reason reason)
+// The broker control protocol is separate from WendyCom. It exists only inside
+// the initial device-to-broker mTLS session: WR, version 1, opcode.
+static esp_err_t wait_for_upgrade(void)
 {
-    ESP_LOGI(TAG, "link %d down (reason %d)", link_id, (int)reason);
-    esp_tls_t *tls = s_tls;
-    s_tls = NULL;
-    // State before s_link_id: once s_link_id is 0 a stopping cloud task may
-    // exit and set IDLE, which DISCONNECTED must not overwrite.
-    s_state = WENDY_CLOUD_STATE_DISCONNECTED;
-    s_link_id = 0;
-    wcom_remove_link(link_id);
-    esp_tls_conn_destroy(tls); // client-mode destroy also closes the fd
-    xSemaphoreGive(s_wake);
-}
-
-// Com task. Hands the established TLS connection to the com core; from here
-// on all socket I/O happens on the com task and the device behaves exactly
-// as if a local client had connected.
-static void _add_link_exec(struct wcom_operation *op)
-{
-    struct _add_link_op *aop = (struct _add_link_op *)op;
-    int link_id = wcom_add_tls_link(aop->tls, _on_link_interruption);
-    if (link_id < 0) {
-        ESP_LOGE(TAG, "no free com link, dropping cloud connection");
-        esp_tls_conn_destroy(aop->tls);
-        s_tls = NULL;
-        s_state = WENDY_CLOUD_STATE_ERROR;
-        xSemaphoreGive(s_wake);
-        return;
+    unsigned char record[4];
+    size_t received = 0;
+    int64_t deadline = esp_timer_get_time() + 30000000;
+    while (!s_stop) {
+        int ret = esp_tls_conn_read(s_tls, record + received, sizeof(record) - received);
+        if (ret == ESP_TLS_ERR_SSL_WANT_READ || ret == ESP_TLS_ERR_SSL_WANT_WRITE ||
+            ret == MBEDTLS_ERR_SSL_TIMEOUT) {
+            if (esp_timer_get_time() >= deadline) return ESP_ERR_TIMEOUT;
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+        if (ret <= 0) return ESP_FAIL;
+        received += ret;
+        if (received != sizeof(record)) continue;
+        if (record[0] != 'W' || record[1] != 'R' || record[2] != 1) return ESP_FAIL;
+        if (record[3] == 3) return ESP_OK;
+        if (record[3] != 1) return ESP_FAIL;
+        record[3] = 2;
+        size_t sent = 0;
+        while (sent < sizeof(record) && !s_stop) {
+            ret = esp_tls_conn_write(s_tls, record + sent, sizeof(record) - sent);
+            if (ret <= 0) return ESP_FAIL;
+            sent += ret;
+        }
+        received = 0;
+        deadline = esp_timer_get_time() + 30000000;
     }
-    s_link_id = link_id;
-    ESP_LOGI(TAG, "link %d added", link_id);
+    return ESP_FAIL;
 }
 
-// Com task. Queued by wendy_cloud_stop after s_add_op, so it always runs
-// after a pending handoff and funnels teardown through the interruption handler.
-static void _close_link_exec(struct wcom_operation *op)
+static int detach_socket(void)
 {
-    int link_id = s_link_id;
-    if (link_id != 0)
-        wcom_close(link_id);
+    mbedtls_ssl_context *ssl = esp_tls_get_ssl_context(s_tls);
+    unsigned char byte;
+    int ret;
+    int64_t deadline = esp_timer_get_time() + 10000000;
+    // The broker sends close_notify after its upgrade. No more control data is legal.
+    do {
+        ret = mbedtls_ssl_read(ssl, &byte, 1);
+        if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+        break;
+    } while (!s_stop && esp_timer_get_time() < deadline);
+    if (ret != MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) return -1;
+    do {
+        ret = mbedtls_ssl_close_notify(ssl);
+        if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE)
+            vTaskDelay(pdMS_TO_TICKS(10));
+        else break;
+    } while (!s_stop && esp_timer_get_time() < deadline);
+    if (ret != 0 || s_stop) return -1;
+    int fd = -1;
+    if (esp_tls_get_conn_sockfd(s_tls, &fd) != ESP_OK) return -1;
+    // ESP-IDF's session-delete frees the TLS context without closing the socket.
+    // conn_destroy would close TCP and must not be used at this boundary.
+    esp_tls_server_session_delete(s_tls);
+    s_tls = NULL;
+    return fd;
 }
 
 static void cloud_task(void *arg)
@@ -177,22 +188,26 @@ static void cloud_task(void *arg)
         s_state = WENDY_CLOUD_STATE_CONNECTED;
         ESP_LOGI(TAG, "mTLS connected");
 
-        s_add_op.base.func = _add_link_exec;
-        s_add_op.tls = s_tls;
-        wcom_core_exec(&s_add_op.base);
-
-        // sleep until the link dies (interruption handler) or stop is requested
-        xSemaphoreTake(s_wake, portMAX_DELAY);
-        if (s_stop)
-            break;
+        if (wait_for_upgrade() == ESP_OK && !s_stop) {
+            int fd = detach_socket();
+            if (fd >= 0) {
+                // Starts a fresh TLS server session and requires a same-tenant operator.
+                // The server owns the descriptor on both success and failure.
+                wendy_server_accept_operator(fd);
+                // Keep a control connection available while accepted CLI sessions run.
+                continue;
+            }
+        }
+        if (s_tls) {
+            esp_tls_conn_destroy(s_tls);
+            s_tls = NULL;
+        }
+        s_state = WENDY_CLOUD_STATE_DISCONNECTED;
+        if (s_stop) break;
 
         ESP_LOGI(TAG, "reconnecting in %d ms", CONFIG_WENDY_CLOUD_RECONNECT_DELAY_MS);
         xSemaphoreTake(s_wake, pdMS_TO_TICKS(CONFIG_WENDY_CLOUD_RECONNECT_DELAY_MS));
     }
-
-    // wait for the com task to finish tearing down any live link
-    while (s_link_id != 0)
-        vTaskDelay(pdMS_TO_TICKS(20));
 
     s_state = WENDY_CLOUD_STATE_IDLE;
     s_task = NULL;
@@ -249,12 +264,6 @@ void wendy_cloud_stop(void)
         return;
 
     s_stop = true;
-    // close a live link on the com task; teardown funnels through the state
-    // handler (this op is queued after any pending handoff)
-    static struct wcom_operation close_op = {
-        .func = _close_link_exec,
-    };
-    wcom_core_exec(&close_op);
     xSemaphoreGive(s_wake); // wake the task from any wait
 
     if (xSemaphoreTake(s_stopped, pdMS_TO_TICKS(15000)) != pdTRUE)
