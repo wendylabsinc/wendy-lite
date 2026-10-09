@@ -1,5 +1,0 @@
-# Managed PKI trial layout. Supply pinned trust bundle paths in another overlay.
-CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.cloud.csv"
-CONFIG_WENDY_PKI=y
-CONFIG_WENDY_CLOUD=y

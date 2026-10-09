@@ -10,8 +10,8 @@ import subprocess
 import sys
 import tempfile
 
-PARTITION_OFFSET = 0x3F0000
-PARTITION_SIZE   = 0x4000
+PARTITION_SIZE   = 0x12000   # wendy_conf is the last partition in every table
+FLASH_SIZES      = {"4MB": 0x400000, "8MB": 0x800000, "16MB": 0x1000000, "32MB": 0x2000000}
 HEADER_SIZE      = 8
 
 _REPO_ROOT  = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
@@ -189,15 +189,17 @@ def cmd_read(args):
     with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as fh:
         tmp_bin = fh.name
 
+    offset = FLASH_SIZES[args.flash_size] - PARTITION_SIZE
+
     try:
         esptool = ["esptool.py"]
         if args.port:
             esptool += ["--port", args.port]
         if args.chip != "auto":
             esptool += ["--chip", args.chip]
-        esptool += ["read_flash", hex(PARTITION_OFFSET), hex(PARTITION_SIZE), tmp_bin]
+        esptool += ["read_flash", hex(offset), hex(PARTITION_SIZE), tmp_bin]
 
-        print(f"Reading {hex(PARTITION_SIZE)} bytes from {hex(PARTITION_OFFSET)} …", flush=True)
+        print(f"Reading {hex(PARTITION_SIZE)} bytes from {hex(offset)} …", flush=True)
         r = subprocess.run(esptool)
         if r.returncode:
             sys.exit("esptool failed")
@@ -256,6 +258,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--port", "-p", help="Serial port (e.g. /dev/ttyUSB0)")
     ap.add_argument("--chip", "-c", default="auto", help="ESP chip type (default: auto)")
+    ap.add_argument("--flash-size", "-f", default="4MB", choices=FLASH_SIZES,
+                    help="Flash size of the board (default: 4MB)")
     ap.add_argument(
         "--save-der-dir",
         help="Directory where provisioning key/cert/chain are saved as .der files",

@@ -59,9 +59,10 @@ jobs:
             root="$GITHUB_WORKSPACE/components/wendy_pki/tests/fixtures/root.pem"
           fi
           cat > pki-test.defaults <<EOF_CONFIG
+          CONFIG_WENDY_CLOUD=y
           CONFIG_WENDY_PKI_DEVICE_ROOTS="$root"
           CONFIG_WENDY_PKI_TSA_ROOTS="$root"
           CONFIG_WENDY_PKI_HTTPS_ROOTS="$root"
           EOF_CONFIG
-          idf.py -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;boards/esp32c6_cloud.defaults;pki-test.defaults' set-target esp32c6
+          idf.py -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;pki-test.defaults' set-target esp32c6
           idf.py build
