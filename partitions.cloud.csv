@@ -1,9 +1,0 @@
-# ESP32-C6 4 MB, PKI identity kept separate from Wi-Fi/application NVS.
-# Name,     Type, SubType, Offset,   Size,     Flags
-nvs,        data, nvs,     0x9000,   0x6000,
-phy_init,   data, phy,     0xf000,   0x1000,
-factory,    app,  factory, 0x10000,  0x1E0000,
-wasm_a,     data, 0x80,    0x1F0000, 0x1C0000,
-wendy_pki,  data, nvs,     0x3B0000, 0x30000,
-wendy_conf, data, 0x40,    0x3E0000, 0x14000,
-storage,    data, spiffs,  0x3F4000, 0xC000,
