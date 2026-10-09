@@ -16,4 +16,8 @@ void wendy_server_set_caps(const struct wendy_server_caps caps);
 /// publishes come from wendy_conf, so wendy_conf_init() must have run first.
 void wendy_server_start(void);
 
+/// Consume an already-connected socket, authenticate a same-tenant operator with
+/// a fresh mTLS server session, then hand it to WendyCom. Closes on failure.
+void wendy_server_accept_operator(int fd);
+
 #endif

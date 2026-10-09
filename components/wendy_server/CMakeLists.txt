@@ -4,5 +4,5 @@ idf_component_register(
     INCLUDE_DIRS
         "include"
     REQUIRES
-        wendy_com wendy_conf esp-tls freertos log mdns
+        wendy_com wendy_conf esp-tls freertos log mdns esp_timer mbedtls
 )

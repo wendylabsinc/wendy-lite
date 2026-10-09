@@ -1,4 +1,5 @@
 #include "wendy_server.h"
+#include "wendy_peer_identity.h"
 #include "wendy_conf.h"
 #include "wendy_com_link.h"
 #include "esp_tls.h"
@@ -6,6 +7,7 @@
 #include "mbedtls/x509_crt.h"
 #include "mbedtls/oid.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "mdns.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -303,4 +305,104 @@ void wendy_server_start(void)
     xTaskCreatePinnedToCore(_server_task, "wendy_server", WENDY_SERVER_TASK_STACK, NULL,
                              CONFIG_WENDY_SERVER_TASK_PRIORITY, NULL,
                              CONFIG_WENDY_SERVER_TASK_CORE_AFFINITY);
+}
+
+// Extract exactly one Wendy SPIFFE identity. A device certificate, service
+// certificate, legacy URN, or ambiguous identity cannot prove operator status.
+static bool _identity_tenant(const mbedtls_x509_crt *crt, const char *kind, unsigned char tenant[36])
+{
+    static const char prefix[] = "spiffe://wendy.sh/tenant/";
+    bool found = false;
+    for (const mbedtls_x509_sequence *entry = &crt->subject_alt_names;
+         entry && entry->buf.p; entry = entry->next) {
+        mbedtls_x509_subject_alternative_name san;
+        if (mbedtls_x509_parse_subject_alt_name(&entry->buf, &san) != 0 ||
+            san.type != MBEDTLS_X509_SAN_UNIFORM_RESOURCE_IDENTIFIER) continue;
+        const mbedtls_x509_buf *uri = &san.san.unstructured_name;
+        size_t prefix_len = sizeof(prefix) - 1;
+        if (uri->len < prefix_len || memcmp(uri->p, prefix, prefix_len) != 0) continue;
+        if (found || !wendy_peer_identity(uri->p, uri->len, kind, tenant)) return false;
+        found = true;
+    }
+    return found;
+}
+
+static int _operator_verify(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags)
+{
+    if (depth == 0) {
+        unsigned char tenant[36], own_tenant[36];
+        struct wendy_conf_span certificate = wendy_conf_get_certificate();
+        mbedtls_x509_crt own;
+        mbedtls_x509_crt_init(&own);
+        bool own_ok = mbedtls_x509_crt_parse(&own, certificate.data, certificate.size) == 0 &&
+                      _identity_tenant(&own, "device", own_tenant);
+        mbedtls_x509_crt_free(&own);
+        bool client_auth = false;
+        for (const mbedtls_x509_sequence *eku = &crt->ext_key_usage; eku && eku->buf.p; eku = eku->next) {
+            if (eku->buf.len == MBEDTLS_OID_SIZE(MBEDTLS_OID_CLIENT_AUTH) &&
+                memcmp(eku->buf.p, MBEDTLS_OID_CLIENT_AUTH, eku->buf.len) == 0) client_auth = true;
+        }
+        if (!own_ok || !_identity_tenant(crt, "operator", tenant) || memcmp(tenant, own_tenant, 36) != 0 ||
+            !client_auth ||
+            mbedtls_x509_crt_check_extended_key_usage(crt, MBEDTLS_OID_CLIENT_AUTH,
+                                                     MBEDTLS_OID_SIZE(MBEDTLS_OID_CLIENT_AUTH)) != 0)
+            *flags |= MBEDTLS_X509_BADCERT_OTHER;
+    }
+    return 0; // Preserve all chain, expiry, and identity errors for TLS to reject.
+}
+
+void wendy_server_accept_operator(int fd)
+{
+    struct wendy_conf_span cert = wendy_conf_get_certificate();
+    struct wendy_conf_span key = wendy_conf_get_private_key();
+    struct wendy_conf_span chain = wendy_conf_get_chain_of_trust();
+    unsigned char tenant[36];
+    mbedtls_x509_crt own;
+    mbedtls_x509_crt_init(&own);
+    int parsed = mbedtls_x509_crt_parse(&own, cert.data, cert.size);
+    bool identity_ok = parsed == 0 && _identity_tenant(&own, "device", tenant);
+    mbedtls_x509_crt_free(&own);
+    if (!identity_ok || !key.size || !chain.size) {
+        ESP_LOGE(TAG, "cloud handoff requires a provisioned device identity");
+        close(fd);
+        return;
+    }
+    struct timeval timeout = { .tv_sec = 10 };
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0 ||
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) != 0) {
+        close(fd);
+        return;
+    }
+    esp_tls_t *tls = esp_tls_init();
+    if (!tls) { close(fd); return; }
+    esp_tls_cfg_server_t cfg = {
+        .servercert_buf = cert.data, .servercert_bytes = cert.size,
+        .serverkey_buf = key.data, .serverkey_bytes = key.size,
+        .cacert_buf = chain.data, .cacert_bytes = chain.size,
+    };
+    int ret = esp_tls_server_session_init(&cfg, fd, tls);
+    if (ret == 0) {
+        mbedtls_ssl_set_verify(esp_tls_get_ssl_context(tls), _operator_verify, NULL);
+        int64_t deadline = esp_timer_get_time() + 10000000;
+        do {
+            ret = esp_tls_server_session_continue_async(tls);
+            if (ret != ESP_TLS_ERR_SSL_WANT_READ && ret != ESP_TLS_ERR_SSL_WANT_WRITE) break;
+            vTaskDelay(pdMS_TO_TICKS(10));
+        } while (esp_timer_get_time() < deadline);
+    }
+    if (ret != 0) {
+        ESP_LOGW(TAG, "cloud operator mTLS rejected: 0x%x", -ret);
+        close(fd);
+        esp_tls_server_session_delete(tls);
+        return;
+    }
+    struct _add_link_op *op = malloc(sizeof(*op));
+    if (!op) {
+        close(fd);
+        esp_tls_server_session_delete(tls);
+        return;
+    }
+    op->base.func = _add_link_exec;
+    op->tls = tls;
+    wcom_core_exec(&op->base);
 }
