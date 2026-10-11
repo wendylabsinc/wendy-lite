@@ -74,7 +74,7 @@ GO_TARGETS = [
     (
         ["components/wendy_com/proto/wendy_com_msg.proto"],
         "go/console/wendypb",
-        "wendy-console/wendypb;wendypb",
+        "github.com/wendylabsinc/wendy/go/proto/gen/litepb;litepb",
         False,
         {"sensorlink.proto": SENSORLINK_GO_PKG},
     ),
@@ -88,7 +88,7 @@ GO_TARGETS = [
     (
         ["components/wendy_conf/proto/wendy_conf.proto"],
         "go/console/wendypb",
-        "wendy-console/wendypb",
+        "github.com/wendylabsinc/wendy/go/proto/gen/litepb;litepb",
         False,
         {},
     ),

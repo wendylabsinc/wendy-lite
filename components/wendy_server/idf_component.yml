@@ -5,3 +5,5 @@ dependencies:
     override_path: "../wendy_com"
   wendy_conf:
     override_path: "../wendy_conf"
+  wendy_pki:
+    override_path: "../wendy_pki"

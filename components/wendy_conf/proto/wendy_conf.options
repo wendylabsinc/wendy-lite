@@ -9,3 +9,15 @@ WendyConfCloudProvisioning.cloud_host     type:FT_CALLBACK
 WendyConfCloudProvisioning.key_pem        type:FT_CALLBACK
 WendyConfCloudProvisioning.cert_pem       type:FT_CALLBACK
 WendyConfCloudProvisioning.chain_pem      type:FT_CALLBACK
+
+WendyConfEnrollment.tenant_id max_size:37
+WendyConfEnrollment.device_id max_size:65
+WendyConfEnrollment.token max_size:513
+WendyConfEnrollment.csr_url max_size:257
+WendyConfEnrollment.time_url max_size:257
+WendyConfEnrollment.broker_host max_size:254
+WendyConfEnrollment.signed_time type:FT_CALLBACK
+
+WendyConfEnrollment.device_roots type:FT_CALLBACK
+WendyConfEnrollment.tsa_roots type:FT_CALLBACK
+WendyConfEnrollment.https_roots type:FT_CALLBACK

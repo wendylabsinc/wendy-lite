@@ -27,3 +27,8 @@ version.defaults
 # source of truth. Tracking the resolved tree was painful with
 # multi-target builds because the per-target dep closures differ.
 managed_components/
+
+# Local deployment trust paths and native PKI test builds
+pki-trust.defaults
+pki-test.defaults
+build-pki/

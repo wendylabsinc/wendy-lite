@@ -17,7 +17,8 @@ void wendy_server_set_caps(const struct wendy_server_caps caps);
 void wendy_server_start(void);
 
 /// Consume an already-connected socket, authenticate a same-tenant operator with
-/// a fresh mTLS server session, then hand it to WendyCom. Closes on failure.
-void wendy_server_accept_operator(int fd);
+/// a fresh mTLS server session and verified Cloud grant, then hand it to WendyCom. Closes on failure.
+struct wendy_lite_trust;
+void wendy_server_accept_operator(int fd, const struct wendy_lite_trust *trust);
 
 #endif
