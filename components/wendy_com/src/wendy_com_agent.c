@@ -373,7 +373,7 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
         wendy_pki_builtin_trust(&resp->data.enrollment_challenge.builtin_roots_ready,
                                &resp->data.enrollment_challenge.builtin_tsa_roots_ready);
 #if CONFIG_WENDY_PKI
-        resp->data.enrollment_challenge.roughtime_supported = true;
+        resp->data.enrollment_challenge.roughtime_supported = false;
 #endif
         resp->result = wendy_pki_challenge(cmd->params.enrollment_challenge.status_only, resp->data.enrollment_challenge.nonce_hex,
                          &resp->data.enrollment_challenge.enrolled) == ESP_OK

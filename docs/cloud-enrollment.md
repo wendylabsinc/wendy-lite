@@ -12,11 +12,7 @@ No device private key passes through the CLI or the configuration protobuf.
 
 ## Build the firmware
 
-Use ESP-IDF 5.5.4 and initialize the pinned wolfSSL dependency:
-
-```sh
-git submodule update --init components/wendy_wolfssl/wolfssl
-```
+Use ESP-IDF 5.5.4 and its bundled mbedTLS. wolfSSL is no longer required.
 
 PKI enrollment is built into every image. The cloud connection is opt-in; enable it
 and build without deployment-specific roots:
@@ -27,18 +23,17 @@ idf.py -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;cloud.defaults' set-target esp3
 idf.py build
 ```
 
-The companion CLI discovers device CA roots over HTTPS verified by the enrolling
-computer and provisions them over USB, together with verified HTTPS trust anchors.
-Use `--ca-certs-url` for a custom CA-discovery endpoint. No deployment-specific
-roots need embedding in the firmware. Private HTTPS CAs must already be trusted
-by the computer, or supplied explicitly with `--device-roots` and `--https-roots`.
-The HTTPS bundle must cover the broker too if it uses a different CA.
+Provision compatible device, TSA and HTTPS CA bundles through the authorized USB
+connection using `--device-roots`, `--tsa-roots` and `--https-roots`. Obtain them
+from the PKI administrator. Each complete chain must use algorithms supported by
+mbedTLS; issuing a P-256 leaf beneath an ML-DSA issuer is insufficient. The device
+and operator profiles use P-256, and the TSA uses ECDSA P-256 with SHA-256.
+The HTTPS bundle must also trust the configured broker hostname.
 
-Roughtime is the default time source and requires two agreeing pinned servers.
-RFC 3161 remains available with `--time-url` and explicit `--tsa-roots` as well as
-the device and HTTPS bundles. Optional build-time bundles remain supported by the
-firmware, but the CLI provisions trust at enrollment by default. Without trust,
-the device refuses to connect. Never use disposable fixture roots for deployment.
+Pass the deployment's actual RFC 3161 HTTPS endpoint with `--time-url`. Roughtime
+is not supported by this firmware. Optional build-time bundles remain supported;
+the CLI checks the board's advertised trust readiness. Without all required trust,
+the device refuses to connect. Never use fixture roots for deployment.
 
 Every partition table ends with a 176 KiB `wendy_pki` NVS partition and a 72 KiB
 configuration partition. These layouts are not an OTA-compatible upgrade from
@@ -61,7 +56,11 @@ wendy cloud login --email YOU@YOUR_ORGANIZATION
 wendy cloud enroll-device \
   --device wendy-lite:/dev/cu.usbmodemXXXX \
   --name lite-desk \
-  --broker-port 5055
+  --broker-port 5055 \
+  --time-url https://YOUR_TSA_ENDPOINT/v1/time \
+  --device-roots device-ca-bundle.pem \
+  --tsa-roots tsa-ca-bundle.pem \
+  --https-roots server-ca-bundle.pem
 wendy cloud discover
 ```
 
@@ -82,8 +81,9 @@ Wi-Fi-only configuration updates preserve it; replacing or erasing the entire
 configuration removes it. Existing enrolled boards require operator recovery to
 change enrollment through the CLI. This does not add remote trust rotation.
 
-The command obtains a device-generated nonce and relays signed Roughtime replies
-before minting the credential. The board verifies their signatures and consensus.
+The command obtains a device-generated nonce and a matching RFC 3161 timestamp
+before minting the credential. The board verifies its signature, TSA chain,
+critical timestamp EKU, nonce, message imprint and persisted rollback floor.
 It receives configuration through USB, reboots, refreshes verified time, and
 obtains its certificate. The CLI waits up to two minutes for installation.
 The firmware retains an unverified issuance response separately from its usable
@@ -118,7 +118,11 @@ legacy provisioning credentials.
 LAN discovery advertises the tenant to select an appropriate CLI identity.
 This is only a selection hint: TLS still verifies the certificate chain and the
 CLI checks the device principal. The CLI sends its operator certificate chain,
-including intermediates, and supports the deployment's ML-DSA certificate chain.
+including intermediates. For a CLI session with an ML-DSA administration identity,
+provision a P-256 certificate for the same operator and set `WENDY_LITE_OPERATOR_CERT`
+to its PEM leaf plus full compatible CA chain and `WENDY_LITE_OPERATOR_KEY` to its
+private key. The CLI uses this identity for Lite request signing and device TLS.
+Cloud administration and enrollment authorization keep their existing identity.
 
 CLI access through Cloud requires an authorized tunnel, an end-to-end
 CLI/device mTLS handshake and a verified Cloud session grant. See
@@ -134,39 +138,14 @@ ctest --test-dir build-pki --output-on-failure
 ```
 
 The committed fixtures were generated with pki-core's `ca.Engine.IssueTimestamp`
-and mixed-family certificate builder. They contain public test credentials only.
+and P-256 certificate builder. They contain public test credentials only.
 See [the test instructions](../components/wendy_pki/tests/README.md) to regenerate
-them. CI compiles the PKI-enabled C6 image both without embedded roots and with
-disposable test roots. Neither image is published by the PKI workflow. Hardware enrollment and memory behavior still need a connected
-board and the development trust bundles.
+them. CI runs host verification, including a Go-to-mbedTLS TLS 1.3 interoperability
+test, and builds the PKI-enabled C6 image. Hardware enrollment, latency and memory
+behavior still require a connected board and compatible deployment trust bundles.
 
 ## Firmware size
 
-The wolfSSL configuration uses `WOLFSSL_DILITHIUM_SMALL`,
-`WOLFSSL_SHA3_SMALL`, and `ED25519_SMALL` to trade cryptographic execution
-speed for flash space. These retain the supported signature algorithms and
-certificate validation. Ed25519 remains enabled for authenticated Roughtime.
-
-An ESP32-C6 build with `sdkconfig.defaults` and
-`boards/esp32c6_cloud.defaults` measured 1,863,744 bytes with these settings,
-compared with 1,925,216 bytes without them, a saving of 61,472 bytes.
-The 1,966,080-byte application partition has 102,336 bytes remaining.
-ML-DSA and SHA-3/SHAKE account for 14,741 linked bytes with the compact
-implementations, compared with 24,323 bytes before. These measurements
-include the Lite relay grant changes and will vary as firmware changes.
-
-All seven PKI host tests pass with the compact implementations. Hardware
-verification latency and peak memory usage still need measurement on a
-connected board, especially during authenticated time acquisition.
-
-The configuration also disables wolfSSL's session cache with `NO_SESSION_CACHE`
-and omits `OPENSSL_ALL`, retaining `OPENSSL_EXTRA` for the certificate APIs in
-use. Wendy's PKI connections do not request session resumption; each connection
-performs a full authenticated handshake. Omitting `OPENSSL_ALL` also avoids
-implicitly enabling session tickets, which require cache code in this wolfSSL
-version.
-
-Together these changes reduce the same image by another 25,312 bytes, to
-1,838,432 bytes, with 127,648 bytes of application flash remaining. Linked static
-RAM falls by 101,252 bytes. The firmware build and all seven PKI host tests pass;
-end-to-end handshakes and timing still require device validation.
+The firmware uses ESP-IDF's mbedTLS for TLS, P-256 certificate validation, signed
+time and session grants. It has no wolfSSL dependency. WASM is opt-in through
+`boards/wasm.defaults`. See [relay size measurements](cloud-relay.md#default-image-size).

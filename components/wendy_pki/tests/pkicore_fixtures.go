@@ -13,7 +13,7 @@ import (
 	"encoding/asn1"
 	"encoding/pem"
 	"github.com/wendylabsinc/pki-core/internal/ca"
-	"github.com/wendylabsinc/pki-core/internal/cryptoalg"
+	"fmt"
 	"github.com/wendylabsinc/pki-core/internal/keymgr"
 	"math/big"
 	"net/url"
@@ -28,8 +28,7 @@ type memorySigner struct {
 }
 
 func (m memorySigner) Sign(_ context.Context, _ *keymgr.KeyHandle, message []byte) ([]byte, error) {
-	a, _ := cryptoalg.Lookup("ML_DSA_65")
-	return a.Sign(m.key, message)
+	return nil, fmt.Errorf("P-256 timestamp signing requires SignDigest")
 }
 func (m memorySigner) SignDigest(_ context.Context, _ *keymgr.KeyHandle, digest []byte, _ keymgr.HashAlg) ([]byte, error) {
 	return ecdsa.SignASN1(rand.Reader, m.key.(*ecdsa.PrivateKey), digest)
@@ -43,12 +42,11 @@ func main() {
 	out := os.Args[1]
 	must(os.MkdirAll(out, 0700))
 	write := func(n string, b []byte) { must(os.WriteFile(filepath.Join(out, n), b, 0600)) }
-	rootAlg, _ := cryptoalg.Lookup("ML_DSA_87")
-	key, pub, err := rootAlg.KeyGen(rand.Reader)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	must(err)
 	now := time.Now().UTC().Truncate(time.Second)
-	rootT := &cryptoalg.MLDSACertTemplate{Serial: big.NewInt(1), Subject: pkix.Name{CommonName: "pki-core test root"}, NotBefore: now.Add(-24 * time.Hour), NotAfter: now.Add(24 * time.Hour), IsCA: true, PathLen: 2, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign}
-	rootDER, err := cryptoalg.BuildMLDSASelfSignedCert(rootT, key, pub)
+	rootT := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "pki-core P-256 test root"}, NotBefore: now.Add(-24 * time.Hour), NotAfter: now.Add(24 * time.Hour), IsCA: true, BasicConstraintsValid: true, MaxPathLen: 2, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign}
+	rootDER, err := x509.CreateCertificate(rand.Reader, rootT, rootT, &key.PublicKey, key)
 	must(err)
 	root, err := x509.ParseCertificate(rootDER)
 	must(err)
@@ -60,7 +58,7 @@ func main() {
 	write("nonce.bin", nonce)
 	digest := sha256.Sum256(nonce)
 	for _, name := range []string{"valid", "wrong-eku", "expired", "wrong-imprint", "wrong-nonce", "valid-ecdsa"} {
-		algorithm := keymgr.AlgoMLDSA65
+		algorithm := keymgr.AlgoECDSAP256
 		if name == "valid-ecdsa" {
 			algorithm = keymgr.AlgoECDSAP256
 		}
@@ -73,11 +71,11 @@ func main() {
 		}
 		ekuDER, err := asn1.Marshal(eku)
 		must(err)
-		leafT := &cryptoalg.MLDSACertTemplate{Serial: big.NewInt(2), Subject: pkix.Name{CommonName: "pki-core TSA test signer"}, RawIssuer: root.RawSubject, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), PathLen: -1, KeyUsage: x509.KeyUsageDigitalSignature, Extensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 37}, Critical: true, Value: ekuDER}}}
+		leafT := &x509.Certificate{BasicConstraintsValid: true, SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "pki-core TSA test signer"}, RawIssuer: root.RawSubject, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), MaxPathLen: -1, KeyUsage: x509.KeyUsageDigitalSignature, ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 37}, Critical: true, Value: ekuDER}}}
 		if name == "expired" {
 			leafT.NotAfter = now.Add(-time.Minute)
 		}
-		leafDER, err := cryptoalg.BuildMLDSAIssuedCert(leafT, pk, key, pub)
+		leafDER, err := x509.CreateCertificate(rand.Reader, leafT, root, pk, key)
 		must(err)
 		d := append([]byte(nil), digest[:]...)
 		if name == "wrong-imprint" {
@@ -124,7 +122,7 @@ func main() {
 	principal, _ := url.Parse("spiffe://wendy.sh/tenant/2558fd76-afc7-466e-9613-6b715296a526/device/lite-test")
 	// The same mixed-family certificate builder is used by pki-core issuance.
 	for _, name := range []string{"identity", "identity-expired", "identity-wrong-eku", "identity-wrong-uri", "identity-duplicate-uri"} {
-		template := &cryptoalg.MLDSACertTemplate{Serial: big.NewInt(5), Subject: pkix.Name{CommonName: "lite-test"}, RawIssuer: root.RawSubject, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), PathLen: -1, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}, URIs: []*url.URL{principal}}
+		template := &x509.Certificate{BasicConstraintsValid: true, SerialNumber: big.NewInt(5), Subject: pkix.Name{CommonName: "lite-test"}, RawIssuer: root.RawSubject, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), MaxPathLen: -1, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}, URIs: []*url.URL{principal}}
 		switch name {
 		case "identity-expired":
 			template.NotAfter = now.Add(-time.Minute)
@@ -148,8 +146,8 @@ func main() {
 		}
 		sanDER, err := asn1.Marshal(san)
 		must(err)
-		template.Extensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 37}, Value: ekuDER}, {Id: asn1.ObjectIdentifier{2, 5, 29, 17}, Value: sanDER}}
-		der, err := cryptoalg.BuildMLDSAIssuedCert(template, &deviceKey.PublicKey, key, pub)
+		template.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 37}, Value: ekuDER}, {Id: asn1.ObjectIdentifier{2, 5, 29, 17}, Value: sanDER}}
+		der, err := x509.CreateCertificate(rand.Reader, template, root, &deviceKey.PublicKey, key)
 		must(err)
 		write(name+".pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 	}

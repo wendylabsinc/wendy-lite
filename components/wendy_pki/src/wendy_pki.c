@@ -8,35 +8,22 @@
 #include "wendy_pki_internal.h"
 #include <unistd.h>
 #include "wendy_pki_verify.h"
-#include "wendy_roughtime.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
-#include <wolfssl/wolfcrypt/asn_public.h>
-#include <wolfssl/wolfcrypt/ecc.h>
-#include <wolfssl/wolfcrypt/hash.h>
-#include <wolfssl/wolfcrypt/random.h>
-#include <wolfssl/wolfcrypt/sha256.h>
+#include <mbedtls/pk.h>
+#include <psa/crypto.h>
+#include <mbedtls/sha256.h>
+#include <mbedtls/x509_csr.h>
 
 static const char *TAG = "wendy_pki";
 static pthread_once_t crypto_once = PTHREAD_ONCE_INIT;
 static int crypto_ok;
-static void init_crypto(void) { crypto_ok = wolfSSL_Init() == WOLFSSL_SUCCESS; }
-int wendy_pki_random(unsigned char *out, unsigned int size)
-{
-    esp_fill_random(out, size);
-    return 0;
-}
+static void init_crypto(void) { crypto_ok = psa_crypto_init() == PSA_SUCCESS; }
 static pthread_once_t identity_once = PTHREAD_ONCE_INIT;
 static esp_err_t identity_ready = ESP_FAIL;
-static pthread_mutex_t clock_mutex = PTHREAD_MUTEX_INITIALIZER;
-static uint8_t relay_nonce[32];
-static int64_t relay_started;
-static bool relay_active;
-static unsigned relay_mask;
-static struct wendy_rt_interval relay_evidence[WENDY_RT_SERVERS];
 static void init_identity(void)
 {
     // Identity loss requires operator recovery. Never erase this partition automatically.
@@ -97,12 +84,6 @@ esp_err_t wendy_pki_challenge(bool status_only, char nonce_hex[65], bool *enroll
     if (r == ESP_OK)
         r = nvs_commit(h);
     nvs_close(h);
-    pthread_mutex_lock(&clock_mutex);
-    memcpy(relay_nonce, nonce, 32);
-    relay_started = esp_timer_get_time();
-    relay_active = r == ESP_OK;
-    relay_mask = 0;
-    pthread_mutex_unlock(&clock_mutex);
     if (r != ESP_OK)
         return r;
     for (int i = 0; i < 32; i++)
@@ -125,63 +106,12 @@ static int set_floor(nvs_handle_t h, time_t value)
     struct timeval tv = {.tv_sec = value};
     return settimeofday(&tv, NULL);
 }
-/* Call with clock_mutex held. Persist only a verified lower bound. */
-static int apply_roughtime(struct wendy_rt_interval interval, int64_t *seconds)
-{
-    nvs_handle_t h;
-    if (open_identity(&h) != ESP_OK) return -1;
-    int64_t floor = 0;
-    esp_err_t err = nvs_get_i64(h, "floor", &floor);
-    int result = -1;
-    if ((err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) || floor < 0 ||
-        floor > INT64_MAX / 1000000 || interval.upper < floor * 1000000) goto done;
-    if (interval.lower < floor * 1000000) interval.lower = floor * 1000000;
-    int64_t next_floor = interval.lower / 1000000;
-    if (nvs_set_i64(h, "floor", next_floor) != ESP_OK || nvs_commit(h) != ESP_OK) goto done;
-    *seconds = (interval.lower + (interval.upper - interval.lower) / 2) / 1000000;
-    struct timeval tv = {.tv_sec = *seconds};
-    result = settimeofday(&tv, NULL);
-done:
-    nvs_close(h);
-    return result;
-}
 esp_err_t wendy_pki_sync_time(const char *server, const uint8_t *reply, size_t size,
                               bool *synchronized, int64_t *seconds)
 {
+    (void)server; (void)reply; (void)size;
     *synchronized = false; *seconds = 0;
-    int index = wendy_rt_find_server(server);
-    if (index < 0) return ESP_ERR_INVALID_ARG;
-    pthread_once(&crypto_once, init_crypto);
-    if (!crypto_ok) return ESP_FAIL;
-    pthread_mutex_lock(&clock_mutex);
-    int64_t now = esp_timer_get_time();
-    esp_err_t result = ESP_FAIL;
-    if (!relay_active || now - relay_started > 30000000 || (relay_mask & (1u << index))) goto done;
-    struct wendy_rt_interval interval;
-    if (wendy_rt_verify(reply, size, relay_nonce, wendy_rt_servers[index].key, &interval)) goto done;
-    interval.lower -= now; interval.upper -= relay_started;
-    relay_evidence[index] = interval;
-    relay_mask |= 1u << index;
-    result = ESP_OK;
-    if (!wendy_rt_consensus(relay_evidence, relay_mask, &interval)) {
-        now = esp_timer_get_time(); interval.lower += now; interval.upper += now;
-        if (apply_roughtime(interval, seconds)) { result = ESP_FAIL; goto done; }
-        *synchronized = true;
-        relay_active = false; /* Single use: replay cannot advance the clock. */
-    }
-done:
-    pthread_mutex_unlock(&clock_mutex);
-    return result;
-}
-static int refresh_roughtime(void)
-{
-    struct wendy_rt_interval interval;
-    if (wendy_rt_query(&interval)) return -1;
-    pthread_mutex_lock(&clock_mutex);
-    int64_t seconds;
-    int result = apply_roughtime(interval, &seconds);
-    pthread_mutex_unlock(&clock_mutex);
-    return result;
+    return ESP_ERR_NOT_SUPPORTED;
 }
 static int seed_clock(nvs_handle_t h, struct wendy_conf_span seed, struct wendy_conf_span roots)
 {
@@ -249,81 +179,45 @@ static int identity_key(nvs_handle_t h, const WendyConfEnrollment *cfg, uint8_t 
     }
     if (t != ESP_ERR_NVS_NOT_FOUND || d != ESP_ERR_NVS_NOT_FOUND)
         return -1;
-    WC_RNG rng;
-    ecc_key k;
+    mbedtls_pk_context k;
+    mbedtls_pk_init(&k);
     int result = -1;
-    if (wc_InitRng(&rng))
-        return -1;
-    if (wc_ecc_init(&k))
-    {
-        wc_FreeRng(&rng);
-        return -1;
-    }
     *key = malloc(256);
-    if (!*key)
-        goto done;
-    if (wc_ecc_make_key_ex(&rng, 32, &k, ECC_SECP256R1))
-        goto done;
-    int n = wc_EccKeyToDer(&k, *key, 256);
-    if (n <= 0)
-        goto done;
+    if (!*key || mbedtls_pk_setup(&k, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY)) ||
+        mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP256R1, mbedtls_pk_ec(k), wendy_pki_rng, NULL)) goto done;
+    int n = mbedtls_pk_write_key_der(&k, *key, 256);
+    if (n <= 0) goto done;
+    memmove(*key, *key+256-n, n);
     *size = n;
     if (nvs_set_blob(h, "key", *key, *size) != ESP_OK ||
         nvs_set_str(h, "tenant", cfg->tenant_id) != ESP_OK ||
-        nvs_set_str(h, "device", cfg->device_id) != ESP_OK || nvs_commit(h) != ESP_OK)
-        goto done;
+        nvs_set_str(h, "device", cfg->device_id) != ESP_OK || nvs_commit(h) != ESP_OK) goto done;
     result = 0;
 done:
-    wc_ecc_free(&k);
-    wc_FreeRng(&rng);
-    if (result && *key)
-    {
-        erase(*key, 256);
-        free(*key);
-        *key = NULL;
-    }
+    mbedtls_pk_free(&k);
+    if (result && *key) { erase(*key, 256); free(*key); *key = NULL; }
     return result;
 }
 static char *make_csr(const uint8_t *key, size_t key_size, const char *device)
 {
-    WC_RNG rng;
-    ecc_key k;
-    Cert *request = NULL;
-    uint8_t *der = NULL;
-    char *pem = NULL;
-    word32 index = 0;
-    if (wc_InitRng(&rng))
-        return NULL;
-    if (wc_ecc_init(&k))
-    {
-        wc_FreeRng(&rng);
-        return NULL;
-    }
-    if (wc_EccPrivateKeyDecode(key, &index, &k, key_size) || index != key_size)
-        goto done;
-    request = malloc(sizeof *request);
-    der = malloc(4096);
-    pem = calloc(1, 4096);
-    if (!request || !der || !pem)
-        goto fail;
-    wc_InitCert(request);
-    request->sigType = CTC_SHA256wECDSA;
-    if (strlen(device) >= sizeof request->subject.commonName)
-        goto fail;
-    memcpy(request->subject.commonName, device, strlen(device) + 1);
-    int n = wc_MakeCertReq(request, der, 4096, NULL, &k);
-    if (n <= 0 || (n = wc_SignCert(n, request->sigType, der, 4096, NULL, &k, &rng)) <= 0 ||
-        wc_DerToPem(der, n, (uint8_t *)pem, 4095, CERTREQ_TYPE) <= 0)
-        goto fail;
+    mbedtls_pk_context k;
+    mbedtls_x509write_csr csr;
+    mbedtls_pk_init(&k); mbedtls_x509write_csr_init(&csr);
+    char *pem = calloc(1, 4096), subject[80];
+    // Device IDs are restricted by provisioning to this DN-safe alphabet.
+    if (!pem || !device || !*device || strlen(device)>64 ||
+        strspn(device, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.") != strlen(device)) goto fail;
+    snprintf(subject, sizeof subject, "CN=%s", device);
+    if (mbedtls_pk_parse_key(&k, key, key_size, NULL, 0, wendy_pki_rng, NULL) ||
+        mbedtls_x509write_csr_set_subject_name(&csr, subject)) goto fail;
+    mbedtls_x509write_csr_set_key(&csr, &k);
+    mbedtls_x509write_csr_set_md_alg(&csr, MBEDTLS_MD_SHA256);
+    if (mbedtls_x509write_csr_pem(&csr, (unsigned char *)pem, 4096, wendy_pki_rng, NULL)) goto fail;
     goto done;
 fail:
-    free(pem);
-    pem = NULL;
+    free(pem); pem = NULL;
 done:
-    free(request);
-    free(der);
-    wc_ecc_free(&k);
-    wc_FreeRng(&rng);
+    mbedtls_x509write_csr_free(&csr); mbedtls_pk_free(&k);
     return pem;
 }
 static int issue(nvs_handle_t h, const WendyConfEnrollment *cfg,
@@ -427,7 +321,7 @@ static int valid_config(const WendyConfEnrollment *c)
     snprintf(suffix, sizeof suffix, "/v1/%s", c->tenant_id);
     size_t n = strlen(c->csr_url), s = strlen(suffix);
     return n > s && !strcmp(c->csr_url + n - s, suffix) && !strncmp(c->csr_url, "https://", 8) &&
-           (!strcmp(c->time_url, "roughtime") || !strncmp(c->time_url, "https://", 8));
+           !strncmp(c->time_url, "https://", 8);
 }
 /* A USB-authorized configuration is the only runtime source of trust.
  * Never substitute a chain returned by an enrollment or timestamp endpoint. */
@@ -442,7 +336,7 @@ static int select_trust(const WendyConfEnrollment *cfg, struct wendy_conf_enroll
         data->https_roots = (struct wendy_conf_span){wendy_pki_https_roots_start, ROOT_SIZE(https)};
     }
     return wendy_pki_verify_roots(data->device_roots.data, data->device_roots.size) ||
-           (strcmp(cfg->time_url, "roughtime") && wendy_pki_verify_roots(data->tsa_roots.data, data->tsa_roots.size)) ||
+           wendy_pki_verify_roots(data->tsa_roots.data, data->tsa_roots.size) ||
            wendy_pki_verify_roots(data->https_roots.data, data->https_roots.size) ? -1 : 0;
 }
 esp_err_t wendy_pki_connect(wendy_pki_connection **connection)
@@ -480,8 +374,7 @@ esp_err_t wendy_pki_connect(wendy_pki_connection **connection)
     char principal[160];
     snprintf(principal, sizeof principal, "spiffe://wendy.sh/tenant/%s/device/%s", cfg.tenant_id,
              cfg.device_id);
-    if (!strcmp(cfg.time_url, "roughtime") ? refresh_roughtime() :
-        (seed_clock(h, data.signed_time, data.tsa_roots) || refresh_time(h, cfg.time_url, &data)))
+    if (seed_clock(h, data.signed_time, data.tsa_roots) || refresh_time(h, cfg.time_url, &data))
     {
         ESP_LOGE(TAG, "verified current PKI time unavailable; cloud connection held");
         goto done;
@@ -573,7 +466,7 @@ static esp_err_t accept_operator(int fd, wendy_pki_connection **connection,
                                  data.device_roots, cfg.tenant_id, connection, deadline);
     fd = -1; /* pki_tls_accept owns the socket, including failures. */
     if (!accepted) {
-        if (!trust || (!wc_Sha256Hash((uint8_t *)principal, strlen(principal), (*connection)->device_hash) &&
+        if (!trust || (!mbedtls_sha256((uint8_t *)principal, strlen(principal), (*connection)->device_hash, 0) &&
                        !pki_relay_grant(*connection, trust, deadline))) {
             result = ESP_OK;
         } else {

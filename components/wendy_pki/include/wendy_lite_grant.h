@@ -2,8 +2,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <time.h>
-#define WENDY_LITE_KEY_BYTES 1952
-#define WENDY_LITE_GRANT_MAX 3586
+#define WENDY_LITE_KEY_BYTES 65
+#define WENDY_LITE_GRANT_MAX 341
 struct wendy_lite_key {
     uint8_t id_size;
     uint8_t id[128];

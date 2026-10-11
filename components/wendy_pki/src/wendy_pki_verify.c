@@ -2,16 +2,44 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <wolfssl/openssl/evp.h>
-#include <wolfssl/openssl/pem.h>
-#include <wolfssl/ssl.h>
-#include <wolfssl/wolfcrypt/asn.h>
-#include <wolfssl/wolfcrypt/asn_public.h>
-#include <wolfssl/wolfcrypt/dilithium.h>
-#include <wolfssl/wolfcrypt/ecc.h>
-#include <wolfssl/wolfcrypt/hash.h>
-#include <wolfssl/wolfcrypt/settings.h>
+#include <mbedtls/x509_crt.h>
+#include <mbedtls/pk.h>
+#include <mbedtls/sha256.h>
+#include <mbedtls/oid.h>
 
+static mbedtls_x509_crt *parse_cert(const uint8_t *data, size_t size)
+{
+    mbedtls_x509_crt *cert = calloc(1, sizeof *cert);
+    if (!cert) return NULL;
+    mbedtls_x509_crt_init(cert);
+    if (mbedtls_x509_crt_parse_der(cert, data, size)) {
+        mbedtls_x509_crt_free(cert); free(cert); return NULL;
+    }
+    return cert;
+}
+static void free_cert(mbedtls_x509_crt *cert)
+{
+    if (cert) { mbedtls_x509_crt_free(cert); free(cert); }
+}
+static int parse_pem(mbedtls_x509_crt *cert, const uint8_t *data, size_t size)
+{
+    if (!data || !size || size > 65536 || memchr(data, 0, size)) return -1;
+    uint8_t *copy = calloc(1, size+1);
+    if (!copy) return -1;
+    memcpy(copy, data, size);
+    char *p = (char *)copy;
+    int count = 0;
+    while (*p) {
+        while (*p && strchr(" \t\r\n", *p)) p++;
+        if (!*p) break;
+        if (++count > 8 || strncmp(p, "-----BEGIN CERTIFICATE-----", 27)) { free(copy); return -1; }
+        char *end = strstr(p, "-----END CERTIFICATE-----");
+        if (!end) { free(copy); return -1; }
+        p = end + 25;
+    }
+    int r = count ? mbedtls_x509_crt_parse(cert, copy, size+1) : -1;
+    free(copy); return r;
+}
 int wendy_pki_verify_roots(const uint8_t *pem, size_t size)
 {
     if (!pem || !size || size > 16384 || memchr(pem, 0, size))
@@ -34,12 +62,11 @@ int wendy_pki_verify_roots(const uint8_t *pem, size_t size)
         if (!end)
             goto done;
         end += 25;
-        WOLFSSL_X509 *cert = wolfSSL_X509_load_certificate_buffer(
-            (const uint8_t *)p, (int)(end - p), WOLFSSL_FILETYPE_PEM);
-        if (!cert)
-            goto done;
-        int ca = wolfSSL_X509_get_isCA(cert);
-        wolfSSL_X509_free(cert);
+        mbedtls_x509_crt cert;
+        mbedtls_x509_crt_init(&cert);
+        int parsed = parse_pem(&cert, (const uint8_t *)p, end-p);
+        int ca = !parsed && cert.MBEDTLS_PRIVATE(ca_istrue) && !cert.next;
+        mbedtls_x509_crt_free(&cert);
         if (!ca)
             goto done;
         count++;
@@ -139,7 +166,7 @@ static int utc_time(der d, time_t *value)
     int y = v[0], m = v[1], day = v[2];
     static const int days[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
     int leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-    if (y < 2020 || y > 2099 || m < 1 || m > 12 || day < 1 ||
+    if (y < 1970 || y > 9999 || m < 1 || m > 12 || day < 1 ||
         day > days[m - 1] + (m == 2 && leap) || v[3] > 23 || v[4] > 59 || v[5] > 59)
         return -1;
     /* Gregorian civil date -> seconds since 1970, independent of local TZ. */
@@ -165,119 +192,79 @@ static int certificate_parts(der cert, der *serial, der *issuer, der *spki)
 }
 static int verify_signature(der spki, der sig_alg, der attrs, der sig)
 {
-    der a, key_alg, key;
-    if (take(&spki, 0x30, &a) || take(&a, 6, &key_alg) || take(&spki, 3, &key) || spki.n ||
-        key.n < 2 || key.p[0])
-        return -1;
-    uint8_t *message = malloc(attrs.raw_n);
-    if (!message)
-        return -1;
-    memcpy(message, attrs.raw, attrs.raw_n);
-    message[0] = 0x31;
-    int result = -1, valid = 0;
-    const uint8_t ml_prefix[] = {0x60, 0x86, 0x48, 1, 0x65, 3, 4, 3};
-    if (key_alg.n == 9 && !memcmp(key_alg.p, ml_prefix, 8) && key_alg.p[8] >= 17 &&
-        key_alg.p[8] <= 19 && !a.n && equal(key_alg, sig_alg))
-    {
-        dilithium_key *k = malloc(sizeof *k);
-        if (k)
-        {
-            int level = key_alg.p[8] == 17   ? WC_ML_DSA_44
-                        : key_alg.p[8] == 18 ? WC_ML_DSA_65
-                                             : WC_ML_DSA_87;
-            if (!wc_dilithium_init(k))
-            {
-                if (!wc_dilithium_set_level(k, level) &&
-                    !wc_dilithium_import_public(key.p + 1, key.n - 1, k) &&
-                    !wc_dilithium_verify_ctx_msg(sig.p, sig.n, NULL, 0, message, attrs.raw_n,
-                                                 &valid, k) &&
-                    valid)
-                    result = 0;
-                wc_dilithium_free(k);
-            }
-            free(k);
-        }
-    }
-    else
-    {
-        const uint8_t ec[] = {0x2a, 0x86, 0x48, 0xce, 0x3d, 2, 1};
-        const uint8_t es256[] = {0x2a, 0x86, 0x48, 0xce, 0x3d, 4, 3, 2};
-        const uint8_t p256[] = {0x2a, 0x86, 0x48, 0xce, 0x3d, 3, 1, 7};
-        if (bytes(key_alg, ec, sizeof ec) && bytes(sig_alg, es256, sizeof es256) &&
-            !oid(&a, p256, sizeof p256) && !a.n)
-        {
-            ecc_key k;
-            uint8_t hash[32];
-            if (!wc_ecc_init(&k))
-            {
-                if (!wc_ecc_import_x963(key.p + 1, key.n - 1, &k) &&
-                    !wc_Hash(WC_HASH_TYPE_SHA256, message, attrs.raw_n, hash, sizeof hash) &&
-                    !wc_ecc_verify_hash(sig.p, sig.n, hash, sizeof hash, &valid, &k) && valid)
-                    result = 0;
-                wc_ecc_free(&k);
-            }
-        }
-    }
-    free(message);
-    return result;
-}
-/* Certificates from the response are untrusted intermediates. Only the build's
- * pre-pinned PEM bundle enters the trust store. */
-static int verify_chain(WOLFSSL_X509 *leaf, WOLFSSL_STACK *untrusted, const uint8_t *roots,
-                        size_t size, time_t now)
-{
-    int result = -1, count = 0;
-    WOLFSSL_X509_STORE *store = wolfSSL_X509_STORE_new();
-    WOLFSSL_X509_STORE_CTX *ctx = wolfSSL_X509_STORE_CTX_new();
-    WOLFSSL_BIO *bio = wolfSSL_BIO_new_mem_buf(roots, (int)size);
-    if (!store || !ctx || !bio)
-        goto done;
-    /* Root insertion otherwise checks the untrusted wall clock before the
-     * context's verification time takes effect. Check pinned roots explicitly
-     * at the supplied time, then restore date checks for chain verification. */
-    WOLFSSL_X509_VERIFY_PARAM *param = wolfSSL_X509_STORE_get0_param(store);
-    if (!param || wolfSSL_X509_VERIFY_PARAM_set_flags(param, WOLFSSL_NO_CHECK_TIME) != WOLFSSL_SUCCESS)
-        goto done;
-    WOLFSSL_X509 *root;
-    while ((root = wolfSSL_PEM_read_bio_X509(bio, NULL, NULL, NULL)))
-    {
-        int ok = wolfSSL_X509_cmp_time(wolfSSL_X509_get_notBefore(root), &now) == -1 &&
-                 wolfSSL_X509_cmp_time(wolfSSL_X509_get_notAfter(root), &now) == 1 &&
-                 wolfSSL_X509_STORE_add_cert(store, root) == WOLFSSL_SUCCESS;
-        wolfSSL_X509_free(root);
-        if (!ok)
-            goto done;
-        count++;
-    }
-    if (!count ||
-        wolfSSL_X509_VERIFY_PARAM_clear_flags(param, WOLFSSL_NO_CHECK_TIME) != WOLFSSL_SUCCESS ||
-        wolfSSL_X509_STORE_CTX_init(ctx, store, leaf, untrusted) != WOLFSSL_SUCCESS)
-        goto done;
-    wolfSSL_X509_STORE_CTX_set_time(ctx, 0, now);
-    if (wolfSSL_X509_verify_cert(ctx) == WOLFSSL_SUCCESS)
-        result = 0;
-    else
-        printf("PKI chain verification error %d at depth %d\n",
-               wolfSSL_X509_STORE_CTX_get_error(ctx), wolfSSL_X509_STORE_CTX_get_error_depth(ctx));
+    const uint8_t es256[] = {0x2a,0x86,0x48,0xce,0x3d,4,3,2};
+    if (!bytes(sig_alg, es256, sizeof es256)) return -1;
+    mbedtls_pk_context key;
+    mbedtls_pk_init(&key);
+    uint8_t *message = malloc(attrs.raw_n), hash[32];
+    int result = -1;
+    if (!message) goto done;
+    memcpy(message, attrs.raw, attrs.raw_n); message[0] = 0x31;
+    if (mbedtls_pk_parse_public_key(&key, spki.raw, spki.raw_n) ||
+        !mbedtls_pk_can_do(&key, MBEDTLS_PK_ECDSA) ||
+        mbedtls_pk_ec(key)->MBEDTLS_PRIVATE(grp).id != MBEDTLS_ECP_DP_SECP256R1 ||
+        mbedtls_sha256(message, attrs.raw_n, hash, 0) ||
+        mbedtls_pk_verify(&key, MBEDTLS_MD_SHA256, hash, sizeof hash, sig.p, sig.n)) goto done;
+    result = 0;
 done:
-    wolfSSL_BIO_free(bio);
-    wolfSSL_X509_STORE_CTX_free(ctx);
-    wolfSSL_X509_STORE_free(store);
-    return result;
+    free(message); mbedtls_pk_free(&key); return result;
+}
+static int cert_time(const mbedtls_x509_time *t, time_t *out)
+{
+    char text[16];
+    if (snprintf(text, sizeof text, "%04d%02d%02d%02d%02d%02dZ",
+        t->year,t->mon,t->day,t->hour,t->min,t->sec) != 15) return -1;
+    return utc_time((der){(uint8_t *)text, NULL, 15, 0, 24}, out);
+}
+static int verify_at(void *context, mbedtls_x509_crt *cert, int depth, uint32_t *flags)
+{
+    (void)depth;
+    time_t now = *(time_t *)context, start, end;
+    // Replace only wall-clock date flags with checks at the authenticated time.
+    *flags &= ~(MBEDTLS_X509_BADCERT_EXPIRED | MBEDTLS_X509_BADCERT_FUTURE);
+    if (cert_time(&cert->valid_from, &start) || start > now) *flags |= MBEDTLS_X509_BADCERT_FUTURE;
+    if (cert_time(&cert->valid_to, &end) || end <= now) *flags |= MBEDTLS_X509_BADCERT_EXPIRED;
+    return 0;
+}
+static int verify_chain(mbedtls_x509_crt *leaf, mbedtls_x509_crt **certs, int count,
+    const uint8_t *roots, size_t size, time_t now)
+{
+    mbedtls_x509_crt chain, anchors;
+    mbedtls_x509_crt_init(&chain); mbedtls_x509_crt_init(&anchors);
+    int result = -1; uint32_t flags = 0;
+    if (wendy_pki_verify_roots(roots, size) || parse_pem(&anchors, roots, size) ||
+        mbedtls_x509_crt_parse_der(&chain, leaf->raw.p, leaf->raw.len)) goto done;
+    for (int i=0; i<count; i++) if (certs[i] != leaf &&
+        mbedtls_x509_crt_parse_der(&chain, certs[i]->raw.p, certs[i]->raw.len)) goto done;
+    if (!mbedtls_x509_crt_verify(&chain, &anchors, NULL, NULL, &flags, verify_at, &now) && !flags) result = 0;
+done:
+    mbedtls_x509_crt_free(&chain); mbedtls_x509_crt_free(&anchors); return result;
 }
 static int tsa_eku(der cert)
 {
-    DecodedCert *d = malloc(sizeof *d);
-    if (!d)
-        return -1;
-    wc_InitDecodedCert(d, cert.p, cert.n, NULL);
-    int result = wc_ParseCert(d, CERT_TYPE, NO_VERIFY, NULL);
-    if (!result && (!d->extExtKeyUsageSet || !d->extExtKeyUsageCrit ||
-                    d->extExtKeyUsage != EXTKEYUSE_TIMESTAMP || d->isCA))
-        result = -1;
-    wc_FreeDecodedCert(d);
-    free(d);
-    return result;
+    mbedtls_x509_crt *crt = parse_cert(cert.p, cert.n);
+    if (!crt) return -1;
+    int valid = !crt->MBEDTLS_PRIVATE(ca_istrue) && crt->ext_key_usage.buf.p && !crt->ext_key_usage.next &&
+        MBEDTLS_OID_CMP(MBEDTLS_OID_TIME_STAMPING, &crt->ext_key_usage.buf) == 0;
+    free_cert(crt);
+    if (!valid) return -1;
+    // RFC 3161 requires a critical, exclusively timestamping EKU.
+    der seq, tbs, item, extensions, ext, id, critical, value;
+    if (take(&cert, 0x30, &seq) || take(&seq, 0x30, &tbs)) return -1;
+    while (tbs.n && tbs.p[0] != 0xa3) {
+        if (take(&tbs, tbs.p[0], &item)) return -1;
+    }
+    if (take(&tbs, 0xa3, &item) || take(&item, 0x30, &extensions) || item.n || tbs.n) return -1;
+    const uint8_t eku[] = {0x55,0x1d,0x25};
+    int found = 0;
+    while (extensions.n) {
+        if (take(&extensions, 0x30, &ext) || take(&ext, 6, &id)) return -1;
+        if (bytes(id, eku, sizeof eku)) {
+            if (found++ || take(&ext, 1, &critical) || critical.n != 1 || critical.p[0] != 255 ||
+                take(&ext, 4, &value) || ext.n) return -1;
+        }
+    }
+    return found == 1 ? 0 : -1;
 }
 #ifdef ESP_PLATFORM
 #include "esp_log.h"
@@ -306,9 +293,8 @@ int wendy_pki_verify_time(const uint8_t *input, size_t size, const uint8_t nonce
                           time_t *verified_time)
 {
     int result = -1, count = 0, signer_index = -1;
-    WOLFSSL_X509 *certs[8] = {0};
+    mbedtls_x509_crt *certs[8] = {0};
     der rawcerts[8] = {0};
-    WOLFSSL_STACK *chain = NULL;
     der all = {input, input, size, size, 0}, resp, status, ci, wrapper, sd, tmp, ec, tst_bytes,
         certset, signers, si, sid, sid_issuer, sid_serial, attrs, sig_alg, sig;
     der tst, imprint, digest, generation, integer_value, serial, issuer, spki = {0};
@@ -334,9 +320,8 @@ int wendy_pki_verify_time(const uint8_t *input, size_t size, const uint8_t nonce
     {
         REQUIRE(count < 8 && !take(&certset, 0x30, &tmp));
         rawcerts[count] = (der){tmp.raw, tmp.raw, tmp.raw_n, tmp.raw_n, 0x30};
-        const uint8_t *p = tmp.raw;
-        certs[count] = wolfSSL_d2i_X509(NULL, &p, (int)tmp.raw_n);
-        REQUIRE(certs[count] && p == tmp.raw + tmp.raw_n);
+        certs[count] = parse_cert(tmp.raw, tmp.raw_n);
+        REQUIRE(certs[count]);
         REQUIRE(!certificate_parts(rawcerts[count], &serial, &issuer, &spki));
         if (equal(sid_serial, serial) && equal(sid_issuer, issuer))
         {
@@ -348,7 +333,7 @@ int wendy_pki_verify_time(const uint8_t *input, size_t size, const uint8_t nonce
     REQUIRE(signer_index >= 0);
     REQUIRE(!certificate_parts(rawcerts[signer_index], &serial, &issuer, &spki));
     REQUIRE(!tsa_eku(rawcerts[signer_index]));
-    REQUIRE(!wc_Hash(WC_HASH_TYPE_SHA256, tst_bytes.p, tst_bytes.n, hash, sizeof hash));
+    REQUIRE(!mbedtls_sha256(tst_bytes.p, tst_bytes.n, hash, 0));
     der attrlist = attrs, attr, id, set, value;
     int have_ct = 0, have_md = 0, have_ess = 0;
     while (attrlist.n)
@@ -373,8 +358,7 @@ int wendy_pki_verify_time(const uint8_t *input, size_t size, const uint8_t nonce
             if (entry.n && entry.p[0] == 0x30)
                 REQUIRE(!sha256_algorithm(&entry));
             REQUIRE(!take(&entry, 4, &cert_hash) && !entry.n);
-            REQUIRE(!wc_Hash(WC_HASH_TYPE_SHA256, rawcerts[signer_index].p,
-                             rawcerts[signer_index].n, cert_hash_bytes, sizeof cert_hash_bytes) &&
+            REQUIRE(!mbedtls_sha256(rawcerts[signer_index].p, rawcerts[signer_index].n, cert_hash_bytes, 0) &&
                     bytes(cert_hash, cert_hash_bytes, 32));
         }
     }
@@ -384,7 +368,7 @@ int wendy_pki_verify_time(const uint8_t *input, size_t size, const uint8_t nonce
             !take(&tst, 6, &tmp));
     REQUIRE(!take(&tst, 0x30, &imprint) && !sha256_algorithm(&imprint) &&
             !take(&imprint, 4, &digest) && !imprint.n);
-    REQUIRE(!wc_Hash(WC_HASH_TYPE_SHA256, nonce, 32, hash, 32) && bytes(digest, hash, 32));
+    REQUIRE(!mbedtls_sha256(nonce, 32, hash, 0) && bytes(digest, hash, 32));
     REQUIRE(!integer(&tst, &integer_value) && !take(&tst, 24, &generation) &&
             !utc_time(generation, &when) && when >= floor);
     if (tst.n && tst.p[0] == 0x30)
@@ -401,103 +385,60 @@ int wendy_pki_verify_time(const uint8_t *input, size_t size, const uint8_t nonce
     if (tst.n && tst.p[0] == 0xa0)
         REQUIRE(!take(&tst, 0xa0, &tmp));
     REQUIRE(!tst.n);
-    chain = wolfSSL_sk_X509_new_null();
-    REQUIRE(chain);
-    for (int i = 0; i < count; i++)
-        if (i != signer_index)
-            REQUIRE(wolfSSL_sk_X509_push(chain, certs[i]) > 0);
-    REQUIRE(!verify_chain(certs[signer_index], chain, roots, roots_size, when));
+    REQUIRE(!verify_chain(certs[signer_index], certs, count, roots, roots_size, when));
     *verified_time = when;
     result = 0;
 done:
-    wolfSSL_sk_X509_free(chain);
     for (int i = 0; i < 8; i++)
-        wolfSSL_X509_free(certs[i]);
+        free_cert(certs[i]);
     return result;
 }
 
-int wendy_pki_verify_identity(const uint8_t *pem, size_t size, const uint8_t *roots,
-                              size_t roots_size, const uint8_t *key, size_t key_size,
-                              const char *principal, time_t now, time_t *expires)
+static int single_uri(mbedtls_x509_crt *crt, const char *expected)
 {
-    int result = -1, count = 0;
-    WOLFSSL_X509 *certs[8] = {0};
-    WOLFSSL_STACK *chain = NULL;
-    WOLFSSL_EVP_PKEY *private_key = NULL;
-    DecodedCert *decoded = NULL;
-    char *copy = NULL;
-    int decoded_ready = 0;
-    REQUIRE(pem && size && size <= 65536 && roots && roots_size && key && key_size && principal &&
-            expires);
-    copy = calloc(1, size + 1);
-    REQUIRE(copy);
-    memcpy(copy, pem, size);
-    REQUIRE(!memchr(copy, 0, size));
-    char *p = copy;
-    while (*p)
-    {
-        while (*p == ' ' || *p == '\r' || *p == '\n' || *p == '\t')
-            p++;
-        if (!*p)
-            break;
-        REQUIRE(count < 8 && !strncmp(p, "-----BEGIN CERTIFICATE-----", 27));
-        char *end = strstr(p, "-----END CERTIFICATE-----");
-        REQUIRE(end);
-        end += 25;
-        certs[count] = wolfSSL_X509_load_certificate_buffer((uint8_t *)p, (int)(end - p),
-                                                            WOLFSSL_FILETYPE_PEM);
-        REQUIRE(certs[count]);
+    int count = 0;
+    for (const mbedtls_x509_sequence *a = &crt->subject_alt_names; a && a->buf.p; a=a->next) {
+        mbedtls_x509_subject_alternative_name san;
+        if (mbedtls_x509_parse_subject_alt_name(&a->buf, &san) ||
+            san.type != MBEDTLS_X509_SAN_UNIFORM_RESOURCE_IDENTIFIER) continue;
+        if (san.san.unstructured_name.len != strlen(expected) ||
+            memcmp(san.san.unstructured_name.p, expected, strlen(expected))) return -1;
         count++;
-        p = end;
     }
-    REQUIRE(count > 0);
-    chain = wolfSSL_sk_X509_new_null();
-    REQUIRE(chain);
-    for (int i = 1; i < count; i++)
-        REQUIRE(wolfSSL_sk_X509_push(chain, certs[i]) > 0);
-    REQUIRE(!verify_chain(certs[0], chain, roots, roots_size, now));
-    int der_size = 0;
-    const uint8_t *leaf = wolfSSL_X509_get_der(certs[0], &der_size);
-    REQUIRE(leaf && der_size > 0);
-    decoded = malloc(sizeof *decoded);
-    REQUIRE(decoded);
-    wc_InitDecodedCert(decoded, leaf, der_size, NULL);
-    decoded_ready = 1;
-    int parse_result = wc_ParseCert(decoded, CERT_TYPE, NO_VERIFY, NULL);
-
-    REQUIRE(!parse_result && !decoded->isCA && decoded->extExtKeyUsageSet);
-    REQUIRE((decoded->extExtKeyUsage & (EXTKEYUSE_CLIENT_AUTH | EXTKEYUSE_SERVER_AUTH)) ==
-            (EXTKEYUSE_CLIENT_AUTH | EXTKEYUSE_SERVER_AUTH));
-    int uris = 0;
-    for (DNS_entry *alt = decoded->altNames; alt; alt = alt->next)
-        if (alt->type == ASN_URI_TYPE)
-        {
-            REQUIRE((size_t)alt->len == strlen(principal) &&
-                    !memcmp(alt->name, principal, alt->len));
-            uris++;
-        }
-    REQUIRE(uris == 1);
-    const uint8_t *key_cursor = key;
-    private_key = wolfSSL_d2i_PrivateKey(EVP_PKEY_EC, NULL, &key_cursor, (long)key_size);
-    REQUIRE(private_key && key_cursor == key + key_size &&
-            wolfSSL_X509_check_private_key(certs[0], private_key) == WOLFSSL_SUCCESS);
-    struct tm tm = {0};
-    REQUIRE(wolfSSL_ASN1_TIME_to_tm(wolfSSL_X509_get_notAfter(certs[0]), &tm) == WOLFSSL_SUCCESS);
-    char date[16];
-    REQUIRE(strftime(date, sizeof date, "%Y%m%d%H%M%SZ", &tm) == 15);
-    der d = {(uint8_t *)date, NULL, 15, 0, 24};
-    REQUIRE(!utc_time(d, expires) && *expires > now);
+    return count == 1 ? 0 : -1;
+}
+static int has_eku(mbedtls_x509_crt *crt, const char *oid, size_t n)
+{
+    for (const mbedtls_x509_sequence *a=&crt->ext_key_usage; a && a->buf.p; a=a->next)
+        if (a->buf.len == n && !memcmp(a->buf.p, oid, n)) return 1;
+    return 0;
+}
+int wendy_pki_verify_identity(const uint8_t *pem, size_t size, const uint8_t *roots,
+    size_t roots_size, const uint8_t *key, size_t key_size, const char *principal,
+    time_t now, time_t *expires)
+{
+    if (!pem || !size || size>65536 || memchr(pem,0,size) || !roots || !roots_size ||
+        !key || !key_size || !principal || !expires) return -1;
+    mbedtls_x509_crt chain;
+    mbedtls_pk_context private_key;
+    mbedtls_x509_crt_init(&chain); mbedtls_pk_init(&private_key);
+    int result = -1, count = 0;
+    mbedtls_x509_crt *certs[8];
+    if (parse_pem(&chain, pem, size)) goto done;
+    for (mbedtls_x509_crt *c=&chain; c; c=c->next) {
+        if (count==8) goto done;
+        certs[count++]=c;
+    }
+    if (!count || verify_chain(&chain, certs, count, roots, roots_size, now) || chain.MBEDTLS_PRIVATE(ca_istrue) ||
+        !has_eku(&chain, MBEDTLS_OID_CLIENT_AUTH, MBEDTLS_OID_SIZE(MBEDTLS_OID_CLIENT_AUTH)) ||
+        !has_eku(&chain, MBEDTLS_OID_SERVER_AUTH, MBEDTLS_OID_SIZE(MBEDTLS_OID_SERVER_AUTH)) ||
+        single_uri(&chain, principal) ||
+        mbedtls_pk_parse_key(&private_key,key,key_size,NULL,0,wendy_pki_rng,NULL) ||
+        mbedtls_pk_check_pair(&chain.pk,&private_key,wendy_pki_rng,NULL) ||
+        cert_time(&chain.valid_to, expires) || *expires<=now) goto done;
     result = 0;
 done:
-    if (decoded_ready)
-        wc_FreeDecodedCert(decoded);
-    free(decoded);
-    wolfSSL_EVP_PKEY_free(private_key);
-    wolfSSL_sk_X509_free(chain);
-    for (int i = 0; i < 8; i++)
-        wolfSSL_X509_free(certs[i]);
-    free(copy);
-    return result;
+    mbedtls_pk_free(&private_key); mbedtls_x509_crt_free(&chain); return result;
 }
 
 size_t wendy_pki_time_request(uint8_t out[128], const uint8_t nonce[32])
@@ -507,7 +448,7 @@ size_t wendy_pki_time_request(uint8_t out[128], const uint8_t nonce[32])
                                      0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65,
                                      0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20};
     memcpy(out, prefix, sizeof prefix);
-    if (wc_Hash(WC_HASH_TYPE_SHA256, nonce, 32, out + sizeof prefix, 32))
+    if (mbedtls_sha256(nonce, 32, out + sizeof prefix, 0))
         return 0;
     size_t n = sizeof prefix + 32;
     out[n++] = 2;
@@ -521,46 +462,29 @@ size_t wendy_pki_time_request(uint8_t out[128], const uint8_t nonce[32])
 }
 
 /* Chain verification is performed by TLS before this identity check. */
-int wendy_pki_verify_operator(const uint8_t *der, size_t size, const char *tenant)
+int wendy_pki_verify_operator(const uint8_t *data, size_t size, const char *tenant)
 {
-    if (!der || !size || size > 65536 || !tenant || strlen(tenant) != 36)
-        return -1;
-    int ok = 0, uris = 0;
-    DecodedCert *decoded = malloc(sizeof *decoded);
-    if (!decoded)
-        return -1;
-    wc_InitDecodedCert(decoded, der, size, NULL);
-    if (wc_ParseCert(decoded, CERT_TYPE, NO_VERIFY, NULL) == 0 && !decoded->isCA &&
-        decoded->extExtKeyUsageSet && (decoded->extExtKeyUsage & EXTKEYUSE_CLIENT_AUTH))
-    {
-        char prefix[96];
-        snprintf(prefix, sizeof prefix, "spiffe://wendy.sh/tenant/%s/operator/", tenant);
-        size_t n = strlen(prefix);
-        ok = 1;
-        for (DNS_entry *alt = decoded->altNames; alt; alt = alt->next)
-        {
-            if (alt->type != ASN_URI_TYPE)
-                continue;
-            uris++;
-            if ((size_t)alt->len != n + 36 || memcmp(alt->name, prefix, n))
-            {
-                ok = 0;
-                continue;
-            }
-            for (size_t i = 0; i < 36; i++)
-            {
-                char c = alt->name[n + i];
-                if (i == 8 || i == 13 || i == 18 || i == 23)
-                {
-                    if (c != '-')
-                        ok = 0;
-                }
-                else if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
-                    ok = 0;
-            }
+    if (!data || !size || size>65536 || !tenant || strlen(tenant)!=36) return -1;
+    mbedtls_x509_crt *crt = parse_cert(data, size);
+    if (!crt) return -1;
+    int result = -1, count = 0;
+    if (crt->MBEDTLS_PRIVATE(ca_istrue) || !has_eku(crt,MBEDTLS_OID_CLIENT_AUTH,MBEDTLS_OID_SIZE(MBEDTLS_OID_CLIENT_AUTH))) goto done;
+    char prefix[96]; snprintf(prefix,sizeof prefix,"spiffe://wendy.sh/tenant/%s/operator/",tenant);
+    size_t n = strlen(prefix);
+    for (const mbedtls_x509_sequence *a=&crt->subject_alt_names; a && a->buf.p; a=a->next) {
+        mbedtls_x509_subject_alternative_name san;
+        if (mbedtls_x509_parse_subject_alt_name(&a->buf,&san) ||
+            san.type != MBEDTLS_X509_SAN_UNIFORM_RESOURCE_IDENTIFIER) continue;
+        const mbedtls_x509_buf *uri=&san.san.unstructured_name;
+        if (uri->len!=n+36 || memcmp(uri->p,prefix,n)) goto done;
+        for (size_t i=0;i<36;i++) {
+            char c=uri->p[n+i];
+            if (i==8 || i==13 || i==18 || i==23) { if(c!='-') goto done; }
+            else if (!((c>='0'&&c<='9')||(c>='a'&&c<='f'))) goto done;
         }
+        count++;
     }
-    wc_FreeDecodedCert(decoded);
-    free(decoded);
-    return ok && uris == 1 ? 0 : -1;
+    result = count == 1 ? 0 : -1;
+done:
+    free_cert(crt); return result;
 }

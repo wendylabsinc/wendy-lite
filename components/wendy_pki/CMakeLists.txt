@@ -16,12 +16,12 @@ if(CONFIG_WENDY_PKI)
         string(TOLOWER "${kind}" lower_kind)
         file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/${lower_kind}_roots.pem" "${bundle}")
     endforeach()
-    idf_component_register(SRCS "src/wendy_lite_grant.c" "src/wendy_pki_verify.c" "src/wendy_pki.c" "src/wendy_pki_tls.c"
-        "src/wendy_roughtime.c" "src/wendy_roughtime_servers.c" "src/wendy_roughtime_network.c"
-        INCLUDE_DIRS "include" REQUIRES wendy_wolfssl wendy_conf nvs_flash esp_timer esp_hw_support json http_parser lwip)
+    idf_component_register(SRCS "src/wendy_pki_crypto.c" "src/wendy_lite_grant.c" "src/wendy_pki_verify.c" "src/wendy_pki.c" "src/wendy_pki_tls.c"
+
+        INCLUDE_DIRS "include" REQUIRES mbedtls wendy_conf nvs_flash esp_timer esp_hw_support json http_parser lwip)
     foreach(kind device tsa https)
         target_add_binary_data(${COMPONENT_LIB} "${CMAKE_CURRENT_BINARY_DIR}/${kind}_roots.pem" TEXT RENAME_TO "wendy_pki_${kind}_roots")
     endforeach()
 else()
-    idf_component_register(SRCS "src/wendy_pki_stub.c" INCLUDE_DIRS "include" REQUIRES wendy_wolfssl wendy_conf nvs_flash esp_timer esp_hw_support json http_parser lwip)
+    idf_component_register(SRCS "src/wendy_pki_stub.c" INCLUDE_DIRS "include" REQUIRES mbedtls wendy_conf nvs_flash esp_timer esp_hw_support json http_parser lwip)
 endif()

@@ -7,8 +7,6 @@ dependencies:
     override_path: "../wendy_stdio"
   wendy_com:
     override_path: "../wendy_com"
-  wendy_wolfssl:
-    override_path: "../wendy_wolfssl"
   wendy_pki:
     override_path: "../wendy_pki"
   wendy_server:

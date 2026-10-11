@@ -3,8 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <wolfssl/wolfcrypt/sha256.h>
-#include <wolfssl/wolfcrypt/hash.h>
+#include <mbedtls/sha256.h>
 static unsigned checks;
 #define CHECK(x) do { checks++; if (!(x)) { fprintf(stderr, "check failed at %d\n", __LINE__); abort(); } } while (0)
 static size_t load(const char *root, const char *name, uint8_t *out, size_t max)
@@ -24,12 +23,12 @@ int main(int argc, char **argv)
     CHECK(load(argv[1], "cloud-key.bin", trust.keys[0].public_key, WENDY_LITE_KEY_BYTES) == WENDY_LITE_KEY_BYTES);
     size_t size = load(argv[1], "grant.bin", record, sizeof record);
     trust.session[15] = 3;
-    CHECK(wc_Sha256Hash(record, size, trust.grant_hash) == 0);
+    CHECK(mbedtls_sha256(record, size, trust.grant_hash, 0) == 0);
     uint8_t device[32], operator_id[32];
     const char *device_uri = "spiffe://wendy.sh/tenant/00000000-0000-4000-8000-000000000001/device/lite-test";
     const char *operator_uri = "spiffe://wendy.sh/tenant/00000000-0000-4000-8000-000000000001/operator/00000000-0000-4000-8000-000000000002";
-    CHECK(wc_Sha256Hash((const uint8_t *)device_uri, strlen(device_uri), device) == 0);
-    CHECK(wc_Sha256Hash((const uint8_t *)operator_uri, strlen(operator_uri), operator_id) == 0);
+    CHECK(mbedtls_sha256((const uint8_t *)device_uri, strlen(device_uri), device, 0) == 0);
+    CHECK(mbedtls_sha256((const uint8_t *)operator_uri, strlen(operator_uri), operator_id, 0) == 0);
     uint64_t expiry = 0;
     CHECK(wendy_lite_verify_grant(record, size, &trust, device, operator_id, 1700000000, &expiry) == 0);
     CHECK(expiry == 1700001800);
@@ -49,7 +48,7 @@ int main(int argc, char **argv)
     trust.keys[0].id[0] ^= 1;
     memcpy(changed, record, size); changed[size - 20] ^= 1;
     // Even a matching upgrade hash cannot make a forged signature valid.
-    CHECK(wc_Sha256Hash(changed, size, trust.grant_hash) == 0);
+    CHECK(mbedtls_sha256(changed, size, trust.grant_hash, 0) == 0);
     CHECK(wendy_lite_verify_grant(changed, size, &trust, device, operator_id, 1700000000, &expiry) != 0);
     memcpy(changed, record, size); changed[4] = 255;
     CHECK(wendy_lite_verify_grant(changed, size, &trust, device, operator_id, 1700000000, &expiry) != 0);

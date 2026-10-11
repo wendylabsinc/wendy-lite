@@ -43,10 +43,7 @@ jobs:
       - name: Trust checkout paths in the build container
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git config --global --add safe.directory "$GITHUB_WORKSPACE/components/wendy_wolfssl/wolfssl"
 
-      - name: Verify reviewed wolfSSL revision
-        run: bash tools/verify_wolfssl.sh
 
       # The version a device reports comes from CONFIG_WENDY_FIRMWARE_VERSION_*
       # (components/wendy_core/Kconfig), whose defaults are a dev placeholder.

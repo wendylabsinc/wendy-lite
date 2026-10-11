@@ -21,3 +21,5 @@ size_t wendy_pki_time_request(uint8_t out[128], const uint8_t nonce[32]);
 
 /* After TLS chain verification: require one same-tenant operator URI and clientAuth. */
 int wendy_pki_verify_operator(const uint8_t *der, size_t size, const char *tenant);
+
+int wendy_pki_rng(void *context, unsigned char *out, size_t size);

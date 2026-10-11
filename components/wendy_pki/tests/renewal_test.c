@@ -6,7 +6,6 @@
 static size_t build_roots_size = 1;
 #include "../src/wendy_pki.c"
 #include <assert.h>
-int wendy_rt_query(struct wendy_rt_interval *out) { (void)out; return -1; }
 
 const uint8_t wendy_pki_device_roots_start[] = {0};
 const uint8_t wendy_pki_tsa_roots_start[] = {0};
@@ -277,7 +276,6 @@ int main(int argc, char **argv)
     assert(wendy_pki_connect(&connection) == ESP_OK);
     assert(!pending_certificate && have_certificate && broker_calls == 1);
     assert(renewal_calls == 1 && identity_checks == 2);
-    wolfSSL_Cleanup();
     puts("renewal fallback tests passed");
 }
 

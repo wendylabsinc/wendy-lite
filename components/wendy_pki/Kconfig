@@ -1,6 +1,6 @@
 menu "Wendy PKI"
     config WENDY_PKI
-        bool "Use pki-core Tier C enrollment and ML-DSA trust"
+        bool "Use pki-core Tier C enrollment and P-256 trust"
         default y
         help
             Generate the identity key on-device, redeem a real pki-core credential,

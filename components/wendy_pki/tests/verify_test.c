@@ -3,9 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <wolfssl/ssl.h>
-#include <wolfssl/wolfcrypt/settings.h>
-/* Override only this test executable's wall clock, including wolfSSL calls. */
+/* Override only this test executable's wall clock, including mbedTLS calls. */
 static time_t wall_clock;
 time_t time(time_t *out)
 {
@@ -34,20 +32,14 @@ int main(int argc, char **argv)
         uint8_t nonce[32], request[128];
         for (int i = 0; i < 32; i++)
             nonce[i] = i + 1;
-        assert(wolfSSL_Init() == WOLFSSL_SUCCESS);
         size_t size = wendy_pki_time_request(request, nonce);
         FILE *f = fopen(argv[2], "wb");
         assert(f && fwrite(request, 1, size, f) == size);
         fclose(f);
-        wolfSSL_Cleanup();
         return 0;
     }
     assert(argc == 2 || argc == 3);
     wall_clock = argc == 3 ? (time_t)strtoll(argv[2], NULL, 10) : 0;
-    int init = wolfSSL_Init();
-    printf("init=%d success=%d\n", init, WOLFSSL_SUCCESS);
-    fflush(stdout);
-    assert(init == WOLFSSL_SUCCESS);
     size_t root_n, nonce_n, n;
     unsigned char *root = load(argv[1], "root.pem", &root_n),
                   *nonce = load(argv[1], "nonce.bin", &nonce_n);
@@ -121,6 +113,5 @@ int main(int argc, char **argv)
     free(key);
     free(root);
     free(nonce);
-    wolfSSL_Cleanup();
     puts("signed-time verification tests passed");
 }

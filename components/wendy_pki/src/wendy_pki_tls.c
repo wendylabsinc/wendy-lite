@@ -4,6 +4,7 @@
 #include "wendy_pki_internal.h"
 #include "wendy_pki_verify.h"
 #include <errno.h>
+#include <psa/crypto.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <stdio.h>
@@ -12,36 +13,65 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-static int io_recv(WOLFSSL *ssl, char *buf, int size, void *context)
+static int io_recv(void *context, unsigned char *buf, size_t size)
 {
-    (void)ssl;
-    int fd = *(int *)context;
-    int n = recv(fd, buf, size, 0);
+    int n = recv(*(int *)context, buf, size, 0);
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
-        return WOLFSSL_CBIO_ERR_WANT_READ;
-    return n == 0 ? WOLFSSL_CBIO_ERR_CONN_CLOSE : n < 0 ? WOLFSSL_CBIO_ERR_GENERAL : n;
+        return MBEDTLS_ERR_SSL_WANT_READ;
+    return n < 0 ? MBEDTLS_ERR_SSL_INTERNAL_ERROR : n;
 }
-static int io_send(WOLFSSL *ssl, char *buf, int size, void *context)
+static int io_send(void *context, const unsigned char *buf, size_t size)
 {
-    (void)ssl;
     int n = send(*(int *)context, buf, size, 0);
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
-        return WOLFSSL_CBIO_ERR_WANT_WRITE;
-    return n < 0 ? WOLFSSL_CBIO_ERR_GENERAL : n;
+        return MBEDTLS_ERR_SSL_WANT_WRITE;
+    return n < 0 ? MBEDTLS_ERR_SSL_INTERNAL_ERROR : n;
 }
 void wendy_pki_close(wendy_pki_connection *c)
 {
-    if (!c)
-        return;
-    wolfSSL_free(c->ssl);
-    wolfSSL_CTX_free(c->ctx);
-    if (c->fd >= 0)
-        close(c->fd);
+    if (!c) return;
+    mbedtls_ssl_free(&c->ssl);
+    mbedtls_ssl_config_free(&c->config);
+    mbedtls_x509_crt_free(&c->roots);
+    mbedtls_x509_crt_free(&c->certificate);
+    mbedtls_pk_free(&c->key);
+    if (c->fd >= 0) close(c->fd);
     free(c);
+}
+static int configure(wendy_pki_connection *c, int server, const uint8_t *key,
+    size_t key_size, const char *cert, struct wendy_conf_span roots)
+{
+    mbedtls_ssl_init(&c->ssl); mbedtls_ssl_config_init(&c->config);
+    mbedtls_x509_crt_init(&c->roots); mbedtls_x509_crt_init(&c->certificate);
+    mbedtls_pk_init(&c->key);
+    if (psa_crypto_init() != PSA_SUCCESS || !roots.data || !roots.size || roots.size > 16384 ||
+        mbedtls_ssl_config_defaults(&c->config, server ? MBEDTLS_SSL_IS_SERVER : MBEDTLS_SSL_IS_CLIENT,
+            MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT)) return -1;
+    unsigned char *copy = calloc(1, roots.size + 1);
+    if (!copy) return -1;
+    memcpy(copy, roots.data, roots.size);
+    int r = mbedtls_x509_crt_parse(&c->roots, copy, roots.size + 1);
+    free(copy);
+    if (r) return -1;
+    mbedtls_ssl_conf_authmode(&c->config, MBEDTLS_SSL_VERIFY_REQUIRED);
+    mbedtls_ssl_conf_rng(&c->config, wendy_pki_rng, NULL);
+    mbedtls_ssl_conf_ca_chain(&c->config, &c->roots, NULL);
+    mbedtls_ssl_conf_min_tls_version(&c->config, MBEDTLS_SSL_VERSION_TLS1_3);
+    mbedtls_ssl_conf_max_tls_version(&c->config, MBEDTLS_SSL_VERSION_TLS1_3);
+    if (key || cert) {
+        if (!key || !cert ||
+            mbedtls_x509_crt_parse(&c->certificate, (const unsigned char *)cert, strlen(cert)+1) ||
+            mbedtls_pk_parse_key(&c->key, key, key_size, NULL, 0, wendy_pki_rng, NULL) ||
+            mbedtls_pk_check_pair(&c->certificate.pk, &c->key, wendy_pki_rng, NULL) ||
+            mbedtls_ssl_conf_own_cert(&c->config, &c->certificate, &c->key)) return -1;
+    }
+    if (mbedtls_ssl_setup(&c->ssl, &c->config)) return -1;
+    mbedtls_ssl_set_bio(&c->ssl, &c->fd, io_send, io_recv, NULL);
+    return 0;
 }
 static int wait_socket(wendy_pki_connection *c, int error, int64_t deadline)
 {
-    if (error != WOLFSSL_ERROR_WANT_READ && error != WOLFSSL_ERROR_WANT_WRITE)
+    if (error != MBEDTLS_ERR_SSL_WANT_READ && error != MBEDTLS_ERR_SSL_WANT_WRITE)
         return -1;
     int64_t left = deadline - esp_timer_get_time();
     if (left <= 0)
@@ -49,7 +79,7 @@ static int wait_socket(wendy_pki_connection *c, int error, int64_t deadline)
     fd_set rd, wr;
     FD_ZERO(&rd);
     FD_ZERO(&wr);
-    if (error == WOLFSSL_ERROR_WANT_READ)
+    if (error == MBEDTLS_ERR_SSL_WANT_READ)
         FD_SET(c->fd, &rd);
     else
         FD_SET(c->fd, &wr);
@@ -61,24 +91,15 @@ static int detach_socket(wendy_pki_connection *c)
     int64_t deadline = esp_timer_get_time() + 10000000;
     unsigned char byte;
     for (;;) {
-        int n = wolfSSL_read(c->ssl, &byte, 1);
-        if (n > 0) // Application data is illegal after the upgrade record.
-            return -1;
-        int error = wolfSSL_get_error(c->ssl, n);
-        if (error == WOLFSSL_ERROR_ZERO_RETURN)
-            break;
-        if (wait_socket(c, error, deadline))
-            return -1;
+        int n = mbedtls_ssl_read(&c->ssl, &byte, 1);
+        if (n == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) break;
+        // Reject TCP EOF and application data after the upgrade.
+        if (n >= 0 || wait_socket(c, n, deadline)) return -1;
     }
-    // A TCP EOF is not sufficient: require the authenticated TLS notification.
-    if (!(wolfSSL_get_shutdown(c->ssl) & WOLFSSL_RECEIVED_SHUTDOWN))
-        return -1;
     int n;
-    while ((n = wolfSSL_shutdown(c->ssl)) != WOLFSSL_SUCCESS)
-        if (wait_socket(c, wolfSSL_get_error(c->ssl, n), deadline))
-            return -1;
-    int fd = c->fd;
-    c->fd = -1;
+    while ((n = mbedtls_ssl_close_notify(&c->ssl)) != 0)
+        if (wait_socket(c, n, deadline)) return -1;
+    int fd = c->fd; c->fd = -1;
     return fd;
 }
 int wendy_pki_detach(wendy_pki_connection *c)
@@ -118,7 +139,7 @@ int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t 
         int r = connect(c->fd, a->ai_addr, a->ai_addrlen);
         if (r == 0)
             break;
-        if (errno == EINPROGRESS && !wait_socket(c, WOLFSSL_ERROR_WANT_WRITE, deadline))
+        if (errno == EINPROGRESS && !wait_socket(c, MBEDTLS_ERR_SSL_WANT_WRITE, deadline))
         {
             int e = 0;
             socklen_t n = sizeof e;
@@ -132,36 +153,12 @@ int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t 
     addresses = NULL;
     if (c->fd < 0)
         goto fail;
-    c->ctx = wolfSSL_CTX_new(wolfTLSv1_3_client_method());
-    if (!c->ctx)
-        goto fail;
-    wolfSSL_CTX_set_verify(c->ctx, WOLFSSL_VERIFY_PEER, NULL);
-    if (wolfSSL_CTX_load_verify_buffer(c->ctx, roots.data, roots.size,
-                                       WOLFSSL_FILETYPE_PEM) != WOLFSSL_SUCCESS)
-        goto fail;
-    if (key && cert)
-    {
-        if (wolfSSL_CTX_use_certificate_chain_buffer_format(
-                c->ctx, (uint8_t *)cert, strlen(cert), WOLFSSL_FILETYPE_PEM) != WOLFSSL_SUCCESS ||
-            wolfSSL_CTX_use_PrivateKey_buffer(c->ctx, key, key_size, WOLFSSL_FILETYPE_ASN1) !=
-                WOLFSSL_SUCCESS ||
-            wolfSSL_CTX_check_private_key(c->ctx) != WOLFSSL_SUCCESS)
-            goto fail;
-    }
-    wolfSSL_CTX_SetIORecv(c->ctx, io_recv);
-    wolfSSL_CTX_SetIOSend(c->ctx, io_send);
-    c->ssl = wolfSSL_new(c->ctx);
-    if (!c->ssl)
-        goto fail;
-    wolfSSL_SetIOReadCtx(c->ssl, &c->fd);
-    wolfSSL_SetIOWriteCtx(c->ssl, &c->fd);
-    if (wolfSSL_check_domain_name(c->ssl, host) != WOLFSSL_SUCCESS ||
-        wolfSSL_UseSNI(c->ssl, WOLFSSL_SNI_HOST_NAME, host, strlen(host)) != WOLFSSL_SUCCESS)
-        goto fail;
+    if (configure(c, 0, key, key_size, cert, roots) ||
+        mbedtls_ssl_set_hostname(&c->ssl, host)) goto fail;
     int r;
-    while ((r = wolfSSL_connect(c->ssl)) != WOLFSSL_SUCCESS)
-        if (wait_socket(c, wolfSSL_get_error(c->ssl, r), deadline))
-            goto fail;
+    while ((r = mbedtls_ssl_handshake(&c->ssl)) != 0)
+        if (wait_socket(c, r, deadline)) goto fail;
+    if (mbedtls_ssl_get_verify_result(&c->ssl)) goto fail;
     *out = c;
     return 0;
 fail:
@@ -173,22 +170,23 @@ fail:
 int wendy_pki_fd(void *v) { return ((wendy_pki_connection *)v)->fd; }
 static ssize_t result(wendy_pki_connection *c, int n)
 {
+    if (n == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) return 0;
     if (n >= 0)
         return n;
-    int e = wolfSSL_get_error(c->ssl, n);
-    return e == WOLFSSL_ERROR_WANT_READ ? -2 : e == WOLFSSL_ERROR_WANT_WRITE ? -3 : -1;
+    int e = n;
+    return e == MBEDTLS_ERR_SSL_WANT_READ ? -2 : e == MBEDTLS_ERR_SSL_WANT_WRITE ? -3 : -1;
 }
 ssize_t wendy_pki_read(void *v, void *b, size_t n)
 {
     wendy_pki_connection *c = v;
     if (c->relay_expires_us && esp_timer_get_time() >= c->relay_expires_us) return -1;
-    return result(c, wolfSSL_read(c->ssl, b, n));
+    return result(c, mbedtls_ssl_read(&c->ssl, b, n));
 }
 ssize_t wendy_pki_write(void *v, const void *b, size_t n)
 {
     wendy_pki_connection *c = v;
     if (c->relay_expires_us && esp_timer_get_time() >= c->relay_expires_us) return -1;
-    return result(c, wolfSSL_write(c->ssl, b, n));
+    return result(c, mbedtls_ssl_write(&c->ssl, b, n));
 }
 struct response
 {
@@ -215,13 +213,13 @@ static int write_all(wendy_pki_connection *c, const void *b, size_t n, int64_t d
     const uint8_t *p = b;
     while (n)
     {
-        int r = wolfSSL_write(c->ssl, p, n);
+        int r = mbedtls_ssl_write(&c->ssl, p, n);
         if (r > 0)
         {
             p += r;
             n -= r;
         }
-        else if (wait_socket(c, wolfSSL_get_error(c->ssl, r), deadline))
+        else if (wait_socket(c, r, deadline))
             return -1;
     }
     return 0;
@@ -276,10 +274,12 @@ int pki_http_post(const char *url, const char *type, const char *token, const vo
     char buffer[2048];
     while (!r.complete)
     {
-        int got = wolfSSL_read(c->ssl, buffer, sizeof buffer);
+        int got = mbedtls_ssl_read(&c->ssl, (unsigned char *)buffer, sizeof buffer);
+        if (got == 0) goto done; // TCP EOF without close_notify is a truncated TLS response.
+        if (got == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) got = 0;
         if (got < 0)
         {
-            if (wait_socket(c, wolfSSL_get_error(c->ssl, got), deadline))
+            if (wait_socket(c, got, deadline))
                 goto done;
             continue;
         }
@@ -315,32 +315,14 @@ int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, const char *cert
     if (!c) { close(fd); return -1; }
     c->fd = fd;
     if (fd < 0 || fd >= FD_SETSIZE || fcntl(fd, F_SETFL, O_NONBLOCK) < 0) goto fail;
-    c->ctx = wolfSSL_CTX_new(wolfTLSv1_3_server_method());
-    if (!c->ctx) goto fail;
-    // Build the complete certificate flight before nonblocking socket writes.
-    // Retrying wolfSSL 5.9.1 mid-certificate resets its chain-fragment cursor.
-    wolfSSL_CTX_set_group_messages(c->ctx);
-    wolfSSL_CTX_set_verify(c->ctx, WOLFSSL_VERIFY_PEER | WOLFSSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
-    if (wolfSSL_CTX_load_verify_buffer(c->ctx, roots.data, roots.size, WOLFSSL_FILETYPE_PEM) != WOLFSSL_SUCCESS ||
-        wolfSSL_CTX_use_certificate_chain_buffer_format(c->ctx, (const uint8_t *)cert, strlen(cert), WOLFSSL_FILETYPE_PEM) != WOLFSSL_SUCCESS ||
-        wolfSSL_CTX_use_PrivateKey_buffer(c->ctx, key, key_size, WOLFSSL_FILETYPE_ASN1) != WOLFSSL_SUCCESS ||
-        wolfSSL_CTX_check_private_key(c->ctx) != WOLFSSL_SUCCESS) goto fail;
-    wolfSSL_CTX_SetIORecv(c->ctx, io_recv);
-    wolfSSL_CTX_SetIOSend(c->ctx, io_send);
-    c->ssl = wolfSSL_new(c->ctx);
-    if (!c->ssl) goto fail;
-    wolfSSL_SetIOReadCtx(c->ssl, &c->fd);
-    wolfSSL_SetIOWriteCtx(c->ssl, &c->fd);
+    if (configure(c, 1, key, key_size, cert, roots)) goto fail;
     int r;
-    while ((r = wolfSSL_accept(c->ssl)) != WOLFSSL_SUCCESS)
-        if (wait_socket(c, wolfSSL_get_error(c->ssl, r), deadline)) goto fail;
-    WOLFSSL_X509 *peer = wolfSSL_get_peer_certificate(c->ssl);
-    int peer_size = 0;
-    const uint8_t *peer_der = peer ? wolfSSL_X509_get_der(peer, &peer_size) : NULL;
-    int valid_operator = wendy_pki_verify_operator(peer_der, peer_size, tenant);
-    if (!valid_operator) valid_operator = wendy_lite_peer_hash(peer_der, peer_size, c->operator_hash);
-    wolfSSL_X509_free(peer);
-    if (valid_operator) goto fail;
+    while ((r = mbedtls_ssl_handshake(&c->ssl)) != 0)
+        if (wait_socket(c, r, deadline)) goto fail;
+    const mbedtls_x509_crt *peer = mbedtls_ssl_get_peer_cert(&c->ssl);
+    if (!peer || mbedtls_ssl_get_verify_result(&c->ssl) ||
+        wendy_pki_verify_operator(peer->raw.p, peer->raw.len, tenant) ||
+        wendy_lite_peer_hash(peer->raw.p, peer->raw.len, c->operator_hash)) goto fail;
     *out = c;
     return 0;
 fail:
@@ -352,9 +334,9 @@ static int read_all(wendy_pki_connection *c, uint8_t *out, size_t n, int64_t dea
 {
     while (n) {
         if (esp_timer_get_time() >= deadline) return -1;
-        int got = wolfSSL_read(c->ssl, out, n);
+        int got = mbedtls_ssl_read(&c->ssl, out, n);
         if (got > 0) { out += got; n -= got; }
-        else if (!got || wait_socket(c, wolfSSL_get_error(c->ssl, got), deadline)) return -1;
+        else if (!got || wait_socket(c, got, deadline)) return -1;
     }
     return 0;
 }
@@ -364,7 +346,7 @@ int wendy_pki_relay_upgrade(wendy_pki_connection *c, struct wendy_lite_trust *tr
     uint8_t header[4], count;
     int64_t deadline = esp_timer_get_time() + 10000000;
     memset(trust, 0, sizeof *trust);
-    if (read_all(c, header, 4, deadline) || memcmp(header, "WR\x02\x04", 4) ||
+    if (read_all(c, header, 4, deadline) || memcmp(header, "WR\x03\x04", 4) ||
         read_all(c, &count, 1, deadline) || count < 1 || count > 2) return -1;
     trust->count = count;
     for (unsigned i = 0; i < count; i++) {
@@ -379,9 +361,9 @@ int wendy_pki_relay_upgrade(wendy_pki_connection *c, struct wendy_lite_trust *tr
     for (;;) {
         deadline = esp_timer_get_time() + 30000000;
         if (deadline > renew) deadline = renew;
-        if (read_all(c, header, 4, deadline) || memcmp(header, "WR\x02", 3)) return -1;
+        if (read_all(c, header, 4, deadline) || memcmp(header, "WR\x03", 3)) return -1;
         if (header[3] == 1) {
-            if (write_all(c, "WR\x02\x02", 4, deadline)) return -1;
+            if (write_all(c, "WR\x03\x02", 4, deadline)) return -1;
         } else if (header[3] == 3) {
             deadline = esp_timer_get_time() + 10000000;
             if (read_all(c, trust->session, 16, deadline) ||
@@ -396,16 +378,16 @@ int pki_relay_grant(wendy_pki_connection *c, const struct wendy_lite_trust *trus
     uint8_t *record = malloc(WENDY_LITE_GRANT_MAX);
     if (!record) return -1;
     int result = -1;
-    if (read_all(c, record, 5, deadline) || memcmp(record, "WLG1", 4) ||
+    if (read_all(c, record, 5, deadline) || memcmp(record, "WLG2", 4) ||
         record[4] < 1 || record[4] > 128) goto done;
-    size_t size = 3458u + record[4];
+    size_t size = 213u + record[4];
     uint64_t expires = 0;
     if (read_all(c, record + 5, size - 5, deadline) ||
         wendy_lite_verify_grant(record, size, trust, c->device_hash, c->operator_hash, time(NULL), &expires)) goto done;
     int64_t remaining = (int64_t)expires - (int64_t)time(NULL);
     if (remaining <= 0 || remaining > 1800) goto done;
     c->relay_expires_us = esp_timer_get_time() + remaining * 1000000;
-    if (write_all(c, "WLA1", 4, deadline)) goto done;
+    if (write_all(c, "WLA2", 4, deadline)) goto done;
     result = 0;
 done:
     free(record);

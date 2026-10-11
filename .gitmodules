@@ -1,3 +1,0 @@
-[submodule "components/wendy_wolfssl/wolfssl"]
-	path = components/wendy_wolfssl/wolfssl
-	url = https://github.com/wolfSSL/wolfssl.git

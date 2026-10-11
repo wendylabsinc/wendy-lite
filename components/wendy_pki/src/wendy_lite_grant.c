@@ -1,11 +1,9 @@
 #include "wendy_lite_grant.h"
 #include <stdlib.h>
 #include <string.h>
-#include <wolfssl/wolfcrypt/asn.h>
-#include <wolfssl/wolfcrypt/asn_public.h>
-#include <wolfssl/wolfcrypt/dilithium.h>
-#include <wolfssl/wolfcrypt/sha256.h>
-#include <wolfssl/wolfcrypt/hash.h>
+#include <mbedtls/ecdsa.h>
+#include <mbedtls/sha256.h>
+#include <mbedtls/x509_crt.h>
 
 int wendy_lite_key_id(const uint8_t *id, size_t n)
 {
@@ -28,7 +26,7 @@ int wendy_lite_verify_grant(const uint8_t *r, size_t n,
     const uint8_t operator_id[32], time_t now, uint64_t *expires)
 {
     if (!r || !trust || !device || !operator_id || !expires || now < 0 || n < 5 ||
-        memcmp(r, "WLG1", 4) || n != 3458u + r[4] ||
+        memcmp(r, "WLG2", 4) || n != 213u + r[4] ||
         wendy_lite_key_id(r + 5, r[4]) || trust->count < 1 || trust->count > 2) return -1;
     const struct wendy_lite_key *selected = NULL;
     for (unsigned i = 0; i < trust->count; i++) {
@@ -43,39 +41,45 @@ int wendy_lite_verify_grant(const uint8_t *r, size_t n,
     uint64_t issued = u64(fields), expiry = u64(fields + 8);
     uint8_t hash[32];
     if (!issued || expiry <= issued || expiry - issued > 1800 || issued > (uint64_t)now ||
-        expiry <= (uint64_t)now || wc_Sha256Hash(r, n, hash) ||
+        expiry <= (uint64_t)now || mbedtls_sha256(r, n, hash, 0) ||
         memcmp(hash, trust->grant_hash, 32) || memcmp(fields + 16, trust->session, 16) ||
         memcmp(fields + 48, device, 32) || memcmp(fields + 80, operator_id, 32)) return -1;
-    dilithium_key *key = malloc(sizeof *key);
-    if (!key) return -1;
-    int result = -1, valid = 0;
-    if (!wc_dilithium_init(key)) {
-        if (!wc_dilithium_set_level(key, WC_ML_DSA_65) &&
-            !wc_dilithium_import_public(selected->public_key, WENDY_LITE_KEY_BYTES, key) &&
-            !wc_dilithium_verify_ctx_msg(r + n - 3309, 3309, NULL, 0, r, n - 3309, &valid, key) && valid) {
-            *expires = expiry;
-            result = 0;
-        }
-        wc_dilithium_free(key);
+    mbedtls_ecp_group group;
+    mbedtls_ecp_point point;
+    mbedtls_mpi sr, ss;
+    mbedtls_ecp_group_init(&group); mbedtls_ecp_point_init(&point);
+    mbedtls_mpi_init(&sr); mbedtls_mpi_init(&ss);
+    int result = -1;
+    if (!mbedtls_ecp_group_load(&group, MBEDTLS_ECP_DP_SECP256R1) &&
+        !mbedtls_ecp_point_read_binary(&group, &point, selected->public_key, WENDY_LITE_KEY_BYTES) &&
+        !mbedtls_ecp_check_pubkey(&group, &point) &&
+        !mbedtls_mpi_read_binary(&sr, r+n-64, 32) &&
+        !mbedtls_mpi_read_binary(&ss, r+n-32, 32) &&
+        !mbedtls_sha256(r, n-64, hash, 0) &&
+        !mbedtls_ecdsa_verify(&group, hash, 32, &point, &sr, &ss)) {
+        *expires = expiry;
+        result = 0;
     }
-    free(key);
+    mbedtls_mpi_free(&sr); mbedtls_mpi_free(&ss);
+    mbedtls_ecp_point_free(&point); mbedtls_ecp_group_free(&group);
     return result;
 }
+
 int wendy_lite_peer_hash(const uint8_t *der, size_t n, uint8_t hash[32])
 {
     if (!der || !n || n > 65536 || !hash) return -1;
-    DecodedCert *cert = malloc(sizeof *cert);
-    if (!cert) return -1;
-    wc_InitDecodedCert(cert, der, n, NULL);
+    mbedtls_x509_crt cert;
+    mbedtls_x509_crt_init(&cert);
     int result = -1, count = 0;
-    if (!wc_ParseCert(cert, CERT_TYPE, NO_VERIFY, NULL)) {
-        for (DNS_entry *a = cert->altNames; a; a = a->next) {
-            if (a->type != ASN_URI_TYPE) continue;
+    if (!mbedtls_x509_crt_parse_der(&cert, der, n)) {
+        for (const mbedtls_x509_sequence *a = &cert.subject_alt_names; a && a->buf.p; a = a->next) {
+            mbedtls_x509_subject_alternative_name san;
+            if (mbedtls_x509_parse_subject_alt_name(&a->buf, &san) ||
+                san.type != MBEDTLS_X509_SAN_UNIFORM_RESOURCE_IDENTIFIER) continue;
             count++;
-            result = a->len > 0 ? wc_Sha256Hash((uint8_t *)a->name, a->len, hash) : -1;
+            result = mbedtls_sha256(san.san.unstructured_name.p, san.san.unstructured_name.len, hash, 0);
         }
     }
-    wc_FreeDecodedCert(cert);
-    free(cert);
+    mbedtls_x509_crt_free(&cert);
     return count == 1 && result == 0 ? 0 : -1;
 }

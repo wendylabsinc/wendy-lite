@@ -2,10 +2,8 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <wolfssl/ssl.h>
 int main(int argc, char **argv) {
     assert(argc == 2);
-    wolfSSL_Init();
     const char *names[] = {"valid", "wrong-role", "duplicate", "wrong-eku", "ca"};
     for (int i = 0; i < 5; i++) {
         char path[1024]; snprintf(path, sizeof path, "%s/%s.der", argv[1], names[i]);
