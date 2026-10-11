@@ -3,3 +3,8 @@
 WendyComAppPushDataParams.data   type:FT_CALLBACK
 WendyComConfPushDataParams.data  type:FT_CALLBACK
 WendyComConsoleData.data         type:FT_CALLBACK
+
+WendyComEnrollmentChallenge.nonce_hex max_size:65
+
+WendyComSyncTimeParams.server   type:FT_CALLBACK
+WendyComSyncTimeParams.response type:FT_CALLBACK

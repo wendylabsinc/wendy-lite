@@ -1,10 +1,26 @@
 dependencies:
+  nanopb:
+    override_path: "../nanopb"
   wendy_conf:
     override_path: "../wendy_conf"
   wendy_stdio:
     override_path: "../wendy_stdio"
+  wendy_com:
+    override_path: "../wendy_com"
+  wendy_wolfssl:
+    override_path: "../wendy_wolfssl"
+  wendy_pki:
+    override_path: "../wendy_pki"
+  wendy_server:
+    override_path: "../wendy_server"
+  wendy_cloud:
+    override_path: "../wendy_cloud"
   wendy_wasm:
     override_path: "../wendy_wasm"
+    rules:
+      - if: "$CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True"
+  wendy_callback:
+    override_path: "../wendy_callback"
     rules:
       - if: "$CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True"
   wendy_hal:
@@ -13,6 +29,10 @@ dependencies:
       - if: "$CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True"
   wendy_hal_export:
     override_path: "../wendy_hal_export"
+    rules:
+      - if: "$CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True"
+  wendy_net:
+    override_path: "../wendy_net"
     rules:
       - if: "$CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True"
   wendy_usj:

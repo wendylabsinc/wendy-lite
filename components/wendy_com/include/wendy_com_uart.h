@@ -29,6 +29,8 @@ typedef enum wendy_com_uart_esc_cmd {
 
 typedef struct wendy_com_uart {
     int fd;
+    // Optional nonblocking writer: byte count or WENDY_COM_UART_ERR_*.
+    ssize_t (*write_bytes)(const void *data, size_t size);
     uint8_t raw_buf[WENDY_COM_UART_RAW_BUF_SIZE];
     int raw_pos;
     int raw_len;

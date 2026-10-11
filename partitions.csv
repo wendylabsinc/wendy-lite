@@ -1,8 +1,9 @@
 # Name,     Type, SubType, Offset,   Size,     Flags
-# 4 MB flash layout (ESP32-C6)
+# 4 MB flash layout (ESP32-C6). PKI identity is kept separate from
+# Wi-Fi/application NVS.
 nvs,        data, nvs,     0x9000,   0x6000,
 phy_init,   data, phy,     0xf000,   0x1000,
-factory,    app,  factory, 0x10000,  0x1E0000,
-wasm_a,     data, 0x80,    0x1F0000, 0x200000,
-wendy_conf, data, 0x40,    0x3F0000, 0x4000,
-storage,    data, spiffs,  0x3F4000, 0xC000,
+factory,    app,  factory, 0x10000,  0x1D8000,
+wasm_a,     data, 0x80,    0x1E8000, 0x1DA000,
+wendy_pki,  data, nvs,     0x3C2000, 0x2C000,
+wendy_conf, data, 0x40,    0x3EE000, 0x12000,

@@ -1,0 +1,48 @@
+name: PKI enrollment
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - name: Verify reviewed wolfSSL revision
+        run: bash tools/verify_wolfssl.sh
+      - name: Verify pki-core timestamp and certificate fixtures
+        run: |
+          cmake -S components/wendy_pki/tests -B build-pki -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          cmake --build build-pki -j2
+          ctest --test-dir build-pki --output-on-failure
+
+  firmware:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    container:
+      image: espressif/idf:v5.5.4
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - name: Trust checkout paths in the build container
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/components/wendy_wolfssl/wolfssl"
+      - name: Verify reviewed wolfSSL revision
+        run: bash tools/verify_wolfssl.sh
+      - name: Build ESP32-C6 with enrollment and cloud enabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          . "$IDF_PATH/export.sh"
+          echo 'CONFIG_WENDY_CLOUD=y' > cloud.defaults
+          idf.py -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;cloud.defaults' set-target esp32c6
+          idf.py build

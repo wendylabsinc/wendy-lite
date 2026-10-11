@@ -124,6 +124,11 @@ struct wcom_stream_ops {
 
 int wcom_add_stream_link(const struct wcom_stream_ops *ops, void *ctx,
                          wcom_interruption_handler_t interruption_handler);
+// Socket-backed custom TLS transport. wakeup_fd returns the transport socket,
+// selected but never drained as eventfd. can_read/can_write are not used.
+int wcom_add_socket_link(const struct wcom_stream_ops *ops, void *ctx,
+                         wcom_interruption_handler_t interruption_handler);
+bool wcom_link_is_local(int link_id);
 int wcom_add_tls_link(esp_tls_t *tls, wcom_interruption_handler_t interruption_handler);
 int wcom_add_uart_link(wendy_com_uart_t *uart, wcom_interruption_handler_t interruption_handler);
 void wcom_remove_link(int link_id);

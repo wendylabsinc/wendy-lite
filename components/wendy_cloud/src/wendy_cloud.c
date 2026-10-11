@@ -2,22 +2,17 @@
 
 #if CONFIG_WENDY_CLOUD
 
-#include "esp_tls.h"
+#include "wendy_pki.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "wendy_conf.h"
 #include "wendy_server.h"
-#include "mbedtls/ssl.h"
 #include "esp_timer.h"
 #include <unistd.h>
 
 #include <stdatomic.h>
-#include <string.h>
-
-#define _CONNECT_TIMEOUT_MS 10000
-#define _DEFAULT_PORT 5055
 
 static const char *TAG = "wendy_cloud";
 
@@ -26,72 +21,16 @@ static _Atomic wendy_cloud_state_t s_state = WENDY_CLOUD_STATE_IDLE;
 // and cleared by the cloud task on exit, ordered via s_stopped.
 static TaskHandle_t                s_task  = NULL;
 static SemaphoreHandle_t           s_stopped;
-// Wakes the cloud task on link death or stop. Module-owned so the com task
-// never has to touch a task handle that may already be dead.
+// Wakes the cloud task from its reconnect delay when stop is requested.
 static SemaphoreHandle_t           s_wake;
 static atomic_bool                 s_stop;
 
 // Owned exclusively by the cloud task until the authenticated socket handoff.
-static esp_tls_t *s_tls;
+static wendy_pki_connection *s_tls;
 
 static esp_err_t cloud_connect(void)
 {
-    s_tls = esp_tls_init();
-    if (!s_tls) {
-        ESP_LOGE(TAG, "esp_tls_init failed");
-        return ESP_ERR_NO_MEM;
-    }
-
-    struct wendy_conf_span host = wendy_conf_get_cloud_host();
-
-    int port = _DEFAULT_PORT;
-    if (host.size > 0) {
-        const char *p = host.data + host.size - 1;
-        while (p > (const char *)host.data && *p >= '0' && *p <= '9')
-            p--;
-        if (*p == ':') {
-            host.size = p - (const char *)host.data;
-            port = (int)strtol(p + 1, NULL, 10);
-        }
-    }
-
-    ESP_LOGI(TAG, "Connecting to %.*s:%d with mTLS", (int)host.size, host.data, port);
-
-    struct wendy_conf_span key = wendy_conf_get_private_key();
-    struct wendy_conf_span cert = wendy_conf_get_certificate();
-    struct wendy_conf_span chain = wendy_conf_get_chain_of_trust();
-
-    esp_tls_cfg_t cfg = {
-        .clientcert_buf   = cert.data,
-        .clientcert_bytes = cert.size,
-        .clientkey_buf    = key.data,
-        .clientkey_bytes  = key.size,
-        .cacert_buf       = chain.data,
-        .cacert_bytes     = chain.size,
-        .timeout_ms       = _CONNECT_TIMEOUT_MS,
-    };
-
-    int ret = esp_tls_conn_new_sync(
-        host.data,
-        host.size,
-        port,
-        &cfg,
-        s_tls);
-
-    if (ret != 1) {
-        int mbedtls_err = 0, flags = 0;
-        esp_tls_error_handle_t eh;
-        if (esp_tls_get_error_handle(s_tls, &eh) == ESP_OK) {
-            esp_tls_get_and_clear_last_error(eh, &mbedtls_err, &flags);
-        }
-        ESP_LOGE(TAG, "TLS connect failed ret=%d mbedtls=0x%x flags=0x%x",
-                 ret, mbedtls_err, flags);
-        esp_tls_conn_destroy(s_tls);
-        s_tls = NULL;
-        return ESP_FAIL;
-    }
-
-    return ESP_OK;
+    return wendy_pki_connect(&s_tls);
 }
 
 // The broker control protocol is separate from WendyCom. It exists only inside
@@ -101,10 +40,12 @@ static esp_err_t wait_for_upgrade(void)
     unsigned char record[4];
     size_t received = 0;
     int64_t deadline = esp_timer_get_time() + 30000000;
+    int64_t refresh = esp_timer_get_time() + 240000000;
     while (!s_stop) {
-        int ret = esp_tls_conn_read(s_tls, record + received, sizeof(record) - received);
-        if (ret == ESP_TLS_ERR_SSL_WANT_READ || ret == ESP_TLS_ERR_SSL_WANT_WRITE ||
-            ret == MBEDTLS_ERR_SSL_TIMEOUT) {
+        if (esp_timer_get_time() >= deadline || esp_timer_get_time() >= refresh)
+            return ESP_ERR_TIMEOUT;
+        int ret = wendy_pki_read(s_tls, record + received, sizeof(record) - received);
+        if (ret == -2 || ret == -3) {
             if (esp_timer_get_time() >= deadline) return ESP_ERR_TIMEOUT;
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
@@ -118,7 +59,12 @@ static esp_err_t wait_for_upgrade(void)
         record[3] = 2;
         size_t sent = 0;
         while (sent < sizeof(record) && !s_stop) {
-            ret = esp_tls_conn_write(s_tls, record + sent, sizeof(record) - sent);
+            if (esp_timer_get_time() >= deadline) return ESP_ERR_TIMEOUT;
+            ret = wendy_pki_write(s_tls, record + sent, sizeof(record) - sent);
+            if (ret == -2 || ret == -3) {
+                vTaskDelay(pdMS_TO_TICKS(10));
+                continue;
+            }
             if (ret <= 0) return ESP_FAIL;
             sent += ret;
         }
@@ -130,33 +76,9 @@ static esp_err_t wait_for_upgrade(void)
 
 static int detach_socket(void)
 {
-    mbedtls_ssl_context *ssl = esp_tls_get_ssl_context(s_tls);
-    unsigned char byte;
-    int ret;
-    int64_t deadline = esp_timer_get_time() + 10000000;
-    // The broker sends close_notify after its upgrade. No more control data is legal.
-    do {
-        ret = mbedtls_ssl_read(ssl, &byte, 1);
-        if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
-            vTaskDelay(pdMS_TO_TICKS(10));
-            continue;
-        }
-        break;
-    } while (!s_stop && esp_timer_get_time() < deadline);
-    if (ret != MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) return -1;
-    do {
-        ret = mbedtls_ssl_close_notify(ssl);
-        if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE)
-            vTaskDelay(pdMS_TO_TICKS(10));
-        else break;
-    } while (!s_stop && esp_timer_get_time() < deadline);
-    if (ret != 0 || s_stop) return -1;
-    int fd = -1;
-    if (esp_tls_get_conn_sockfd(s_tls, &fd) != ESP_OK) return -1;
-    // ESP-IDF's session-delete frees the TLS context without closing the socket.
-    // conn_destroy would close TCP and must not be used at this boundary.
-    esp_tls_server_session_delete(s_tls);
-    s_tls = NULL;
+    int fd = wendy_pki_detach(s_tls);
+    if (fd >= 0)
+        s_tls = NULL;
     return fd;
 }
 
@@ -180,7 +102,7 @@ static void cloud_task(void *arg)
 
         if (s_stop) {
             // stopped during connect: not yet handed off, safe to destroy here
-            esp_tls_conn_destroy(s_tls);
+            wendy_pki_close(s_tls);
             s_tls = NULL;
             break;
         }
@@ -191,6 +113,10 @@ static void cloud_task(void *arg)
         if (wait_for_upgrade() == ESP_OK && !s_stop) {
             int fd = detach_socket();
             if (fd >= 0) {
+                if (s_stop) {
+                    close(fd);
+                    break;
+                }
                 // Starts a fresh TLS server session and requires a same-tenant operator.
                 // The server owns the descriptor on both success and failure.
                 wendy_server_accept_operator(fd);
@@ -199,7 +125,7 @@ static void cloud_task(void *arg)
             }
         }
         if (s_tls) {
-            esp_tls_conn_destroy(s_tls);
+            wendy_pki_close(s_tls);
             s_tls = NULL;
         }
         s_state = WENDY_CLOUD_STATE_DISCONNECTED;
@@ -222,19 +148,18 @@ esp_err_t wendy_cloud_start(void)
         return ESP_OK;
     }
 
-    struct wendy_conf_span host = wendy_conf_get_cloud_host();
-    struct wendy_conf_span key = wendy_conf_get_private_key();
-    struct wendy_conf_span cert = wendy_conf_get_certificate();
-    struct wendy_conf_span chain = wendy_conf_get_chain_of_trust();
-    if (host.size == 0 || key.size == 0 || cert.size == 0 || chain.size == 0) {
-        ESP_LOGE(TAG, "cloud provisioning not found in wendy_conf");
-        return ESP_FAIL;
+    if (!wendy_conf_has_enrollment()) {
+        ESP_LOGE(TAG, "pki-core enrollment configuration is missing");
+        return ESP_ERR_INVALID_STATE;
     }
 
     if (!s_stopped)
         s_stopped = xSemaphoreCreateBinary();
     if (!s_wake)
         s_wake = xSemaphoreCreateBinary();
+    if (!s_stopped || !s_wake)
+        return ESP_ERR_NO_MEM;
+    xSemaphoreTake(s_stopped, 0);
     xSemaphoreTake(s_wake, 0); // drain a stale wake left over from a previous run
     s_stop = false;
 

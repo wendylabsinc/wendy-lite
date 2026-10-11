@@ -121,3 +121,14 @@ struct wendy_conf_span wendy_conf_get_default_certificate(void);
 struct wendy_conf_span wendy_conf_get_default_private_key(void);
 
 void wendy_conf_copy_span(char *dest, size_t dest_size, struct wendy_conf_span src);
+
+bool wendy_conf_has_enrollment(void);
+#define WENDY_CONF_MAX_TRUST_BUNDLE 16384
+#define WENDY_CONF_MAX_ENROLLMENT_DATA 65536
+struct wendy_conf_enrollment_data {
+    struct wendy_conf_span signed_time, device_roots, tsa_roots, https_roots;
+    uint8_t *storage;
+};
+/* The caller frees data->storage. All spans survive configuration writes. */
+esp_err_t wendy_conf_copy_enrollment(WendyConfEnrollment *config,
+                                     struct wendy_conf_enrollment_data *data);

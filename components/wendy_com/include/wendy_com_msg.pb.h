@@ -134,6 +134,31 @@ typedef struct _WendyComGetDeviceInfoParams {
     char dummy_field;
 } WendyComGetDeviceInfoParams;
 
+/* USB-only bootstrap challenge. The nonce is generated and retained on-device. */
+typedef struct _WendyComEnrollmentChallengeParams {
+    bool status_only;
+} WendyComEnrollmentChallengeParams;
+
+typedef struct _WendyComEnrollmentChallenge {
+    char nonce_hex[65];
+    bool enrolled;
+    bool usb_trust_supported; /* accepts explicitly provisioned CA bundles */
+    bool roughtime_supported; /* sync_time verifies device-nonce-bound replies */
+    bool builtin_roots_ready; /* device and HTTPS CA bundles configured */
+    bool builtin_tsa_roots_ready;
+} WendyComEnrollmentChallenge;
+
+/* USB relay of one pinned server's reply to the current device challenge. */
+typedef struct _WendyComSyncTimeParams {
+    pb_callback_t server; /* pinned server that produced the reply, as "hostname:port" */
+    pb_callback_t response;
+} WendyComSyncTimeParams;
+
+typedef struct _WendyComSyncTimeResult {
+    bool synchronized;
+    int64_t unix_seconds;
+} WendyComSyncTimeResult;
+
 /* Params for WENDY_COM_CMD_CONSOLE_ATTACH — start streaming console output as
  WendyComConsoleData events carrying the given event_id. A repeated attach
  with the same event_id refreshes the auto-detach deadline. */
@@ -203,6 +228,8 @@ typedef struct _WendyComCommand {
         wendy_lite_sensorlink_GetSensorManifest sensor_link_get_manifest;
         wendy_lite_sensorlink_Subscribe sensor_link_subscribe;
         wendy_lite_sensorlink_Unsubscribe sensor_link_unsubscribe;
+        WendyComEnrollmentChallengeParams enrollment_challenge;
+        WendyComSyncTimeParams sync_time;
     } params;
 } WendyComCommand;
 
@@ -215,6 +242,8 @@ typedef struct _WendyComResponse {
         WendyComDeviceIdentity device_identity;
         WendyComDeviceInfo device_info;
         wendy_lite_sensorlink_SensorManifest sensor_link_manifest;
+        WendyComEnrollmentChallenge enrollment_challenge;
+        WendyComSyncTimeResult sync_time;
     } data;
 } WendyComResponse;
 
@@ -335,6 +364,10 @@ extern "C" {
 
 
 
+
+
+
+
 #define WendyComConsoleData_io_ENUMTYPE WendyComConsoleIo
 
 
@@ -369,6 +402,10 @@ extern "C" {
 #define WendyComGetDeviceIdentityParams_init_default {0}
 #define WendyComDeviceIdentity_init_default      {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define WendyComGetDeviceInfoParams_init_default {0}
+#define WendyComEnrollmentChallengeParams_init_default {0}
+#define WendyComEnrollmentChallenge_init_default {"", 0, 0, 0, 0, 0}
+#define WendyComSyncTimeParams_init_default      {{{NULL}, NULL}, {{NULL}, NULL}}
+#define WendyComSyncTimeResult_init_default      {0, 0}
 #define WendyComConsoleAttachParams_init_default {0, 0, 0}
 #define WendyComConsoleDetachParams_init_default {0}
 #define WendyComConsoleBegin_init_default        {0}
@@ -401,6 +438,10 @@ extern "C" {
 #define WendyComGetDeviceIdentityParams_init_zero {0}
 #define WendyComDeviceIdentity_init_zero         {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define WendyComGetDeviceInfoParams_init_zero    {0}
+#define WendyComEnrollmentChallengeParams_init_zero {0}
+#define WendyComEnrollmentChallenge_init_zero    {"", 0, 0, 0, 0, 0}
+#define WendyComSyncTimeParams_init_zero         {{{NULL}, NULL}, {{NULL}, NULL}}
+#define WendyComSyncTimeResult_init_zero         {0, 0}
 #define WendyComConsoleAttachParams_init_zero    {0, 0, 0}
 #define WendyComConsoleDetachParams_init_zero    {0}
 #define WendyComConsoleBegin_init_zero           {0}
@@ -437,6 +478,17 @@ extern "C" {
 #define WendyComDeviceIdentity_id_tag            1
 #define WendyComDeviceIdentity_name_tag          2
 #define WendyComDeviceIdentity_display_name_tag  3
+#define WendyComEnrollmentChallengeParams_status_only_tag 1
+#define WendyComEnrollmentChallenge_nonce_hex_tag 1
+#define WendyComEnrollmentChallenge_enrolled_tag 2
+#define WendyComEnrollmentChallenge_usb_trust_supported_tag 3
+#define WendyComEnrollmentChallenge_roughtime_supported_tag 4
+#define WendyComEnrollmentChallenge_builtin_roots_ready_tag 5
+#define WendyComEnrollmentChallenge_builtin_tsa_roots_ready_tag 6
+#define WendyComSyncTimeParams_server_tag        1
+#define WendyComSyncTimeParams_response_tag      2
+#define WendyComSyncTimeResult_synchronized_tag  1
+#define WendyComSyncTimeResult_unix_seconds_tag  2
 #define WendyComConsoleAttachParams_event_id_tag 1
 #define WendyComConsoleAttachParams_duration_tag 2
 #define WendyComConsoleAttachParams_blocking_tag 3
@@ -469,11 +521,15 @@ extern "C" {
 #define WendyComCommand_sensor_link_get_manifest_tag 16
 #define WendyComCommand_sensor_link_subscribe_tag 17
 #define WendyComCommand_sensor_link_unsubscribe_tag 18
+#define WendyComCommand_enrollment_challenge_tag 19
+#define WendyComCommand_sync_time_tag            20
 #define WendyComResponse_request_id_tag          1
 #define WendyComResponse_result_tag              2
 #define WendyComResponse_device_identity_tag     3
 #define WendyComResponse_device_info_tag         4
 #define WendyComResponse_sensor_link_manifest_tag 5
+#define WendyComResponse_enrollment_challenge_tag 6
+#define WendyComResponse_sync_time_tag           7
 #define WendyComEvent_event_id_tag               1
 #define WendyComEvent_console_begin_tag          2
 #define WendyComEvent_console_data_tag           3
@@ -578,6 +634,33 @@ X(a, CALLBACK, SINGULAR, STRING,   display_name,      3)
 #define WendyComGetDeviceInfoParams_CALLBACK NULL
 #define WendyComGetDeviceInfoParams_DEFAULT NULL
 
+#define WendyComEnrollmentChallengeParams_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, BOOL,     status_only,       1)
+#define WendyComEnrollmentChallengeParams_CALLBACK NULL
+#define WendyComEnrollmentChallengeParams_DEFAULT NULL
+
+#define WendyComEnrollmentChallenge_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, STRING,   nonce_hex,         1) \
+X(a, STATIC,   SINGULAR, BOOL,     enrolled,          2) \
+X(a, STATIC,   SINGULAR, BOOL,     usb_trust_supported,   3) \
+X(a, STATIC,   SINGULAR, BOOL,     roughtime_supported,   4) \
+X(a, STATIC,   SINGULAR, BOOL,     builtin_roots_ready,   5) \
+X(a, STATIC,   SINGULAR, BOOL,     builtin_tsa_roots_ready,   6)
+#define WendyComEnrollmentChallenge_CALLBACK NULL
+#define WendyComEnrollmentChallenge_DEFAULT NULL
+
+#define WendyComSyncTimeParams_FIELDLIST(X, a) \
+X(a, CALLBACK, SINGULAR, STRING,   server,            1) \
+X(a, CALLBACK, SINGULAR, BYTES,    response,          2)
+#define WendyComSyncTimeParams_CALLBACK pb_default_field_callback
+#define WendyComSyncTimeParams_DEFAULT NULL
+
+#define WendyComSyncTimeResult_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, BOOL,     synchronized,      1) \
+X(a, STATIC,   SINGULAR, INT64,    unix_seconds,      2)
+#define WendyComSyncTimeResult_CALLBACK NULL
+#define WendyComSyncTimeResult_DEFAULT NULL
+
 #define WendyComConsoleAttachParams_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   event_id,          1) \
 X(a, STATIC,   SINGULAR, UINT32,   duration,          2) \
@@ -636,7 +719,9 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (params,conf_push_data,params.conf_push_data)
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,conf_push_end,params.conf_push_end),  15) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,sensor_link_get_manifest,params.sensor_link_get_manifest),  16) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,sensor_link_subscribe,params.sensor_link_subscribe),  17) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (params,sensor_link_unsubscribe,params.sensor_link_unsubscribe),  18)
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,sensor_link_unsubscribe,params.sensor_link_unsubscribe),  18) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,enrollment_challenge,params.enrollment_challenge),  19) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,sync_time,params.sync_time),  20)
 #define WendyComCommand_CALLBACK NULL
 #define WendyComCommand_DEFAULT NULL
 #define WendyComCommand_params_ping_MSGTYPE WendyComPingParams
@@ -656,18 +741,24 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (params,sensor_link_unsubscribe,params.sensor
 #define WendyComCommand_params_sensor_link_get_manifest_MSGTYPE wendy_lite_sensorlink_GetSensorManifest
 #define WendyComCommand_params_sensor_link_subscribe_MSGTYPE wendy_lite_sensorlink_Subscribe
 #define WendyComCommand_params_sensor_link_unsubscribe_MSGTYPE wendy_lite_sensorlink_Unsubscribe
+#define WendyComCommand_params_enrollment_challenge_MSGTYPE WendyComEnrollmentChallengeParams
+#define WendyComCommand_params_sync_time_MSGTYPE WendyComSyncTimeParams
 
 #define WendyComResponse_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   request_id,        1) \
 X(a, STATIC,   SINGULAR, UENUM,    result,            2) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,device_identity,data.device_identity),   3) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,device_info,data.device_info),   4) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (data,sensor_link_manifest,data.sensor_link_manifest),   5)
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,sensor_link_manifest,data.sensor_link_manifest),   5) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,enrollment_challenge,data.enrollment_challenge),   6) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,sync_time,data.sync_time),   7)
 #define WendyComResponse_CALLBACK NULL
 #define WendyComResponse_DEFAULT NULL
 #define WendyComResponse_data_device_identity_MSGTYPE WendyComDeviceIdentity
 #define WendyComResponse_data_device_info_MSGTYPE WendyComDeviceInfo
 #define WendyComResponse_data_sensor_link_manifest_MSGTYPE wendy_lite_sensorlink_SensorManifest
+#define WendyComResponse_data_enrollment_challenge_MSGTYPE WendyComEnrollmentChallenge
+#define WendyComResponse_data_sync_time_MSGTYPE WendyComSyncTimeResult
 
 #define WendyComEvent_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   event_id,          1) \
@@ -756,6 +847,10 @@ extern const pb_msgdesc_t WendyComConfPushEndParams_msg;
 extern const pb_msgdesc_t WendyComGetDeviceIdentityParams_msg;
 extern const pb_msgdesc_t WendyComDeviceIdentity_msg;
 extern const pb_msgdesc_t WendyComGetDeviceInfoParams_msg;
+extern const pb_msgdesc_t WendyComEnrollmentChallengeParams_msg;
+extern const pb_msgdesc_t WendyComEnrollmentChallenge_msg;
+extern const pb_msgdesc_t WendyComSyncTimeParams_msg;
+extern const pb_msgdesc_t WendyComSyncTimeResult_msg;
 extern const pb_msgdesc_t WendyComConsoleAttachParams_msg;
 extern const pb_msgdesc_t WendyComConsoleDetachParams_msg;
 extern const pb_msgdesc_t WendyComConsoleBegin_msg;
@@ -790,6 +885,10 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComGetDeviceIdentityParams_fields &WendyComGetDeviceIdentityParams_msg
 #define WendyComDeviceIdentity_fields &WendyComDeviceIdentity_msg
 #define WendyComGetDeviceInfoParams_fields &WendyComGetDeviceInfoParams_msg
+#define WendyComEnrollmentChallengeParams_fields &WendyComEnrollmentChallengeParams_msg
+#define WendyComEnrollmentChallenge_fields &WendyComEnrollmentChallenge_msg
+#define WendyComSyncTimeParams_fields &WendyComSyncTimeParams_msg
+#define WendyComSyncTimeResult_fields &WendyComSyncTimeResult_msg
 #define WendyComConsoleAttachParams_fields &WendyComConsoleAttachParams_msg
 #define WendyComConsoleDetachParams_fields &WendyComConsoleDetachParams_msg
 #define WendyComConsoleBegin_fields &WendyComConsoleBegin_msg
@@ -812,13 +911,14 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 /* WendyComAppPushDataParams_size depends on runtime parameters */
 /* WendyComConfPushDataParams_size depends on runtime parameters */
 /* WendyComDeviceIdentity_size depends on runtime parameters */
+/* WendyComSyncTimeParams_size depends on runtime parameters */
 /* WendyComConsoleData_size depends on runtime parameters */
 /* WendyComDeviceInfo_size depends on runtime parameters */
 /* WendyComCommand_size depends on runtime parameters */
 /* WendyComResponse_size depends on runtime parameters */
 /* WendyComEvent_size depends on runtime parameters */
 /* WendyComMessage_size depends on runtime parameters */
-#define WENDY_COM_MSG_PB_H_MAX_SIZE              WendyComHandshake_size
+#define WENDY_COM_MSG_PB_H_MAX_SIZE              WendyComEnrollmentChallenge_size
 #define WendyComAppPushBeginParams_size          8
 #define WendyComAppPushEndParams_size            0
 #define WendyComAppStartParams_size              0
@@ -834,6 +934,8 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComConsoleBegin_size                0
 #define WendyComConsoleDetachParams_size         6
 #define WendyComConsoleEnd_size                  0
+#define WendyComEnrollmentChallengeParams_size   2
+#define WendyComEnrollmentChallenge_size         76
 #define WendyComGetDeviceIdentityParams_size     0
 #define WendyComGetDeviceInfoParams_size         0
 #define WendyComHandshake_size                   20
@@ -842,6 +944,7 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComProtocolVersion_size             12
 #define WendyComRebootParams_size                8
 #define WendyComService_size                     6
+#define WendyComSyncTimeResult_size              13
 
 #ifdef __cplusplus
 } /* extern "C" */
