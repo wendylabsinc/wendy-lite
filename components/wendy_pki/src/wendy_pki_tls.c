@@ -56,6 +56,38 @@ static int wait_socket(wendy_pki_connection *c, int error, int64_t deadline)
     struct timeval tv = {left / 1000000, left % 1000000};
     return select(c->fd + 1, &rd, &wr, NULL, &tv) > 0 ? 0 : -1;
 }
+static int detach_socket(wendy_pki_connection *c)
+{
+    int64_t deadline = esp_timer_get_time() + 10000000;
+    unsigned char byte;
+    for (;;) {
+        int n = wolfSSL_read(c->ssl, &byte, 1);
+        if (n > 0) // Application data is illegal after the upgrade record.
+            return -1;
+        int error = wolfSSL_get_error(c->ssl, n);
+        if (error == WOLFSSL_ERROR_ZERO_RETURN)
+            break;
+        if (wait_socket(c, error, deadline))
+            return -1;
+    }
+    // A TCP EOF is not sufficient: require the authenticated TLS notification.
+    if (!(wolfSSL_get_shutdown(c->ssl) & WOLFSSL_RECEIVED_SHUTDOWN))
+        return -1;
+    int n;
+    while ((n = wolfSSL_shutdown(c->ssl)) != WOLFSSL_SUCCESS)
+        if (wait_socket(c, wolfSSL_get_error(c->ssl, n), deadline))
+            return -1;
+    int fd = c->fd;
+    c->fd = -1;
+    return fd;
+}
+int wendy_pki_detach(wendy_pki_connection *c)
+{
+    int fd = detach_socket(c);
+    if (fd >= 0)
+        wendy_pki_close(c);
+    return fd;
+}
 int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t key_size,
                     const char *cert, struct wendy_conf_span roots, wendy_pki_connection **out)
 {
@@ -354,15 +386,7 @@ int wendy_pki_relay_upgrade(wendy_pki_connection *c, struct wendy_lite_trust *tr
             deadline = esp_timer_get_time() + 10000000;
             if (read_all(c, trust->session, 16, deadline) ||
                 read_all(c, trust->grant_hash, 32, deadline)) return -1;
-            for (;;) {
-                int r = wolfSSL_shutdown(c->ssl);
-                if (r == WOLFSSL_SUCCESS) break;
-                int error = r == WOLFSSL_SHUTDOWN_NOT_DONE ? WOLFSSL_ERROR_WANT_READ : wolfSSL_get_error(c->ssl, r);
-                if (wait_socket(c, error, deadline)) return -1;
-            }
-            int fd = c->fd;
-            c->fd = -1;
-            return fd;
+            return detach_socket(c);
         } else return -1;
     }
 }

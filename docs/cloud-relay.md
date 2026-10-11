@@ -31,9 +31,9 @@ sessions at expiry and after 60 seconds idle. Firmware also refuses reads and
 writes after the grant expires. Inner TLS establishment plus grant admission
 share a 10-second deadline; outer control reads have a 30-second deadline.
 
-Build with ESP-IDF 5.5.4 and the PKI-enabled ESP32-C6 overlay described in
-[enrollment](cloud-enrollment.md). The implementation depends on the authenticated
-provisioning branch and uses its wolfSSL support for mixed ECDSA/ML-DSA chains.
+Build with ESP-IDF 5.5.4 and enable `CONFIG_WENDY_CLOUD=y` as described in
+[enrollment](cloud-enrollment.md). All images include PKI support. The relay uses
+wolfSSL support for mixed ECDSA/ML-DSA chains.
 Old WR01 firmware and unsigned relay opens are incompatible.
 
 ## Verification

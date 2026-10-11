@@ -1,7 +1,7 @@
 menu "Wendy PKI"
     config WENDY_PKI
         bool "Use pki-core Tier C enrollment and ML-DSA trust"
-        default n
+        default y
         help
             Generate the identity key on-device, redeem a real pki-core credential,
             and verify signed time before making cloud mTLS connections.

@@ -26,8 +26,8 @@ Beyond the generic boards, Wendy Lite has overlays for the following boards (fro
 |---|---|---|---|---|
 | Waveshare ESP32-P4-WIFI6-Touch-LCD-4B | `esp32p4` | 32 MB | 32 MB | Wi-Fi/BT via on-board ESP32-C6 (SDIO/ESP-Hosted); 4″ 720×720 MIPI-DSI touch panel; WAMR pool: 24 MiB from PSRAM |
 | DFRobot FireBeetle 2 ESP32-P4 (DFR1172) | `esp32p4` | 16 MB | 32 MB | Wi-Fi/BT via on-board ESP32-C6 (SDIO/ESP-Hosted); headless; WAMR pool: 24 MiB from PSRAM |
-| Seeed Studio XIAO ESP32S3 | `esp32s3` | 8 MB | 8 MB | Native Wi-Fi/BT; native app support (OTA partition layout); WAMR pool: system allocator |
-| M5Stack StampS3 | `esp32s3` | 8 MB | – | Native Wi-Fi/BT; native app support (OTA partition layout); WAMR pool: system allocator |
+| Seeed Studio XIAO ESP32S3 | `esp32s3` | 8 MB | 8 MB | Native Wi-Fi/BT; native app support (OTA partition layout); no WASM app support |
+| M5Stack StampS3 | `esp32s3` | 8 MB | – | Native Wi-Fi/BT; native app support (OTA partition layout); no WASM app support |
 
 The targets share the same source tree. Per-target overrides live in `sdkconfig.defaults.<target>`. Running `idf.py set-target <target>` on its own selects that target's reference board; to select a specific board instead, pass its overlay argfile from `boards/` before `set-target` (e.g. `idf.py @boards/<board_cfg>.cfg set-target <target>`. See [ESP32-P4 notes](#esp32-p4-notes) below for `esp32p4`, which has no bare-target option).
 

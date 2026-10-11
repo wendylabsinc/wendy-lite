@@ -38,6 +38,13 @@ int main(int argc,char **argv)
     assert(wendy_rt_consensus(v,15,&out)); /* Two disjoint quorums are ambiguous. */
     v[2]=(struct wendy_rt_interval){16,19};
     assert(!wendy_rt_consensus(v,15,&out) && out.lower==16 && out.upper==19);
-    puts("Roughtime signatures, nonce binding, framing, bounds and quorum verified");
+    assert(wendy_rt_find_server("roughtime.cloudflare.com:2003")==0);
+    assert(wendy_rt_find_server("roughtime.int08h.com:2002")==1);
+    assert(wendy_rt_find_server("time.txryan.com:2002")==3);
+    const char *unpinned[]={"roughtime.cloudflare.com:2002","roughtime.cloudflare.com:20030",
+                            "roughtime.cloudflare.com:","roughtime.cloudflare.com","roughtime.cloudflare","",
+                            "roughtime.cloudflare.comX2003","xroughtime.cloudflare.com:2003"};
+    for (size_t i=0;i<sizeof unpinned/sizeof unpinned[0];i++) assert(wendy_rt_find_server(unpinned[i])<0);
+    puts("Roughtime signatures, nonce binding, framing, bounds, quorum and server pins verified");
     return 0;
 }

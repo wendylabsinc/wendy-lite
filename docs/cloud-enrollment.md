@@ -18,10 +18,12 @@ Use ESP-IDF 5.5.4 and initialize the pinned wolfSSL dependency:
 git submodule update --init components/wendy_wolfssl/wolfssl
 ```
 
-For the ESP32-C6 4 MB trial layout, build without deployment-specific roots:
+PKI enrollment is built into every image. The cloud connection is opt-in; enable it
+and build without deployment-specific roots:
 
 ```sh
-idf.py -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;boards/esp32c6_cloud.defaults' set-target esp32c6
+echo 'CONFIG_WENDY_CLOUD=y' > cloud.defaults
+idf.py -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;cloud.defaults' set-target esp32c6
 idf.py build
 ```
 
@@ -38,11 +40,10 @@ the device and HTTPS bundles. Optional build-time bundles remain supported by th
 firmware, but the CLI provisions trust at enrollment by default. Without trust,
 the device refuses to connect. Never use disposable fixture roots for deployment.
 
-This layout adds a 192 KiB `wendy_pki` NVS partition and an 80 KiB configuration
-partition. It changes the WASM/configuration layout and is not an OTA-compatible
-upgrade from the normal C6 image. Preserve any needed application data before
-installing it. The identity partition is never erased by automatic NVS recovery.
-Other boards need an equivalent partition layout and enough application space.
+Every partition table ends with a 176 KiB `wendy_pki` NVS partition and a 72 KiB
+configuration partition. These layouts are not an OTA-compatible upgrade from
+images that predate them: flash over USB, and preserve any needed application data
+before installing. The identity partition is never erased by automatic NVS recovery.
 
 Private keys currently use software NVS custody. Hardware key protection, flash
 encryption, and secure boot provisioning are not implemented by this enrollment
