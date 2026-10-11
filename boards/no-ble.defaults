@@ -1,0 +1,4 @@
+# Append last to omit both the WendyCom BLE transport and the Bluetooth stack.
+CONFIG_WENDY_BLE=n
+CONFIG_WENDY_BLE_EXPORT=n
+CONFIG_BT_ENABLED=n

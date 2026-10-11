@@ -21,6 +21,27 @@ Existing `sdkconfig` files retain their choices. Configure a fresh build to pick
 up the new defaults, including disabled WASM callbacks and host API exports. The ESP32-C61 still has no supported WASM runtime. Disabling
 WASM does not change partition layouts or reclaim existing WASM data partitions.
 
+## Optional Bluetooth support
+
+Bluetooth is enabled by default. To omit the BLE transport and its controller/host
+stack, append `boards/no-ble.defaults` last, after any board or WASM defaults:
+
+```sh
+idf.py -B build-no-ble -D SDKCONFIG=sdkconfig.no-ble \
+  -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;boards/no-ble.defaults' set-target esp32c6
+idf.py -B build-no-ble -D SDKCONFIG=sdkconfig.no-ble build
+```
+
+Use a new sdkconfig filename, or disable `Component config > Bluetooth` in
+`idf.py menuconfig` for an existing configuration. Defaults do not override an
+existing sdkconfig. Disabling only the WendyCom BLE transport does not disable
+the entire Bluetooth stack.
+
+USB and Wi-Fi remain available, including Cloud access when enabled. The board
+will not advertise or accept connections over BLE, and WASM BLE exports are
+unavailable. The profile can be combined with `boards/wasm.defaults`; put
+`boards/no-ble.defaults` last.
+
 ## Supported Hardware
 
 Wendy Lite firmware builds for five ESP-IDF targets:

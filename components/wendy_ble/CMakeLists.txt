@@ -1,8 +1,10 @@
+set(wendy_ble_sources "src/wendy_ble.c")
+if(CONFIG_WENDY_BLE)
+    list(APPEND wendy_ble_sources "src/wendy_ble_l2cap.c" "src/wendy_ble_tls.c")
+endif()
+
 idf_component_register(
-    SRCS
-        "src/wendy_ble.c"
-        "src/wendy_ble_l2cap.c"
-        "src/wendy_ble_tls.c"
+    SRCS ${wendy_ble_sources}
     INCLUDE_DIRS
         "include"
     PRIV_INCLUDE_DIRS

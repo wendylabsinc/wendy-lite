@@ -59,13 +59,27 @@ On ESP32-C6 with ESP-IDF 5.5.4 and Cloud enabled:
 | --- | ---: |
 | Previous wolfSSL + WASM | 1,838,784 |
 | Previous wolfSSL, WASM disabled | 1,638,064 |
-| mbedTLS only, WASM disabled | 1,340,432 |
-| mbedTLS only, WASM enabled | 1,541,552 |
+| mbedTLS only, WASM disabled | 1,386,000 |
+| mbedTLS only, WASM enabled | 1,586,688 |
+| mbedTLS only, WASM and Bluetooth disabled | 1,012,544 |
 
-Removing wolfSSL saves 297,632 bytes against the no-WASM baseline. Combined with
-making WASM opt-in, the default saves 498,352 bytes, about 27.1%, and leaves
-592,880 bytes in the unchanged 1,933,312-byte factory partition. Both current
+Removing wolfSSL saves 252,064 bytes against the no-WASM baseline. Combined with
+making WASM opt-in, the default saves 452,784 bytes, about 24.6%, and leaves
+547,312 bytes in the unchanged 1,933,312-byte factory partition. Both current
 configurations build; the default map has no wolfSSL, ML-DSA or WASM runtime.
 These are controlled local builds, not measurements of deployed hardware.
 Existing sdkconfig files retain their settings, so use a fresh configuration
 when adopting these defaults. Partition layouts are unchanged.
+
+These measurements explicitly enable TLS 1.3. Earlier numbers of 1,340,432 bytes
+without WASM and 1,541,552 bytes with WASM came from reused sdkconfig files with
+TLS 1.3 disabled and do not describe the intended Cloud firmware. Confirm
+`CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y` in the generated sdkconfig. Use a fresh
+configuration when adopting changed defaults.
+
+Append `boards/no-ble.defaults` last to omit Bluetooth while retaining USB,
+Wi-Fi and Cloud. On this same C6 configuration it saves another 373,456 bytes
+compared with the Bluetooth-enabled default and leaves 920,768 bytes in the
+factory partition. Linker archive and symbol inspection confirms the BLE stack
+is absent. Both Bluetooth modes build; hardware behavior still needs validation.
+See [Bluetooth configuration](../README.md#optional-bluetooth-support).

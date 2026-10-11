@@ -28,6 +28,9 @@ jobs:
           ctest --test-dir build-pki --output-on-failure
 
   firmware:
+    strategy:
+      matrix:
+        bluetooth: [enabled, disabled]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -46,5 +49,13 @@ jobs:
           set -euo pipefail
           . "$IDF_PATH/export.sh"
           echo 'CONFIG_WENDY_CLOUD=y' > cloud.defaults
-          idf.py -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;cloud.defaults' set-target esp32c6
+          defaults='sdkconfig.defaults;cloud.defaults'
+          if [ "${{ matrix.bluetooth }}" = disabled ]; then
+            defaults="$defaults;boards/no-ble.defaults"
+          fi
+          idf.py -D "SDKCONFIG_DEFAULTS=$defaults" set-target esp32c6
           idf.py build
+          grep -q '^CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y$' sdkconfig
+          if [ "${{ matrix.bluetooth }}" = disabled ]; then
+            grep -q '^# CONFIG_BT_ENABLED is not set$' sdkconfig
+          fi
