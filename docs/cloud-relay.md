@@ -49,3 +49,13 @@ cover valid grants, every truncated length, altered signatures, expiry, key and
 identity mismatches. Seven host tests pass both normally and under ASan/UBSan.
 An ESP32-C6 build passes. A physical-board trial must still verify enrollment,
 outer shutdown/inner handshake, key rotation, resource use and crypto latency.
+
+## Default image size
+
+WASM and its host API exports are opt-in through `boards/wasm.defaults`.
+On ESP32-C6 with ESP-IDF 5.5.4 and Cloud enabled, the default image is
+1,638,064 bytes, compared with 1,838,784 bytes with WASM enabled. This saves
+200,720 bytes and leaves 295,248 bytes in the existing factory app partition.
+Both configurations build; the default ELF has no WASM runtime symbols.
+Existing sdkconfig files retain their settings, so use a fresh configuration
+when adopting these defaults. Partition layouts are unchanged.

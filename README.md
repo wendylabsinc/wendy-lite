@@ -1,10 +1,25 @@
 # Wendy Lite
 
-Wendy Lite is a WebAssembly runtime for ESP32 microcontrollers. Write your application in **Swift**, **Rust**, **C/C++**, **AssemblyScript**, or **WAT**, compile it to `.wasm`, and run it on real hardware.
+Wendy Lite runs applications on ESP32 microcontrollers. Native applications use C/C++ and ESP-IDF. Optional WebAssembly support runs applications compiled from Swift, Rust, C/C++, AssemblyScript or WAT.
 
 The Wendy host firmware exposes a comprehensive set of hardware APIs through WASM imports — GPIO, I2C, SPI, UART, RMT, NeoPixel, BLE, WiFi, sockets, TLS, USB, NVS storage, timers, and OpenTelemetry.
 
 Wendy Lite also supports native applications, written in C and C++ and built using the ESP-IDF tools and API.
+
+## Optional WASM support
+
+Firmware builds omit the WASM runtime by default. To enable it on a supported
+board, append `boards/wasm.defaults` after the base and board defaults in
+`SDKCONFIG_DEFAULTS` before configuring a fresh build. For example, on ESP32-C6:
+
+```sh
+idf.py -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;boards/wasm.defaults' set-target esp32c6
+idf.py build
+```
+
+Existing `sdkconfig` files retain their choices. Configure a fresh build to pick
+up the new defaults, including disabled WASM callbacks and host API exports. The ESP32-C61 still has no supported WASM runtime. Disabling
+WASM does not change partition layouts or reclaim existing WASM data partitions.
 
 ## Supported Hardware
 

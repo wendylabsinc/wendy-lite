@@ -1,7 +1,8 @@
 menu "Wendy WASM Runtime"
     config WENDY_WASM
         bool "Enable the WASM runtime"
-        default y
+        default y if WENDY_CORE_WASM_APP_SUPPORT
+        default n
         help
             Build the WAMR-based WASM runtime and the ability to run
             WASM applications. When disabled, all modules exposing a
