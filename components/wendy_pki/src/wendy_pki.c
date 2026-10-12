@@ -424,15 +424,33 @@ static int select_trust(const WendyConfEnrollment *cfg, struct wendy_conf_enroll
 {
     if (!cfg->provision_trust)
     {
-        if (data->device_roots.size || data->tsa_roots.size || data->https_roots.size)
+        if (data->device_roots.size || data->tsa_roots.size || data->https_roots.size) {
+            ESP_LOGE(TAG, "Runtime CA bundles require USB trust provisioning");
             return -1;
+        }
         data->device_roots = (struct wendy_conf_span){wendy_pki_device_roots_start, ROOT_SIZE(device)};
         data->tsa_roots = (struct wendy_conf_span){wendy_pki_tsa_roots_start, ROOT_SIZE(tsa)};
         data->https_roots = (struct wendy_conf_span){wendy_pki_https_roots_start, ROOT_SIZE(https)};
     }
-    return wendy_pki_verify_roots(data->device_roots.data, data->device_roots.size) ||
-           wendy_pki_verify_roots(data->tsa_roots.data, data->tsa_roots.size) ||
-           wendy_pki_verify_roots(data->https_roots.data, data->https_roots.size) ? -1 : 0;
+    const struct wendy_conf_span roots[] = {data->device_roots, data->tsa_roots, data->https_roots};
+    const char *names[] = {"device", "timestamp", "HTTPS"};
+    for (size_t i = 0; i < sizeof roots / sizeof roots[0]; i++) {
+        if (wendy_pki_verify_roots(roots[i].data, roots[i].size)) {
+            ESP_LOGE(TAG, "Invalid or missing %s CA bundle (%zu bytes); provision compatible trust roots over USB",
+                     names[i], roots[i].size);
+            return -1;
+        }
+    }
+    return 0;
+}
+static int validate_config_and_trust(const WendyConfEnrollment *cfg,
+                                   struct wendy_conf_enrollment_data *data)
+{
+    if (!valid_config(cfg)) {
+        ESP_LOGE(TAG, "Invalid enrollment configuration; check tenant/device IDs, broker address/port, and HTTPS enrollment/time endpoints");
+        return -1;
+    }
+    return select_trust(cfg, data);
 }
 static esp_err_t connect_identity(wendy_pki_connection **connection)
 {
@@ -447,9 +465,8 @@ static esp_err_t connect_identity(wendy_pki_connection **connection)
         erase(cfg.token, sizeof cfg.token);
         return copy_result;
     }
-    if (!valid_config(&cfg) || select_trust(&cfg, &data))
+    if (validate_config_and_trust(&cfg, &data))
     {
-        ESP_LOGE(TAG, "Invalid enrollment configuration or missing/invalid CA bundles; provision device and HTTPS trust roots over USB");
         free(data.storage);
         erase(cfg.token, sizeof cfg.token);
         return ESP_ERR_INVALID_ARG;
@@ -553,7 +570,7 @@ static esp_err_t accept_identity_operator(int fd, wendy_pki_connection **connect
     time_t expires;
     esp_err_t result = ESP_FAIL;
     if (!crypto_ok || wendy_conf_copy_enrollment(&cfg, &data) != ESP_OK ||
-        !valid_config(&cfg) || select_trust(&cfg, &data) || open_identity(&h) != ESP_OK)
+        validate_config_and_trust(&cfg, &data) || open_identity(&h) != ESP_OK)
         goto done;
     opened = true;
     char principal[160];
