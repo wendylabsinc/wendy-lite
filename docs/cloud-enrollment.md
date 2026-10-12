@@ -133,12 +133,32 @@ certificates, and unverified timestamps. A delayed fresh-time exchange over
 Configuration upload and enrollment challenges are restricted to the physical
 UART/USB link. The new PKI identity is used for Cloud and LAN connections. Once
 enrollment is configured, the LAN server uses the verified stored identity and
-requires a clientAuth certificate with exactly one operator SPIFFE URI in the
-same tenant. Missing, invalid, or expired enrollment credentials fail closed;
-the LAN server does not fall back to legacy or anonymous TLS. BLE still uses the
-legacy provisioning credentials.
+requires a clientAuth certificate with exactly one operator or device SPIFFE URI
+in the same tenant. Operators can manage the device; authenticated devices can
+only request the SensorLink manifest, subscribe, and unsubscribe. Device clients
+cannot send console input or invoke management commands, including through extra
+WendyCom channels. Missing, invalid, or expired enrollment credentials fail closed;
+the LAN server does not fall back to legacy or anonymous TLS. BLE requires
+legacy provisioning credentials and a trusted operator certificate for the same
+organization. BLE is disabled whenever PKI enrollment is configured, including
+devices that also retain legacy credentials, because BLE cannot use the stored
+PKI identity yet. Unprovisioned devices accept anonymous TLS connections over LAN
+and Bluetooth by default. `CONFIG_WENDY_BLE_REQUIRE_MTLS=y` disables anonymous
+Bluetooth access. Configuration upload and enrollment still require USB/UART.
 
-LAN discovery advertises the tenant to select an appropriate CLI identity.
+Legacy LAN and BLE provisioning also require certificate chain validation and
+an explicit `clientAuth` leaf with exactly one
+`spiffe://wendy.sh/tenant/<tenant UUID>/operator/<subject>` URI. Legacy LAN also
+accepts `/device/<subject>` with the same SensorLink-only restrictions. BLE and
+Cloud relay access remain operator-only. The tenant must match the device
+certificate's sole `/device/` URI. Service, ambiguous, and missing identities are
+rejected. Legacy credentials without this
+device identity must be replaced over USB/UART. Missing or invalid credentials on
+a PKI-enrolled device never enable anonymous access. Discovery advertises whether
+mTLS is required.
+
+LAN discovery advertises the tenant and device principal to select an appropriate
+identity and locate paired sensors.
 This is only a selection hint: TLS still verifies the certificate chain and the
 CLI checks the device principal. The CLI sends its operator certificate chain,
 including intermediates. With the default mbedTLS firmware and an ML-DSA administration identity,

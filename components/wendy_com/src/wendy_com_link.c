@@ -38,6 +38,7 @@ enum link_type {
 struct wcom_link {
     int id;
     enum wcom_link_state state;
+    enum wcom_link_permission permission;
     enum link_type type;
     union {
         esp_tls_t *tls;
@@ -568,7 +569,20 @@ void wcom_close(int link_id)
 /// Returns -1 if the link couldn't be added (e.g. max links reached).
 int wcom_add_tls_link(esp_tls_t *tls, wcom_interruption_handler_t interruption_handler)
 {
+    return wcom_add_tls_link_with_permission(tls, interruption_handler, WCOM_LINK_PERMISSION_FULL);
+}
+
+static bool _valid_permission(enum wcom_link_permission permission)
+{
+    return permission == WCOM_LINK_PERMISSION_FULL || permission == WCOM_LINK_PERMISSION_SENSOR_ONLY;
+}
+
+int wcom_add_tls_link_with_permission(esp_tls_t *tls,
+                                      wcom_interruption_handler_t interruption_handler,
+                                      enum wcom_link_permission permission)
+{
     assert(xTaskGetCurrentTaskHandle() == _main_task);
+    if (!_valid_permission(permission)) return -1;
 
     for (int i = 0; i < WCOM_LINK_COUNT; i++) {
         struct wcom_link *ch = &_links[i];
@@ -579,6 +593,7 @@ int wcom_add_tls_link(esp_tls_t *tls, wcom_interruption_handler_t interruption_h
             ch->id = _link_id_generator * WCOM_LINK_COUNT + i;
             ch->state = WCOM_LINK_STATE_CONNECTED;
             ch->type = LINK_TYPE_TLS;
+            ch->permission = permission;
             ch->tls = tls;
             ch->interruption_handler = interruption_handler;
             esp_tls_get_conn_sockfd(tls, &ch->fd);
@@ -612,6 +627,7 @@ int wcom_add_uart_link(wendy_com_uart_t *uart, wcom_interruption_handler_t inter
             ch->id = _link_id_generator * WCOM_LINK_COUNT + i;
             ch->state = WCOM_LINK_STATE_CONNECTED;
             ch->type = LINK_TYPE_UART;
+            ch->permission = WCOM_LINK_PERMISSION_FULL;
             ch->uart = uart;
             ch->interruption_handler = interruption_handler;
             ch->fd = wendy_com_uart_get_fd(uart);
@@ -634,9 +650,11 @@ int wcom_add_uart_link(wendy_com_uart_t *uart, wcom_interruption_handler_t inter
 }
 
 static int _add_custom_link(enum link_type type, const struct wcom_stream_ops *ops,
-                            void *ctx, wcom_interruption_handler_t interruption_handler)
+                            void *ctx, wcom_interruption_handler_t interruption_handler,
+                            enum wcom_link_permission permission)
 {
     assert(xTaskGetCurrentTaskHandle() == _main_task);
+    if (!_valid_permission(permission)) return -1;
     assert(ops && ops->read && ops->write && ops->wakeup_fd);
     assert(type != LINK_TYPE_STREAM || (ops->can_read && ops->can_write));
 
@@ -649,6 +667,7 @@ static int _add_custom_link(enum link_type type, const struct wcom_stream_ops *o
             ch->id = _link_id_generator * WCOM_LINK_COUNT + i;
             ch->state = WCOM_LINK_STATE_CONNECTED;
             ch->type = type;
+            ch->permission = permission;
             ch->ops = ops;
             ch->stream_ctx = ctx;
             ch->interruption_handler = interruption_handler;
@@ -674,13 +693,27 @@ static int _add_custom_link(enum link_type type, const struct wcom_stream_ops *o
 int wcom_add_stream_link(const struct wcom_stream_ops *ops, void *ctx,
                          wcom_interruption_handler_t handler)
 {
-    return _add_custom_link(LINK_TYPE_STREAM, ops, ctx, handler);
+    return _add_custom_link(LINK_TYPE_STREAM, ops, ctx, handler, WCOM_LINK_PERMISSION_FULL);
 }
 
 int wcom_add_socket_link(const struct wcom_stream_ops *ops, void *ctx,
                          wcom_interruption_handler_t handler)
 {
-    return _add_custom_link(LINK_TYPE_SOCKET, ops, ctx, handler);
+    return wcom_add_socket_link_with_permission(ops, ctx, handler, WCOM_LINK_PERMISSION_FULL);
+}
+
+int wcom_add_socket_link_with_permission(const struct wcom_stream_ops *ops, void *ctx,
+                                         wcom_interruption_handler_t handler,
+                                         enum wcom_link_permission permission)
+{
+    return _add_custom_link(LINK_TYPE_SOCKET, ops, ctx, handler, permission);
+}
+
+enum wcom_link_permission wcom_link_get_permission(int link_id)
+{
+    struct wcom_link *link = _get_link(link_id);
+    return link && link->state == WCOM_LINK_STATE_CONNECTED && _valid_permission(link->permission)
+        ? link->permission : WCOM_LINK_PERMISSION_NONE;
 }
 
 bool wcom_link_is_local(int link_id)
@@ -703,6 +736,7 @@ void wcom_remove_link(int link_id)
         _fire_state_change_handlers(link_id, WCOM_LINK_STATE_UNDEFINED);
         ch->id = 0;
         ch->type = LINK_TYPE_NONE;
+        ch->permission = WCOM_LINK_PERMISSION_NONE;
         ch->uart = NULL;
         ch->tls = NULL;
         ch->stream_ctx = NULL;

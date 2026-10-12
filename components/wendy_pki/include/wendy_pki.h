@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
+#include "wendy_peer_role.h"
 typedef struct wendy_pki_connection wendy_pki_connection;
 void wendy_pki_builtin_trust(bool *ready, bool *tsa_ready);
 /* A challenge discloses no key material. Only the USB command calls this. */
@@ -31,6 +32,10 @@ ssize_t wendy_pki_write(void *connection, const void *data, size_t size);
 
 /* Takes ownership of fd on every outcome. No issuance or network time fetch. */
 esp_err_t wendy_pki_accept(int fd, wendy_pki_connection **connection);
+/* LAN additionally accepts same-tenant devices for SensorLink. The consumer
+ * must restrict device peers using the role captured by the TLS handshake. */
+esp_err_t wendy_pki_accept_lan(int fd, wendy_pki_connection **connection);
+enum wendy_peer_role wendy_pki_get_peer_role(const wendy_pki_connection *connection);
 
 #include "wendy_lite_grant.h"
 /* Installs keys exclusively from authenticated outer TLS, then detaches TCP. */

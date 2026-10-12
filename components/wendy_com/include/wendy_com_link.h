@@ -23,6 +23,14 @@ enum wcom_link_state {
     WCOM_LINK_STATE_ERROR,
 };
 
+/* Transport authentication fixes this permission before any link callbacks.
+ * Every protocol channel on the link inherits it for its entire lifetime. */
+enum wcom_link_permission {
+    WCOM_LINK_PERMISSION_NONE = 0,
+    WCOM_LINK_PERMISSION_FULL,
+    WCOM_LINK_PERMISSION_SENSOR_ONLY,
+};
+
 struct wcom_rx_chunk;
 struct wcom_tx_chunk;
 
@@ -128,8 +136,18 @@ int wcom_add_stream_link(const struct wcom_stream_ops *ops, void *ctx,
 // selected but never drained as eventfd. can_read/can_write are not used.
 int wcom_add_socket_link(const struct wcom_stream_ops *ops, void *ctx,
                          wcom_interruption_handler_t interruption_handler);
+/* Authenticated network transports pass the peer's permission explicitly.
+ * Constructors without a permission argument retain full access. NONE and
+ * unknown values are rejected; a link's permission cannot be changed. */
+int wcom_add_socket_link_with_permission(const struct wcom_stream_ops *ops, void *ctx,
+                         wcom_interruption_handler_t interruption_handler,
+                         enum wcom_link_permission permission);
 bool wcom_link_is_local(int link_id);
+enum wcom_link_permission wcom_link_get_permission(int link_id);
 int wcom_add_tls_link(esp_tls_t *tls, wcom_interruption_handler_t interruption_handler);
+int wcom_add_tls_link_with_permission(esp_tls_t *tls,
+                         wcom_interruption_handler_t interruption_handler,
+                         enum wcom_link_permission permission);
 int wcom_add_uart_link(wendy_com_uart_t *uart, wcom_interruption_handler_t interruption_handler);
 void wcom_remove_link(int link_id);
 

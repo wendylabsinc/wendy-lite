@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <time.h>
+#include "wendy_peer_role.h"
 /* Strict, bounded PEM CA bundle validation, independent of the boot clock. */
 int wendy_pki_verify_roots(const uint8_t *pem, size_t size);
 /* Verify a nonce-bound RFC 3161 response. Nothing changes the system clock here.
@@ -21,5 +22,10 @@ size_t wendy_pki_time_request(uint8_t out[128], const uint8_t nonce[32]);
 
 /* After TLS chain verification: require one same-tenant operator URI and clientAuth. */
 int wendy_pki_verify_operator(const uint8_t *der, size_t size, const char *tenant);
+
+/* Same leaf policy as verify_operator, returning its operator/device role.
+ * The caller must also verify the TLS chain before authorizing the role. */
+enum wendy_peer_role wendy_pki_verify_peer(const uint8_t *der, size_t size,
+                                           const char *tenant);
 
 int wendy_pki_rng(void *context, unsigned char *out, size_t size);

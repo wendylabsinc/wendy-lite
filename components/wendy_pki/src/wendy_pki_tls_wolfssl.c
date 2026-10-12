@@ -381,11 +381,11 @@ done:
 }
 
 
-/* TLS validates the chain, dates and clientAuth usage. Also require exactly
- * one operator URI in this device's tenant, never another device's identity. */
-
-int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, const char *cert,
-                   struct wendy_conf_span roots, const char *tenant, wendy_pki_connection **out, int64_t deadline)
+/* TLS validates the chain, dates and clientAuth usage. LAN may additionally
+ * accept a same-tenant device, with its role fixed for the TLS 1.3 session. */
+static int accept_peer(int fd, const uint8_t *key, size_t key_size, const char *cert,
+                       struct wendy_conf_span roots, const char *tenant,
+                       wendy_pki_connection **out, int64_t deadline, bool allow_device)
 {
     pthread_once(&tls_once, init_tls);
     if (!tls_ready || !key || !key_size || key_size > INT_MAX || !cert ||
@@ -419,18 +419,40 @@ int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, const char *cert
     WOLFSSL_X509 *peer = wolfSSL_get_peer_certificate(c->ssl);
     int peer_size = 0;
     const uint8_t *peer_der = peer ? wolfSSL_X509_get_der(peer, &peer_size) : NULL;
-    int valid_operator = wendy_pki_verify_operator(peer_der, peer_size, tenant);
-    if (!valid_operator) valid_operator = wendy_lite_peer_hash(peer_der, peer_size, c->operator_hash);
-    if (!valid_operator) valid_operator = wendy_lite_peer_spki_hash(peer_der, peer_size, c->operator_spki_hash);
-    if (!valid_operator) valid_operator = wendy_lite_peer_expiry(peer_der, peer_size, &c->operator_expires);
+    enum wendy_peer_role role = wendy_pki_verify_peer(peer_der, peer_size, tenant);
+    int invalid_peer = role == WENDY_PEER_ROLE_NONE ||
+                       (!allow_device && role != WENDY_PEER_ROLE_OPERATOR);
+    if (!invalid_peer) invalid_peer = wendy_lite_peer_hash(peer_der, peer_size, c->operator_hash);
+    if (!invalid_peer) invalid_peer = wendy_lite_peer_spki_hash(peer_der, peer_size, c->operator_spki_hash);
+    if (!invalid_peer) invalid_peer = wendy_lite_peer_expiry(peer_der, peer_size, &c->operator_expires);
     wolfSSL_X509_free(peer);
-    if (valid_operator) goto fail;
+    if (invalid_peer) goto fail;
     if (wolfSSL_get_verify_result(c->ssl) != 0) goto fail;
+    c->peer_role = role;
     *out = c;
     return 0;
 fail:
     wendy_pki_close(c);
     return -1;
+}
+
+int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, const char *cert,
+                   struct wendy_conf_span roots, const char *tenant,
+                   wendy_pki_connection **out, int64_t deadline)
+{
+    return accept_peer(fd, key, key_size, cert, roots, tenant, out, deadline, false);
+}
+
+int pki_tls_accept_lan(int fd, const uint8_t *key, size_t key_size, const char *cert,
+                       struct wendy_conf_span roots, const char *tenant,
+                       wendy_pki_connection **out, int64_t deadline)
+{
+    return accept_peer(fd, key, key_size, cert, roots, tenant, out, deadline, true);
+}
+
+enum wendy_peer_role wendy_pki_get_peer_role(const wendy_pki_connection *connection)
+{
+    return connection ? connection->peer_role : WENDY_PEER_ROLE_NONE;
 }
 
 static int read_all(wendy_pki_connection *c, uint8_t *out, size_t n, int64_t deadline)
@@ -514,6 +536,7 @@ fail:
 
 int pki_relay_grant(wendy_pki_connection *c, const struct wendy_lite_trust *trust, int64_t deadline)
 {
+    if (!c || c->peer_role != WENDY_PEER_ROLE_OPERATOR) return -1;
     uint8_t *record = malloc(WENDY_LITE_GRANT_MAX);
     if (!record) return -1;
     int result = -1;

@@ -36,6 +36,7 @@ struct _agent_channel {
 
 struct _agent_link {
     int link_id;
+    enum wcom_link_permission permission;
     bool handshake_done;
     uint32_t rx_channel; // channel of the inbound message currently being handled
     struct wcom_agent_msg_header header;
@@ -357,6 +358,18 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
 
     ESP_LOGI(TAG, "link %d received cmd id %d", link->link_id, cmd->request_id);
 
+    /* Device peers can only consume SensorLink. Keep an explicit allowlist so
+     * new management commands remain forbidden without policy changes. */
+    if (link->permission != WCOM_LINK_PERMISSION_FULL &&
+        !(link->permission == WCOM_LINK_PERMISSION_SENSOR_ONLY &&
+          (cmd->which_params == WendyComCommand_sensor_link_get_manifest_tag ||
+           cmd->which_params == WendyComCommand_sensor_link_subscribe_tag ||
+           cmd->which_params == WendyComCommand_sensor_link_unsubscribe_tag))) {
+        resp->result = WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+        _send_message(link, &out);
+        return;
+    }
+
     /* Buffered commands on an existing network session must not survive a
      * physical identity reset, even if its reply or the host reboot is lost. */
     if (!wcom_link_is_local(link->link_id) && wendy_pki_reset_in_progress()) {
@@ -493,6 +506,12 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
 // _done_sending_msg when their reply finishes sending.
 static void _process_event(struct _agent_link *link, const WendyComEvent *evt, const struct _span *data_span)
 {
+    /* Console stdin is an event, so command authorization alone is insufficient. */
+    if (link->permission != WCOM_LINK_PERMISSION_FULL ||
+        (!wcom_link_is_local(link->link_id) && wendy_pki_reset_in_progress())) {
+        _start_recv_header(link);
+        return;
+    }
     struct _agent_channel *channel = _find_channel(link, link->rx_channel);
     if (!channel) {
         ESP_LOGW(TAG, "link %d event on unopened channel %u", link->link_id, link->rx_channel);
@@ -689,6 +708,7 @@ static void _on_link_state_changed(
             struct _agent_link *ch = &_links[i];
             if (ch->link_id == 0) {
                 ch->link_id = link_id;
+                ch->permission = wcom_link_get_permission(link_id);
                 ch->handshake_done = false;
                 ch->rx_channel = 0;
                 for (int i = 0; i < _CHANNELS_PER_LINK_COUNT; i++) {
@@ -714,6 +734,7 @@ static void _on_link_state_changed(
                 }
                 link->handshake_done = false;
                 link->link_id = 0;
+                link->permission = WCOM_LINK_PERMISSION_NONE;
                 free(link->dynamic_buf);
                 link->dynamic_buf = NULL;
                 link->dynamic_buf_size = 0;

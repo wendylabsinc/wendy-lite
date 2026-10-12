@@ -32,3 +32,4 @@ managed_components/
 pki-trust.defaults
 pki-test.defaults
 build-pki/
+tools/__pycache__

@@ -1,4 +1,4 @@
-#include "../components/wendy_server/src/wendy_peer_identity.h"
+#include "../components/wendy_pki/src/wendy_peer_identity.h"
 #include <assert.h>
 #include <stdio.h>
 
@@ -7,13 +7,20 @@ int main(void)
 {
     struct { const char *uri; const char *kind; bool valid; } cases[] = {
         {ROOT "operator/alice", "operator", true},
-        {ROOT "operator/alice@example.com", "operator", true},
+        {ROOT "operator/alice@example.com", "operator", false},
+        {ROOT "operator/legacy-subject", "operator", true},
         {ROOT "device/board-1", "device", true},
         {ROOT "device/board-1", "operator", false},
         {ROOT "service/user-alice", "operator", false},
         {ROOT "operator/alice", "device", false},
         {ROOT "operator/", "operator", false},
-        {ROOT "operator/alice/extra", "operator", false},
+        {ROOT "operator/alice/extra", "operator", true},
+        {ROOT "device/fleet/board-1", "device", true},
+        {ROOT "operator/.", "operator", false},
+        {ROOT "operator/alice/..", "operator", false},
+        {ROOT "operator/alice//extra", "operator", false},
+        {ROOT "operator/alice/", "operator", false},
+        {ROOT "operator/abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abc", "operator", false},
         {ROOT "operator/alice?admin=true", "operator", false},
         {ROOT "operator/alice#admin", "operator", false},
         {ROOT "operator/alice%2fadmin", "operator", false},
@@ -37,5 +44,5 @@ int main(void)
     const unsigned char valid[] = ROOT "operator/alice";
     for (size_t size = 0; size < sizeof(ROOT "operator/") - 1; size++)
         assert(!wendy_peer_identity(valid, size, "operator", tenant));
-    puts("20 operator identity tests passed");
+    puts("operator identity tests passed");
 }

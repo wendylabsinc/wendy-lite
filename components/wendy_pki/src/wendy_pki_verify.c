@@ -1,4 +1,5 @@
 #include "wendy_pki_verify.h"
+#include "wendy_operator_auth.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -475,29 +476,19 @@ size_t wendy_pki_time_request(uint8_t out[128], const uint8_t nonce[32])
 }
 
 /* Chain verification is performed by TLS before this identity check. */
+enum wendy_peer_role wendy_pki_verify_peer(const uint8_t *data, size_t size,
+                                           const char *tenant)
+{
+    if (!data || !size || size>65536 || !tenant || strlen(tenant)!=36)
+        return WENDY_PEER_ROLE_NONE;
+    mbedtls_x509_crt *crt = parse_cert(data, size);
+    if (!crt) return WENDY_PEER_ROLE_NONE;
+    enum wendy_peer_role result = crt->raw.len == size ? wendy_peer_auth_role(crt, tenant)
+                                                      : WENDY_PEER_ROLE_NONE;
+    free_cert(crt); return result;
+}
+
 int wendy_pki_verify_operator(const uint8_t *data, size_t size, const char *tenant)
 {
-    if (!data || !size || size>65536 || !tenant || strlen(tenant)!=36) return -1;
-    mbedtls_x509_crt *crt = parse_cert(data, size);
-    if (!crt) return -1;
-    int result = -1, count = 0;
-    if (crt->MBEDTLS_PRIVATE(ca_istrue) || !has_eku(crt,MBEDTLS_OID_CLIENT_AUTH,MBEDTLS_OID_SIZE(MBEDTLS_OID_CLIENT_AUTH))) goto done;
-    char prefix[96]; snprintf(prefix,sizeof prefix,"spiffe://wendy.sh/tenant/%s/operator/",tenant);
-    size_t n = strlen(prefix);
-    for (const mbedtls_x509_sequence *a=&crt->subject_alt_names; a && a->buf.p; a=a->next) {
-        mbedtls_x509_subject_alternative_name san;
-        if (mbedtls_x509_parse_subject_alt_name(&a->buf,&san) ||
-            san.type != MBEDTLS_X509_SAN_UNIFORM_RESOURCE_IDENTIFIER) continue;
-        const mbedtls_x509_buf *uri=&san.san.unstructured_name;
-        if (uri->len!=n+36 || memcmp(uri->p,prefix,n)) goto done;
-        for (size_t i=0;i<36;i++) {
-            char c=uri->p[n+i];
-            if (i==8 || i==13 || i==18 || i==23) { if(c!='-') goto done; }
-            else if (!((c>='0'&&c<='9')||(c>='a'&&c<='f'))) goto done;
-        }
-        count++;
-    }
-    result = count == 1 ? 0 : -1;
-done:
-    free_cert(crt); return result;
+    return wendy_pki_verify_peer(data, size, tenant) == WENDY_PEER_ROLE_OPERATOR ? 0 : -1;
 }

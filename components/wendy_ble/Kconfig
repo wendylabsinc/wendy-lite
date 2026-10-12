@@ -8,6 +8,10 @@ menu "Wendy BLE (WendyCom transport)"
             channel. The device acts as a BLE peripheral; the console connects
             as a central.
 
+            Provisioned devices require a verified operator certificate from
+            the device's organization. Devices with PKI
+            enrollment use LAN or Cloud; BLE does not support their identity yet.
+
             This component owns the NimBLE stack: it calls nimble_port_init(),
             installs the host sync callback and drives advertising. No other
             component may bring the stack up.
@@ -34,17 +38,17 @@ menu "Wendy BLE (WendyCom transport)"
 
     config WENDY_BLE_REQUIRE_MTLS
         bool "Require mTLS (refuse to advertise when unprovisioned)"
-        default y
+        default n
         depends on WENDY_BLE
         help
             When set, the device neither advertises nor opens the L2CAP server
-            unless wendy_conf carries a private key, a certificate and a chain
-            of trust.
+            unless it has legacy provisioning credentials with a valid Wendy
+            device identity. Clients need a trusted operator certificate from
+            the same organization.
 
-            When unset, an unprovisioned device serves the
-            embedded self-signed certificate with client verification off,
-            matching what wendy_server does on TCP. That keeps BLE usable as a
-            recovery path on a fresh board, which is its main purpose.
+            When unset, an unprovisioned device serves the embedded self-signed
+            certificate without requiring a client certificate. Configured PKI
+            enrollment always disables BLE, even if legacy credentials exist.
 
     config WENDY_BLE_TASK_PRIORITY
         int "BLE session task priority"

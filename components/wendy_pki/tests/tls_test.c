@@ -94,11 +94,17 @@ int main(int argc, char **argv) {
     assert(!listen(listener, 1)); printf("%d\n", ntohs(address.sin_port)); fflush(stdout);
     int fd = accept(listener, NULL, NULL); close(listener); assert(fd >= 0);
     wendy_pki_connection *c = NULL;
-    int rc = pki_tls_accept(fd, key, kn, (char *)cert, (struct wendy_conf_span){root, rn},
+    const char *mode = argv[4];
+    bool lan = !strncmp(mode, "lan-", 4);
+    if (lan) mode += 4;
+    int rc = (lan ? pki_tls_accept_lan : pki_tls_accept)(fd, key, kn, (char *)cert, (struct wendy_conf_span){root, rn},
         "2558fd76-afc7-466e-9613-6b715296a526", &c, esp_timer_get_time() + 3000000);
     free(key); free(cert); free(root);
-    if (!strcmp(argv[4], "reject")) { if (c) wendy_pki_close(c); return rc ? 0 : 1; }
+    if (!strcmp(mode, "reject")) { if (c) wendy_pki_close(c); return rc ? 0 : 1; }
     if (rc) return 2;
+    assert(wendy_pki_get_peer_role(c) == (!strcmp(mode, "valid-device") ? WENDY_PEER_ROLE_DEVICE : WENDY_PEER_ROLE_OPERATOR));
+    if (!strcmp(mode, "valid-device"))
+        assert(pki_relay_grant(c, NULL, esp_timer_get_time() + 3000000) == -1);
     if (argc == 8) {
         size_t tn;
         unsigned char *raw = load(argv[5], &tn);
@@ -113,7 +119,7 @@ int main(int argc, char **argv) {
         c->device_expires = (time_t)strtoll(argv[6], NULL, 10);
         free(raw);
         rc = pki_relay_grant(c, &trust, esp_timer_get_time() + 3000000);
-        if (!strcmp(argv[4], "relay-reject")) {
+        if (!strcmp(mode, "relay-reject")) {
             wendy_pki_close(c);
             return rc ? 0 : 6;
         }
@@ -129,7 +135,7 @@ int main(int argc, char **argv) {
         return 0;
     }
     fd = wendy_pki_detach(c);
-    if (!strcmp(argv[4], "truncate") || !strcmp(argv[4], "extra")) {
+    if (!strcmp(mode, "truncate") || !strcmp(mode, "extra")) {
         if (fd < 0) { wendy_pki_close(c); return 0; } close(fd); return 3;
     }
     if (fd < 0) { wendy_pki_close(c); return 4; }

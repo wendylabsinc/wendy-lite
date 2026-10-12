@@ -395,6 +395,7 @@ int main(int argc, char **argv)
 }
 
 int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, const char *cert, struct wendy_conf_span roots, const char *tenant, wendy_pki_connection **out, int64_t deadline) { (void)deadline; (void)fd; (void)key; (void)key_size; (void)cert; (void)roots; (void)tenant; (void)out; return -1; }
+int pki_tls_accept_lan(int fd, const uint8_t *key, size_t key_size, const char *cert, struct wendy_conf_span roots, const char *tenant, wendy_pki_connection **out, int64_t deadline) { (void)deadline; (void)fd; (void)key; (void)key_size; (void)cert; (void)roots; (void)tenant; (void)out; return -1; }
 
 int pki_relay_grant(wendy_pki_connection *c, const struct wendy_lite_trust *t, int64_t d) { (void)c; (void)t; (void)d; return -1; }
 

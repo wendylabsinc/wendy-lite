@@ -34,6 +34,7 @@ struct wendy_pki_connection
     mbedtls_pk_context key;
 #endif
     int fd;
+    enum wendy_peer_role peer_role;
     uint8_t device_hash[32], operator_hash[32], operator_spki_hash[32];
     time_t device_expires, operator_expires;
     int64_t relay_expires_us;
@@ -46,6 +47,9 @@ int pki_http_post(const char *url, const char *type, const char *token, const vo
 
 int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, const char *cert,
                    struct wendy_conf_span roots, const char *tenant, wendy_pki_connection **out, int64_t deadline);
+int pki_tls_accept_lan(int fd, const uint8_t *key, size_t key_size, const char *cert,
+                      struct wendy_conf_span roots, const char *tenant,
+                      wendy_pki_connection **out, int64_t deadline);
 
 int pki_relay_grant(wendy_pki_connection *, const struct wendy_lite_trust *, int64_t deadline);
 

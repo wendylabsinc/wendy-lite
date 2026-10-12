@@ -70,6 +70,21 @@ func main() {
 		u, err := url.Parse(uri)
 		must(err)
 		template := &x509.Certificate{SignatureAlgorithm: signature, SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: name}, NotBefore: time.Now().Add(-time.Hour), NotAfter: expiry, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: usages, DNSNames: []string{"localhost"}, URIs: []*url.URL{u}}
+		switch name {
+		case "lan-device-ca":
+			template.IsCA, template.BasicConstraintsValid = true, true
+			template.KeyUsage |= x509.KeyUsageCertSign
+		case "lan-device-duplicate-uri":
+			template.URIs = []*url.URL{u, u}
+		case "lan-device-extra-uri":
+			other, err := url.Parse("spiffe://wendy.sh/tenant/2558fd76-afc7-466e-9613-6b715296a526/operator/user")
+			must(err)
+			template.URIs = []*url.URL{u, other}
+		case "lan-device-missing-uri":
+			template.URIs = nil
+		case "lan-device-future":
+			template.NotBefore = time.Now().Add(time.Minute)
+		}
 		der, err := x509.CreateCertificate(rand.Reader, template, parent, key.Public(), issuer)
 		must(err)
 		raw, err := x509.MarshalPKCS8PrivateKey(key)
@@ -81,12 +96,18 @@ func main() {
 	_, keyDER, serverPEM := leaf("device", time.Now().Add(time.Hour), []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, tenant+"device/lite-test", rootKey, root, 0)
 	must(os.WriteFile(filepath.Join(directory, "key.der"), keyDER, 0600))
 	must(os.WriteFile(filepath.Join(directory, "server.pem"), serverPEM, 0600))
-	cases := []string{"valid", "wrong-tenant", "wrong-role", "wrong-eku", "expired", "untrusted", "no-client", "tls12", "truncate", "extra", "intermediate", "intermediate-key-usage", "intermediate-not-ca", "intermediate-path-length", "intermediate-expired", "intermediate-sha1", "relay-valid", "relay-operator-expiry", "relay-device-expiry", "relay-wrong-key", "relay-old", "relay-truncated", "relay-expired", "relay-long-presentation"}
+	cases := []string{"valid", "wrong-tenant", "wrong-role", "wrong-eku", "expired", "untrusted", "no-client", "tls12", "truncate", "extra", "intermediate", "intermediate-key-usage", "intermediate-not-ca", "intermediate-path-length", "intermediate-expired", "intermediate-sha1", "relay-valid", "relay-operator-expiry", "relay-device-expiry", "relay-wrong-key", "relay-old", "relay-truncated", "relay-expired", "relay-long-presentation", "relay-device-client",
+		"lan-operator", "lan-device", "lan-device-wrong-tenant", "lan-device-wrong-eku", "lan-device-missing-eku",
+		"lan-device-ca", "lan-device-duplicate-uri", "lan-device-extra-uri", "lan-device-missing-uri",
+		"lan-device-expired", "lan-device-future", "lan-device-untrusted", "lan-device-tampered", "lan-no-client"}
 	for _, name := range cases {
 		expiry := time.Now().Add(time.Hour)
 		usages := []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
 		uri := tenant + "operator/11111111-1111-4111-8111-111111111111"
 		issuer := rootKey
+		if strings.HasPrefix(name, "lan-device") || name == "relay-device-client" {
+			uri = tenant + "device/consumer-agent"
+		}
 		parent := root
 		var chain [][]byte
 		if strings.HasPrefix(name, "intermediate") {
@@ -117,15 +138,17 @@ func main() {
 		switch name {
 		case "relay-operator-expiry":
 			expiry = time.Now().Add(90 * time.Second)
-		case "expired":
+		case "expired", "lan-device-expired":
 			expiry = time.Now().Add(-time.Minute)
-		case "wrong-tenant":
+		case "wrong-tenant", "lan-device-wrong-tenant":
 			uri = strings.Replace(uri, "2558fd76", "3558fd76", 1)
 		case "wrong-role":
 			uri = tenant + "device/lite-test"
-		case "wrong-eku":
+		case "wrong-eku", "lan-device-wrong-eku":
 			usages = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
-		case "untrusted":
+		case "lan-device-missing-eku":
+			usages = nil
+		case "untrusted", "lan-device-untrusted":
 			issuer, err = newIssuer()
 			must(err)
 		}
@@ -133,7 +156,10 @@ func main() {
 		if name == "intermediate-sha1" {
 			signature = x509.ECDSAWithSHA1
 		}
-		cert, _, _ := leaf("operator", expiry, usages, uri, issuer, parent, signature)
+		cert, _, _ := leaf(name, expiry, usages, uri, issuer, parent, signature)
+		if name == "lan-device-tampered" {
+			cert.Certificate[0][len(cert.Certificate[0])-1] ^= 1
+		}
 		cert.Certificate = append(cert.Certificate, chain...)
 		mode := "reject"
 		if name == "valid" || name == "intermediate" || name == "truncate" || name == "extra" {
@@ -142,9 +168,18 @@ func main() {
 				mode = "valid"
 			}
 		}
+		if name == "lan-device" {
+			mode = "valid-device"
+		}
+		if name == "lan-operator" {
+			mode = "valid"
+		}
 		args := []string{filepath.Join(directory, "key.der"), filepath.Join(directory, "server.pem"), filepath.Join(directory, "root.pem"), mode}
 		var grant []byte
-		relay := strings.HasPrefix(name, "relay-")
+		if strings.HasPrefix(name, "lan-") {
+			args[3] = "lan-" + mode
+		}
+		relay := strings.HasPrefix(name, "relay-") && name != "relay-device-client"
 		if relay {
 			mode = "relay-reject"
 			if name == "relay-valid" || name == "relay-operator-expiry" || name == "relay-device-expiry" {
@@ -228,7 +263,7 @@ func main() {
 		must(err)
 		must(conn.SetDeadline(time.Now().Add(4 * time.Second)))
 		cfg := &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: pool, ServerName: "localhost", Certificates: []tls.Certificate{cert}}
-		if name == "no-client" {
+		if name == "no-client" || name == "lan-no-client" {
 			cfg.Certificates = nil
 		}
 		if name == "tls12" {
