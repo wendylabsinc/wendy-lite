@@ -33,7 +33,8 @@ struct wendy_pki_connection
     mbedtls_pk_context key;
 #endif
     int fd;
-    uint8_t device_hash[32], operator_hash[32];
+    uint8_t device_hash[32], operator_hash[32], operator_spki_hash[32];
+    time_t device_expires, operator_expires;
     int64_t relay_expires_us;
 };
 int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t key_size,

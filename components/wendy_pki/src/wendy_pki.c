@@ -536,9 +536,13 @@ static esp_err_t connect_identity(wendy_pki_connection **connection)
         else
             ESP_LOGI(TAG, "pki-core issued identity for %s", cfg.device_id);
     }
+    ESP_LOGI(TAG, "connecting to broker %s:%u", cfg.broker_host, (unsigned)cfg.broker_port);
     if (pki_tls_connect(cfg.broker_host, cfg.broker_port, key, key_size,
-                        fresh ? fresh : (char *)stored, data.https_roots, connection))
+                        fresh ? fresh : (char *)stored, data.https_roots, connection)) {
+        ESP_LOGW(TAG, "broker TLS connection failed");
         goto done;
+    }
+    ESP_LOGI(TAG, "broker TLS authenticated; awaiting control handshake");
     result = ESP_OK;
 done:
     if (key)
@@ -592,6 +596,7 @@ static esp_err_t accept_identity_operator(int fd, wendy_pki_connection **connect
                                  data.device_roots, cfg.tenant_id, connection, deadline);
     fd = -1; /* pki_tls_accept owns the socket, including failures. */
     if (!accepted) {
+        (*connection)->device_expires = expires;
         if (!trust || (!mbedtls_sha256((uint8_t *)principal, strlen(principal), (*connection)->device_hash, 0) &&
                        !pki_relay_grant(*connection, trust, deadline))) {
             result = ESP_OK;

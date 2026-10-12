@@ -20,15 +20,29 @@ same-tenant operator SPIFFE URI. Device and service identities are refused.
 Before WendyCom, the CLI must send the WLG2 compact grant as its first inner TLS
 application record. Firmware checks the P-256 signature, trusted key ID,
 upgrade session and grant hash, its own device identity, authenticated operator
-identity, issuance time and expiry. Lifetime must be positive and at most 1800
-seconds. Success sends WLA2; failure closes the socket. The operator's signing
-and TLS keys may differ, but their principal URI must match.
+identity, and SHA-256 of the authenticated operator certificate's SubjectPublicKeyInfo
+DER. The operator's signing and TLS certificates may differ, but their principal
+URI and public key must match. A matching URI with a different key is refused.
+Success sends WLA2; failure closes the socket.
+
+The current Cloud WLG2 record is `309 + key_id_length` bytes (at most 437).
+After the key ID it contains two 8-byte timestamps; four 16-byte identifiers
+(session, grant, correlation, asset); five 32-byte hashes (device URI, operator
+URI, operator SPKI, principal payload, attestation); and a 64-byte raw P-256
+signature. Earlier `213 + key_id_length` records are rejected.
+
+The signed expiry is a presentation deadline: firmware requires
+`issued_at <= now < present_by` and `0 < present_by - issued_at <= 60` seconds.
+Once admitted, the session deadline is `issued_at + 1800` seconds, capped by
+both authenticated certificate expiries. The presentation deadline does not
+terminate an established session. The upgrade hash and session bind admission
+to the single-use outer connection.
 
 The cloud task opens a replacement control connection after handing off the
 operator stream. PostgreSQL-backed broker caps permit one active session per
 device and four per user, including replacement connections. The broker closes
 sessions at expiry and after 60 seconds idle. Firmware also refuses reads and
-writes after the grant expires. Inner TLS establishment plus grant admission
+writes after the session deadline. Inner TLS establishment plus grant admission
 share a 10-second deadline; outer control reads have a 30-second deadline.
 
 Build with ESP-IDF 5.5.4 and enable `CONFIG_WENDY_CLOUD=y` as described in
@@ -47,9 +61,11 @@ ctest --test-dir build-pki --output-on-failure
 ```
 
 The shared Go-generated P-256 grant fixture also runs in Swift. Firmware tests
-cover valid grants, every truncated length, altered signatures, expiry, key and
-identity mismatches. Seven host tests pass both normally and under ASan/UBSan.
-An ESP32-C6 build passes. A physical-board trial must still verify enrollment,
+cover the current Cloud record, rejected legacy records, every truncated length,
+maximum and oversized records, altered signatures, presentation deadlines,
+session expiry, key rotation, and matching operator URIs with different keys.
+See [fixture provenance and regeneration](../components/wendy_pki/tests/lite-fixtures/README.md).
+A physical-board trial must still verify the complete cloud relay, including
 outer shutdown/inner handshake, key rotation, resource use and crypto latency.
 
 ## Default image size

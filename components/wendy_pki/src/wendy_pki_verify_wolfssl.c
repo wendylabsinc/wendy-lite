@@ -727,3 +727,35 @@ int wendy_lite_peer_hash(const uint8_t *input, size_t size, uint8_t hash[32])
     free(decoded);
     return count == 1 && !result ? 0 : -1;
 }
+
+/* Hash the exact SubjectPublicKeyInfo the authenticated certificate carries.
+ * Re-encoding the key can change algorithm parameters and the bound bytes. */
+int wendy_lite_peer_spki_hash(const uint8_t *input, size_t size, uint8_t hash[32])
+{
+    if (!input || !size || size > 65536 || !hash) return -1;
+    der serial, issuer, spki;
+    if (certificate_parts((der){input, input, size, size, 0}, &serial, &issuer, &spki))
+        return -1;
+    return wc_Hash(WC_HASH_TYPE_SHA256, spki.raw, (word32)spki.raw_n, hash, 32) ? -1 : 0;
+}
+
+int wendy_lite_peer_expiry(const uint8_t *input, size_t size, time_t *expires)
+{
+    if (!input || !size || size > 65536 || !expires) return -1;
+    der all = {input, input, size, size, 0}, sequence;
+    if (take(&all, 0x30, &sequence) || all.n) return -1;
+    WOLFSSL_X509 *cert = wolfSSL_X509_load_certificate_buffer(input, (int)size, WOLFSSL_FILETYPE_ASN1);
+    if (!cert) return -1;
+    struct tm tm = {0};
+    char date[16];
+    time_t parsed;
+    int result = -1;
+    if (wolfSSL_ASN1_TIME_to_tm(wolfSSL_X509_get_notAfter(cert), &tm) == WOLFSSL_SUCCESS &&
+        strftime(date, sizeof date, "%Y%m%d%H%M%SZ", &tm) == 15 &&
+        !utc_time((der){(uint8_t *)date, NULL, 15, 0, 24}, &parsed)) {
+        *expires = parsed;
+        result = 0;
+    }
+    wolfSSL_X509_free(cert);
+    return result;
+}

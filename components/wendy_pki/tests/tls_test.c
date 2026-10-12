@@ -10,9 +10,10 @@
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
+static int64_t clock_advance;
 int64_t esp_timer_get_time(void) {
     struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
-    return (int64_t)t.tv_sec * 1000000 + t.tv_nsec / 1000;
+    return (int64_t)t.tv_sec * 1000000 + t.tv_nsec / 1000 + clock_advance;
 }
 static unsigned char *load(const char *path, size_t *size) {
     FILE *f = fopen(path, "rb"); assert(f); fseek(f, 0, SEEK_END);
@@ -30,7 +31,7 @@ int main(int argc, char **argv) {
     assert(wendy_pki_read(&old, &byte, 1) == -1);
     assert(wendy_pki_write(&old, "x", 1) == -1);
     resetting = false;
-    assert(argc == 5); size_t kn, cn, rn;
+    assert(argc == 5 || argc == 8); size_t kn, cn, rn;
     unsigned char *key = load(argv[1], &kn), *cert = load(argv[2], &cn), *root = load(argv[3], &rn);
     int listener = socket(AF_INET, SOCK_STREAM, 0); assert(listener >= 0);
     struct sockaddr_in address = {.sin_family = AF_INET, .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
@@ -44,6 +45,35 @@ int main(int argc, char **argv) {
     free(key); free(cert); free(root);
     if (!strcmp(argv[4], "reject")) { if (c) wendy_pki_close(c); return rc ? 0 : 1; }
     if (rc) return 2;
+    if (argc == 8) {
+        size_t tn;
+        unsigned char *raw = load(argv[5], &tn);
+        assert(tn == 145);
+        struct wendy_lite_trust trust = {.count = 1};
+        trust.keys[0].id_size = 4;
+        memcpy(trust.keys[0].id, "test", 4);
+        memcpy(trust.keys[0].public_key, raw, 65);
+        memcpy(trust.session, raw + 65, 16);
+        memcpy(trust.grant_hash, raw + 81, 32);
+        memcpy(c->device_hash, raw + 113, 32);
+        c->device_expires = (time_t)strtoll(argv[6], NULL, 10);
+        free(raw);
+        rc = pki_relay_grant(c, &trust, esp_timer_get_time() + 3000000);
+        if (!strcmp(argv[4], "relay-reject")) {
+            wendy_pki_close(c);
+            return rc ? 0 : 6;
+        }
+        if (rc) { wendy_pki_close(c); return 7; }
+        int64_t expected = strtoll(argv[7], NULL, 10);
+        int64_t remaining = (c->relay_expires_us - esp_timer_get_time()) / 1000000;
+        assert(llabs(remaining - (expected - time(NULL))) <= 1);
+        // The session uses a monotonic cutoff even after the clock is corrected.
+        clock_advance = c->relay_expires_us - esp_timer_get_time() + 1;
+        assert(wendy_pki_read(c, &byte, 1) == -1);
+        assert(wendy_pki_write(c, "x", 1) == -1);
+        wendy_pki_close(c);
+        return 0;
+    }
     fd = wendy_pki_detach(c);
     if (!strcmp(argv[4], "truncate") || !strcmp(argv[4], "extra")) {
         if (fd < 0) { wendy_pki_close(c); return 0; } close(fd); return 3;

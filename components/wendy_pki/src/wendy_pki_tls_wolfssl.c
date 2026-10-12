@@ -126,12 +126,15 @@ int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t 
     if (!c)
         return -1;
     c->fd = -1;
+    const char *stage = "DNS";
+    int tls_error = 0;
     struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM}, *addresses = NULL;
     char service[6];
     snprintf(service, sizeof service, "%u", port);
-    if (getaddrinfo(host, service, &hints, &addresses))
+    if ((tls_error = getaddrinfo(host, service, &hints, &addresses)) != 0)
         goto fail;
     int64_t deadline = esp_timer_get_time() + 15000000;
+    stage = "TCP connect";
     for (struct addrinfo *a = addresses; a; a = a->ai_next)
     {
         c->fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
@@ -161,6 +164,7 @@ int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t 
     addresses = NULL;
     if (c->fd < 0)
         goto fail;
+    stage = "TLS setup";
     c->ctx = wolfSSL_CTX_new(wolfTLSv1_3_client_method());
     if (!c->ctx)
         goto fail;
@@ -188,14 +192,20 @@ int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t 
     if (wolfSSL_check_domain_name(c->ssl, host) != WOLFSSL_SUCCESS ||
         wolfSSL_UseSNI(c->ssl, WOLFSSL_SNI_HOST_NAME, host, strlen(host)) != WOLFSSL_SUCCESS)
         goto fail;
+    stage = "TLS handshake";
     int r;
-    while ((r = wolfSSL_connect(c->ssl)) != WOLFSSL_SUCCESS)
-        if (wait_socket(c, wolfSSL_get_error(c->ssl, r), deadline))
-            goto fail;
-    if (wolfSSL_get_verify_result(c->ssl) != 0) goto fail;
+    while ((r = wolfSSL_connect(c->ssl)) != WOLFSSL_SUCCESS) {
+        tls_error = wolfSSL_get_error(c->ssl, r);
+        if (wait_socket(c, tls_error, deadline)) goto fail;
+    }
+    stage = "certificate verification";
+    tls_error = (int)wolfSSL_get_verify_result(c->ssl);
+    if (tls_error != 0) goto fail;
     *out = c;
     return 0;
 fail:
+    ESP_LOGW("wendy_pki", "TLS client failed at %s (%s:%u, tls=%d, errno=%d)",
+             stage, host, port, tls_error, errno);
     if (addresses)
         freeaddrinfo(addresses);
     wendy_pki_close(c);
@@ -386,6 +396,8 @@ int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, const char *cert
     const uint8_t *peer_der = peer ? wolfSSL_X509_get_der(peer, &peer_size) : NULL;
     int valid_operator = wendy_pki_verify_operator(peer_der, peer_size, tenant);
     if (!valid_operator) valid_operator = wendy_lite_peer_hash(peer_der, peer_size, c->operator_hash);
+    if (!valid_operator) valid_operator = wendy_lite_peer_spki_hash(peer_der, peer_size, c->operator_spki_hash);
+    if (!valid_operator) valid_operator = wendy_lite_peer_expiry(peer_der, peer_size, &c->operator_expires);
     wolfSSL_X509_free(peer);
     if (valid_operator) goto fail;
     if (wolfSSL_get_verify_result(c->ssl) != 0) goto fail;
@@ -409,34 +421,52 @@ static int read_all(wendy_pki_connection *c, uint8_t *out, size_t n, int64_t dea
 
 int wendy_pki_relay_upgrade(wendy_pki_connection *c, struct wendy_lite_trust *trust)
 {
+    memset(trust, 0, sizeof *trust);
+    const char *stage = "grant key set";
     uint8_t header[4], count;
     int64_t deadline = esp_timer_get_time() + 10000000;
-    memset(trust, 0, sizeof *trust);
     if (read_all(c, header, 4, deadline) || memcmp(header, "WR\x03\x04", 4) ||
-        read_all(c, &count, 1, deadline) || count < 1 || count > 2) return -1;
+        read_all(c, &count, 1, deadline) || count < 1 || count > 2) goto fail;
     trust->count = count;
     for (unsigned i = 0; i < count; i++) {
         struct wendy_lite_key *key = &trust->keys[i];
         if (read_all(c, &key->id_size, 1, deadline) || key->id_size < 1 || key->id_size > 128 ||
             read_all(c, key->id, key->id_size, deadline) || wendy_lite_key_id(key->id, key->id_size) ||
-            read_all(c, key->public_key, sizeof key->public_key, deadline)) return -1;
+            read_all(c, key->public_key, sizeof key->public_key, deadline)) goto fail;
         if (i && trust->keys[0].id_size == key->id_size &&
-            !memcmp(trust->keys[0].id, key->id, key->id_size)) return -1;
+            !memcmp(trust->keys[0].id, key->id, key->id_size)) goto fail;
     }
     int64_t renew = esp_timer_get_time() + 240000000;
+    bool first = true;
     for (;;) {
+        stage = "heartbeat";
         deadline = esp_timer_get_time() + 30000000;
         if (deadline > renew) deadline = renew;
-        if (read_all(c, header, 4, deadline) || memcmp(header, "WR\x03", 3)) return -1;
+        if (read_all(c, header, 4, deadline) || memcmp(header, "WR\x03", 3)) {
+            if (esp_timer_get_time() >= renew) {
+                ESP_LOGI("wendy_pki", "refreshing broker control connection");
+                return -1;
+            }
+            goto fail;
+        }
         if (header[3] == 1) {
-            if (write_all(c, "WR\x03\x02", 4, deadline)) return -1;
+            if (write_all(c, "WR\x03\x02", 4, deadline)) goto fail;
+            if (first) ESP_LOGI("wendy_pki", "broker control heartbeat received and answered");
+            first = false;
         } else if (header[3] == 3) {
+            stage = "relay handoff";
             deadline = esp_timer_get_time() + 10000000;
             if (read_all(c, trust->session, 16, deadline) ||
-                read_all(c, trust->grant_hash, 32, deadline)) return -1;
-            return detach_socket(c);
-        } else return -1;
+                read_all(c, trust->grant_hash, 32, deadline)) goto fail;
+            int fd = detach_socket(c);
+            if (fd < 0) goto fail;
+            ESP_LOGI("wendy_pki", "broker control handed off to operator TLS");
+            return fd;
+        } else goto fail;
     }
+fail:
+    ESP_LOGW("wendy_pki", "broker control failed at %s", stage);
+    return -1;
 }
 
 int pki_relay_grant(wendy_pki_connection *c, const struct wendy_lite_trust *trust, int64_t deadline)
@@ -446,16 +476,22 @@ int pki_relay_grant(wendy_pki_connection *c, const struct wendy_lite_trust *trus
     int result = -1;
     if (read_all(c, record, 5, deadline) || memcmp(record, "WLG2", 4) ||
         record[4] < 1 || record[4] > 128) goto done;
-    size_t size = 213u + record[4];
+    size_t size = WENDY_LITE_GRANT_FIXED + record[4];
     uint64_t expires = 0;
     if (read_all(c, record + 5, size - 5, deadline) ||
-        wendy_lite_verify_grant(record, size, trust, c->device_hash, c->operator_hash, time(NULL), &expires)) goto done;
+        wendy_lite_verify_grant(record, size, trust, c->device_hash, c->operator_hash, c->operator_spki_hash, time(NULL), &expires)) goto done;
+    // presentBy authorizes presentation only. Bound the session separately by
+    // its signed issue time and both authenticated certificates.
+    if (c->device_expires <= 0 || c->operator_expires <= 0) goto done;
+    if (expires > (uint64_t)c->device_expires) expires = (uint64_t)c->device_expires;
+    if (expires > (uint64_t)c->operator_expires) expires = (uint64_t)c->operator_expires;
     int64_t remaining = (int64_t)expires - (int64_t)time(NULL);
     if (remaining <= 0 || remaining > 1800) goto done;
     c->relay_expires_us = esp_timer_get_time() + remaining * 1000000;
     if (write_all(c, "WLA2", 4, deadline)) goto done;
     result = 0;
 done:
+    if (result) ESP_LOGW("wendy_pki", "operator relay grant rejected");
     free(record);
     return result;
 }

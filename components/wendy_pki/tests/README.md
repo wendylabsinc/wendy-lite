@@ -45,11 +45,15 @@ the timestamp issuance code and certificate encoder are the actual PKI code.
 the successful timestamp fixture. Never use these roots in a deployed image.
 
 `tls_test_driver.go` creates disposable P-256 chains and connects Go TLS to the
-production firmware TLS adapter. Sixteen cases cover TLS 1.3, wrong tenant/role/EKU,
+production firmware TLS adapter. Twenty-four cases cover TLS 1.3, wrong tenant/role/EKU,
 expired/untrusted/missing client certificates, TLS 1.2 refusal, truncated shutdown,
 unexpected application data during handoff, valid intermediate chains, and
 rejection of non-CA intermediates, missing keyCertSign usage, path-length
-violations, expired intermediates, and SHA-1 leaf signatures. The valid case exchanges
+violations, expired intermediates, and SHA-1 leaf signatures. Relay cases send the
+current Cloud WLG2 layout through authenticated TLS, reject another key for the
+same operator URI, and enforce independent presentation and session deadlines.
+They cover both certificate expiry caps, legacy/truncated/expired grants and
+presentation windows over 60 seconds. The valid handoff case exchanges
 close_notify and then transfers raw bytes on the preserved TCP socket.
 The wolfSSL profile runs the same cases with ML-DSA-44, ML-DSA-65, and ML-DSA-87
 roots and P-256 device/operator keys. Set `IDF_PATH` to ESP-IDF 5.5.4 and install

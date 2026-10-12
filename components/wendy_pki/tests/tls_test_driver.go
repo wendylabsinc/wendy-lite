@@ -10,9 +10,11 @@ import (
 	"crypto/elliptic"
 	"crypto/mldsa"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -79,7 +81,7 @@ func main() {
 	_, keyDER, serverPEM := leaf("device", time.Now().Add(time.Hour), []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, tenant+"device/lite-test", rootKey, root, 0)
 	must(os.WriteFile(filepath.Join(directory, "key.der"), keyDER, 0600))
 	must(os.WriteFile(filepath.Join(directory, "server.pem"), serverPEM, 0600))
-	cases := []string{"valid", "wrong-tenant", "wrong-role", "wrong-eku", "expired", "untrusted", "no-client", "tls12", "truncate", "extra", "intermediate", "intermediate-key-usage", "intermediate-not-ca", "intermediate-path-length", "intermediate-expired", "intermediate-sha1"}
+	cases := []string{"valid", "wrong-tenant", "wrong-role", "wrong-eku", "expired", "untrusted", "no-client", "tls12", "truncate", "extra", "intermediate", "intermediate-key-usage", "intermediate-not-ca", "intermediate-path-length", "intermediate-expired", "intermediate-sha1", "relay-valid", "relay-operator-expiry", "relay-device-expiry", "relay-wrong-key", "relay-old", "relay-truncated", "relay-expired", "relay-long-presentation"}
 	for _, name := range cases {
 		expiry := time.Now().Add(time.Hour)
 		usages := []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
@@ -113,6 +115,8 @@ func main() {
 			}
 		}
 		switch name {
+		case "relay-operator-expiry":
+			expiry = time.Now().Add(90 * time.Second)
 		case "expired":
 			expiry = time.Now().Add(-time.Minute)
 		case "wrong-tenant":
@@ -138,7 +142,82 @@ func main() {
 				mode = "valid"
 			}
 		}
-		cmd := exec.Command(os.Args[1], filepath.Join(directory, "key.der"), filepath.Join(directory, "server.pem"), filepath.Join(directory, "root.pem"), mode)
+		args := []string{filepath.Join(directory, "key.der"), filepath.Join(directory, "server.pem"), filepath.Join(directory, "root.pem"), mode}
+		var grant []byte
+		relay := strings.HasPrefix(name, "relay-")
+		if relay {
+			mode = "relay-reject"
+			if name == "relay-valid" || name == "relay-operator-expiry" || name == "relay-device-expiry" {
+				mode = "relay"
+			}
+			args[3] = mode
+			signer, e := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			must(e)
+			issued := time.Now().Unix()
+			if name == "relay-expired" {
+				issued -= 120
+			}
+			presentBy := issued + 60
+			if name == "relay-long-presentation" {
+				presentBy = issued + 61
+			}
+			grant = append([]byte("WLG2"), 4)
+			grant = append(grant, []byte("test")...)
+			grant = binary.BigEndian.AppendUint64(grant, uint64(issued))
+			grant = binary.BigEndian.AppendUint64(grant, uint64(presentBy))
+			var session [16]byte
+			_, e = rand.Read(session[:])
+			must(e)
+			grant = append(grant, session[:]...)
+			// jti, correlation ID, asset ID: four UUID fields including session.
+			for range 3 {
+				id := make([]byte, 16)
+				_, e = rand.Read(id)
+				must(e)
+				grant = append(grant, id...)
+			}
+			deviceHash := sha256.Sum256([]byte(tenant + "device/lite-test"))
+			operatorHash := sha256.Sum256([]byte(uri))
+			publicKey := cert.PrivateKey.(crypto.Signer).Public()
+			if name == "relay-wrong-key" {
+				other, e := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+				must(e)
+				publicKey = other.Public() // Same authenticated URI, different bound key.
+			}
+			spki, e := x509.MarshalPKIXPublicKey(publicKey)
+			must(e)
+			spkiHash := sha256.Sum256(spki)
+			for _, h := range [][32]byte{deviceHash, operatorHash, spkiHash, sha256.Sum256([]byte("principal")), sha256.Sum256([]byte("attestation"))} {
+				grant = append(grant, h[:]...)
+			}
+			if name == "relay-old" {
+				grant = grant[:149+4]
+			}
+			digest := sha256.Sum256(grant)
+			r, ss, e := ecdsa.Sign(rand.Reader, signer, digest[:])
+			must(e)
+			sig := make([]byte, 64)
+			r.FillBytes(sig[:32])
+			ss.FillBytes(sig[32:])
+			grant = append(grant, sig...)
+			grantHash := sha256.Sum256(grant)
+			trust := elliptic.Marshal(elliptic.P256(), signer.X, signer.Y)
+			trust = append(trust, session[:]...)
+			trust = append(trust, grantHash[:]...)
+			trust = append(trust, deviceHash[:]...)
+			trustPath := filepath.Join(directory, "trust.bin")
+			must(os.WriteFile(trustPath, trust, 0600))
+			deviceExpiry := time.Now().Add(time.Hour).Unix()
+			if name == "relay-device-expiry" {
+				deviceExpiry = time.Now().Add(120 * time.Second).Unix()
+			}
+			sessionExpiry := min(issued+1800, expiry.Unix(), deviceExpiry)
+			args = append(args, trustPath, fmt.Sprint(deviceExpiry), fmt.Sprint(sessionExpiry))
+			if name == "relay-truncated" {
+				grant = grant[:len(grant)-1]
+			}
+		}
+		cmd := exec.Command(os.Args[1], args...)
 		cmd.Stderr = os.Stderr
 		stdout, err := cmd.StdoutPipe()
 		must(err)
@@ -160,22 +239,40 @@ func main() {
 		handshake := client.Handshake()
 		if mode != "reject" {
 			must(handshake)
-			switch name {
-			case "truncate":
-				conn.Close()
-			case "extra":
-				_, err = client.Write([]byte("unexpected"))
+			if relay {
+				_, err = client.Write(grant)
 				must(err)
-			default:
-				must(client.CloseWrite())
-				var b [1]byte
-				_, err = client.Read(b[:])
-				if err != io.EOF {
-					panic(fmt.Sprintf("expected close_notify, got %v", err))
+				if name == "relay-truncated" || name == "relay-old" {
+					must(client.CloseWrite())
 				}
-				must(conn.SetDeadline(time.Now().Add(4 * time.Second)))
-				_, err = conn.Write([]byte("raw"))
-				must(err)
+				var ack [4]byte
+				_, err = io.ReadFull(client, ack[:])
+				if mode == "relay" {
+					must(err)
+					if string(ack[:]) != "WLA2" {
+						panic("invalid grant ack")
+					}
+				} else if err == nil {
+					panic("invalid relay grant accepted")
+				}
+			} else {
+				switch name {
+				case "truncate":
+					conn.Close()
+				case "extra":
+					_, err = client.Write([]byte("unexpected"))
+					must(err)
+				default:
+					must(client.CloseWrite())
+					var b [1]byte
+					_, err = client.Read(b[:])
+					if err != io.EOF {
+						panic(fmt.Sprintf("expected close_notify, got %v", err))
+					}
+					must(conn.SetDeadline(time.Now().Add(4 * time.Second)))
+					_, err = conn.Write([]byte("raw"))
+					must(err)
+				}
 			}
 		}
 		if mode == "reject" {
