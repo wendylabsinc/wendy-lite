@@ -19,7 +19,17 @@ static unsigned char *load(const char *path, size_t *size) {
     *size = ftell(f); rewind(f); unsigned char *p = calloc(1, *size + 1);
     assert(p && fread(p, 1, *size, f) == *size); fclose(f); return p;
 }
+static bool resetting;
+bool wendy_pki_reset_in_progress(void) { return resetting; }
+
 int main(int argc, char **argv) {
+    /* Reset revokes existing sessions before the client requests reboot. */
+    wendy_pki_connection old = {0};
+    resetting = true;
+    char byte;
+    assert(wendy_pki_read(&old, &byte, 1) == -1);
+    assert(wendy_pki_write(&old, "x", 1) == -1);
+    resetting = false;
     assert(argc == 5); size_t kn, cn, rn;
     unsigned char *key = load(argv[1], &kn), *cert = load(argv[2], &cn), *root = load(argv[3], &rn);
     int listener = socket(AF_INET, SOCK_STREAM, 0); assert(listener >= 0);

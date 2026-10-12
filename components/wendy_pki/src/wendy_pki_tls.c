@@ -179,13 +179,15 @@ static ssize_t result(wendy_pki_connection *c, int n)
 ssize_t wendy_pki_read(void *v, void *b, size_t n)
 {
     wendy_pki_connection *c = v;
-    if (c->relay_expires_us && esp_timer_get_time() >= c->relay_expires_us) return -1;
+    if (wendy_pki_reset_in_progress() ||
+        (c->relay_expires_us && esp_timer_get_time() >= c->relay_expires_us)) return -1;
     return result(c, mbedtls_ssl_read(&c->ssl, b, n));
 }
 ssize_t wendy_pki_write(void *v, const void *b, size_t n)
 {
     wendy_pki_connection *c = v;
-    if (c->relay_expires_us && esp_timer_get_time() >= c->relay_expires_us) return -1;
+    if (wendy_pki_reset_in_progress() ||
+        (c->relay_expires_us && esp_timer_get_time() >= c->relay_expires_us)) return -1;
     return result(c, mbedtls_ssl_write(&c->ssl, b, n));
 }
 struct response

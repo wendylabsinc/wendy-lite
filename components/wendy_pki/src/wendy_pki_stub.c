@@ -18,3 +18,11 @@ esp_err_t wendy_pki_challenge(bool status_only, char nonce_hex[65], bool *enroll
     (void)enrolled;
     return ESP_ERR_NOT_SUPPORTED;
 }
+
+esp_err_t wendy_pki_reset(const char *expected_device_id, const char *nonce_hex)
+{
+    (void)expected_device_id; (void)nonce_hex;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+bool wendy_pki_reset_in_progress(void) { return false; }

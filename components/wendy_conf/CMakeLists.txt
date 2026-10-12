@@ -8,6 +8,6 @@ idf_component_register(
         "certs/default_cert.der"
         "certs/default_key.der"
     REQUIRES
-        esp_partition log
+        esp_partition log nvs_flash
         nanopb
 )

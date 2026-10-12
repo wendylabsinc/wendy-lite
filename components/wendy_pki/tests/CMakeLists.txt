@@ -19,11 +19,13 @@ add_executable(conf_test conf_test.c ../../wendy_conf/src/wendy_conf.pb.c
 target_include_directories(conf_test PRIVATE stubs ../../wendy_conf/include ../../nanopb)
 find_package(Threads REQUIRED)
 target_link_libraries(conf_test PRIVATE Threads::Threads)
+target_link_libraries(renewal_test PRIVATE Threads::Threads)
 
 enable_testing()
 add_test(NAME pki_verification COMMAND verify_test "${CMAKE_CURRENT_LIST_DIR}/fixtures")
 add_test(NAME pki_verification_future_clock COMMAND verify_test "${CMAKE_CURRENT_LIST_DIR}/fixtures" 4102444800)
 add_test(NAME pki_renewal_fallback COMMAND renewal_test "${CMAKE_CURRENT_LIST_DIR}/fixtures/device-key.der")
+set_tests_properties(pki_renewal_fallback PROPERTIES TIMEOUT 20)
 add_test(NAME pki_configuration_persistence COMMAND conf_test)
 
 add_executable(operator_test operator_test.c)

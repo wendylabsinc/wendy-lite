@@ -10,6 +10,7 @@
 #include "esp_mac.h"
 #include "esp_partition.h"
 #include "esp_system.h"
+#include "nvs.h"
 #include "pb_decode.h"
 
 #include "wendy_conf.h"
@@ -22,6 +23,7 @@
 #define MAGIC      "WYC0"
 #define MAGIC_LEN  4
 #define HEADER_LEN 8
+#define RECOVERY_MAGIC "WCR1"
 
 #define WENDY_CONF_PART_SUBTYPE ((esp_partition_subtype_t)0x40)
 
@@ -185,7 +187,7 @@ static void _load_conf(void)
                      | ((uint32_t)data[6] << 16)
                      | ((uint32_t)data[7] << 24);
 
-    if (pb_size == 0 || pb_size > part->size - HEADER_LEN) {
+    if (pb_size > part->size - HEADER_LEN) {
         ESP_LOGE(TAG, "invalid pb size %" PRIu32, pb_size);
         esp_partition_munmap(mmap);
         return;
@@ -248,7 +250,7 @@ void wendy_conf_init(void)
 /**
  * Scan the top-level fields of a protobuf-encoded message and return a bitmask
  * of the field numbers present (bit N set = field number N present; field
- * numbers >= 32 are ignored, WendyConf root fields are 1..3).
+ * numbers >= 32 are ignored, WendyConf root fields are 1..4).
  */
 static bool _scan_root_fields(const uint8_t *data, size_t size, uint32_t *mask)
 {
@@ -273,12 +275,13 @@ static bool _scan_root_fields(const uint8_t *data, size_t size, uint32_t *mask)
 
 /**
  * Copy into out the raw bytes of every top-level field of in_data whose
- * field number is present in mask (bit N set = keep field number N), and
- * store the total size in out_size.  Pass out == NULL for a dry run that
- * only computes the size.
+ * field number is present in mask (bit N set = keep field number N). Fields
+ * numbered 32 or above are kept only when keep_unknown is true. Store the
+ * total size in out_size. Pass out == NULL for a dry run that computes size.
  */
 static bool _copy_kept_fields(const uint8_t *in_data, size_t in_size,
-                              uint32_t mask, uint8_t *out, size_t *out_size)
+                              uint32_t mask, bool keep_unknown,
+                              uint8_t *out, size_t *out_size)
 {
     size_t       pos    = 0;
     pb_istream_t stream = pb_istream_from_buffer(in_data, in_size);
@@ -297,7 +300,7 @@ static bool _copy_kept_fields(const uint8_t *in_data, size_t in_size,
         if (!pb_skip_field(&stream, wire_type))
             return false;
         size_t end = (const uint8_t *)stream.state - in_data;
-        if (tag < 32 && (mask & (1u << tag))) {
+        if (tag < 32 ? (mask & (1u << tag)) != 0 : keep_unknown) {
             if (out)
                 memcpy(out + pos, in_data + start, end - start);
             pos += end - start;
@@ -310,7 +313,7 @@ static bool _copy_kept_fields(const uint8_t *in_data, size_t in_size,
 
 static esp_err_t _write_conf(const void *pb_data, size_t pb_size, enum wendy_conf_write_mode mode)
 {
-    if (!pb_data || pb_size == 0)
+    if (!pb_data)
         return ESP_ERR_INVALID_ARG;
 
     // Check enrollment sizes and authorization before replacing persisted data.
@@ -354,7 +357,7 @@ static esp_err_t _write_conf(const void *pb_data, size_t pb_size, enum wendy_con
         // compute their size, so the buffer below can be allocated exactly.
         uint32_t present;
         if (!_scan_root_fields(pb_data, pb_size, &present) ||
-            !_copy_kept_fields(s_cache.pb_data, s_cache.pb_size, ~present,
+            !_copy_kept_fields(s_cache.pb_data, s_cache.pb_size, ~present, false,
                                NULL, &kept_size)) {
             ESP_LOGE(TAG, "merge failed");
             return ESP_ERR_INVALID_STATE;
@@ -374,7 +377,7 @@ static esp_err_t _write_conf(const void *pb_data, size_t pb_size, enum wendy_con
         kept = malloc(kept_size);
         if (!kept)
             return ESP_ERR_NO_MEM;
-        _copy_kept_fields(s_cache.pb_data, s_cache.pb_size, keep_mask,
+        _copy_kept_fields(s_cache.pb_data, s_cache.pb_size, keep_mask, false,
                           kept, &kept_size);
     }
 
@@ -402,7 +405,7 @@ static esp_err_t _write_conf(const void *pb_data, size_t pb_size, enum wendy_con
     err = esp_partition_write(part, 0, header, HEADER_LEN);
     if (err == ESP_OK && kept_size > 0)
         err = esp_partition_write(part, HEADER_LEN, kept, kept_size);
-    if (err == ESP_OK)
+    if (err == ESP_OK && pb_size > 0)
         err = esp_partition_write(part, HEADER_LEN + kept_size, pb_data, pb_size);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "write failed: %s", esp_err_to_name(err));
@@ -534,8 +537,114 @@ void wendy_conf_copy_span(char *dest, size_t dest_size, struct wendy_conf_span s
 
 esp_err_t wendy_conf_write(const void *data, size_t size, enum wendy_conf_write_mode mode)
 {
+    if (!data || size == 0)
+        return ESP_ERR_INVALID_ARG;
     pthread_mutex_lock(&s_cache_lock);
     esp_err_t result = _write_conf(data, size, mode);
+    pthread_mutex_unlock(&s_cache_lock);
+    return result;
+}
+
+esp_err_t wendy_conf_clear_enrollment(void)
+{
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    uint8_t *journal = NULL;
+    nvs_handle_t recovery;
+    bool opened = false;
+    pthread_mutex_lock(&s_cache_lock);
+
+    // The PKI reset caller initializes this partition and commits its reset
+    // marker before calling us. Keep recovery data outside the identity namespace.
+    result = nvs_open_from_partition("wendy_pki", "conf_recovery", NVS_READWRITE, &recovery);
+    if (result != ESP_OK)
+        goto done;
+    opened = true;
+    const uint32_t keep_mask = ~((1u << WendyConf_provisioning_tag) |
+                                 (1u << WendyConf_enrollment_tag));
+    size_t journal_size = 0, kept_size = 0;
+    result = nvs_get_blob(recovery, "retained", NULL, &journal_size);
+    if (result == ESP_ERR_NVS_NOT_FOUND) {
+        // A previous upload may have invalidated the cache. An unreadable
+        // configuration without a journal cannot be recovered safely.
+        if (!s_cache.valid)
+            _load_conf();
+        result = ESP_ERR_INVALID_STATE;
+        if (!s_cache.valid ||
+            !_copy_kept_fields(s_cache.pb_data, s_cache.pb_size, keep_mask, true,
+                               NULL, &kept_size))
+            goto done;
+        if (kept_size == s_cache.pb_size) {
+            result = ESP_OK;
+            goto done;
+        }
+
+        // The prefix makes an empty retained config a nonempty, versioned blob.
+        journal_size = MAGIC_LEN + kept_size;
+        journal = malloc(journal_size);
+        if (!journal) {
+            result = ESP_ERR_NO_MEM;
+            goto done;
+        }
+        memcpy(journal, RECOVERY_MAGIC, MAGIC_LEN);
+        if (!_copy_kept_fields(s_cache.pb_data, s_cache.pb_size, keep_mask, true,
+                               journal + MAGIC_LEN, &kept_size))
+            goto done;
+        result = nvs_set_blob(recovery, "retained", journal, journal_size);
+        if (result == ESP_OK)
+            result = nvs_commit(recovery);
+        if (result != ESP_OK)
+            goto done;
+    } else if (result == ESP_OK) {
+        // A committed journal is authoritative even if an interrupted flash
+        // write left a decodable, but incomplete, configuration behind.
+        result = ESP_ERR_INVALID_SIZE;
+        if (journal_size < MAGIC_LEN || journal_size - MAGIC_LEN > wendy_conf_get_max_size())
+            goto done;
+        journal = malloc(journal_size);
+        if (!journal) {
+            result = ESP_ERR_NO_MEM;
+            goto done;
+        }
+        size_t expected_size = journal_size;
+        result = nvs_get_blob(recovery, "retained", journal, &journal_size);
+        if (result != ESP_OK)
+            goto done;
+        result = ESP_ERR_INVALID_STATE;
+        if (journal_size != expected_size || memcmp(journal, RECOVERY_MAGIC, MAGIC_LEN) ||
+            !_copy_kept_fields(journal + MAGIC_LEN, journal_size - MAGIC_LEN,
+                               keep_mask, true, NULL, &kept_size) ||
+            kept_size != journal_size - MAGIC_LEN)
+            goto done;
+    } else {
+        goto done;
+    }
+
+    // Refresh from flash even when the cache is valid. Verify exact bytes before
+    // dropping the only durable copy of fields retained through a failed write.
+    _invalidate_cache();
+    _load_conf();
+    if (!s_cache.valid || s_cache.pb_size != kept_size ||
+        memcmp(s_cache.pb_data, journal + MAGIC_LEN, kept_size)) {
+        result = _write_conf(journal + MAGIC_LEN, kept_size, WENDY_CONF_WRITE_MODE_REPLACE);
+        if (result != ESP_OK)
+            goto done;
+        _load_conf();
+        if (!s_cache.valid || s_cache.pb_size != kept_size ||
+            memcmp(s_cache.pb_data, journal + MAGIC_LEN, kept_size)) {
+            result = ESP_ERR_INVALID_STATE;
+            goto done;
+        }
+    }
+    result = nvs_erase_key(recovery, "retained");
+    if (result == ESP_ERR_NVS_NOT_FOUND)
+        result = ESP_OK;
+    if (result == ESP_OK)
+        result = nvs_commit(recovery);
+
+done:
+    if (opened)
+        nvs_close(recovery);
+    free(journal);
     pthread_mutex_unlock(&s_cache_lock);
     return result;
 }

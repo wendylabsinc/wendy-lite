@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include "wendy_pki_verify.h"
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +25,11 @@ static int crypto_ok;
 static void init_crypto(void) { crypto_ok = psa_crypto_init() == PSA_SUCCESS; }
 static pthread_once_t identity_once = PTHREAD_ONCE_INIT;
 static esp_err_t identity_ready = ESP_FAIL;
+/* Serialize issuance, status, and recovery so an in-flight enrollment cannot
+ * restore a key or certificate after reset has erased it. */
+static pthread_mutex_t identity_lock = PTHREAD_MUTEX_INITIALIZER;
+static atomic_bool identity_resetting;
+bool wendy_pki_reset_in_progress(void) { return atomic_load(&identity_resetting); }
 static void init_identity(void)
 {
     // Identity loss requires operator recovery. Never erase this partition automatically.
@@ -64,13 +70,22 @@ void wendy_pki_builtin_trust(bool *ready, bool *tsa_ready)
     *ready = ROOT_SIZE(device) > 0 && ROOT_SIZE(https) > 0;
     *tsa_ready = ROOT_SIZE(tsa) > 0;
 }
-esp_err_t wendy_pki_challenge(bool status_only, char nonce_hex[65], bool *enrolled)
+static esp_err_t identity_challenge(bool status_only, char nonce_hex[65], bool *enrolled)
 {
     nvs_handle_t h;
     if (open_identity(&h) != ESP_OK)
         return ESP_FAIL;
     size_t size = 0;
-    *enrolled = nvs_get_blob(h, "certificate", NULL, &size) == ESP_OK && size > 0;
+    esp_err_t cert_status = nvs_get_blob(h, "certificate", NULL, &size);
+    int64_t pending = 0;
+    esp_err_t reset_status = nvs_get_i64(h, "reset_pending", &pending);
+    if ((cert_status != ESP_OK && cert_status != ESP_ERR_NVS_NOT_FOUND) ||
+        (reset_status != ESP_OK && reset_status != ESP_ERR_NVS_NOT_FOUND)) {
+        nvs_close(h);
+        return ESP_FAIL;
+    }
+    /* Incomplete reset is not a usable unprovisioned state. */
+    *enrolled = (cert_status == ESP_OK && size > 0) || pending != 0;
     if (status_only)
     {
         nonce_hex[0] = 0;
@@ -90,6 +105,86 @@ esp_err_t wendy_pki_challenge(bool status_only, char nonce_hex[65], bool *enroll
         snprintf(nonce_hex + i * 2, 3, "%02x", nonce[i]);
     return ESP_OK;
 }
+esp_err_t wendy_pki_challenge(bool status_only, char nonce_hex[65], bool *enrolled)
+{
+    /* NVS serializes its own accesses. Status must remain responsive while
+     * cloud connection/issuance is waiting on the network. Physical commands
+     * share the WendyCom dispatch task, so reset and challenges do not race. */
+    return identity_challenge(status_only, nonce_hex, enrolled);
+}
+
+/* This marker survives interruption between clearing configuration and keys. */
+static bool identity_use_allowed(void)
+{
+    if (identity_resetting) return false;
+    nvs_handle_t h;
+    if (open_identity(&h) != ESP_OK) return false;
+    int64_t pending = 0;
+    esp_err_t result = nvs_get_i64(h, "reset_pending", &pending);
+    nvs_close(h);
+    return result == ESP_ERR_NVS_NOT_FOUND || (result == ESP_OK && pending == 0);
+}
+
+esp_err_t wendy_pki_reset(const char *expected_device_id, const char *nonce_hex)
+{
+    if (!expected_device_id || !nonce_hex || strlen(nonce_hex) != 64 ||
+        strcmp(expected_device_id, wendy_conf_get_device_id()))
+        return ESP_ERR_INVALID_ARG;
+    uint8_t provided[32];
+    for (size_t i = 0; i < sizeof provided; i++) {
+        unsigned byte = 0;
+        for (size_t j = 0; j < 2; j++) {
+            char c = nonce_hex[i * 2 + j];
+            if (c >= '0' && c <= '9') byte = (byte << 4) | (c - '0');
+            else if (c >= 'a' && c <= 'f') byte = (byte << 4) | (c - 'a' + 10);
+            else return ESP_ERR_INVALID_ARG;
+        }
+        provided[i] = (uint8_t)byte;
+    }
+    pthread_mutex_lock(&identity_lock);
+    nvs_handle_t h;
+    esp_err_t result = open_identity(&h);
+    if (result != ESP_OK) goto unlock;
+    uint8_t expected[32];
+    size_t size = sizeof expected;
+    result = nvs_get_blob(h, "nonce", expected, &size);
+    unsigned mismatch = 0;
+    if (result != ESP_OK || size != sizeof expected) {
+        result = ESP_ERR_INVALID_STATE;
+        goto done;
+    }
+    for (size_t i = 0; i < size; i++) mismatch |= expected[i] ^ provided[i];
+    if (mismatch) {
+        result = ESP_ERR_INVALID_ARG;
+        goto done;
+    }
+    identity_resetting = true;
+    result = nvs_set_i64(h, "reset_pending", 1);
+    if (result == ESP_OK) result = nvs_commit(h);
+    if (result != ESP_OK) goto done;
+    /* Never erase keys while the old bootstrap token can still be used. */
+    result = wendy_conf_clear_enrollment();
+    if (result != ESP_OK) goto done;
+    const char *keys[] = {"key", "certificate", "pending", "tenant", "device", "nonce"};
+    for (size_t i = 0; i < sizeof keys / sizeof keys[0]; i++) {
+        result = nvs_erase_key(h, keys[i]);
+        if (result == ESP_ERR_NVS_NOT_FOUND) result = ESP_OK;
+        if (result != ESP_OK) goto done;
+    }
+    result = nvs_commit(h);
+    if (result != ESP_OK) goto done;
+    result = nvs_erase_key(h, "reset_pending");
+    if (result == ESP_ERR_NVS_NOT_FOUND) result = ESP_OK;
+    if (result == ESP_OK) result = nvs_commit(h);
+    /* The signed clock floor intentionally survives local identity reset. */
+done:
+    nvs_close(h);
+unlock:
+    pthread_mutex_unlock(&identity_lock);
+    erase(provided, sizeof provided);
+    return result;
+}
+
 static int set_floor(nvs_handle_t h, time_t value)
 {
     int64_t floor = 0;
@@ -339,7 +434,7 @@ static int select_trust(const WendyConfEnrollment *cfg, struct wendy_conf_enroll
            wendy_pki_verify_roots(data->tsa_roots.data, data->tsa_roots.size) ||
            wendy_pki_verify_roots(data->https_roots.data, data->https_roots.size) ? -1 : 0;
 }
-esp_err_t wendy_pki_connect(wendy_pki_connection **connection)
+static esp_err_t connect_identity(wendy_pki_connection **connection)
 {
     pthread_once(&crypto_once, init_crypto);
     if (!crypto_ok)
@@ -437,7 +532,15 @@ done:
 }
 
 
-static esp_err_t accept_operator(int fd, wendy_pki_connection **connection,
+esp_err_t wendy_pki_connect(wendy_pki_connection **connection)
+{
+    pthread_mutex_lock(&identity_lock);
+    esp_err_t result = identity_use_allowed() ? connect_identity(connection) : ESP_ERR_INVALID_STATE;
+    pthread_mutex_unlock(&identity_lock);
+    return result;
+}
+
+static esp_err_t accept_identity_operator(int fd, wendy_pki_connection **connection,
     const struct wendy_lite_trust *trust)
 {
     pthread_once(&crypto_once, init_crypto);
@@ -481,6 +584,17 @@ done:
     free(data.storage);
     erase(cfg.token, sizeof cfg.token);
     if (opened) nvs_close(h);
+    return result;
+}
+
+static esp_err_t accept_operator(int fd, wendy_pki_connection **connection,
+                                  const struct wendy_lite_trust *trust)
+{
+    pthread_mutex_lock(&identity_lock);
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    if (identity_use_allowed()) result = accept_identity_operator(fd, connection, trust);
+    else close(fd);
+    pthread_mutex_unlock(&identity_lock);
     return result;
 }
 

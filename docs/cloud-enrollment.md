@@ -149,3 +149,36 @@ behavior still require a connected board and compatible deployment trust bundles
 The firmware uses ESP-IDF's mbedTLS for TLS, P-256 certificate validation, signed
 time and session grants. It has no wolfSSL dependency. WASM is opt-in through
 `boards/wasm.defaults`. See [relay size measurements](cloud-relay.md#default-image-size).
+
+
+## Reset a local enrollment
+
+Updated firmware advertises `enrollment_reset_supported` in its USB enrollment
+challenge. With an updated CLI, `wendy device unenroll --device
+wendy-lite:/dev/cu.usbmodemXXXX` first removes the Cloud enrollment, then clears
+the connected board's enrollment and reboots it. Cloud-only removal still leaves
+the board's identity in place. A board whose Cloud asset was already removed can
+repeat the USB command to finish local recovery.
+
+The `enrollment_reset` WendyCom command accepts the hardware ID and the current
+challenge nonce. Firmware accepts it only through the physical serial link;
+LAN, Bluetooth, and Cloud sessions cannot reset enrollment. A stale nonce or a
+different hardware ID is rejected before any write. The command acknowledges
+success before the CLI reboots. Existing network sessions stop accepting reads,
+writes, and commands as soon as reset begins, including when the response is lost.
+
+Reset first commits a pending marker and a recovery copy of the unrelated
+configuration. It removes enrollment and legacy provisioning configuration before
+erasing the key, certificate, pending issuance, and identity binding. Device name,
+Wi-Fi, unknown configuration fields, and the app partitions are preserved. The
+signed time floor also remains. Interrupted configuration writes can resume from
+the retained recovery copy; the copy is cleared only after a verified write.
+An incomplete reset blocks Cloud issuance after restart and reports an enrolled
+state until a fresh USB challenge and reset finish the cleanup. Repeating the
+command with a new nonce is safe after a lost reply or a partial failure.
+
+Ordinary configuration uploads still use the existing erase/write storage format;
+this recovery journal only protects the enrollment-reset operation. Corrupt
+recovery data or failed NVS writes return an error and retain remaining identity
+material. Older firmware does not advertise reset support and requires an update
+before the CLI can complete local recovery.

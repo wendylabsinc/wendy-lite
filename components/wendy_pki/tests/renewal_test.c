@@ -22,6 +22,12 @@ static time_t clock_now, stored_expiry;
 static bool have_certificate, invalid_certificate, expire_during_renewal;
 static int renewal_calls, broker_calls, identity_checks;
 static bool pending_certificate, issuance_success;
+static bool have_key, have_binding, have_nonce, config_cleared, fail_clear;
+static int64_t reset_pending;
+static uint8_t stored_nonce[32], random_counter;
+static const char *fail_erase;
+static int commit_calls, fail_commit;
+static int clear_calls, erase_calls;
 static uint8_t key_der[256];
 static size_t key_der_size;
 static WendyConfEnrollment config = {
@@ -47,7 +53,7 @@ int settimeofday(const struct timeval *tv, const struct timezone *tz)
     return 0;
 }
 int64_t esp_timer_get_time(void) { return 0; }
-void esp_fill_random(void *out, size_t size) { memset(out, 1, size); }
+void esp_fill_random(void *out, size_t size) { memset(out, ++random_counter, size); }
 esp_err_t nvs_flash_init_partition(const char *p) { return ESP_OK; }
 esp_err_t nvs_open_from_partition(const char *p, const char *n, int mode, nvs_handle_t *h)
 {
@@ -57,21 +63,47 @@ esp_err_t nvs_open_from_partition(const char *p, const char *n, int mode, nvs_ha
 void nvs_close(nvs_handle_t h) {}
 esp_err_t nvs_get_i64(nvs_handle_t h, const char *name, int64_t *out)
 {
-    *out = signed_now;
+    if (!strcmp(name, "reset_pending")) {
+        if (!reset_pending) return ESP_ERR_NVS_NOT_FOUND;
+        *out = reset_pending;
+    } else {
+        assert(!strcmp(name, "floor"));
+        *out = signed_now;
+    }
     return ESP_OK;
 }
-esp_err_t nvs_set_i64(nvs_handle_t h, const char *name, int64_t value) { return ESP_OK; }
-esp_err_t nvs_commit(nvs_handle_t h) { return ESP_OK; }
+esp_err_t nvs_set_i64(nvs_handle_t h, const char *name, int64_t value)
+{
+    if (!strcmp(name, "reset_pending")) reset_pending = value;
+    else assert(!strcmp(name, "floor"));
+    return ESP_OK;
+}
+esp_err_t nvs_commit(nvs_handle_t h)
+{
+    return ++commit_calls == fail_commit ? ESP_FAIL : ESP_OK;
+}
 esp_err_t nvs_erase_key(nvs_handle_t h, const char *name)
 {
+    if (identity_resetting) {
+        assert(config_cleared);
+        erase_calls++;
+    }
+    if (fail_erase && !strcmp(name, fail_erase)) return ESP_FAIL;
     if (!strcmp(name, "pending")) pending_certificate = false;
+    else if (!strcmp(name, "certificate")) have_certificate = false;
+    else if (!strcmp(name, "key")) have_key = false;
+    else if (!strcmp(name, "tenant") || !strcmp(name, "device")) have_binding = false;
+    else if (!strcmp(name, "nonce")) have_nonce = false;
+    else if (!strcmp(name, "reset_pending")) reset_pending = 0;
+    else assert(0 && "unexpected erased key, signed clock floor must survive");
     return ESP_OK;
 }
 esp_err_t nvs_get_blob(nvs_handle_t h, const char *name, void *out, size_t *size)
 {
     const void *data;
     size_t n;
-    if (!strcmp(name, "key"))
+    if (!strcmp(name, "nonce") && have_nonce) { data = stored_nonce; n = sizeof stored_nonce; }
+    else if (!strcmp(name, "key") && have_key)
     {
         data = key_der;
         n = key_der_size;
@@ -94,6 +126,12 @@ esp_err_t nvs_get_blob(nvs_handle_t h, const char *name, void *out, size_t *size
 }
 esp_err_t nvs_set_blob(nvs_handle_t h, const char *name, const void *data, size_t size)
 {
+    if (!strcmp(name, "nonce")) {
+        assert(size == sizeof stored_nonce);
+        memcpy(stored_nonce, data, size);
+        have_nonce = true;
+    }
+    if (!strcmp(name, "key")) have_key = true;
     if (!strcmp(name, "pending")) pending_certificate = true;
     if (!strcmp(name, "certificate"))
     {
@@ -104,18 +142,31 @@ esp_err_t nvs_set_blob(nvs_handle_t h, const char *name, const void *data, size_
 }
 esp_err_t nvs_get_str(nvs_handle_t h, const char *name, char *out, size_t *size)
 {
+    if (!have_binding) return ESP_ERR_NVS_NOT_FOUND;
     const char *value = !strcmp(name, "tenant") ? config.tenant_id : config.device_id;
     assert(*size >= strlen(value) + 1);
     strcpy(out, value);
     *size = strlen(value) + 1;
     return ESP_OK;
 }
-esp_err_t nvs_set_str(nvs_handle_t h, const char *name, const char *value) { return ESP_OK; }
+esp_err_t nvs_set_str(nvs_handle_t h, const char *name, const char *value) { have_binding = true; return ESP_OK; }
 esp_err_t wendy_conf_copy_enrollment(WendyConfEnrollment *out,
                                      struct wendy_conf_enrollment_data *data)
 {
+    if (config_cleared) return ESP_ERR_INVALID_STATE;
     *out = config;
     *data = usb_data;
+    return ESP_OK;
+}
+
+const char *wendy_conf_get_device_id(void) { return "441bf6804824"; }
+esp_err_t wendy_conf_clear_enrollment(void)
+{
+    clear_calls++;
+    assert(reset_pending && identity_resetting);
+    assert(pthread_mutex_trylock(&identity_lock) != 0);
+    if (fail_clear) return ESP_FAIL;
+    config_cleared = true;
     return ESP_OK;
 }
 
@@ -191,6 +242,11 @@ void cJSON_Delete(cJSON *o) { free(o); }
 static void reset(void)
 {
     pending_certificate = issuance_success = false;
+    have_key = have_binding = true;
+    have_nonce = config_cleared = fail_clear = identity_resetting = false;
+    reset_pending = 0;
+    fail_erase = NULL;
+    commit_calls = fail_commit = clear_calls = erase_calls = 0;
     clock_now = signed_now;
     config.provision_trust = false;
     usb_data = (struct wendy_conf_enrollment_data){0};
@@ -201,6 +257,64 @@ static void reset(void)
     invalid_certificate = expire_during_renewal = false;
     renewal_calls = broker_calls = identity_checks = 0;
 }
+
+static void test_enrollment_reset(void)
+{
+    char nonce[65], stale[65];
+    bool enrolled;
+    wendy_pki_connection *connection = NULL;
+    reset();
+    assert(wendy_pki_challenge(false, nonce, &enrolled) == ESP_OK && enrolled);
+    /* Background issuance may own the lock during a slow network operation. */
+    pthread_mutex_lock(&identity_lock);
+    assert(wendy_pki_challenge(true, stale, &enrolled) == ESP_OK && enrolled);
+    pthread_mutex_unlock(&identity_lock);
+    strcpy(stale, nonce);
+    assert(wendy_pki_challenge(false, nonce, &enrolled) == ESP_OK);
+    assert(wendy_pki_reset("other-board", nonce) != ESP_OK);
+    assert(wendy_pki_reset("441bf6804824", stale) != ESP_OK);
+    assert(wendy_pki_reset("441bf6804824", "invalid") != ESP_OK);
+    memset(stale, 'z', 64); stale[64] = 0;
+    assert(wendy_pki_reset("441bf6804824", stale) != ESP_OK);
+    assert(clear_calls == 0 && erase_calls == 0 && have_key && have_certificate);
+
+    fail_clear = true;
+    assert(wendy_pki_reset("441bf6804824", nonce) != ESP_OK);
+    assert(reset_pending && have_key && have_certificate && erase_calls == 0);
+    /* Simulate reboot: the durable marker must still block old issuance. */
+    identity_resetting = false;
+    assert(wendy_pki_connect(&connection) != ESP_OK);
+    assert(broker_calls == 0 && renewal_calls == 0);
+    assert(wendy_pki_challenge(true, stale, &enrolled) == ESP_OK && enrolled);
+    fail_clear = false;
+    fail_erase = "certificate";
+    assert(wendy_pki_reset("441bf6804824", nonce) != ESP_OK);
+    assert(config_cleared && !have_key && have_certificate && reset_pending);
+    fail_erase = NULL;
+    fail_commit = commit_calls + 2; /* Fail after the key deletion phase. */
+    assert(wendy_pki_reset("441bf6804824", nonce) != ESP_OK);
+    assert(!have_certificate && reset_pending);
+    assert(wendy_pki_challenge(true, stale, &enrolled) == ESP_OK && enrolled);
+    fail_commit = 0;
+    assert(wendy_pki_challenge(false, nonce, &enrolled) == ESP_OK && enrolled);
+    assert(wendy_pki_reset("441bf6804824", nonce) == ESP_OK);
+    assert(!have_key && !have_binding && !have_certificate && !have_nonce && !reset_pending);
+    assert(wendy_pki_challenge(true, stale, &enrolled) == ESP_OK && !enrolled);
+    assert(wendy_pki_connect(&connection) != ESP_OK);
+    assert(broker_calls == 0 && renewal_calls == 0);
+    int64_t floor;
+    assert(nvs_get_i64(1, "floor", &floor) == ESP_OK && floor == signed_now);
+    /* A lost success reply can be retried with a new challenge. */
+    assert(wendy_pki_challenge(false, nonce, &enrolled) == ESP_OK && !enrolled);
+    assert(wendy_pki_reset("441bf6804824", nonce) == ESP_OK);
+
+    reset();
+    assert(wendy_pki_challenge(false, nonce, &enrolled) == ESP_OK);
+    fail_commit = commit_calls + 1;
+    assert(wendy_pki_reset("441bf6804824", nonce) != ESP_OK);
+    assert(clear_calls == 0 && erase_calls == 0 && have_key && have_certificate);
+}
+
 int main(int argc, char **argv)
 {
     assert(argc == 2);
@@ -276,7 +390,8 @@ int main(int argc, char **argv)
     assert(wendy_pki_connect(&connection) == ESP_OK);
     assert(!pending_certificate && have_certificate && broker_calls == 1);
     assert(renewal_calls == 1 && identity_checks == 2);
-    puts("renewal fallback tests passed");
+    test_enrollment_reset();
+    puts("renewal fallback and local enrollment reset tests passed");
 }
 
 int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, const char *cert, struct wendy_conf_span roots, const char *tenant, wendy_pki_connection **out, int64_t deadline) { (void)deadline; (void)fd; (void)key; (void)key_size; (void)cert; (void)roots; (void)tenant; (void)out; return -1; }

@@ -8,3 +8,6 @@ WendyComEnrollmentChallenge.nonce_hex max_size:65
 
 WendyComSyncTimeParams.server   type:FT_CALLBACK
 WendyComSyncTimeParams.response type:FT_CALLBACK
+
+WendyComEnrollmentResetParams.expected_device_id max_size:13
+WendyComEnrollmentResetParams.nonce_hex max_size:65

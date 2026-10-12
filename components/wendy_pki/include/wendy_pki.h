@@ -9,6 +9,12 @@ typedef struct wendy_pki_connection wendy_pki_connection;
 void wendy_pki_builtin_trust(bool *ready, bool *tsa_ready);
 /* A challenge discloses no key material. Only the USB command calls this. */
 esp_err_t wendy_pki_challenge(bool status_only, char nonce_hex[65], bool *enrolled);
+/* Physical setup only; caller must enforce the USB transport boundary.
+ * Clears enrollment configuration before identity keys, preserving signed time.
+ * The caller reboots after acknowledging success. */
+esp_err_t wendy_pki_reset(const char *expected_device_id, const char *nonce_hex);
+/* Revokes use of existing network sessions until reboot after recovery starts. */
+bool wendy_pki_reset_in_progress(void);
 /* Legacy wire API: this mbedTLS profile returns ESP_ERR_NOT_SUPPORTED. */
 esp_err_t wendy_pki_sync_time(const char *server, const uint8_t *reply, size_t size,
                             bool *synchronized, int64_t *seconds);

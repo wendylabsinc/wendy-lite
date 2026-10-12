@@ -356,10 +356,19 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
 
     ESP_LOGI(TAG, "link %d received cmd id %d", link->link_id, cmd->request_id);
 
+    /* Buffered commands on an existing network session must not survive a
+     * physical identity reset, even if its reply or the host reboot is lost. */
+    if (!wcom_link_is_local(link->link_id) && wendy_pki_reset_in_progress()) {
+        resp->result = WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+        _send_message(link, &out);
+        return;
+    }
+
     // Configuration writes and bootstrap challenges require physical setup.
     // An unenrolled network peer cannot redirect a device's enrollment.
     if ((cmd->which_params == WendyComCommand_conf_push_begin_tag ||
          cmd->which_params == WendyComCommand_enrollment_challenge_tag ||
+         cmd->which_params == WendyComCommand_enrollment_reset_tag ||
          cmd->which_params == WendyComCommand_sync_time_tag) &&
         !wcom_link_is_local(link->link_id)) {
         resp->result = WendyComResult_WENDY_COM_RESULT_BAD_STATE;
@@ -374,9 +383,15 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
                                &resp->data.enrollment_challenge.builtin_tsa_roots_ready);
 #if CONFIG_WENDY_PKI
         resp->data.enrollment_challenge.roughtime_supported = false;
+        resp->data.enrollment_challenge.enrollment_reset_supported = true;
 #endif
         resp->result = wendy_pki_challenge(cmd->params.enrollment_challenge.status_only, resp->data.enrollment_challenge.nonce_hex,
                          &resp->data.enrollment_challenge.enrolled) == ESP_OK
+            ? WendyComResult_WENDY_COM_RESULT_OK : WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+        break;
+    case WendyComCommand_enrollment_reset_tag:
+        resp->result = wendy_pki_reset(cmd->params.enrollment_reset.expected_device_id,
+                                     cmd->params.enrollment_reset.nonce_hex) == ESP_OK
             ? WendyComResult_WENDY_COM_RESULT_OK : WendyComResult_WENDY_COM_RESULT_BAD_STATE;
         break;
     case WendyComCommand_sync_time_tag: {

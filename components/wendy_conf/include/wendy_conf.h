@@ -51,6 +51,21 @@ void wendy_conf_init(void);
 esp_err_t wendy_conf_write(const void *pb_data, size_t pb_size, enum wendy_conf_write_mode mode);
 
 /**
+ * Remove enrollment and legacy provisioning from persisted configuration,
+ * preserving every other root field verbatim. Reloads the configuration after
+ * success and is safe to call repeatedly. The application partition is untouched.
+ *
+ * The caller must initialize the wendy_pki NVS partition and persist a reset
+ * marker that blocks identity use before calling this function. Retained fields
+ * are committed in that partition's separate conf_recovery namespace before
+ * erasing configuration. A retry, including after reboot, recovers from this
+ * journal and removes it only after verifying the persisted configuration.
+ * Callers must check success before erasing identity keys. Missing or unreadable
+ * configuration without a recovery journal returns an error without erasing it.
+ */
+esp_err_t wendy_conf_clear_enrollment(void);
+
+/**
  * Largest protobuf-encoded WendyConf message the wendy_conf partition can
  * hold.
  */

@@ -57,6 +57,9 @@ PB_BIND(WendyComEnrollmentChallengeParams, WendyComEnrollmentChallengeParams, AU
 PB_BIND(WendyComEnrollmentChallenge, WendyComEnrollmentChallenge, AUTO)
 
 
+PB_BIND(WendyComEnrollmentResetParams, WendyComEnrollmentResetParams, AUTO)
+
+
 PB_BIND(WendyComSyncTimeParams, WendyComSyncTimeParams, AUTO)
 
 
