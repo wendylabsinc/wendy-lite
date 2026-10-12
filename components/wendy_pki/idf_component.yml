@@ -1,0 +1,5 @@
+dependencies:
+  wendy_wolfssl:
+    override_path: "../wendy_wolfssl"
+    rules:
+      - if: "$CONFIG{WENDY_PKI_WOLFSSL} == True"

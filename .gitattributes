@@ -3,3 +3,5 @@ components/wendy_pki/tests/fixtures/*.der binary
 
 components/wendy_pki/tests/roughtime-fixtures/*.bin binary
 components/wendy_pki/tests/lite-fixtures/*.bin binary
+components/wendy_pki/tests/mldsa-fixtures/*.bin binary
+components/wendy_pki/tests/mldsa-fixtures/*.der binary

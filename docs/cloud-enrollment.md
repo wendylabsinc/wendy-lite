@@ -12,10 +12,10 @@ No device private key passes through the CLI or the configuration protobuf.
 
 ## Build the firmware
 
-Use ESP-IDF 5.5.4 and its bundled mbedTLS. wolfSSL is no longer required.
+Use ESP-IDF 5.5.4. Firmware uses its bundled mbedTLS by default.
 
-PKI enrollment is built into every image. The cloud connection is opt-in; enable it
-and build without deployment-specific roots:
+PKI and the cloud connection task are enabled by default. The task starts after
+Wi-Fi connects and enrollment is configured. Build without deployment-specific roots:
 
 ```sh
 echo 'CONFIG_WENDY_CLOUD=y' > cloud.defaults
@@ -23,11 +23,31 @@ idf.py -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;cloud.defaults' set-target esp3
 idf.py build
 ```
 
+For a PKI deployment with ML-DSA CA or operator certificates, enable the optional
+wolfSSL backend. `CONFIG_WENDY_PKI_WOLFSSL` defaults to `n`; standard images keep
+mbedTLS and do not compile wolfSSL. Initialize the pinned wolfSSL submodule before
+building the optional profile:
+
+```sh
+git submodule update --init components/wendy_wolfssl/wolfssl
+echo 'CONFIG_WENDY_PKI_WOLFSSL=y' > wolfssl.defaults
+idf.py -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;wolfssl.defaults' set-target esp32c6
+idf.py build
+```
+
+For an existing native app, enable **Wendy PKI / wolfSSL** in `idf.py menuconfig`
+or set `CONFIG_WENDY_PKI_WOLFSSL=y` in its active `sdkconfig`. A change to
+`sdkconfig.defaults` alone does not override a value already in `sdkconfig`.
+Keep the setting in the app's defaults as well if future clean builds need it.
+The optional backend verifies ML-DSA-44, ML-DSA-65 and ML-DSA-87 certificates and
+keeps P-256 device keys. It increases firmware size and memory use.
+
 Provision compatible device, TSA and HTTPS CA bundles through the authorized USB
 connection using `--device-roots`, `--tsa-roots` and `--https-roots`. Obtain them
 from the PKI administrator. Each complete chain must use algorithms supported by
-mbedTLS; issuing a P-256 leaf beneath an ML-DSA issuer is insufficient. The device
-and operator profiles use P-256, and the TSA uses ECDSA P-256 with SHA-256.
+the selected backend; issuing a P-256 leaf beneath an ML-DSA issuer still requires
+the wolfSSL profile. Both profiles verify ECDSA timestamps, including Sigstore's
+P-384 signing certificates.
 The HTTPS bundle must also trust the configured broker hostname.
 
 Pass the deployment's actual RFC 3161 HTTPS endpoint with `--time-url`. Roughtime
@@ -70,7 +90,10 @@ selected Cloud session. Override it with `--broker-host`. Set
 `--time-url https://codesign.example/v1/time` to use RFC 3161.
 
 The CLI validates discovered or supplied roots and checks USB trust support
-before reserving an asset. The firmware accepts at most eight CA certificates
+before reserving an asset. Firmware advertises `mldsa_verification_supported` only
+when PKI uses wolfSSL. The CLI requires this capability before accepting ML-DSA
+trust bundles. An absent capability uses the mbedTLS compatibility check.
+The firmware accepts at most eight CA certificates
 and 16 KiB per bundle; signed time plus all bundles must fit within 64 KiB.
 
 The bundles persist with the enrollment configuration in the `wendy_conf` flash
@@ -118,7 +141,7 @@ legacy provisioning credentials.
 LAN discovery advertises the tenant to select an appropriate CLI identity.
 This is only a selection hint: TLS still verifies the certificate chain and the
 CLI checks the device principal. The CLI sends its operator certificate chain,
-including intermediates. For a CLI session with an ML-DSA administration identity,
+including intermediates. With the default mbedTLS firmware and an ML-DSA administration identity,
 provision a P-256 certificate for the same operator and set `WENDY_LITE_OPERATOR_CERT`
 to its PEM leaf plus full compatible CA chain and `WENDY_LITE_OPERATOR_KEY` to its
 private key. The CLI uses this identity for Lite request signing and device TLS.
@@ -146,8 +169,9 @@ behavior still require a connected board and compatible deployment trust bundles
 
 ## Firmware size
 
-The firmware uses ESP-IDF's mbedTLS for TLS, P-256 certificate validation, signed
-time and session grants. It has no wolfSSL dependency. WASM is opt-in through
+The default firmware uses ESP-IDF's mbedTLS for TLS, P-256 certificate validation,
+signed time and session grants. The optional wolfSSL profile adds ML-DSA certificate
+verification. WASM is opt-in through
 `boards/wasm.defaults`. See [relay size measurements](cloud-relay.md#default-image-size).
 
 

@@ -7,6 +7,9 @@ on:
 
 jobs:
   verify:
+    strategy:
+      matrix:
+        wolfssl: ['OFF', 'ON']
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -18,12 +21,12 @@ jobs:
           submodules: true
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26.x'
+          go-version: '1.27.x'
       - name: Verify pki-core timestamp and certificate fixtures
         shell: bash
         run: |
           . "$IDF_PATH/export.sh"
-          cmake -S components/wendy_pki/tests -B build-pki -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          cmake -S components/wendy_pki/tests -B build-pki -DWENDY_PKI_WOLFSSL=${{ matrix.wolfssl }} -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
           cmake --build build-pki -j2
           ctest --test-dir build-pki --output-on-failure
 
@@ -31,6 +34,7 @@ jobs:
     strategy:
       matrix:
         bluetooth: [enabled, disabled]
+        wolfssl: [disabled, enabled]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -49,6 +53,9 @@ jobs:
           set -euo pipefail
           . "$IDF_PATH/export.sh"
           echo 'CONFIG_WENDY_CLOUD=y' > cloud.defaults
+          if [ "${{ matrix.wolfssl }}" = enabled ]; then
+            echo 'CONFIG_WENDY_PKI_WOLFSSL=y' >> cloud.defaults
+          fi
           defaults='sdkconfig.defaults;cloud.defaults'
           if [ "${{ matrix.bluetooth }}" = disabled ]; then
             defaults="$defaults;boards/no-ble.defaults"
@@ -56,6 +63,15 @@ jobs:
           idf.py -D "SDKCONFIG_DEFAULTS=$defaults" set-target esp32c6
           idf.py build
           grep -q '^CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y$' sdkconfig
+          if [ "${{ matrix.wolfssl }}" = enabled ]; then
+            grep -q '^CONFIG_WENDY_PKI_WOLFSSL=y$' sdkconfig
+          else
+            grep -q '^# CONFIG_WENDY_PKI_WOLFSSL is not set$' sdkconfig
+            if grep -q 'libwendy_wolfssl.a' build/*.map; then
+              echo 'Default firmware unexpectedly links wolfSSL'
+              exit 1
+            fi
+          fi
           if [ "${{ matrix.bluetooth }}" = disabled ]; then
             grep -q '^# CONFIG_BT_ENABLED is not set$' sdkconfig
           fi

@@ -65,6 +65,7 @@ int wendy_lite_verify_grant(const uint8_t *r, size_t n,
     return result;
 }
 
+#if !CONFIG_WENDY_PKI_WOLFSSL
 int wendy_lite_peer_hash(const uint8_t *der, size_t n, uint8_t hash[32])
 {
     if (!der || !n || n > 65536 || !hash) return -1;
@@ -83,3 +84,4 @@ int wendy_lite_peer_hash(const uint8_t *der, size_t n, uint8_t hash[32])
     mbedtls_x509_crt_free(&cert);
     return count == 1 && result == 0 ? 0 : -1;
 }
+#endif

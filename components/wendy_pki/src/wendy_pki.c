@@ -22,7 +22,13 @@
 static const char *TAG = "wendy_pki";
 static pthread_once_t crypto_once = PTHREAD_ONCE_INIT;
 static int crypto_ok;
-static void init_crypto(void) { crypto_ok = psa_crypto_init() == PSA_SUCCESS; }
+static void init_crypto(void)
+{
+    crypto_ok = psa_crypto_init() == PSA_SUCCESS;
+#if CONFIG_WENDY_PKI_WOLFSSL
+    crypto_ok = crypto_ok && wendy_pki_backend_init() == 0;
+#endif
+}
 static pthread_once_t identity_once = PTHREAD_ONCE_INIT;
 static esp_err_t identity_ready = ESP_FAIL;
 /* Serialize issuance, status, and recovery so an in-flight enrollment cannot

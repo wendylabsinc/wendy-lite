@@ -11,7 +11,7 @@ provisions one or two P-256 public keys. Upgrade (3) carries a 16-byte session
 ID and SHA-256 of the exact signed grant. Keys are accepted only from the
 authenticated outer connection; neither CLI nor inner TLS can provision them.
 
-On upgrade, mbedTLS exchanges close notifications and releases the outer TLS
+On upgrade, the TLS backend exchanges close notifications and releases the outer TLS
 session while preserving the descriptor. The same TCP socket then accepts a new
 TLS server session from the CLI. The CLI must authenticate the intended device.
 The device requires a valid chain, explicit client-auth EKU and exactly one
@@ -33,7 +33,9 @@ share a 10-second deadline; outer control reads have a 30-second deadline.
 
 Build with ESP-IDF 5.5.4 and enable `CONFIG_WENDY_CLOUD=y` as described in
 [enrollment](cloud-enrollment.md). All images include PKI support. The relay uses
-ESP-IDF mbedTLS with compatible complete certificate chains.
+ESP-IDF mbedTLS by default. Set `CONFIG_WENDY_PKI_WOLFSSL=y` to use wolfSSL for
+ML-DSA CA and operator certificates. Both profiles require compatible complete
+certificate chains and retain P-256 session grant verification.
 Old WR01/WR02 firmware and unsigned relay opens are incompatible.
 
 ## Verification
@@ -67,7 +69,8 @@ Removing wolfSSL saves 252,064 bytes against the no-WASM baseline. Combined with
 making WASM opt-in, the default saves 452,784 bytes, about 24.6%, and leaves
 547,312 bytes in the unchanged 1,933,312-byte factory partition. Both current
 configurations build; the default map has no wolfSSL, ML-DSA or WASM runtime.
-These are controlled local builds, not measurements of deployed hardware.
+These are controlled local builds before the optional wolfSSL profile was restored,
+not measurements of deployed hardware or the current opt-in profile.
 Existing sdkconfig files retain their settings, so use a fresh configuration
 when adopting these defaults. Partition layouts are unchanged.
 

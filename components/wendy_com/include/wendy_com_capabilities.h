@@ -8,10 +8,15 @@ static inline void wcom_enrollment_capabilities(WendyComEnrollmentChallenge *cha
     challenge->enrollment_reset_supported = false;
     challenge->has_cloud_enrollment_supported = true;
     challenge->cloud_enrollment_supported = false;
+    challenge->has_mldsa_verification_supported = true;
+    challenge->mldsa_verification_supported = false;
 #if CONFIG_WENDY_PKI
     challenge->enrollment_reset_supported = true;
 #endif
 #if CONFIG_WENDY_PKI && CONFIG_WENDY_CLOUD && CONFIG_WENDY_WIFI_ENABLED
     challenge->cloud_enrollment_supported = true;
+#endif
+#if CONFIG_WENDY_PKI && CONFIG_WENDY_PKI_WOLFSSL
+    challenge->mldsa_verification_supported = true;
 #endif
 }

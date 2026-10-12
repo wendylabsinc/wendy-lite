@@ -24,3 +24,16 @@ int wendy_pki_rng(void *context, unsigned char *out, size_t size)
     return result;
 #endif
 }
+
+#if CONFIG_WENDY_PKI_WOLFSSL
+#include <pthread.h>
+#include <wolfssl/ssl.h>
+static pthread_once_t backend_once = PTHREAD_ONCE_INIT;
+static int backend_ready;
+static void init_backend(void) { backend_ready = wolfSSL_Init() == WOLFSSL_SUCCESS; }
+int wendy_pki_backend_init(void)
+{
+    pthread_once(&backend_once, init_backend);
+    return backend_ready ? 0 : -1;
+}
+#endif
