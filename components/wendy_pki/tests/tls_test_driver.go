@@ -287,4 +287,75 @@ func main() {
 		}
 		fmt.Println("PASS", profile, name)
 	}
+
+	// Exercise the firmware's outbound role. Three issuer intermediates make
+	// every ML-DSA profile cross the TLS record boundary, with a P-256 device key.
+	issuer, parent := rootKey, root
+	chain := [][]byte{rootDER}
+	for level := range 3 {
+		caKey, e := newIssuer()
+		must(e)
+		ca := &x509.Certificate{SerialNumber: big.NewInt(int64(200 + level)), Subject: pkix.Name{CommonName: fmt.Sprintf("outbound intermediate %d", level)}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+		der, e := x509.CreateCertificate(rand.Reader, ca, parent, caKey.Public(), issuer)
+		must(e)
+		chain = append([][]byte{der}, chain...)
+		parent, issuer = ca, caKey
+	}
+	device, deviceKey, devicePEM := leaf("outbound device", time.Now().Add(time.Hour), []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, tenant+"device/lite-test", issuer, parent, 0)
+	chain = append(device.Certificate, chain...)
+	chainBytes := 0
+	for index, der := range chain {
+		chainBytes += len(der)
+		if index > 0 {
+			devicePEM = append(devicePEM, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
+		}
+	}
+	if profile != "p256" && chainBytes <= 16384 {
+		panic("outbound ML-DSA fixture must exceed one TLS record")
+	}
+	must(os.WriteFile(filepath.Join(directory, "outbound-key.der"), deviceKey, 0600))
+	must(os.WriteFile(filepath.Join(directory, "outbound-device.pem"), devicePEM, 0600))
+
+	// The broker's HTTPS identity is independent of the device enrollment CA.
+	// A P-384 issuer also covers the public server-chain verification path.
+	serverCAKey, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	must(err)
+	serverCA := &x509.Certificate{SerialNumber: big.NewInt(300), Subject: pkix.Name{CommonName: "outbound server CA"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	serverCADER, err := x509.CreateCertificate(rand.Reader, serverCA, serverCA, serverCAKey.Public(), serverCAKey)
+	must(err)
+	must(os.WriteFile(filepath.Join(directory, "outbound-root.pem"), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: serverCADER}), 0600))
+	broker, _, _ := leaf("localhost", time.Now().Add(time.Hour), []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, tenant+"device/broker-test", serverCAKey, serverCA, 0)
+	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	must(err)
+	defer listener.Close()
+	must(listener.SetDeadline(time.Now().Add(10 * time.Second)))
+	cmd := exec.Command(os.Args[1], filepath.Join(directory, "outbound-key.der"), filepath.Join(directory, "outbound-device.pem"), filepath.Join(directory, "outbound-root.pem"), "connect", fmt.Sprint(listener.Addr().(*net.TCPAddr).Port))
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	must(cmd.Start())
+	defer cmd.Process.Kill()
+	raw, err := listener.Accept()
+	must(err)
+	defer raw.Close()
+	must(raw.SetDeadline(time.Now().Add(10 * time.Second)))
+	server := tls.Server(raw, &tls.Config{
+		MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13,
+		Certificates: []tls.Certificate{broker}, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: pool,
+		// Keep default session tickets enabled. The firmware must not negotiate
+		// unused PSK resumption and then reject a fragmented post-handshake ticket.
+	})
+	must(server.Handshake())
+	state := server.ConnectionState()
+	if len(state.PeerCertificates) != len(chain) || len(state.VerifiedChains) == 0 {
+		panic("outbound client chain was not authenticated")
+	}
+	var hello [5]byte
+	_, err = io.ReadFull(server, hello[:])
+	must(err)
+	if string(hello[:]) != "hello" {
+		panic("invalid outbound application data")
+	}
+	_, err = server.Write([]byte("world"))
+	must(err)
+	must(cmd.Wait())
+	fmt.Printf("PASS %s outbound-short-writes chain_bytes=%d certificates=%d cipher=%s\n", profile, chainBytes, len(chain), tls.CipherSuiteName(state.CipherSuite))
 }

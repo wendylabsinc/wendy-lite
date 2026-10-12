@@ -70,6 +70,8 @@ add_test(NAME lite_grant_verification COMMAND lite_grant_test "${CMAKE_CURRENT_L
 
 get_filename_component(IDF_COMPONENTS "${MBEDTLS_ROOT}/../.." ABSOLUTE)
 add_executable(tls_test tls_test.c ${PKI_TLS} "${IDF_COMPONENTS}/http_parser/http_parser.c")
+# Only the host adapter interposes socket sends; production builds are unchanged.
+set_source_files_properties(${PKI_TLS} PROPERTIES COMPILE_DEFINITIONS "send=wendy_test_send")
 target_include_directories(tls_test PRIVATE stubs ../src ../../wendy_conf/include ../../nanopb "${IDF_COMPONENTS}/http_parser")
 target_link_libraries(tls_test PRIVATE pki)
 find_program(GO_EXECUTABLE go REQUIRED)

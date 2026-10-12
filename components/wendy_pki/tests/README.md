@@ -45,7 +45,7 @@ the timestamp issuance code and certificate encoder are the actual PKI code.
 the successful timestamp fixture. Never use these roots in a deployed image.
 
 `tls_test_driver.go` creates disposable P-256 chains and connects Go TLS to the
-production firmware TLS adapter. Twenty-four cases cover TLS 1.3, wrong tenant/role/EKU,
+production firmware TLS adapter. Inbound cases cover TLS 1.3, wrong tenant/role/EKU,
 expired/untrusted/missing client certificates, TLS 1.2 refusal, truncated shutdown,
 unexpected application data during handoff, valid intermediate chains, and
 rejection of non-CA intermediates, missing keyCertSign usage, path-length
@@ -58,6 +58,22 @@ close_notify and then transfers raw bytes on the preserved TCP socket.
 The wolfSSL profile runs the same cases with ML-DSA-44, ML-DSA-65, and ML-DSA-87
 roots and P-256 device/operator keys. Set `IDF_PATH` to ESP-IDF 5.5.4 and install
 Go 1.27 or newer before configuring host tests.
+
+An outbound case exercises `pki_tls_connect` against Go's verifying TLS server.
+The device chain includes three intermediates and exceeds 16 KB for every ML-DSA
+profile. A host-only send adapter limits writes to 512 bytes and alternates them
+with `EAGAIN`; the test requires both partial writes and retries during the
+handshake. It also verifies a P-384 server CA and exchanges application data in
+both directions after the server authenticates the complete device chain.
+
+The outbound server uses Go's default session-ticket settings. Firmware disables
+PSK negotiation and always performs a fresh certificate handshake. Without
+`NO_PSK`, the pinned wolfSSL version advertises PSK modes despite its disabled
+session cache; large certificate-bound tickets from Go and Cloud BoringSSL then
+fail the first application read with `INCOMPLETE_DATA` (`-310`). The outbound
+regression covers that configuration failure as well as partial client-flight
+writes. Host socket tests do not establish ESP32 handshake latency or reproduce
+a sustained lwIP send-window stall.
 
 `mldsa_test` covers signed timestamps and mixed ML-DSA/P-256 identity chains at
 authenticated time under incorrect device clocks, including certificate date,

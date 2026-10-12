@@ -4,6 +4,8 @@
 #include <assert.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <errno.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,6 +25,52 @@ static unsigned char *load(const char *path, size_t *size) {
 static bool resetting;
 bool wendy_pki_reset_in_progress(void) { return resetting; }
 
+static bool short_writes;
+static unsigned send_calls, partial_sends, blocked_sends;
+/* The production TLS source is compiled with send renamed to this adapter.
+ * Alternate short writes with EAGAIN so each handshake flight must resume. */
+ssize_t wendy_test_send(int fd, const void *buffer, size_t size, int flags) {
+    if (short_writes) {
+        if (++send_calls % 2 == 0) {
+            blocked_sends++;
+            errno = EAGAIN;
+            return -1;
+        }
+        if (size > 512) {
+            size = 512;
+            partial_sends++;
+        }
+    }
+    return send(fd, buffer, size, flags);
+}
+static void wait_io(wendy_pki_connection *c, int result) {
+    assert(result == -2 || result == -3);
+    struct pollfd fd = {.fd = wendy_pki_fd(c), .events = result == -2 ? POLLIN : POLLOUT};
+    assert(poll(&fd, 1, 3000) == 1);
+}
+static void outbound(unsigned port, const unsigned char *key, size_t kn,
+                     const unsigned char *cert, const unsigned char *root, size_t rn) {
+    short_writes = true;
+    wendy_pki_connection *c = NULL;
+    assert(pki_tls_connect("localhost", port, key, kn, (const char *)cert,
+        (struct wendy_conf_span){root, rn}, &c) == 0);
+    assert(c && partial_sends && blocked_sends);
+    size_t written = 0, received = 0;
+    char response[5];
+    while (written < 5) {
+        int n = wendy_pki_write(c, "hello" + written, 5 - written);
+        if (n > 0) written += (size_t)n;
+        else wait_io(c, n);
+    }
+    while (received < sizeof response) {
+        int n = wendy_pki_read(c, response + received, sizeof response - received);
+        if (n > 0) received += (size_t)n;
+        else wait_io(c, n);
+    }
+    assert(!memcmp(response, "world", sizeof response));
+    wendy_pki_close(c);
+}
+
 int main(int argc, char **argv) {
     /* Reset revokes existing sessions before the client requests reboot. */
     wendy_pki_connection old = {0};
@@ -31,8 +79,14 @@ int main(int argc, char **argv) {
     assert(wendy_pki_read(&old, &byte, 1) == -1);
     assert(wendy_pki_write(&old, "x", 1) == -1);
     resetting = false;
-    assert(argc == 5 || argc == 8); size_t kn, cn, rn;
+    assert(argc == 5 || argc == 6 || argc == 8); size_t kn, cn, rn;
     unsigned char *key = load(argv[1], &kn), *cert = load(argv[2], &cn), *root = load(argv[3], &rn);
+    if (argc == 6) {
+        assert(!strcmp(argv[4], "connect"));
+        outbound((unsigned)strtoul(argv[5], NULL, 10), key, kn, cert, root, rn);
+        free(key); free(cert); free(root);
+        return 0;
+    }
     int listener = socket(AF_INET, SOCK_STREAM, 0); assert(listener >= 0);
     struct sockaddr_in address = {.sin_family = AF_INET, .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
     assert(!bind(listener, (struct sockaddr *)&address, sizeof address));

@@ -32,12 +32,20 @@ static inline int wendy_pki_host_random(unsigned char *p, unsigned int n)
 #define WOLFSSL_SP_MATH_ALL
 #define WOLFSSL_SP_SMALL
 #define WOLFSSL_HAVE_SP_ECC
+/* Public broker and timestamp chains use P-384. The generic ECC path can
+ * exceed the broker's handshake deadline on ESP32. Keep full verification
+ * while using the pinned library's optimized P-384 implementation. */
+#define WOLFSSL_SP_384
 #define WOLFSSL_HAVE_SP_RSA
 #define NO_ASM
 #define NO_FILESYSTEM
 #define NO_WRITEV
 /* PKI connections perform a fresh authenticated handshake each time. */
 #define NO_SESSION_CACHE
+/* Do not advertise PSK modes or request tickets we cannot resume. Large
+ * certificate-bound TLS 1.3 tickets require post-handshake reassembly that the
+ * pinned library does not retain when session-ticket support is disabled. */
+#define NO_PSK
 #define NO_OLD_TLS
 #define NO_DSA
 #define NO_DH

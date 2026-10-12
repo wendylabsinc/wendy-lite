@@ -41,8 +41,9 @@ static int certificate_policy(int verified, WOLFSSL_X509_STORE_CTX *context)
 static int io_recv(WOLFSSL *ssl, char *buf, int size, void *context)
 {
     (void)ssl;
-    int fd = *(int *)context;
-    int n = recv(fd, buf, size, 0);
+    wendy_pki_connection *c = context;
+    int n = recv(c->fd, buf, size, 0);
+    if (n > 0) c->socket_read_bytes += (unsigned)n;
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
         return WOLFSSL_CBIO_ERR_WANT_READ;
     return n == 0 ? WOLFSSL_CBIO_ERR_CONN_CLOSE : n < 0 ? WOLFSSL_CBIO_ERR_GENERAL : n;
@@ -50,7 +51,9 @@ static int io_recv(WOLFSSL *ssl, char *buf, int size, void *context)
 static int io_send(WOLFSSL *ssl, char *buf, int size, void *context)
 {
     (void)ssl;
-    int n = send(*(int *)context, buf, size, 0);
+    wendy_pki_connection *c = context;
+    int n = send(c->fd, buf, size, 0);
+    if (n > 0) c->socket_written_bytes += (unsigned)n;
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
         return WOLFSSL_CBIO_ERR_WANT_WRITE;
     return n < 0 ? WOLFSSL_CBIO_ERR_GENERAL : n;
@@ -126,45 +129,12 @@ int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t 
     if (!c)
         return -1;
     c->fd = -1;
-    const char *stage = "DNS";
+    int64_t started = esp_timer_get_time();
+    const char *stage = "TLS setup";
     int tls_error = 0;
     struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM}, *addresses = NULL;
-    char service[6];
-    snprintf(service, sizeof service, "%u", port);
-    if ((tls_error = getaddrinfo(host, service, &hints, &addresses)) != 0)
-        goto fail;
-    int64_t deadline = esp_timer_get_time() + 15000000;
-    stage = "TCP connect";
-    for (struct addrinfo *a = addresses; a; a = a->ai_next)
-    {
-        c->fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
-        if (c->fd < 0)
-            continue;
-        if (c->fd >= FD_SETSIZE)
-        {
-            close(c->fd);
-            c->fd = -1;
-            continue;
-        }
-        fcntl(c->fd, F_SETFL, O_NONBLOCK);
-        int r = connect(c->fd, a->ai_addr, a->ai_addrlen);
-        if (r == 0)
-            break;
-        if (errno == EINPROGRESS && !wait_socket(c, WOLFSSL_ERROR_WANT_WRITE, deadline))
-        {
-            int e = 0;
-            socklen_t n = sizeof e;
-            if (!getsockopt(c->fd, SOL_SOCKET, SO_ERROR, &e, &n) && !e)
-                break;
-        }
-        close(c->fd);
-        c->fd = -1;
-    }
-    freeaddrinfo(addresses);
-    addresses = NULL;
-    if (c->fd < 0)
-        goto fail;
-    stage = "TLS setup";
+    /* Prepare local credentials before the broker starts its TCP handshake
+     * deadline. Certificate and peer verification remain unchanged. */
     c->ctx = wolfSSL_CTX_new(wolfTLSv1_3_client_method());
     if (!c->ctx)
         goto fail;
@@ -187,12 +157,59 @@ int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t 
     c->ssl = wolfSSL_new(c->ctx);
     if (!c->ssl)
         goto fail;
-    wolfSSL_SetIOReadCtx(c->ssl, &c->fd);
-    wolfSSL_SetIOWriteCtx(c->ssl, &c->fd);
+    wolfSSL_SetIOReadCtx(c->ssl, c);
+    wolfSSL_SetIOWriteCtx(c->ssl, c);
     if (wolfSSL_check_domain_name(c->ssl, host) != WOLFSSL_SUCCESS ||
         wolfSSL_UseSNI(c->ssl, WOLFSSL_SNI_HOST_NAME, host, strlen(host)) != WOLFSSL_SUCCESS)
         goto fail;
+    int64_t prepared = esp_timer_get_time();
+    stage = "DNS";
+    char service[6];
+    snprintf(service, sizeof service, "%u", port);
+    if ((tls_error = getaddrinfo(host, service, &hints, &addresses)) != 0)
+        goto fail;
+    int64_t deadline = esp_timer_get_time() + 15000000;
+    stage = "TCP connect";
+    for (struct addrinfo *a = addresses; a; a = a->ai_next)
+    {
+        c->fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+        if (c->fd < 0)
+            continue;
+        if (c->fd >= FD_SETSIZE)
+        {
+            close(c->fd);
+            c->fd = -1;
+            continue;
+        }
+        stage = "TCP socket setup";
+        int flags = fcntl(c->fd, F_GETFL, 0);
+        if (flags < 0 || fcntl(c->fd, F_SETFL, flags | O_NONBLOCK) < 0 ||
+            (flags = fcntl(c->fd, F_GETFL, 0)) < 0 || !(flags & O_NONBLOCK)) {
+            ESP_LOGW("wendy_pki", "TLS client could not set nonblocking socket (errno=%d)", errno);
+            close(c->fd);
+            c->fd = -1;
+            continue;
+        }
+        stage = "TCP connect";
+        int r = connect(c->fd, a->ai_addr, a->ai_addrlen);
+        if (r == 0)
+            break;
+        if (errno == EINPROGRESS && !wait_socket(c, WOLFSSL_ERROR_WANT_WRITE, deadline))
+        {
+            int e = 0;
+            socklen_t n = sizeof e;
+            if (!getsockopt(c->fd, SOL_SOCKET, SO_ERROR, &e, &n) && !e)
+                break;
+        }
+        close(c->fd);
+        c->fd = -1;
+    }
+    freeaddrinfo(addresses);
+    addresses = NULL;
+    if (c->fd < 0)
+        goto fail;
     stage = "TLS handshake";
+    int64_t handshake_started = esp_timer_get_time();
     int r;
     while ((r = wolfSSL_connect(c->ssl)) != WOLFSSL_SUCCESS) {
         tls_error = wolfSSL_get_error(c->ssl, r);
@@ -201,11 +218,19 @@ int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t 
     stage = "certificate verification";
     tls_error = (int)wolfSSL_get_verify_result(c->ssl);
     if (tls_error != 0) goto fail;
+    ESP_LOGI("wendy_pki", "TLS client authenticated (%s:%u, setup_ms=%lld, connect_ms=%lld, handshake_ms=%lld, rx=%llu, tx=%llu)",
+             host, port, (long long)((prepared - started) / 1000),
+             (long long)((handshake_started - prepared) / 1000),
+             (long long)((esp_timer_get_time() - handshake_started) / 1000),
+             (unsigned long long)c->socket_read_bytes, (unsigned long long)c->socket_written_bytes);
     *out = c;
     return 0;
 fail:
-    ESP_LOGW("wendy_pki", "TLS client failed at %s (%s:%u, tls=%d, errno=%d)",
-             stage, host, port, tls_error, errno);
+    ESP_LOGW("wendy_pki", "TLS client failed at %s (%s:%u, tls=%d, errno=%d, state=%s, elapsed_ms=%lld, rx=%llu, tx=%llu)",
+             stage, host, port, tls_error, errno,
+             c->ssl ? wolfSSL_state_string_long(c->ssl) : "not initialized",
+             (long long)((esp_timer_get_time() - started) / 1000),
+             (unsigned long long)c->socket_read_bytes, (unsigned long long)c->socket_written_bytes);
     if (addresses)
         freeaddrinfo(addresses);
     wendy_pki_close(c);
@@ -386,8 +411,8 @@ int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, const char *cert
     wolfSSL_CTX_SetIOSend(c->ctx, io_send);
     c->ssl = wolfSSL_new(c->ctx);
     if (!c->ssl) goto fail;
-    wolfSSL_SetIOReadCtx(c->ssl, &c->fd);
-    wolfSSL_SetIOWriteCtx(c->ssl, &c->fd);
+    wolfSSL_SetIOReadCtx(c->ssl, c);
+    wolfSSL_SetIOWriteCtx(c->ssl, c);
     int r;
     while ((r = wolfSSL_accept(c->ssl)) != WOLFSSL_SUCCESS)
         if (wait_socket(c, wolfSSL_get_error(c->ssl, r), deadline)) goto fail;
@@ -410,11 +435,29 @@ fail:
 
 static int read_all(wendy_pki_connection *c, uint8_t *out, size_t n, int64_t deadline)
 {
+    int64_t started = esp_timer_get_time();
+    size_t requested = n;
     while (n) {
-        if (esp_timer_get_time() >= deadline) return -1;
+        if (esp_timer_get_time() >= deadline) {
+            ESP_LOGW("wendy_pki", "TLS control read deadline (requested=%u, remaining=%u, elapsed_ms=%lld)",
+                     (unsigned)requested, (unsigned)n,
+                     (long long)((esp_timer_get_time() - started) / 1000));
+            return -1;
+        }
         int got = wolfSSL_read(c->ssl, out, n);
         if (got > 0) { out += got; n -= got; }
-        else if (!got || wait_socket(c, wolfSSL_get_error(c->ssl, got), deadline)) return -1;
+        else {
+            int error = wolfSSL_get_error(c->ssl, got);
+            if (!got || wait_socket(c, error, deadline)) {
+                ESP_LOGW("wendy_pki", "TLS control read failed (tls=%d, errno=%d, state=%s, requested=%u, remaining=%u, elapsed_ms=%lld, rx=%llu, tx=%llu)",
+                         error, errno, wolfSSL_state_string_long(c->ssl),
+                         (unsigned)requested, (unsigned)n,
+                         (long long)((esp_timer_get_time() - started) / 1000),
+                         (unsigned long long)c->socket_read_bytes,
+                         (unsigned long long)c->socket_written_bytes);
+                return -1;
+            }
+        }
     }
     return 0;
 }

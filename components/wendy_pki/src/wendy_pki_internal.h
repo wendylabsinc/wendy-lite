@@ -26,6 +26,7 @@ struct wendy_pki_connection
 #if CONFIG_WENDY_PKI_WOLFSSL
     WOLFSSL_CTX *ctx;
     WOLFSSL *ssl;
+    uint64_t socket_read_bytes, socket_written_bytes;
 #else
     mbedtls_ssl_config config;
     mbedtls_ssl_context ssl;
