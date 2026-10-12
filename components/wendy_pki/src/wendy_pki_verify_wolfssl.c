@@ -1,5 +1,6 @@
 #include "wendy_pki_verify.h"
 #include "wendy_lite_grant.h"
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
