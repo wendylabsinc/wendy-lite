@@ -15,6 +15,8 @@ static const char *TAG = "wendy_ble";
 #if CONFIG_WENDY_BLE
 
 #include "wendy_conf.h"
+#include "wendy_operator_auth.h"
+#include "wendy_pki.h"
 #include "wendy_ble_l2cap.h"
 #include "wendy_ble_tls.h"
 #include "wendy_com_link.h"
@@ -206,6 +208,10 @@ static int _gap_event(struct ble_gap_event *event, void *arg);
 /// in the scan response, where there is room for it.
 static void _start_advertising(void)
 {
+    if (wendy_pki_reset_in_progress() || wendy_conf_has_enrollment() ||
+        wendy_conf_is_provisioned() != _provisioned)
+        return;
+
     struct ble_hs_adv_fields adv = {0};
     adv.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     adv.uuids128 = &_uuid_svc;
@@ -520,21 +526,30 @@ esp_err_t wendy_ble_start(void)
 {
     esp_err_t err = ESP_OK;
 
-    if (_started)
-        return ESP_OK;
-
-    struct wendy_conf_span key   = wendy_conf_get_private_key();
-    struct wendy_conf_span cert  = wendy_conf_get_certificate();
-    struct wendy_conf_span chain = wendy_conf_get_chain_of_trust();
-    _provisioned = key.size > 0 && cert.size > 0 && chain.size > 0;
-
+    if (wendy_conf_has_enrollment()) {
+        ESP_LOGW(TAG, "PKI identity is not supported over BLE; use LAN or Cloud");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (wendy_pki_reset_in_progress()) {
+        ESP_LOGW(TAG, "identity reset in progress; BLE disabled");
+        return ESP_ERR_INVALID_STATE;
+    }
+    _provisioned = wendy_conf_is_provisioned();
 #if CONFIG_WENDY_BLE_REQUIRE_MTLS
     if (!_provisioned) {
-        ESP_LOGW(TAG, "device not provisioned and mTLS is required: "
-                      "not advertising");
+        ESP_LOGW(TAG, "BLE requires provisioned credentials; use USB for setup");
         return ESP_ERR_INVALID_STATE;
     }
 #endif
+    struct wendy_conf_span cert = wendy_conf_get_certificate();
+    struct wendy_operator_auth auth;
+    if (_provisioned && wendy_operator_auth_init(&auth, cert.data, cert.size)) {
+        ESP_LOGE(TAG, "device certificate has no valid Wendy device identity; not advertising");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (_started)
+        return ESP_OK;
 
     // Snapshot the identity for the life of the advertisement. wendy_conf
     // fixes these at init and never changes them, so the copies are belt and
@@ -584,9 +599,9 @@ esp_err_t wendy_ble_start(void)
     _started = true;
 
     if (_provisioned)
-        ESP_LOGI(TAG, "full mTLS enabled: only authenticated clients will be accepted");
+        ESP_LOGI(TAG, "mTLS enabled: same-organization operator certificate required");
     else
-        ESP_LOGI(TAG, "mTLS disabled: any client will be accepted");
+        ESP_LOGI(TAG, "unprovisioned: clients may connect without a certificate");
 
     // If the host synced before this ran, _on_sync skipped advertising because
     // _started was still false; start it here instead.

@@ -22,11 +22,11 @@ if(CONFIG_WENDY_PKI)
     endif()
     # Keep the existing P-256 key/CSR and relay-grant implementation in both
     # profiles. Only certificate verification and TLS select a backend.
-    idf_component_register(SRCS "src/wendy_pki_crypto.c" "src/wendy_lite_grant.c" "src/wendy_pki.c" ${pki_backend_sources}
+    idf_component_register(SRCS "src/wendy_operator_auth.c" "src/wendy_pki_crypto.c" "src/wendy_lite_grant.c" "src/wendy_pki.c" ${pki_backend_sources}
         INCLUDE_DIRS "include" REQUIRES mbedtls wendy_conf nvs_flash esp_timer esp_hw_support json http_parser lwip)
     foreach(kind device tsa https)
         target_add_binary_data(${COMPONENT_LIB} "${CMAKE_CURRENT_BINARY_DIR}/${kind}_roots.pem" TEXT RENAME_TO "wendy_pki_${kind}_roots")
     endforeach()
 else()
-    idf_component_register(SRCS "src/wendy_pki_stub.c" INCLUDE_DIRS "include" REQUIRES mbedtls wendy_conf nvs_flash esp_timer esp_hw_support json http_parser lwip)
+    idf_component_register(SRCS "src/wendy_operator_auth.c" "src/wendy_pki_stub.c" INCLUDE_DIRS "include" REQUIRES mbedtls wendy_conf nvs_flash esp_timer esp_hw_support json http_parser lwip)
 endif()

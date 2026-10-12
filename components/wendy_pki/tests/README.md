@@ -55,9 +55,45 @@ same operator URI, and enforce independent presentation and session deadlines.
 They cover both certificate expiry caps, legacy/truncated/expired grants and
 presentation windows over 60 seconds. The valid handoff case exchanges
 close_notify and then transfers raw bytes on the preserved TCP socket.
+LAN cases also accept same-tenant device clients and assert the verified peer
+role. They reject wrong tenants, malformed or ambiguous identities, missing
+clientAuth, CA leaves, invalid dates, untrusted issuers, and signature tampering.
+The operator-only accept path rejects device clients, including relay clients.
 The wolfSSL profile runs the same cases with ML-DSA-44, ML-DSA-65, and ML-DSA-87
 roots and P-256 device/operator keys. Set `IDF_PATH` to ESP-IDF 5.5.4 and install
 Go 1.27 or newer before configuring host tests.
+
+`operator_auth_test_driver.go` creates temporary signed certificates for the
+legacy LAN/BLE authentication helper. Unit checks cover device tenant extraction,
+strict operator identities, explicit clientAuth usage, CA rejection, and
+preservation of every pre-existing mbedTLS verification flag. Real TLS 1.2 and
+TLS 1.3 handshakes exercise the LAN/BLE verification callback and the identity
+check after a required client-certificate handshake. Valid same-organization operators
+and intermediate chains can exchange application data. Missing, untrusted,
+expired, future, and tampered certificates cannot. Other rejection cases cover
+wrong organizations, roles, authorities, missing or duplicate URI identities,
+invalid subject segments, URI query/fragment/percent/NUL suffixes, missing or
+incorrect EKUs, and CA leaves. Safe operator names and nested subjects remain
+valid, matching the pki-core issuer grammar. The same signed fixtures also
+exercise the selected PKI backend's operator verifier.
+The LAN policy additionally accepts same-tenant device certificates and records
+their restricted role. Tests exercise both policies against the same fixtures,
+reject role changes during later verification, and check both backends' peer
+classifiers.
+These tests run with mbedTLS under both host build profiles because legacy LAN
+and BLE use mbedTLS regardless of the PKI backend.
+The host adapter also checks anonymous TLS 1.2 and TLS 1.3 access in its
+unprovisioned configuration, with a self-signed server certificate containing no
+tenant identity. Provisioned configurations continue to reject missing client
+certificates. These cases check the TLS policy, not the firmware provisioning
+state machine.
+
+`wendycom_link_permissions` sends serialized protocol frames through the
+production link, agent, and command code. It permits SensorLink manifest,
+subscribe, and unsubscribe requests from device links while rejecting every
+management command and console input before calling delegates. It covers extra
+channels, stale client IDs, channel and link reuse, invalid permissions, reset
+revocation, and preserved operator/local access.
 
 An outbound case exercises `pki_tls_connect` against Go's verifying TLS server.
 The device chain includes three intermediates and exceeds 16 KB for every ML-DSA

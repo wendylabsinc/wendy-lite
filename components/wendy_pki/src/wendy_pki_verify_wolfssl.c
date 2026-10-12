@@ -1,5 +1,7 @@
 #include "wendy_pki_verify.h"
+#include "wendy_peer_identity.h"
 #include "wendy_lite_grant.h"
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -657,48 +659,51 @@ size_t wendy_pki_time_request(uint8_t out[128], const uint8_t nonce[32])
 }
 
 /* Chain verification is performed by TLS before this identity check. */
-int wendy_pki_verify_operator(const uint8_t *der, size_t size, const char *tenant)
+enum wendy_peer_role wendy_pki_verify_peer(const uint8_t *input, size_t size,
+                                           const char *tenant)
 {
-    if (!der || !size || size > 65536 || !tenant || strlen(tenant) != 36)
-        return -1;
+    if (!input || !size || size > 65536 || !tenant ||
+        !wendy_identity_uuid((const unsigned char *)tenant, strlen(tenant)))
+        return WENDY_PEER_ROLE_NONE;
+    der all = {input, input, size, size, 0}, sequence;
+    if (take(&all, 0x30, &sequence) || all.n) return WENDY_PEER_ROLE_NONE;
     int ok = 0, uris = 0;
+    enum wendy_peer_role role = WENDY_PEER_ROLE_NONE;
     DecodedCert *decoded = malloc(sizeof *decoded);
     if (!decoded)
-        return -1;
-    wc_InitDecodedCert(decoded, der, size, NULL);
+        return WENDY_PEER_ROLE_NONE;
+    wc_InitDecodedCert(decoded, input, size, NULL);
     if (wc_ParseCert(decoded, CERT_TYPE, NO_VERIFY, NULL) == 0 && !decoded->isCA &&
         decoded->extExtKeyUsageSet && (decoded->extExtKeyUsage & EXTKEYUSE_CLIENT_AUTH))
     {
-        char prefix[96];
-        snprintf(prefix, sizeof prefix, "spiffe://wendy.sh/tenant/%s/operator/", tenant);
-        size_t n = strlen(prefix);
         ok = 1;
         for (DNS_entry *alt = decoded->altNames; alt; alt = alt->next)
         {
             if (alt->type != ASN_URI_TYPE)
                 continue;
             uris++;
-            if ((size_t)alt->len != n + 36 || memcmp(alt->name, prefix, n))
-            {
+            unsigned char peer_tenant[36];
+            if (wendy_peer_identity((const unsigned char *)alt->name, alt->len,
+                                    "operator", peer_tenant))
+                role = WENDY_PEER_ROLE_OPERATOR;
+            else if (wendy_peer_identity((const unsigned char *)alt->name, alt->len,
+                                         "device", peer_tenant))
+                role = WENDY_PEER_ROLE_DEVICE;
+            else {
                 ok = 0;
                 continue;
             }
-            for (size_t i = 0; i < 36; i++)
-            {
-                char c = alt->name[n + i];
-                if (i == 8 || i == 13 || i == 18 || i == 23)
-                {
-                    if (c != '-')
-                        ok = 0;
-                }
-                else if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
-                    ok = 0;
-            }
+            if (memcmp(peer_tenant, tenant, sizeof peer_tenant)) ok = 0;
         }
     }
     wc_FreeDecodedCert(decoded);
     free(decoded);
-    return ok && uris == 1 ? 0 : -1;
+    return ok && uris == 1 ? role : WENDY_PEER_ROLE_NONE;
+}
+
+int wendy_pki_verify_operator(const uint8_t *input, size_t size, const char *tenant)
+{
+    return wendy_pki_verify_peer(input, size, tenant) == WENDY_PEER_ROLE_OPERATOR ? 0 : -1;
 }
 
 /* The grant binds the peer's sole URI, regardless of its certificate's signing

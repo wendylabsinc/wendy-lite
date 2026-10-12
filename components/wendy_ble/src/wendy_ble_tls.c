@@ -1,6 +1,8 @@
 #include "wendy_ble_tls.h"
 #include "wendy_ble_l2cap.h"
 #include "wendy_conf.h"
+#include "wendy_operator_auth.h"
+#include "wendy_pki.h"
 
 #include <string.h>
 
@@ -32,6 +34,8 @@
 //--- globals ---//
 
 static bool _active;
+static bool _provisioned;
+static struct wendy_operator_auth _operator_auth;
 
 static mbedtls_ssl_context      _ssl;
 static mbedtls_ssl_config       _conf;
@@ -43,6 +47,12 @@ static mbedtls_ctr_drbg_context _ctr_drbg;
 
 
 //--- internal functions ---//
+
+static bool _session_allowed(void)
+{
+    return !wendy_pki_reset_in_progress() && !wendy_conf_has_enrollment() &&
+           wendy_conf_is_provisioned() == _provisioned;
+}
 
 /// mbedTLS BIO. The L2CAP layer already speaks in WANT_READ / WANT_WRITE, so
 /// this is a pure translation; the receive ring below it is what makes a
@@ -101,7 +111,9 @@ static void _free_contexts(void)
 esp_err_t wble_tls_session_start(void)
 {
     static const char *pers = "wendy_ble_tls";
+    esp_err_t result = ESP_FAIL;
 
+    _active = false;
     mbedtls_ssl_init(&_ssl);
     mbedtls_ssl_config_init(&_conf);
     mbedtls_x509_crt_init(&_own_cert);
@@ -110,24 +122,41 @@ esp_err_t wble_tls_session_start(void)
     mbedtls_entropy_init(&_entropy);
     mbedtls_ctr_drbg_init(&_ctr_drbg);
 
+    if (wendy_conf_has_enrollment()) {
+        ESP_LOGW(TAG, "PKI identity is not supported over BLE; use LAN or Cloud");
+        result = ESP_ERR_INVALID_STATE;
+        goto fail;
+    }
+    if (wendy_pki_reset_in_progress()) {
+        ESP_LOGW(TAG, "identity reset in progress; BLE connection rejected");
+        result = ESP_ERR_INVALID_STATE;
+        goto fail;
+    }
+    _provisioned = wendy_conf_is_provisioned();
+#if CONFIG_WENDY_BLE_REQUIRE_MTLS
+    if (!_provisioned) {
+        ESP_LOGW(TAG, "BLE requires provisioned credentials; use USB for setup");
+        result = ESP_ERR_INVALID_STATE;
+        goto fail;
+    }
+#endif
+
+    struct wendy_conf_span cert = _provisioned ? wendy_conf_get_certificate()
+                                               : wendy_conf_get_default_certificate();
+    struct wendy_conf_span key = _provisioned ? wendy_conf_get_private_key()
+                                              : wendy_conf_get_default_private_key();
+    if (_provisioned && wendy_operator_auth_init(&_operator_auth, cert.data, cert.size)) {
+        ESP_LOGE(TAG, "device certificate has no valid Wendy device identity");
+        result = ESP_ERR_INVALID_STATE;
+        goto fail;
+    }
+
     int ret = mbedtls_ctr_drbg_seed(&_ctr_drbg, mbedtls_entropy_func, &_entropy,
                                     (const unsigned char *)pers, strlen(pers));
     if (ret != 0) {
         _log_mbedtls_error("ctr_drbg_seed", ret);
         goto fail;
     }
-
-    // Same policy as wendy_server on TCP: real mTLS when the device carries a
-    // key, a certificate and a chain; otherwise the embedded self-signed
-    // certificate with no client verification, so a fresh board stays
-    // reachable. CONFIG_WENDY_BLE_REQUIRE_MTLS (checked in wendy_ble_start)
-    // is what removes the fallback for production images.
-    bool provisioned = wendy_conf_is_provisioned();
-
-    struct wendy_conf_span cert = provisioned ? wendy_conf_get_certificate()
-                                              : wendy_conf_get_default_certificate();
-    struct wendy_conf_span key  = provisioned ? wendy_conf_get_private_key()
-                                              : wendy_conf_get_default_private_key();
 
     ret = mbedtls_x509_crt_parse_der(&_own_cert, cert.data, cert.size);
     if (ret != 0) {
@@ -149,7 +178,7 @@ esp_err_t wble_tls_session_start(void)
         goto fail;
     }
 
-    if (provisioned) {
+    if (_provisioned) {
         struct wendy_conf_span chain = wendy_conf_get_chain_of_trust();
         ret = mbedtls_x509_crt_parse_der(&_ca_chain, chain.data, chain.size);
         if (ret != 0) {
@@ -157,9 +186,8 @@ esp_err_t wble_tls_session_start(void)
             goto fail;
         }
         mbedtls_ssl_conf_ca_chain(&_conf, &_ca_chain, NULL);
-        // REQUIRED, not OPTIONAL: optional completes the handshake and merely
-        // records that verification failed.
         mbedtls_ssl_conf_authmode(&_conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+        mbedtls_ssl_conf_verify(&_conf, wendy_operator_auth_verify, &_operator_auth);
     } else {
         mbedtls_ssl_conf_authmode(&_conf, MBEDTLS_SSL_VERIFY_NONE);
     }
@@ -181,14 +209,19 @@ esp_err_t wble_tls_session_start(void)
     mbedtls_ssl_set_bio(&_ssl, NULL, _bio_send, _bio_recv, NULL);
 
     ESP_LOGI(TAG, "handshake starting (%s)",
-             provisioned ? "mTLS, client certificate required"
-                         : "no client verification");
+             _provisioned ? "same-organization operator certificate required"
+                          : "unprovisioned, no client verification");
 
     int64_t deadline = esp_timer_get_time() + HANDSHAKE_TIMEOUT_US;
     size_t heap_before = heap_caps_get_free_size(MALLOC_CAP_8BIT);
     size_t heap_low = heap_before;
 
     for (;;) {
+        if (!_session_allowed()) {
+            ESP_LOGW(TAG, "credentials changed during BLE handshake; connection rejected");
+            result = ESP_ERR_INVALID_STATE;
+            goto fail;
+        }
         ret = mbedtls_ssl_handshake(&_ssl);
         if (ret == 0)
             break;
@@ -216,6 +249,16 @@ esp_err_t wble_tls_session_start(void)
         }
     }
 
+    if (!_session_allowed()) {
+        ESP_LOGW(TAG, "credentials changed during BLE handshake; connection rejected");
+        result = ESP_ERR_INVALID_STATE;
+        goto fail;
+    }
+    if (_provisioned && mbedtls_ssl_get_verify_result(&_ssl) != 0) {
+        ESP_LOGW(TAG, "operator certificate verification failed");
+        goto fail;
+    }
+
     ESP_LOGI(TAG, "handshake done in %lld ms (%s, heap low water %u, cost %u)",
              (HANDSHAKE_TIMEOUT_US - (deadline - esp_timer_get_time())) / 1000,
              mbedtls_ssl_get_ciphersuite(&_ssl),
@@ -226,7 +269,7 @@ esp_err_t wble_tls_session_start(void)
 
 fail:
     _free_contexts();
-    return ESP_FAIL;
+    return result;
 }
 
 void wble_tls_session_end(void)
@@ -239,12 +282,13 @@ void wble_tls_session_end(void)
 
 bool wble_tls_pending(void)
 {
-    return _active && mbedtls_ssl_get_bytes_avail(&_ssl) > 0;
+    return _active && _session_allowed() &&
+           mbedtls_ssl_get_bytes_avail(&_ssl) > 0;
 }
 
 ssize_t wble_tls_read(void *buf, size_t len)
 {
-    if (!_active)
+    if (!_active || !_session_allowed())
         return WBLE_ERR_UNKNOWN;
 
     int ret = mbedtls_ssl_read(&_ssl, buf, len);
@@ -265,7 +309,7 @@ ssize_t wble_tls_read(void *buf, size_t len)
 
 ssize_t wble_tls_write(const void *buf, size_t len)
 {
-    if (!_active)
+    if (!_active || !_session_allowed())
         return WBLE_ERR_UNKNOWN;
 
     int ret = mbedtls_ssl_write(&_ssl, buf, len);

@@ -11,5 +11,5 @@ idf_component_register(
         "src"
     REQUIRES
         bt mbedtls freertos log
-        wendy_com wendy_conf
+        wendy_com wendy_conf wendy_pki
 )

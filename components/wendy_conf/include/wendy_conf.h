@@ -120,17 +120,16 @@ struct wendy_conf_span wendy_conf_get_certificate(void);
 struct wendy_conf_span wendy_conf_get_chain_of_trust(void);
 
 /**
- * True when the device carries everything mutual TLS needs: a private key, a
- * certificate, and a chain of trust to verify peers against. Transports use
- * it to decide between real mTLS and the unauthenticated fallback below, so
- * they all answer the question the same way.
+ * True when legacy provisioning carries a private key, a certificate and a
+ * chain of trust. Transports must also validate the device identity before
+ * authenticating clients. Unprovisioned devices may use anonymous TLS when
+ * no PKI enrollment is configured.
  */
 bool wendy_conf_is_provisioned(void);
 
 /**
- * The self-signed certificate and key compiled into the firmware, served by
- * every transport when the device is not provisioned. They authenticate
- * nothing — they exist so a fresh device is still reachable.
+ * The embedded self-signed certificate and key used for anonymous TLS on
+ * unprovisioned devices. These do not authenticate clients or establish trust.
  */
 struct wendy_conf_span wendy_conf_get_default_certificate(void);
 struct wendy_conf_span wendy_conf_get_default_private_key(void);

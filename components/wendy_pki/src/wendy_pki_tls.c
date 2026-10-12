@@ -318,11 +318,11 @@ done:
 }
 
 
-/* TLS validates the chain, dates and clientAuth usage. Also require exactly
- * one operator URI in this device's tenant, never another device's identity. */
-
-int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, const char *cert,
-                   struct wendy_conf_span roots, const char *tenant, wendy_pki_connection **out, int64_t deadline)
+/* TLS validates the chain, dates and clientAuth usage. LAN may additionally
+ * accept a same-tenant device, with its role fixed for the TLS 1.3 session. */
+static int accept_peer(int fd, const uint8_t *key, size_t key_size, const char *cert,
+                       struct wendy_conf_span roots, const char *tenant,
+                       wendy_pki_connection **out, int64_t deadline, bool allow_device)
 {
     wendy_pki_connection *c = calloc(1, sizeof *c);
     if (!c) { close(fd); return -1; }
@@ -333,16 +333,37 @@ int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, const char *cert
     while ((r = mbedtls_ssl_handshake(&c->ssl)) != 0)
         if (wait_socket(c, r, deadline)) goto fail;
     const mbedtls_x509_crt *peer = mbedtls_ssl_get_peer_cert(&c->ssl);
-    if (!peer || mbedtls_ssl_get_verify_result(&c->ssl) ||
-        wendy_pki_verify_operator(peer->raw.p, peer->raw.len, tenant) ||
+    if (!peer || mbedtls_ssl_get_verify_result(&c->ssl)) goto fail;
+    enum wendy_peer_role role = wendy_pki_verify_peer(peer->raw.p, peer->raw.len, tenant);
+    if (role == WENDY_PEER_ROLE_NONE || (!allow_device && role != WENDY_PEER_ROLE_OPERATOR) ||
         wendy_lite_peer_hash(peer->raw.p, peer->raw.len, c->operator_hash) ||
         wendy_lite_peer_spki_hash(peer->raw.p, peer->raw.len, c->operator_spki_hash) ||
         wendy_lite_peer_expiry(peer->raw.p, peer->raw.len, &c->operator_expires)) goto fail;
+    c->peer_role = role;
     *out = c;
     return 0;
 fail:
     wendy_pki_close(c);
     return -1;
+}
+
+int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, const char *cert,
+                   struct wendy_conf_span roots, const char *tenant,
+                   wendy_pki_connection **out, int64_t deadline)
+{
+    return accept_peer(fd, key, key_size, cert, roots, tenant, out, deadline, false);
+}
+
+int pki_tls_accept_lan(int fd, const uint8_t *key, size_t key_size, const char *cert,
+                       struct wendy_conf_span roots, const char *tenant,
+                       wendy_pki_connection **out, int64_t deadline)
+{
+    return accept_peer(fd, key, key_size, cert, roots, tenant, out, deadline, true);
+}
+
+enum wendy_peer_role wendy_pki_get_peer_role(const wendy_pki_connection *connection)
+{
+    return connection ? connection->peer_role : WENDY_PEER_ROLE_NONE;
 }
 
 static int read_all(wendy_pki_connection *c, uint8_t *out, size_t n, int64_t deadline)
@@ -408,6 +429,7 @@ fail:
 
 int pki_relay_grant(wendy_pki_connection *c, const struct wendy_lite_trust *trust, int64_t deadline)
 {
+    if (!c || c->peer_role != WENDY_PEER_ROLE_OPERATOR) return -1;
     uint8_t *record = malloc(WENDY_LITE_GRANT_MAX);
     if (!record) return -1;
     int result = -1;

@@ -14,7 +14,10 @@
 /// room for the other transports' sessions.
 
 /// Run the handshake to completion on the calling task. Returns ESP_OK only
-/// once the encrypted stream is usable.
+/// once the encrypted stream is usable. Provisioned devices authenticate a
+/// trusted operator from their organization. Unprovisioned devices allow
+/// anonymous clients only when CONFIG_WENDY_BLE_REQUIRE_MTLS is disabled.
+/// Refuses any configured PKI enrollment and any identity reset in progress.
 esp_err_t wble_tls_session_start(void);
 
 /// Release everything. Safe whether or not the handshake succeeded.

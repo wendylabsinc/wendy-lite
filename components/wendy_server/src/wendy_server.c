@@ -1,11 +1,11 @@
 #include "wendy_server.h"
 #include "wendy_conf.h"
 #include "wendy_pki.h"
+#include "wendy_operator_auth.h"
 #include "wendy_com_link.h"
 #include "esp_tls.h"
 #include "mbedtls/ssl.h"
 #include "mbedtls/x509_crt.h"
-#include "mbedtls/oid.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "mdns.h"
@@ -43,11 +43,14 @@ struct _add_link_op {
     struct wcom_operation base;
     esp_tls_t *tls;
     wendy_pki_connection *pki;
+    struct wendy_operator_auth auth;
+    bool provisioned;
 };
 
 struct wendy_server_link {
     esp_tls_t *tls;
     wendy_pki_connection *pki;
+    struct wendy_operator_auth auth;
     int link_id;
 };
 
@@ -61,14 +64,16 @@ static bool _running = false;
 
 //--- internal functions ---//
 
-static int _tls_verify_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags)
+static enum wcom_link_permission _peer_permission(enum wendy_peer_role role)
 {
-#if WENDY_SERVER_DUMP_CERT == 1
-    char buf[256];
-    mbedtls_x509_dn_gets(buf, sizeof(buf), &crt->subject);
-    ESP_LOGI(TAG, "peer cert chain depth %d: %s", depth, buf);
-#endif
-    return 0;
+    switch (role) {
+    case WENDY_PEER_ROLE_OPERATOR:
+        return WCOM_LINK_PERMISSION_FULL;
+    case WENDY_PEER_ROLE_DEVICE:
+        return WCOM_LINK_PERMISSION_SENSOR_ONLY;
+    default:
+        return WCOM_LINK_PERMISSION_NONE;
+    }
 }
 
 #if CONFIG_WENDY_PKI
@@ -113,7 +118,8 @@ static void _add_link_exec(struct wcom_operation *op)
     if (aop->pki) {
         for (int i = 0; i < WENDY_SERVER_MAX_LINKS; i++) {
             if (_links[i].tls || _links[i].pki) continue;
-            int id = wcom_add_socket_link(&pki_ops, aop->pki, _on_interruption);
+            int id = wcom_add_socket_link_with_permission(&pki_ops, aop->pki,
+                _on_interruption, _peer_permission(wendy_pki_get_peer_role(aop->pki)));
             if (id < 0) break;
             _links[i].pki = aop->pki;
             _links[i].link_id = id;
@@ -125,6 +131,15 @@ static void _add_link_exec(struct wcom_operation *op)
         return;
     }
 #endif
+    if (wendy_conf_has_enrollment() || aop->provisioned != wendy_conf_is_provisioned() ||
+        wendy_pki_reset_in_progress()) {
+        int fd = -1;
+        esp_tls_get_conn_sockfd(aop->tls, &fd);
+        if (fd >= 0) close(fd);
+        esp_tls_server_session_delete(aop->tls);
+        free(aop);
+        return;
+    }
     int slot = -1;
     for (int i = 0; i < WENDY_SERVER_MAX_LINKS; i++) {
         if (_links[i].tls == NULL && _links[i].pki == NULL) {
@@ -143,7 +158,14 @@ static void _add_link_exec(struct wcom_operation *op)
         return;
     }
 
-    int link_id = wcom_add_tls_link(aop->tls, _on_interruption);
+    // Keep the callback context alive for subsequent TLS renegotiations.
+    if (aop->provisioned) {
+        _links[slot].auth = aop->auth;
+        mbedtls_ssl_set_verify(esp_tls_get_ssl_context(aop->tls),
+                               wendy_operator_auth_verify, &_links[slot].auth);
+    }
+    int link_id = wcom_add_tls_link_with_permission(aop->tls, _on_interruption,
+        aop->provisioned ? _peer_permission(aop->auth.role) : WCOM_LINK_PERMISSION_FULL);
     if (link_id < 0) {
         ESP_LOGE(TAG, "max links reached, rejecting connection");
         int fd = -1;
@@ -164,11 +186,6 @@ static void _add_link_exec(struct wcom_operation *op)
 
 static void _server_task(void *arg)
 {
-    struct wendy_conf_span key = wendy_conf_get_private_key();
-    struct wendy_conf_span cert = wendy_conf_get_certificate();
-    struct wendy_conf_span chain = wendy_conf_get_chain_of_trust();
-    struct wendy_conf_span default_cert = wendy_conf_get_default_certificate();
-    struct wendy_conf_span default_key = wendy_conf_get_default_private_key();
     bool pki_configured = wendy_conf_has_enrollment();
     bool trusted = pki_configured || wendy_conf_is_provisioned();
 
@@ -203,11 +220,10 @@ static void _server_task(void *arg)
     }
 
     ESP_LOGI(TAG, "listening on port %d", WENDY_SERVER_PORT);
-    if (trusted) {
-        ESP_LOGI(TAG, "full mTLS enabled: only authenticated clients will be accepted");
-    } else {
-        ESP_LOGI(TAG, "mTLS disabled: any client will be accepted");
-    }
+    if (trusted)
+        ESP_LOGI(TAG, "mTLS required: same-tenant operators or devices with SensorLink-only access");
+    else
+        ESP_LOGI(TAG, "device is unprovisioned: anonymous TLS clients are allowed");
 
     // The full identity, so a browser can tell which board answers without
     // opening a connection first: the ID pins it down, the names label it.
@@ -246,6 +262,10 @@ static void _server_task(void *arg)
         struct wendy_conf_enrollment_data enrollment_data = {0};
         if (wendy_conf_copy_enrollment(&enrollment, &enrollment_data) == ESP_OK) {
             mdns_service_txt_item_set("_wendy-lite", "_tcp", "tenant", enrollment.tenant_id);
+            char principal[160];
+            snprintf(principal, sizeof principal, "spiffe://wendy.sh/tenant/%s/device/%s",
+                     enrollment.tenant_id, enrollment.device_id);
+            mdns_service_txt_item_set("_wendy-lite", "_tcp", "principal", principal);
         }
         free(enrollment_data.storage);
         memset(&enrollment, 0, sizeof enrollment);
@@ -275,7 +295,7 @@ static void _server_task(void *arg)
 #if CONFIG_WENDY_PKI
             struct _add_link_op *op = calloc(1, sizeof *op);
             if (!op) { close(client_fd); continue; }
-            if (wendy_pki_accept(client_fd, &op->pki) != ESP_OK) {
+            if (wendy_pki_accept_lan(client_fd, &op->pki) != ESP_OK) {
                 ESP_LOGW(TAG, "PKI LAN authentication failed");
                 free(op);
                 continue;
@@ -287,6 +307,23 @@ static void _server_task(void *arg)
 #endif
             continue;
         }
+        // Anonymous TLS is only for unprovisioned devices. Invalid provisioned
+        // identities fail closed, rather than falling back to the default key.
+        bool provisioned = wendy_conf_is_provisioned();
+        struct wendy_conf_span key = provisioned ? wendy_conf_get_private_key()
+                                                : wendy_conf_get_default_private_key();
+        struct wendy_conf_span cert = provisioned ? wendy_conf_get_certificate()
+                                                 : wendy_conf_get_default_certificate();
+        struct wendy_conf_span chain = provisioned ? wendy_conf_get_chain_of_trust()
+                                                  : (struct wendy_conf_span){0};
+        struct wendy_operator_auth auth = {0};
+        if (wendy_pki_reset_in_progress() ||
+            (provisioned && wendy_operator_auth_init(&auth, cert.data, cert.size))) {
+            ESP_LOGW(TAG, "LAN authentication unavailable: provision a device identity over USB/UART");
+            close(client_fd);
+            continue;
+        }
+        auth.allow_device = true;
         esp_tls_t *tls = esp_tls_init();
         if (!tls) {
             ESP_LOGE(TAG, "esp_tls_init() failed");
@@ -294,25 +331,14 @@ static void _server_task(void *arg)
             continue;
         }
 
-        esp_tls_cfg_server_t cfg;
-        if (trusted) {
-            cfg = (esp_tls_cfg_server_t){
-                .servercert_buf   = cert.data,
-                .servercert_bytes = cert.size,
-                .serverkey_buf    = key.data,
-                .serverkey_bytes  = key.size,
-                .cacert_buf       = chain.data,
-                .cacert_bytes     = chain.size,
-            };
-        } else {
-            cfg = (esp_tls_cfg_server_t){
-                .servercert_buf   = default_cert.data,
-                .servercert_bytes = default_cert.size,
-                .serverkey_buf    = default_key.data,
-                .serverkey_bytes  = default_key.size,
-                // no cacert_buf: peer identity checks disabled
-            };
-        }
+        esp_tls_cfg_server_t cfg = {
+            .servercert_buf   = cert.data,
+            .servercert_bytes = cert.size,
+            .serverkey_buf    = key.data,
+            .serverkey_bytes  = key.size,
+            .cacert_buf       = chain.data,
+            .cacert_bytes     = chain.size,
+        };
 
 #if WENDY_SERVER_DUMP_CERT == 1
         {
@@ -335,9 +361,9 @@ static void _server_task(void *arg)
             continue;
         }
 
-        // Register the verify callback before the handshake so it fires for every
-        // certificate in the peer's chain (leaf at depth 0, intermediates at depth 1+).
-        mbedtls_ssl_set_verify(esp_tls_get_ssl_context(tls), _tls_verify_cb, NULL);
+        if (provisioned)
+            mbedtls_ssl_set_verify(esp_tls_get_ssl_context(tls),
+                                   wendy_operator_auth_verify, &auth);
 
         int ret;
         while ((ret = esp_tls_server_session_continue_async(tls)) != 0) {
@@ -346,6 +372,22 @@ static void _server_task(void *arg)
         }
         if (ret != 0) {
             ESP_LOGE(TAG, "TLS handshake failed: 0x%x", -ret);
+            close(client_fd);
+            esp_tls_server_session_delete(tls);
+            continue;
+        }
+
+        // Provisioned devices authorize the authenticated leaf before creating
+        // any WendyCom link. A provisioning change invalidates this handshake.
+        mbedtls_ssl_context *ssl = esp_tls_get_ssl_context(tls);
+        enum wendy_peer_role role = provisioned
+            ? wendy_peer_auth_role(mbedtls_ssl_get_peer_cert(ssl), auth.tenant)
+            : WENDY_PEER_ROLE_NONE;
+        if ((provisioned && (mbedtls_ssl_get_verify_result(ssl) ||
+             role == WENDY_PEER_ROLE_NONE || role != auth.role)) ||
+            wendy_conf_has_enrollment() || provisioned != wendy_conf_is_provisioned() ||
+            wendy_pki_reset_in_progress()) {
+            ESP_LOGW(TAG, "LAN client rejected: a same-tenant operator or device certificate is required");
             close(client_fd);
             esp_tls_server_session_delete(tls);
             continue;
@@ -362,6 +404,11 @@ static void _server_task(void *arg)
         }
         op->base.func = _add_link_exec;
         op->tls = tls;
+        op->auth = auth;
+        op->provisioned = provisioned;
+        // The queued operation owns the context until the link takes over.
+        if (provisioned)
+            mbedtls_ssl_set_verify(ssl, wendy_operator_auth_verify, &op->auth);
         wcom_core_exec(&op->base);
     }
 }

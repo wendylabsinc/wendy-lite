@@ -567,8 +567,8 @@ esp_err_t wendy_pki_connect(wendy_pki_connection **connection)
     return result;
 }
 
-static esp_err_t accept_identity_operator(int fd, wendy_pki_connection **connection,
-    const struct wendy_lite_trust *trust)
+static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
+    const struct wendy_lite_trust *trust, bool allow_device)
 {
     pthread_once(&crypto_once, init_crypto);
     WendyConfEnrollment cfg = WendyConfEnrollment_init_zero;
@@ -592,7 +592,12 @@ static esp_err_t accept_identity_operator(int fd, wendy_pki_connection **connect
             data.device_roots.size, key, key_size, principal, time(NULL), &expires))
         goto done;
     int64_t deadline = esp_timer_get_time() + (trust ? 10000000 : 15000000);
-    int accepted = pki_tls_accept(fd, key, key_size, (char *)cert,
+    int accepted;
+    if (allow_device && !trust)
+        accepted = pki_tls_accept_lan(fd, key, key_size, (char *)cert,
+                                     data.device_roots, cfg.tenant_id, connection, deadline);
+    else
+        accepted = pki_tls_accept(fd, key, key_size, (char *)cert,
                                  data.device_roots, cfg.tenant_id, connection, deadline);
     fd = -1; /* pki_tls_accept owns the socket, including failures. */
     if (!accepted) {
@@ -615,12 +620,12 @@ done:
     return result;
 }
 
-static esp_err_t accept_operator(int fd, wendy_pki_connection **connection,
-                                  const struct wendy_lite_trust *trust)
+static esp_err_t accept_peer(int fd, wendy_pki_connection **connection,
+                              const struct wendy_lite_trust *trust, bool allow_device)
 {
     pthread_mutex_lock(&identity_lock);
     esp_err_t result = ESP_ERR_INVALID_STATE;
-    if (identity_use_allowed()) result = accept_identity_operator(fd, connection, trust);
+    if (identity_use_allowed()) result = accept_identity_peer(fd, connection, trust, allow_device);
     else close(fd);
     pthread_mutex_unlock(&identity_lock);
     return result;
@@ -628,11 +633,15 @@ static esp_err_t accept_operator(int fd, wendy_pki_connection **connection,
 
 esp_err_t wendy_pki_accept(int fd, wendy_pki_connection **connection)
 {
-    return accept_operator(fd, connection, NULL);
+    return accept_peer(fd, connection, NULL, false);
+}
+esp_err_t wendy_pki_accept_lan(int fd, wendy_pki_connection **connection)
+{
+    return accept_peer(fd, connection, NULL, true);
 }
 esp_err_t wendy_pki_accept_relay(int fd, const struct wendy_lite_trust *trust,
                                   wendy_pki_connection **connection)
 {
     if (!trust) { close(fd); return ESP_ERR_INVALID_ARG; }
-    return accept_operator(fd, connection, trust);
+    return accept_peer(fd, connection, trust, false);
 }
