@@ -100,6 +100,13 @@ CONFIG_WENDY_CORE_WATCHDOG=y
 CONFIG_BOOTLOADER_WDT_DISABLE_IN_USER_CODE=y
 CONFIG_BOOTLOADER_WDT_TIME_MS=40000
 
+# Start the enrollment task when Wi-Fi connects and enrollment is configured.
+CONFIG_WENDY_CLOUD=y
+
 # PKI uses mbedTLS for the outer client and inner operator TLS 1.3 server.
 CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y
 CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE=y
+
+# Sigstore RFC 3161 timestamps use P-384 TSA certificates and SHA-384 chains.
+CONFIG_MBEDTLS_ECP_DP_SECP384R1_ENABLED=y
+CONFIG_MBEDTLS_SHA512_C=y

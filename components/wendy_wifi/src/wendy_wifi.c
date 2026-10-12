@@ -2,6 +2,8 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <pthread.h>
+#include <stdatomic.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -38,8 +40,15 @@ static const char *TAG = "wendy_wifi";
 
 static EventGroupHandle_t s_wifi_events;
 static bool s_infra_initialized = false;
-static bool s_connected = false;
-static bool s_services_started = false;
+static atomic_bool s_connected;
+static TaskHandle_t s_services_task;
+static pthread_mutex_t s_services_lock = PTHREAD_MUTEX_INITIALIZER;
+static bool s_mdns_initialized, s_mdns_started, s_server_started;
+#if CONFIG_WENDY_CLOUD
+static bool s_cloud_started;
+#endif
+
+static void services_task(void *unused);
 
 #define WIFI_CONNECTED_BIT  BIT0
 #define WIFI_FAIL_BIT       BIT1
@@ -56,6 +65,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         s_connected = false;
+        xEventGroupClearBits(s_wifi_events, WIFI_CONNECTED_BIT);
+        xTaskNotifyGive(s_services_task);
         if (s_retry_count < WIFI_MAX_RETRIES) {
             esp_wifi_connect();
             s_retry_count++;
@@ -70,6 +81,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         s_retry_count = 0;
         s_connected = true;
         xEventGroupSetBits(s_wifi_events, WIFI_CONNECTED_BIT);
+        // DHCP may complete after the synchronous connection wait timed out.
+        // Keep service startup and its retries off the system event task.
+        xTaskNotifyGive(s_services_task);
     }
 }
 
@@ -80,6 +94,14 @@ static esp_err_t wifi_infra_init(void)
     if (s_infra_initialized) return ESP_OK;
 
     s_wifi_events = xEventGroupCreate();
+    if (!s_wifi_events) return ESP_ERR_NO_MEM;
+    if (!s_services_task &&
+        xTaskCreate(services_task, "wifi_services", 4096, NULL, 5,
+                    &s_services_task) != pdPASS) {
+        vEventGroupDelete(s_wifi_events);
+        s_wifi_events = NULL;
+        return ESP_ERR_NO_MEM;
+    }
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -211,10 +233,14 @@ static esp_err_t start_mdns_service(void)
     hostname[out] = '\0';
     ESP_LOGI(TAG, "mDNS hostname: '%s'", hostname);
 
-    esp_err_t err = mdns_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "mDNS init failed: %s", esp_err_to_name(err));
-        return err;
+    esp_err_t err;
+    if (!s_mdns_initialized) {
+        err = mdns_init();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "mDNS init failed: %s", esp_err_to_name(err));
+            return err;
+        }
+        s_mdns_initialized = true;
     }
 
     err = mdns_hostname_set(hostname);
@@ -226,31 +252,53 @@ static esp_err_t start_mdns_service(void)
     return ESP_OK;
 }
 
-/* ── Start mDNS + UDP listener (called after successful connect) ──── */
+/* ── Start network services after an IP address is available ─────── */
 
-static void start_services(void)
+static bool start_services(void)
 {
-    if (s_services_started) return;
-
-    esp_err_t err = start_mdns_service();
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "mDNS initialization failed");
+    pthread_mutex_lock(&s_services_lock);
+    if (!s_connected) {
+        pthread_mutex_unlock(&s_services_lock);
+        return true;
     }
+    if (!s_mdns_started)
+        s_mdns_started = start_mdns_service() == ESP_OK;
+    bool ready = s_mdns_started;
 
     // Initialize the mTLS server accessible via the local network
-    wendy_server_start();
+    if (!s_server_started) {
+        wendy_server_start();
+        s_server_started = true;
+    }
 
     // Initialize the mTLS server accessible via the cloud
 #if CONFIG_WENDY_CLOUD
-    {
+    if (!s_cloud_started && wendy_conf_has_enrollment()) {
         esp_err_t err = wendy_cloud_start();
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "cloud start failed: %s", esp_err_to_name(err));
+            ready = false;
+        } else {
+            s_cloud_started = true;
         }
     }
 #endif
 
-    s_services_started = true;
+    pthread_mutex_unlock(&s_services_lock);
+    return ready;
+}
+
+static void services_task(void *unused)
+{
+    (void)unused;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        while (s_connected) {
+            if (start_services()) break;
+            // Retry resource failures without needing another WiFi event.
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5000));
+        }
+    }
 }
 
 /* ── Public API ─────────────────────────────────────────────────────── */
@@ -268,7 +316,6 @@ esp_err_t wendy_wifi_init(void)
         ESP_LOGI(TAG, "found NVS credentials for SSID '%s'", ssid);
         err = wifi_connect(ssid, pass);
         if (err == ESP_OK) {
-            start_services();
             return ESP_OK;
         }
         ESP_LOGW(TAG, "NVS credentials failed");
@@ -289,7 +336,6 @@ esp_err_t wendy_wifi_init(void)
             ESP_LOGI(TAG, "using wendy-conf SSID '%s'", ssid);
             err = wifi_connect(ssid, pass);
             if (err == ESP_OK) {
-                start_services();
                 return ESP_OK;
             }
         }
@@ -301,7 +347,6 @@ esp_err_t wendy_wifi_init(void)
         ESP_LOGI(TAG, "using compile-time SSID '%s'", CONFIG_WENDY_WIFI_SSID);
         err = wifi_connect(CONFIG_WENDY_WIFI_SSID, CONFIG_WENDY_WIFI_PASSWORD);
         if (err == ESP_OK) {
-            start_services();
             return ESP_OK;
         }
         return ESP_FAIL;
@@ -332,9 +377,6 @@ esp_err_t wendy_wifi_try_connect(const char *ssid, const char *password)
     /* Persist on success */
     save_nvs_creds(ssid, password);
 
-    /* Start mDNS + UDP if not already running */
-    start_services();
-
     return ESP_OK;
 }
 
@@ -345,9 +387,12 @@ bool wendy_wifi_is_connected(void)
 
 void wendy_wifi_deinit(void)
 {
+    s_connected = false;
+    if (s_services_task) xTaskNotifyGive(s_services_task);
+    pthread_mutex_lock(&s_services_lock);
     mdns_free();
+    s_mdns_initialized = s_mdns_started = false;
+    pthread_mutex_unlock(&s_services_lock);
     esp_wifi_stop();
     esp_wifi_deinit();
-    s_connected = false;
-    s_services_started = false;
 }

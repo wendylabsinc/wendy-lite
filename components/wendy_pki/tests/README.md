@@ -9,6 +9,13 @@ The verifier runs with simulated wall clocks in 1970 and 2100 to catch accidenta
 dependence on the boot clock, while still rejecting certificates outside their
 validity period at the authenticated verification time.
 
+`public_time_test` verifies a captured Sigstore timestamp with its pinned P-384
+root and SHA-384 certificate chain. Signed disposable fixtures cover P-384
+signers, optional ESSCertIDv2 issuerSerial, mismatched issuer/serial, extra issuer
+names, and unsupported curves. It also rejects wrong nonces, untrusted roots,
+rollback, and signature tampering under simulated wall clocks in 1970 and 2100.
+See `public-time-fixtures/README.md` for provenance and regeneration.
+
 `renewal_test` runs the production connection flow with in-memory NVS and HTTP
 stubs. It checks fallback after failed renewal, retries on the next connection,
 expiry during renewal, rejection of expired or invalid stored identities, failed
@@ -38,3 +45,8 @@ expired/untrusted/missing client certificates, TLS 1.2 refusal, truncated shutdo
 and unexpected application data during handoff. The valid case exchanges
 close_notify and then transfers raw bytes on the preserved TCP socket.
 Set `IDF_PATH` to ESP-IDF 5.5.4 and install Go before configuring host tests.
+
+The enrollment capability tests compile the production WendyCom capability
+helper with Cloud, Wi-Fi, and PKI individually disabled. They ensure unsupported
+profiles report an explicit false enrollment capability while retaining local
+identity recovery wherever PKI is available.

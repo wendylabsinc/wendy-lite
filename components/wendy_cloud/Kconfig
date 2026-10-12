@@ -1,11 +1,12 @@
 menu "Wendy Cloud"
     config WENDY_CLOUD
         bool "Enable cloud mTLS connection"
-        default n
+        default y
         depends on WENDY_PKI
         help
             Open a persistent mTLS socket to the cloud endpoint using
             a device identity enrolled directly with pki-core.
+            The task starts only when stored enrollment is present.
 
     config WENDY_CLOUD_TASK_STACK_SIZE
         int "Cloud task stack size (bytes)"

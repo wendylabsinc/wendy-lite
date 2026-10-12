@@ -19,14 +19,15 @@ extern "C" {
  * Credential resolution: NVS ("wendy_prov" namespace) first, then compile-time
  * CONFIG_WENDY_WIFI_SSID/PASSWORD, then returns WENDY_WIFI_ERR_NO_CREDS.
  *
- * On success, registers mDNS service and starts UDP listener. The names it
- * publishes come from wendy_conf, so wendy_conf_init() must have run first.
+ * After receiving an IP address, starts mDNS and device/cloud services in a
+ * worker, including when DHCP finishes after this call times out. The names
+ * come from wendy_conf, so wendy_conf_init() must have run first.
  */
 esp_err_t wendy_wifi_init(void);
 
 /**
  * Connect to WiFi with given credentials. Persists to NVS on success,
- * then registers mDNS and starts UDP listener.
+ * with service startup scheduled by the IP-address event.
  *
  * Can be called multiple times (disconnects previous network first).
  */

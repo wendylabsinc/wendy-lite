@@ -202,7 +202,8 @@ static int verify_signature(der spki, der sig_alg, der attrs, der sig)
     memcpy(message, attrs.raw, attrs.raw_n); message[0] = 0x31;
     if (mbedtls_pk_parse_public_key(&key, spki.raw, spki.raw_n) ||
         !mbedtls_pk_can_do(&key, MBEDTLS_PK_ECDSA) ||
-        mbedtls_pk_ec(key)->MBEDTLS_PRIVATE(grp).id != MBEDTLS_ECP_DP_SECP256R1 ||
+        (mbedtls_pk_ec(key)->MBEDTLS_PRIVATE(grp).id != MBEDTLS_ECP_DP_SECP256R1 &&
+         mbedtls_pk_ec(key)->MBEDTLS_PRIVATE(grp).id != MBEDTLS_ECP_DP_SECP384R1) ||
         mbedtls_sha256(message, attrs.raw_n, hash, 0) ||
         mbedtls_pk_verify(&key, MBEDTLS_MD_SHA256, hash, sizeof hash, sig.p, sig.n)) goto done;
     result = 0;
@@ -357,7 +358,19 @@ int wendy_pki_verify_time(const uint8_t *input, size_t size, const uint8_t nonce
             REQUIRE(!take(&ids, 0x30, &entry) && !ids.n);
             if (entry.n && entry.p[0] == 0x30)
                 REQUIRE(!sha256_algorithm(&entry));
-            REQUIRE(!take(&entry, 4, &cert_hash) && !entry.n);
+            REQUIRE(!take(&entry, 4, &cert_hash));
+            if (entry.n)
+            {
+                /* RFC 5035 optionally identifies the same certificate by issuer
+                 * and serial. Accept one directoryName and check both fields. */
+                der issuer_serial, names, directory, name, ess_serial;
+                REQUIRE(!take(&entry, 0x30, &issuer_serial) && !entry.n &&
+                        !take(&issuer_serial, 0x30, &names) &&
+                        !take(&names, 0xa4, &directory) && !names.n &&
+                        !take(&directory, 0x30, &name) && !directory.n &&
+                        equal(name, issuer) && !integer(&issuer_serial, &ess_serial) &&
+                        !issuer_serial.n && equal(ess_serial, serial));
+            }
             REQUIRE(!mbedtls_sha256(rawcerts[signer_index].p, rawcerts[signer_index].n, cert_hash_bytes, 0) &&
                     bytes(cert_hash, cert_hash_bytes, 32));
         }

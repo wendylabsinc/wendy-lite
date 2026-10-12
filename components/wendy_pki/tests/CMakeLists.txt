@@ -24,6 +24,10 @@ target_link_libraries(renewal_test PRIVATE Threads::Threads)
 enable_testing()
 add_test(NAME pki_verification COMMAND verify_test "${CMAKE_CURRENT_LIST_DIR}/fixtures")
 add_test(NAME pki_verification_future_clock COMMAND verify_test "${CMAKE_CURRENT_LIST_DIR}/fixtures" 4102444800)
+add_executable(public_time_test public_time_test.c)
+target_link_libraries(public_time_test PRIVATE pki)
+add_test(NAME pki_public_timestamp COMMAND public_time_test "${CMAKE_CURRENT_LIST_DIR}/public-time-fixtures")
+add_test(NAME pki_public_timestamp_future_clock COMMAND public_time_test "${CMAKE_CURRENT_LIST_DIR}/public-time-fixtures" 4102444800)
 add_test(NAME pki_renewal_fallback COMMAND renewal_test "${CMAKE_CURRENT_LIST_DIR}/fixtures/device-key.der")
 set_tests_properties(pki_renewal_fallback PROPERTIES TIMEOUT 20)
 add_test(NAME pki_configuration_persistence COMMAND conf_test)
@@ -43,3 +47,21 @@ target_link_libraries(tls_test PRIVATE pki)
 find_program(GO_EXECUTABLE go REQUIRED)
 add_test(NAME pki_tls_interoperability COMMAND "${GO_EXECUTABLE}" run "${CMAKE_CURRENT_LIST_DIR}/tls_test_driver.go" "$<TARGET_FILE:tls_test>")
 set_tests_properties(pki_tls_interoperability PROPERTIES TIMEOUT 90)
+
+# Compile the production capability helper under supported and disabled profiles.
+add_library(capability_proto STATIC ../../wendy_com/src/wendy_com_msg.pb.c
+    ../../wendy_com/src/sensorlink.pb.c
+    ../../nanopb/pb_common.c ../../nanopb/pb_decode.c ../../nanopb/pb_encode.c)
+target_include_directories(capability_proto PUBLIC ../../wendy_com/include ../../nanopb)
+function(add_capabilities_test name pki cloud wifi reset_supported cloud_supported)
+    add_executable(${name} capabilities_test.c)
+    target_link_libraries(${name} PRIVATE capability_proto)
+    target_compile_definitions(${name} PRIVATE CONFIG_WENDY_PKI=${pki}
+        CONFIG_WENDY_CLOUD=${cloud} CONFIG_WENDY_WIFI_ENABLED=${wifi}
+        EXPECT_RESET=${reset_supported} EXPECT_CLOUD=${cloud_supported})
+    add_test(NAME ${name} COMMAND ${name})
+endfunction()
+add_capabilities_test(enrollment_capabilities_enabled 1 1 1 1 1)
+add_capabilities_test(enrollment_capabilities_cloud_disabled 1 0 1 1 0)
+add_capabilities_test(enrollment_capabilities_wifi_disabled 1 1 0 1 0)
+add_capabilities_test(enrollment_capabilities_pki_disabled 0 1 1 0 0)

@@ -182,3 +182,28 @@ this recovery journal only protects the enrollment-reset operation. Corrupt
 recovery data or failed NVS writes return an error and retain remaining identity
 material. Older firmware does not advertise reset support and requires an update
 before the CLI can complete local recovery.
+
+## Firmware enrollment capability
+
+Standard builds enable `CONFIG_WENDY_CLOUD` so a Wi-Fi connection can start the
+PKI enrollment task when enrollment configuration is present. Firmware without
+stored enrollment does not start the task. Custom profiles can still disable
+Cloud support explicitly.
+
+Network services start when Wi-Fi obtains an IP address, including when DHCP
+finishes after the initial connection wait times out. The service worker retries
+mDNS and cloud-task startup failures while connected, without starting duplicate
+services after repeated IP events.
+
+The optional `cloud_enrollment_supported` field in the USB challenge is true
+only when PKI, Cloud, and Wi-Fi are compiled in. Updated CLIs reject an explicit
+false value before reserving an asset or minting a credential. Older firmware
+omits the field and remains compatible. Firmware with Cloud or Wi-Fi disabled
+still advertises local enrollment reset when PKI is enabled.
+
+The default CLI timestamp service is Sigstore. Its RFC 3161 responses use a
+P-384 signer and SHA-384 certificate chains, and may include the optional
+ESSCertIDv2 issuer/serial binding. Firmware verifies those fields against the
+actual signer certificate and retains its curve restrictions, nonce, imprint,
+trust-root, signature, validity, and rollback checks. The public timestamp host
+tests exercise captured Sigstore data and signed negative fixtures.
