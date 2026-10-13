@@ -79,8 +79,33 @@ int main(int argc, char **argv) {
     assert(wendy_pki_read(&old, &byte, 1) == -1);
     assert(wendy_pki_write(&old, "x", 1) == -1);
     resetting = false;
-    assert(argc == 5 || argc == 6 || argc == 8); size_t kn, cn, rn;
+    assert(argc == 5 || argc == 6 || argc == 7 || argc == 8); size_t kn, cn, rn;
     unsigned char *key = load(argv[1], &kn), *cert = load(argv[2], &cn), *root = load(argv[3], &rn);
+    if (argc == 7) {
+        assert(!strncmp(argv[4], "http-", 5));
+        bool renew = !strcmp(argv[4], "http-renew");
+        uint8_t *body = NULL;
+        size_t body_size = 0;
+        char *authority = NULL;
+        int result = pki_http_post_enrollment(argv[5], "application/json", renew ? NULL : "test-token",
+            "{}", 2, renew ? key : NULL, renew ? kn : 0, renew ? (char *)cert : NULL,
+            (struct wendy_conf_span){root, rn}, &body, &body_size, &authority);
+        if (!strcmp(argv[4], "http-reject")) {
+            assert(result && !body && !authority);
+        } else {
+            assert(!result && body_size == 2 && !memcmp(body, "{}", 2));
+            if (!strcmp(argv[6], "-")) assert(!authority);
+            else {
+                size_t expected_size;
+                unsigned char *expected = load(argv[6], &expected_size);
+                assert(authority && strlen(authority) == expected_size &&
+                       !memcmp(authority, expected, expected_size));
+                free(expected);
+            }
+        }
+        free(authority); free(body); free(key); free(cert); free(root);
+        return 0;
+    }
     if (argc == 6) {
         assert(!strcmp(argv[4], "connect"));
         outbound((unsigned)strtoul(argv[5], NULL, 10), key, kn, cert, root, rn);
@@ -95,9 +120,11 @@ int main(int argc, char **argv) {
     int fd = accept(listener, NULL, NULL); close(listener); assert(fd >= 0);
     wendy_pki_connection *c = NULL;
     const char *mode = argv[4];
+    bool lite = !strncmp(mode, "lite-", 5);
+    if (lite) mode += 5;
     bool lan = !strncmp(mode, "lan-", 4);
     if (lan) mode += 4;
-    int rc = (lan ? pki_tls_accept_lan : pki_tls_accept)(fd, key, kn, (char *)cert, (struct wendy_conf_span){root, rn},
+    int rc = (lite ? pki_tls_accept_lite : lan ? pki_tls_accept_lan : pki_tls_accept)(fd, key, kn, (char *)cert, (struct wendy_conf_span){root, rn},
         "2558fd76-afc7-466e-9613-6b715296a526", &c, esp_timer_get_time() + 3000000);
     free(key); free(cert); free(root);
     if (!strcmp(mode, "reject")) { if (c) wendy_pki_close(c); return rc ? 0 : 1; }

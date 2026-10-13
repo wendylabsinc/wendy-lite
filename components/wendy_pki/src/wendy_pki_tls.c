@@ -201,26 +201,7 @@ ssize_t wendy_pki_write(void *v, const void *b, size_t n)
         (c->relay_expires_us && esp_timer_get_time() >= c->relay_expires_us)) return -1;
     return result(c, mbedtls_ssl_write(&c->ssl, b, n));
 }
-struct response
-{
-    uint8_t *bytes;
-    size_t size;
-    bool complete;
-};
-static int on_body(http_parser *p, const char *b, size_t n)
-{
-    struct response *r = p->data;
-    if (n > PKI_MAX_RESPONSE - r->size)
-        return -1;
-    memcpy(r->bytes + r->size, b, n);
-    r->size += n;
-    return 0;
-}
-static int on_complete(http_parser *p)
-{
-    ((struct response *)p->data)->complete = true;
-    return 0;
-}
+#include "wendy_pki_http_response.h"
 static int write_all(wendy_pki_connection *c, const void *b, size_t n, int64_t deadline)
 {
     const uint8_t *p = b;
@@ -237,10 +218,12 @@ static int write_all(wendy_pki_connection *c, const void *b, size_t n, int64_t d
     }
     return 0;
 }
-int pki_http_post(const char *url, const char *type, const char *token, const void *body,
+int pki_http_post_enrollment(const char *url, const char *type, const char *token, const void *body,
                   size_t body_size, const uint8_t *key, size_t key_size, const char *cert,
-                  struct wendy_conf_span roots, uint8_t **response, size_t *response_size)
+                  struct wendy_conf_span roots, uint8_t **response, size_t *response_size,
+                  char **lite_authority_header)
 {
+    if (lite_authority_header) *lite_authority_header = NULL;
     struct http_parser_url u;
     http_parser_url_init(&u);
     if (!url || strlen(url) > 279 || http_parser_parse_url(url, strlen(url), 0, &u))
@@ -273,7 +256,8 @@ int pki_http_post(const char *url, const char *type, const char *token, const vo
                      "%zu\r\nConnection: close\r\n%s%s%s\r\n",
                      path, authority, type, body_size, token ? "Authorization: Bearer " : "",
                      token ? token : "", token ? "\r\n" : "");
-    struct response r = {.bytes = calloc(1, PKI_MAX_RESPONSE + 1)};
+    struct response r = {.bytes = calloc(1, PKI_MAX_RESPONSE + 1),
+                         .capture_lite_authority = lite_authority_header != NULL};
     if (!r.bytes || n < 0 || n >= sizeof headers)
         goto done;
     int64_t deadline = esp_timer_get_time() + 15000000;
@@ -282,7 +266,9 @@ int pki_http_post(const char *url, const char *type, const char *token, const vo
     http_parser parser;
     http_parser_init(&parser, HTTP_RESPONSE);
     parser.data = &r;
-    http_parser_settings settings = {.on_body = on_body, .on_message_complete = on_complete};
+    http_parser_settings settings = {.on_body = on_body, .on_message_complete = on_complete,
+        .on_header_field = on_header_field, .on_header_value = on_header_value,
+        .on_headers_complete = on_headers_complete};
     size_t total = 0;
     char buffer[2048];
     while (!r.complete)
@@ -310,11 +296,25 @@ int pki_http_post(const char *url, const char *type, const char *token, const vo
     *response = r.bytes;
     *response_size = r.size;
     r.bytes = NULL;
+    if (lite_authority_header) {
+        *lite_authority_header = r.lite_authority;
+        r.lite_authority = NULL;
+    }
     answer = 0;
 done:
+    free(r.lite_authority);
     free(r.bytes);
     wendy_pki_close(c);
     return answer;
+}
+
+
+int pki_http_post(const char *url, const char *type, const char *token, const void *body,
+                  size_t body_size, const uint8_t *key, size_t key_size, const char *cert,
+                  struct wendy_conf_span roots, uint8_t **response, size_t *response_size)
+{
+    return pki_http_post_enrollment(url, type, token, body, body_size, key, key_size,
+        cert, roots, response, response_size, NULL);
 }
 
 
@@ -322,7 +322,7 @@ done:
  * accept a same-tenant device, with its role fixed for the TLS 1.3 session. */
 static int accept_peer(int fd, const uint8_t *key, size_t key_size, const char *cert,
                        struct wendy_conf_span roots, const char *tenant,
-                       wendy_pki_connection **out, int64_t deadline, bool allow_device)
+                       wendy_pki_connection **out, int64_t deadline, bool allow_device, bool lite)
 {
     wendy_pki_connection *c = calloc(1, sizeof *c);
     if (!c) { close(fd); return -1; }
@@ -336,6 +336,7 @@ static int accept_peer(int fd, const uint8_t *key, size_t key_size, const char *
     if (!peer || mbedtls_ssl_get_verify_result(&c->ssl)) goto fail;
     enum wendy_peer_role role = wendy_pki_verify_peer(peer->raw.p, peer->raw.len, tenant);
     if (role == WENDY_PEER_ROLE_NONE || (!allow_device && role != WENDY_PEER_ROLE_OPERATOR) ||
+        (lite && wendy_pki_verify_lite_operator(peer->raw.p, peer->raw.len, tenant)) ||
         wendy_lite_peer_hash(peer->raw.p, peer->raw.len, c->operator_hash) ||
         wendy_lite_peer_spki_hash(peer->raw.p, peer->raw.len, c->operator_spki_hash) ||
         wendy_lite_peer_expiry(peer->raw.p, peer->raw.len, &c->operator_expires)) goto fail;
@@ -351,14 +352,21 @@ int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, const char *cert
                    struct wendy_conf_span roots, const char *tenant,
                    wendy_pki_connection **out, int64_t deadline)
 {
-    return accept_peer(fd, key, key_size, cert, roots, tenant, out, deadline, false);
+    return accept_peer(fd, key, key_size, cert, roots, tenant, out, deadline, false, false);
 }
 
 int pki_tls_accept_lan(int fd, const uint8_t *key, size_t key_size, const char *cert,
                        struct wendy_conf_span roots, const char *tenant,
                        wendy_pki_connection **out, int64_t deadline)
 {
-    return accept_peer(fd, key, key_size, cert, roots, tenant, out, deadline, true);
+    return accept_peer(fd, key, key_size, cert, roots, tenant, out, deadline, true, false);
+}
+
+int pki_tls_accept_lite(int fd, const uint8_t *key, size_t key_size, const char *cert,
+                       struct wendy_conf_span roots, const char *tenant,
+                       wendy_pki_connection **out, int64_t deadline)
+{
+    return accept_peer(fd, key, key_size, cert, roots, tenant, out, deadline, false, true);
 }
 
 enum wendy_peer_role wendy_pki_get_peer_role(const wendy_pki_connection *connection)

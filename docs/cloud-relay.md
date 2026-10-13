@@ -1,8 +1,9 @@
 # Authenticated Cloud relay
 
-WDY-3512 uses the versioned contract in
-[service-protos PR #110](https://github.com/wendylabsinc/service-protos/pull/110).
-Cloud PR #753 and CLI PR #2223 must roll out with this firmware.
+WDY-3512 follows the
+[Lite relay contract](https://github.com/wendylabsinc/service-protos/blob/main/docs/lite-relay-v1.md).
+Cloud PR #753, CLI PR #2223 and PKI's Lite authority delivery support must roll out
+with this firmware.
 
 The device opens a hostname-verified outer TLS 1.3 connection using its enrolled
 identity and provisioned HTTPS trust roots. All outer records start with
@@ -14,8 +15,21 @@ authenticated outer connection; neither CLI nor inner TLS can provision them.
 On upgrade, the TLS backend exchanges close notifications and releases the outer TLS
 session while preserving the descriptor. The same TCP socket then accepts a new
 TLS server session from the CLI. The CLI must authenticate the intended device.
-The device requires a valid chain, explicit client-auth EKU and exactly one
-same-tenant operator SPIFFE URI. Device and service identities are refused.
+The device requires a P-256 Lite operator leaf signed by its separately pinned
+Lite Operator Authority, with exactly one same-tenant operator SPIFFE URI.
+Its critical keyUsage must be `digitalSignature` only, and its EKU must be exactly
+`clientAuth` plus `id-kp-wendyLiteOperator` (`1.3.6.1.4.1.65441.1.9`). Device,
+service and unmarked operator certificates are refused. The CLI sends only that
+Lite leaf; its primary operator chain does not establish relay operator trust.
+
+The pin comes only from `X-Wendy-Lite-Operator-Authority` on an authenticated PKI
+enrollment or renewal response: standard base64 DER for a self-signed P-256 CA
+with `pathLen=0`. Initial enrollment requires it. A valid renewal header replaces
+the pin after device identity verification; omission keeps the existing pin, and
+malformed data cannot replace it. Existing identities without a pin renew on the
+next control connection and refuse relay access until one is installed. This pin
+is separate from device, HTTPS and TSA roots and cannot be set through the CLI,
+BLE or configuration. See [enrollment](cloud-enrollment.md).
 
 Before WendyCom, the CLI must send the WLG2 compact grant as its first inner TLS
 application record. Firmware checks the P-256 signature, trusted key ID,
@@ -48,8 +62,9 @@ share a 10-second deadline; outer control reads have a 30-second deadline.
 Build with ESP-IDF 5.5.4 and enable `CONFIG_WENDY_CLOUD=y` as described in
 [enrollment](cloud-enrollment.md). All images include PKI support. The relay uses
 ESP-IDF mbedTLS by default. Set `CONFIG_WENDY_PKI_WOLFSSL=y` to use wolfSSL for
-ML-DSA CA and operator certificates. Both profiles require compatible complete
-certificate chains and retain P-256 session grant verification.
+ML-DSA device or infrastructure certificate chains. Both profiles require
+compatible device, HTTPS and TSA trust, and use the separate P-256 Lite authority
+for relay operators and P-256 keys for session grant verification.
 Old WR01/WR02 firmware and unsigned relay opens are incompatible.
 
 ## Verification
@@ -64,6 +79,8 @@ The shared Go-generated P-256 grant fixture also runs in Swift. Firmware tests
 cover the current Cloud record, rejected legacy records, every truncated length,
 maximum and oversized records, altered signatures, presentation deadlines,
 session expiry, key rotation, and matching operator URIs with different keys.
+They also cover authenticated authority delivery, enrollment and renewal pin
+lifecycle, and rejection of certificates outside the Lite operator profile.
 See [fixture provenance and regeneration](../components/wendy_pki/tests/lite-fixtures/README.md).
 A physical-board trial must still verify the complete cloud relay, including
 outer shutdown/inner handshake, key rotation, resource use and crypto latency.

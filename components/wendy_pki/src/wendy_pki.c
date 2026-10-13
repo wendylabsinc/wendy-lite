@@ -171,7 +171,8 @@ esp_err_t wendy_pki_reset(const char *expected_device_id, const char *nonce_hex)
     /* Never erase keys while the old bootstrap token can still be used. */
     result = wendy_conf_clear_enrollment();
     if (result != ESP_OK) goto done;
-    const char *keys[] = {"key", "certificate", "pending", "tenant", "device", "nonce"};
+    const char *keys[] = {"key", "certificate", "pending", "lite_ca", "pending_ca",
+                          "tenant", "device", "nonce"};
     for (size_t i = 0; i < sizeof keys / sizeof keys[0]; i++) {
         result = nvs_erase_key(h, keys[i]);
         if (result == ESP_ERR_NVS_NOT_FOUND) result = ESP_OK;
@@ -332,13 +333,36 @@ static int issue(nvs_handle_t h, const WendyConfEnrollment *cfg,
     int result = -1;
     cJSON *body = NULL, *reply = NULL;
     char url[280];
-    uint8_t *pending = NULL;
-    size_t pending_size = 0;
+    uint8_t *pending = NULL, *pending_authority = NULL;
+    size_t pending_size = 0, pending_authority_size = 0;
+    char *authority_header = NULL, *authority_pem = NULL;
     const char *certificate = NULL;
-    if (!old && !load_blob(h, "pending", &pending, &pending_size))
+    esp_err_t pending_status = nvs_get_blob(h, "pending", NULL, &pending_size);
+    if (pending_status != ESP_ERR_NVS_NOT_FOUND)
     {
+        /* Replay an authenticated response before trying to spend its token or
+         * renewal predecessor again. A NUL blob marks a header omitted on renewal. */
+        if (pending_status != ESP_OK || load_blob(h, "pending", &pending, &pending_size) ||
+            load_blob(h, "pending_ca", &pending_authority, &pending_authority_size))
+        {
+            ESP_LOGE(TAG, "incomplete pending issuance; operator recovery required");
+            goto done;
+        }
+        bool omitted_on_renewal = old && pending_authority_size == 1 && !pending_authority[0];
+        if (!omitted_on_renewal &&
+            (strlen((char *)pending_authority) != pending_authority_size ||
+             wendy_pki_lite_authority_from_header((char *)pending_authority, &authority_pem)))
+        {
+            ESP_LOGE(TAG, "pending issuance has no valid Lite operator authority");
+            goto done;
+        }
         certificate = (char *)pending;
         goto verify;
+    }
+    if (nvs_get_blob(h, "pending_ca", NULL, &pending_authority_size) != ESP_ERR_NVS_NOT_FOUND)
+    {
+        ESP_LOGE(TAG, "incomplete pending issuance; operator recovery required");
+        goto done;
     }
     if (!csr || (!old && !cfg->token[0]))
         goto done;
@@ -351,9 +375,10 @@ static int issue(nvs_handle_t h, const WendyConfEnrollment *cfg,
     if (!json)
         goto done;
     snprintf(url, sizeof url, "%s/%s", cfg->csr_url, old ? "renew" : "enroll");
-    if (pki_http_post(url, "application/json", old ? NULL : cfg->token, json, strlen(json),
-                      old ? key : NULL, old ? key_size : 0, old, data->https_roots,
-                      &response, &response_size))
+    if (pki_http_post_enrollment(url, "application/json", old ? NULL : cfg->token,
+                                 json, strlen(json), old ? key : NULL, old ? key_size : 0,
+                                 old, data->https_roots, &response, &response_size,
+                                 &authority_header))
         goto done;
     reply = cJSON_ParseWithLength((char *)response, response_size);
     if (!reply)
@@ -369,17 +394,60 @@ static int issue(nvs_handle_t h, const WendyConfEnrollment *cfg,
     }
     certificate = cert->valuestring;
     /* Keep the public response separate from the usable identity. A consumed
-     * one-use token cannot fetch it again after a verification/storage failure. */
-    if (!old && (nvs_set_blob(h, "pending", certificate, strlen(certificate)) != ESP_OK ||
-                 nvs_commit(h) != ESP_OK))
-        ESP_LOGW(TAG, "could not retain pending issuance response");
+     * token or renewal predecessor cannot fetch it again after a failure.
+     * Retain invalid or missing authority responses too, so retries fail closed
+     * without attempting to spend that token a second time. */
+    {
+        static const uint8_t omitted_authority = 0;
+        /* Attempt and commit both writes even if one fails. Either retained
+         * piece prevents a retry from spending the credential again. */
+        esp_err_t pending_saved = nvs_set_blob(h, "pending", certificate, strlen(certificate));
+        esp_err_t authority_saved = authority_header ?
+            nvs_set_blob(h, "pending_ca", authority_header, strlen(authority_header)) :
+            old ? nvs_set_blob(h, "pending_ca", &omitted_authority, sizeof omitted_authority) :
+                  nvs_erase_key(h, "pending_ca");
+        esp_err_t committed = nvs_commit(h);
+        if (pending_saved != ESP_OK || committed != ESP_OK ||
+            (authority_saved != ESP_OK &&
+             (authority_header || old || authority_saved != ESP_ERR_NVS_NOT_FOUND)))
+        {
+            ESP_LOGE(TAG, "could not retain pending issuance response");
+            goto done;
+        }
+    }
+    if (authority_header)
+    {
+        if (wendy_pki_lite_authority_from_header(authority_header, &authority_pem))
+        {
+            ESP_LOGE(TAG, "issuance returned an invalid Lite operator authority");
+            goto done;
+        }
+    }
+    else if (!old)
+    {
+        ESP_LOGE(TAG, "initial enrollment has no Lite operator authority");
+        goto done;
+    }
 verify:
+    /* The pre-request timestamp can lag issuance after network and signature
+     * verification work. Obtain authenticated time generated after the response
+     * instead of relaxing notBefore for a freshly minted identity. */
+    if (refresh_time(h, cfg->time_url, data))
+    {
+        ESP_LOGE(TAG, "verified post-issuance time unavailable; response retained");
+        goto done;
+    }
     size_t n = pending ? pending_size : strlen(certificate);
     if (wendy_pki_verify_identity((uint8_t *)certificate, n, data->device_roots.data,
                                   data->device_roots.size, key, key_size, principal, time(NULL),
                                   expires))
         goto done;
-    esp_err_t saved = nvs_set_blob(h, "certificate", certificate, n);
+    /* Only an authenticated response with a valid identity may replace the
+     * operator pin. Renewal without the header preserves the existing pin. */
+    esp_err_t saved = authority_pem ?
+        nvs_set_blob(h, "lite_ca", authority_pem, strlen(authority_pem)) : ESP_OK;
+    if (saved == ESP_OK)
+        saved = nvs_set_blob(h, "certificate", certificate, n);
     if (saved == ESP_OK)
         saved = nvs_commit(h);
     if (saved != ESP_OK)
@@ -388,12 +456,16 @@ verify:
         goto done;
     }
     nvs_erase_key(h, "pending");
+    nvs_erase_key(h, "pending_ca");
     nvs_commit(h);
     *issued = strdup(certificate);
     if (!*issued)
         goto done;
     result = 0;
 done:
+    free(authority_pem);
+    free(authority_header);
+    free(pending_authority);
     free(pending);
     free(csr);
     free(json);
@@ -424,8 +496,8 @@ static int valid_config(const WendyConfEnrollment *c)
     return n > s && !strcmp(c->csr_url + n - s, suffix) && !strncmp(c->csr_url, "https://", 8) &&
            !strncmp(c->time_url, "https://", 8);
 }
-/* A USB-authorized configuration is the only runtime source of trust.
- * Never substitute a chain returned by an enrollment or timestamp endpoint. */
+/* Device, timestamp and HTTPS roots come only from USB-authorized configuration
+ * or the build. The separate Lite operator pin never replaces these roots. */
 static int select_trust(const WendyConfEnrollment *cfg, struct wendy_conf_enrollment_data *data)
 {
     if (!cfg->provision_trust)
@@ -507,17 +579,30 @@ static esp_err_t connect_identity(wendy_pki_connection **connection)
     if (cert_status != ESP_ERR_NVS_NOT_FOUND &&
         (cert_status != ESP_OK || load_blob(h, "certificate", &stored, &stored_size)))
         goto done;
+    size_t pending_size = 0;
+    esp_err_t pending_status = nvs_get_blob(h, "pending", NULL, &pending_size);
+    if (pending_status != ESP_OK && pending_status != ESP_ERR_NVS_NOT_FOUND)
+        goto done;
+    bool have_pending = pending_status == ESP_OK;
     if (stored)
     {
         if (wendy_pki_verify_identity(stored, stored_size, data.device_roots.data,
                                       data.device_roots.size, key, key_size, principal, time(NULL),
-                                      &expires))
+                                      &expires) && !have_pending)
         {
             ESP_LOGE(TAG, "stored identity invalid or expired; operator recovery required");
             goto done;
         }
     }
-    if (!stored || expires - time(NULL) < 86400)
+    size_t authority_size = 0;
+    esp_err_t authority_status = nvs_get_blob(h, "lite_ca", NULL, &authority_size);
+    if (authority_status != ESP_OK && authority_status != ESP_ERR_NVS_NOT_FOUND)
+        goto done;
+    /* Existing installations predate the separately pinned Lite authority.
+     * Renew their still-valid identity to obtain it through authenticated PKI. */
+    bool have_authority = authority_status == ESP_OK && authority_size > 0 &&
+                          authority_size <= PKI_MAX_RESPONSE;
+    if (have_pending || !stored || !have_authority || expires - time(NULL) < 86400)
     {
         if (issue(h, &cfg, &data, key, key_size, (char *)stored, principal, &fresh, &expires))
         {
@@ -575,8 +660,8 @@ static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
     struct wendy_conf_enrollment_data data = {0};
     nvs_handle_t h = 0;
     bool opened = false;
-    uint8_t *key = NULL, *cert = NULL;
-    size_t key_size = 0, cert_size = 0;
+    uint8_t *key = NULL, *cert = NULL, *lite_ca = NULL;
+    size_t key_size = 0, cert_size = 0, lite_ca_size = 0;
     time_t expires;
     esp_err_t result = ESP_FAIL;
     if (!crypto_ok || wendy_conf_copy_enrollment(&cfg, &data) != ESP_OK ||
@@ -593,7 +678,18 @@ static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
         goto done;
     int64_t deadline = esp_timer_get_time() + (trust ? 10000000 : 15000000);
     int accepted;
-    if (allow_device && !trust)
+    if (trust)
+    {
+        if (load_blob(h, "lite_ca", &lite_ca, &lite_ca_size))
+        {
+            ESP_LOGE(TAG, "Lite operator authority unavailable; authenticated renewal required");
+            goto done;
+        }
+        accepted = pki_tls_accept_lite(fd, key, key_size, (char *)cert,
+                                      (struct wendy_conf_span){lite_ca, lite_ca_size},
+                                      cfg.tenant_id, connection, deadline);
+    }
+    else if (allow_device)
         accepted = pki_tls_accept_lan(fd, key, key_size, (char *)cert,
                                      data.device_roots, cfg.tenant_id, connection, deadline);
     else
@@ -613,6 +709,7 @@ static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
 done:
     if (fd >= 0) close(fd);
     if (key) { erase(key, key_size); free(key); }
+    free(lite_ca);
     free(cert);
     free(data.storage);
     erase(cfg.token, sizeof cfg.token);
