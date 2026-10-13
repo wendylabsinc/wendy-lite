@@ -297,8 +297,14 @@ static int verify_signature(der spki, der sig_alg, der attrs, der sig)
 }
 static int valid_at(WOLFSSL_X509 *cert, time_t now)
 {
-    return cert && wolfSSL_X509_cmp_time(wolfSSL_X509_get_notBefore(cert), &now) == -1 &&
-           wolfSSL_X509_cmp_time(wolfSSL_X509_get_notAfter(cert), &now) == 1;
+    if (!cert)
+        return 0;
+    int before = wolfSSL_X509_cmp_time(wolfSSL_X509_get_notBefore(cert), &now);
+    int after = wolfSSL_X509_cmp_time(wolfSSL_X509_get_notAfter(cert), &now);
+    if (before != -1 || after != 1)
+        printf("PKI certificate time rejected: now=%lld before_cmp=%d after_cmp=%d\n",
+               (long long)now, before, after);
+    return before == -1 && after == 1;
 }
 /* The pinned wolfSSL X509_STORE implementation inserts intermediates as
  * temporary CAs without enforcing their key usage or path length. Enforce
@@ -307,10 +313,17 @@ static int verify_path_constraints(WOLFSSL_STACK *path)
 {
     int count = wolfSSL_sk_X509_num(path);
     if (count < 2 || count > 9)
+    {
+        printf("PKI path rejected: certificate count=%d\n", count);
         return -1;
+    }
     for (int i = 0; i < count; i++)
         if (wendy_pki_certificate_policy(wolfSSL_sk_X509_value(path, i), i == count - 1))
+        {
+            printf("PKI path rejected: algorithm policy at depth=%d anchor=%d\n",
+                   i, i == count - 1);
             return -1;
+        }
     int subordinate_cas = 0;
     for (int i = 1; i < count; i++)
     {
@@ -320,6 +333,7 @@ static int verify_path_constraints(WOLFSSL_STACK *path)
         DecodedCert *decoded = malloc(sizeof *decoded);
         if (!raw || size <= 0 || !decoded)
         {
+            printf("PKI path rejected: DER/allocation at depth=%d der_size=%d\n", i, size);
             free(decoded);
             return -1;
         }
@@ -329,6 +343,12 @@ static int verify_path_constraints(WOLFSSL_STACK *path)
                         (decoded->extKeyUsageSet && !(decoded->extKeyUsage & KEYUSE_KEY_CERT_SIGN)) ||
                         (decoded->pathLengthSet && subordinate_cas > decoded->pathLength)))
             result = -1;
+        if (result)
+            printf("PKI path rejected: CA constraints at depth=%d result=%d ca=%d "
+                   "key_usage_set=%d key_usage=%u path_length_set=%d path_length=%u below=%d\n",
+                   i, result, decoded->isCA, decoded->extKeyUsageSet,
+                   (unsigned)decoded->extKeyUsage, decoded->pathLengthSet,
+                   (unsigned)decoded->pathLength, subordinate_cas);
         wc_FreeDecodedCert(decoded);
         free(decoded);
         if (result)
@@ -344,42 +364,70 @@ static int verify_path_constraints(WOLFSSL_STACK *path)
 static int verify_chain(WOLFSSL_X509 *leaf, WOLFSSL_STACK *untrusted, const uint8_t *roots,
                         size_t size, time_t now)
 {
-    if (wendy_pki_verify_roots(roots, size) || !valid_at(leaf, now))
+    if (wendy_pki_verify_roots(roots, size))
+    {
+        printf("PKI chain rejected: invalid root bundle bytes=%zu\n", size);
         return -1;
+    }
+    if (!valid_at(leaf, now))
+    {
+        printf("PKI chain rejected: leaf validity\n");
+        return -1;
+    }
     for (int i = 0; i < wolfSSL_sk_X509_num(untrusted); i++)
         if (!valid_at(wolfSSL_sk_X509_value(untrusted, i), now))
+        {
+            printf("PKI chain rejected: intermediate validity index=%d\n", i);
             return -1;
+        }
     int result = -1, count = 0;
     WOLFSSL_X509_STORE *store = wolfSSL_X509_STORE_new();
     WOLFSSL_X509_STORE_CTX *ctx = wolfSSL_X509_STORE_CTX_new();
     WOLFSSL_BIO *bio = wolfSSL_BIO_new_mem_buf(roots, (int)size);
     if (!store || !ctx || !bio)
+    {
+        printf("PKI chain rejected: store/context/BIO allocation\n");
         goto done;
+    }
     /* Root AND temporary intermediate insertion use the wall clock before the
      * context time takes effect. Check every certificate at the supplied time;
      * disable only this isolated store's redundant wall-clock checks. */
     WOLFSSL_X509_VERIFY_PARAM *param = wolfSSL_X509_STORE_get0_param(store);
     if (!param || wolfSSL_X509_VERIFY_PARAM_set_flags(param, WOLFSSL_NO_CHECK_TIME) != WOLFSSL_SUCCESS)
+    {
+        printf("PKI chain rejected: store time parameters\n");
         goto done;
+    }
     WOLFSSL_X509 *root;
     while ((root = wolfSSL_PEM_read_bio_X509(bio, NULL, NULL, NULL)))
     {
-        int ok = valid_at(root, now) &&
-                 wolfSSL_X509_STORE_add_cert(store, root) == WOLFSSL_SUCCESS;
+        int valid = valid_at(root, now);
+        int added = valid ? wolfSSL_X509_STORE_add_cert(store, root) : 0;
         wolfSSL_X509_free(root);
-        if (!ok)
+        if (!valid || added != WOLFSSL_SUCCESS)
+        {
+            printf("PKI chain rejected: root index=%d valid=%d store_result=%d\n",
+                   count, valid, added);
             goto done;
+        }
         count++;
     }
     if (!count ||
         wolfSSL_X509_STORE_CTX_init(ctx, store, leaf, untrusted) != WOLFSSL_SUCCESS)
+    {
+        printf("PKI chain rejected: context initialization roots=%d intermediates=%d\n",
+               count, wolfSSL_sk_X509_num(untrusted));
         goto done;
+    }
     /* Keep authenticated-time checking active in the verifier itself too.
      * Only store insertion must bypass the untrusted device clock. */
     WOLFSSL_X509_VERIFY_PARAM *context_param = wolfSSL_X509_STORE_CTX_get0_param(ctx);
     if (!context_param ||
         wolfSSL_X509_VERIFY_PARAM_clear_flags(context_param, WOLFSSL_NO_CHECK_TIME) != WOLFSSL_SUCCESS)
+    {
+        printf("PKI chain rejected: context time parameters\n");
         goto done;
+    }
     wolfSSL_X509_STORE_CTX_set_time(ctx, 0, now);
     if (wolfSSL_X509_verify_cert(ctx) == WOLFSSL_SUCCESS)
         result = verify_path_constraints(wolfSSL_X509_STORE_CTX_get_chain(ctx));

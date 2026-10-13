@@ -44,12 +44,21 @@ int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t 
 int pki_http_post(const char *url, const char *type, const char *token, const void *body,
                   size_t body_size, const uint8_t *key, size_t key_size, const char *cert,
                   struct wendy_conf_span roots, uint8_t **response, size_t *response_size);
+/* Only enrollment/renewal may consume this authenticated response header.
+ * The caller owns both the response body and optional allocated header. */
+int pki_http_post_enrollment(const char *url, const char *type, const char *token, const void *body,
+                  size_t body_size, const uint8_t *key, size_t key_size, const char *cert,
+                  struct wendy_conf_span roots, uint8_t **response, size_t *response_size,
+                  char **lite_authority_header);
 
 int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, const char *cert,
                    struct wendy_conf_span roots, const char *tenant, wendy_pki_connection **out, int64_t deadline);
 int pki_tls_accept_lan(int fd, const uint8_t *key, size_t key_size, const char *cert,
                       struct wendy_conf_span roots, const char *tenant,
                       wendy_pki_connection **out, int64_t deadline);
+int pki_tls_accept_lite(int fd, const uint8_t *key, size_t key_size, const char *cert,
+                       struct wendy_conf_span roots, const char *tenant,
+                       wendy_pki_connection **out, int64_t deadline);
 
 int pki_relay_grant(wendy_pki_connection *, const struct wendy_lite_trust *, int64_t deadline);
 

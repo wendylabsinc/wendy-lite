@@ -14,12 +14,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/binary"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"math/big"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -64,12 +66,22 @@ func main() {
 	must(os.WriteFile(filepath.Join(directory, "root.pem"), rootPEM, 0600))
 	pool := x509.NewCertPool()
 	pool.AppendCertsFromPEM(rootPEM)
+	liteRootKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	must(err)
+	liteRoot := *root
+	liteRoot.Subject = pkix.Name{CommonName: "separate Lite operator authority"}
+	liteRootDER, err := x509.CreateCertificate(rand.Reader, &liteRoot, &liteRoot, liteRootKey.Public(), liteRootKey)
+	must(err)
+	must(os.WriteFile(filepath.Join(directory, "lite-root.pem"), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: liteRootDER}), 0600))
 	leaf := func(name string, expiry time.Time, usages []x509.ExtKeyUsage, uri string, issuer crypto.Signer, parent *x509.Certificate, signature x509.SignatureAlgorithm) (tls.Certificate, []byte, []byte) {
 		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		must(err)
 		u, err := url.Parse(uri)
 		must(err)
 		template := &x509.Certificate{SignatureAlgorithm: signature, SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: name}, NotBefore: time.Now().Add(-time.Hour), NotAfter: expiry, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: usages, DNSNames: []string{"localhost"}, URIs: []*url.URL{u}}
+		if strings.HasPrefix(name, "lite-") && name != "lite-unmarked" {
+			template.UnknownExtKeyUsage = []asn1.ObjectIdentifier{{1, 3, 6, 1, 4, 1, 65441, 1, 9}}
+		}
 		switch name {
 		case "lan-device-ca":
 			template.IsCA, template.BasicConstraintsValid = true, true
@@ -99,7 +111,8 @@ func main() {
 	cases := []string{"valid", "wrong-tenant", "wrong-role", "wrong-eku", "expired", "untrusted", "no-client", "tls12", "truncate", "extra", "intermediate", "intermediate-key-usage", "intermediate-not-ca", "intermediate-path-length", "intermediate-expired", "intermediate-sha1", "relay-valid", "relay-operator-expiry", "relay-device-expiry", "relay-wrong-key", "relay-old", "relay-truncated", "relay-expired", "relay-long-presentation", "relay-device-client",
 		"lan-operator", "lan-device", "lan-device-wrong-tenant", "lan-device-wrong-eku", "lan-device-missing-eku",
 		"lan-device-ca", "lan-device-duplicate-uri", "lan-device-extra-uri", "lan-device-missing-uri",
-		"lan-device-expired", "lan-device-future", "lan-device-untrusted", "lan-device-tampered", "lan-no-client"}
+		"lan-device-expired", "lan-device-future", "lan-device-untrusted", "lan-device-tampered", "lan-no-client",
+		"lite-valid", "lite-wrong-role", "lite-wrong-tenant", "lite-unmarked", "lite-extra-eku", "lite-untrusted", "lite-primary-operator", "lite-lan-device"}
 	for _, name := range cases {
 		expiry := time.Now().Add(time.Hour)
 		usages := []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
@@ -109,6 +122,9 @@ func main() {
 			uri = tenant + "device/consumer-agent"
 		}
 		parent := root
+		if strings.HasPrefix(name, "lite-") && name != "lite-primary-operator" {
+			issuer, parent = liteRootKey, &liteRoot
+		}
 		var chain [][]byte
 		if strings.HasPrefix(name, "intermediate") {
 			levels := 1
@@ -140,15 +156,17 @@ func main() {
 			expiry = time.Now().Add(90 * time.Second)
 		case "expired", "lan-device-expired":
 			expiry = time.Now().Add(-time.Minute)
-		case "wrong-tenant", "lan-device-wrong-tenant":
+		case "wrong-tenant", "lan-device-wrong-tenant", "lite-wrong-tenant":
 			uri = strings.Replace(uri, "2558fd76", "3558fd76", 1)
-		case "wrong-role":
+		case "wrong-role", "lite-wrong-role", "lite-lan-device":
 			uri = tenant + "device/lite-test"
 		case "wrong-eku", "lan-device-wrong-eku":
 			usages = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
 		case "lan-device-missing-eku":
 			usages = nil
-		case "untrusted", "lan-device-untrusted":
+		case "lite-extra-eku":
+			usages = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}
+		case "untrusted", "lan-device-untrusted", "lite-untrusted":
 			issuer, err = newIssuer()
 			must(err)
 		}
@@ -174,10 +192,19 @@ func main() {
 		if name == "lan-operator" {
 			mode = "valid"
 		}
+		if name == "lite-valid" {
+			mode = "valid"
+		}
 		args := []string{filepath.Join(directory, "key.der"), filepath.Join(directory, "server.pem"), filepath.Join(directory, "root.pem"), mode}
 		var grant []byte
 		if strings.HasPrefix(name, "lan-") {
 			args[3] = "lan-" + mode
+		}
+		if strings.HasPrefix(name, "lite-") {
+			args[2], args[3] = filepath.Join(directory, "lite-root.pem"), "lite-"+mode
+			if name == "lite-lan-device" {
+				args[2], args[3] = filepath.Join(directory, "root.pem"), "lan-reject"
+			}
 		}
 		relay := strings.HasPrefix(name, "relay-") && name != "relay-device-client"
 		if relay {
@@ -393,4 +420,107 @@ func main() {
 	must(err)
 	must(cmd.Wait())
 	fmt.Printf("PASS %s outbound-short-writes chain_bytes=%d certificates=%d cipher=%s\n", profile, chainBytes, len(chain), tls.CipherSuiteName(state.CipherSuite))
+	if profile == "p256" {
+		exerciseEnrollmentHTTP(directory, broker, pool)
+	}
+}
+
+func exerciseEnrollmentHTTP(directory string, broker tls.Certificate, deviceRoots *x509.CertPool) {
+	const headerName = "X-Wendy-Lite-Operator-Authority"
+	const authority = "dGVzdC1saXRlLWF1dGhvcml0eQ=="
+	for _, tc := range []struct {
+		name, header, expected             string
+		renew, reject, truncate, untrusted bool
+		status                             int
+	}{
+		{name: "fragmented mixed-case header", header: "x-WeNdY-LiTe-OpErAtOr-AuThOrItY: " + authority + "\r\n", expected: authority},
+		{name: "renewal header", header: headerName + ": " + authority + "\r\n", expected: authority, renew: true},
+		{name: "missing header"},
+		{name: "maximum header", header: headerName + ": " + strings.Repeat("A", 4096) + "\r\n", expected: strings.Repeat("A", 4096)},
+		{name: "oversized header", header: headerName + ": " + strings.Repeat("A", 4097) + "\r\n", reject: true},
+		{name: "duplicate header", header: headerName + ": " + authority + "\r\n" + strings.ToLower(headerName) + ": " + authority + "\r\n", reject: true},
+		{name: "empty header", header: headerName + ":\r\n", reject: true},
+		{name: "failed issuance", header: headerName + ": " + authority + "\r\n", status: 403, reject: true},
+		{name: "truncated issuance", header: headerName + ": " + authority + "\r\n", truncate: true, reject: true},
+		{name: "untrusted HTTPS", header: headerName + ": " + authority + "\r\n", untrusted: true, reject: true},
+	} {
+		listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		must(err)
+		must(listener.SetDeadline(time.Now().Add(5 * time.Second)))
+		mode, expectedPath := "http-valid", "-"
+		if tc.renew {
+			mode = "http-renew"
+		}
+		if tc.reject {
+			mode = "http-reject"
+		}
+		if tc.expected != "" {
+			expectedPath = filepath.Join(directory, "expected-header")
+			must(os.WriteFile(expectedPath, []byte(tc.expected), 0600))
+		}
+		rootPath := filepath.Join(directory, "outbound-root.pem")
+		if tc.untrusted {
+			rootPath = filepath.Join(directory, "lite-root.pem")
+		}
+		endpoint := fmt.Sprintf("https://localhost:%d/v1/enroll", listener.Addr().(*net.TCPAddr).Port)
+		command := exec.Command(os.Args[1], filepath.Join(directory, "outbound-key.der"), filepath.Join(directory, "outbound-device.pem"), rootPath, mode, endpoint, expectedPath)
+		command.Stdout, command.Stderr = os.Stdout, os.Stderr
+		must(command.Start())
+		raw, err := listener.Accept()
+		must(err)
+		listener.Close()
+		must(raw.SetDeadline(time.Now().Add(5 * time.Second)))
+		config := &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{broker}}
+		if tc.renew {
+			config.ClientAuth, config.ClientCAs = tls.RequireAndVerifyClientCert, deviceRoots
+		}
+		server := tls.Server(raw, config)
+		err = server.Handshake()
+		if tc.untrusted {
+			if err == nil {
+				panic("untrusted HTTP issuer was accepted")
+			}
+		} else {
+			must(err)
+			request, err := http.ReadRequest(bufio.NewReader(server))
+			must(err)
+			body, err := io.ReadAll(request.Body)
+			must(err)
+			request.Body.Close()
+			if request.Method != "POST" || string(body) != "{}" {
+				panic("unexpected enrollment HTTP request")
+			}
+			if !tc.renew && request.Header.Get("Authorization") != "Bearer test-token" {
+				panic("missing enrollment token")
+			}
+			if tc.renew && request.Header.Get("Authorization") != "" {
+				panic("renewal sent an enrollment token")
+			}
+			statusCode := tc.status
+			if statusCode == 0 {
+				statusCode = 200
+			}
+			response := fmt.Sprintf("HTTP/1.1 %d result\r\n%sContent-Length: 2\r\nConnection: close\r\n\r\n{}", statusCode, tc.header)
+			if tc.truncate {
+				response = strings.TrimSuffix(response, "}")
+			}
+			// Separate TLS records split both field names and values across parser calls.
+			for offset := 0; offset < len(response); {
+				end := min(offset+7, len(response))
+				if _, err := server.Write([]byte(response[offset:end])); err != nil {
+					if !tc.reject {
+						must(err)
+					}
+					break
+				}
+				offset = end
+			}
+		}
+		server.Close()
+		raw.Close()
+		if err := command.Wait(); err != nil {
+			panic(fmt.Sprintf("HTTP %s: %v", tc.name, err))
+		}
+		fmt.Println("PASS enrollment HTTP", tc.name)
+	}
 }

@@ -4,6 +4,14 @@
 #include <stdint.h>
 #include <time.h>
 #include "wendy_peer_role.h"
+#define WENDY_LITE_AUTHORITY_HEADER_MAX 4096
+/* Decode the authenticated enrollment header into one self-signed P-256 CA.
+ * This establishes only the Lite operator pin, never device/TSA/HTTPS trust.
+ * The caller owns the allocated, NUL-terminated PEM on success. */
+int wendy_pki_lite_authority_from_header(const char *header, char **pem);
+/* After TLS verification against the isolated Lite operator CA, enforce the
+ * exact Lite operator profile and the locally enrolled tenant. */
+int wendy_pki_verify_lite_operator(const uint8_t *der, size_t size, const char *tenant);
 /* Strict, bounded PEM CA bundle validation, independent of the boot clock. */
 int wendy_pki_verify_roots(const uint8_t *pem, size_t size);
 /* Verify a nonce-bound RFC 3161 response. Nothing changes the system clock here.

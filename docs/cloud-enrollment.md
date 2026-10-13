@@ -102,15 +102,23 @@ roots. Missing, partial, or malformed provisioned trust fails closed, with no
 fallback to a different trust source. Network peers cannot write this configuration.
 Wi-Fi-only configuration updates preserve it; replacing or erasing the entire
 configuration removes it. Existing enrolled boards require operator recovery to
-change enrollment through the CLI. This does not add remote trust rotation.
+change enrollment through the CLI. Those root bundles do not rotate remotely.
+The separate Lite operator anchor described below can rotate through authenticated
+renewal; device, TSA and HTTPS roots retain their provisioning policy.
 
 The command obtains a device-generated nonce and a matching RFC 3161 timestamp
 before minting the credential. The board verifies its signature, TSA chain,
 critical timestamp EKU, nonce, message imprint and persisted rollback floor.
 It receives configuration through USB, reboots, refreshes verified time, and
 obtains its certificate. The CLI waits up to two minutes for installation.
-The firmware retains an unverified issuance response separately from its usable
-identity so verification can retry without spending the one-use token again.
+Tier C enrollment must also return `X-Wendy-Lite-Operator-Authority`, containing
+standard base64 DER for the tenant's self-signed P-256 CA with `pathLen=0`.
+Firmware validates and pins it separately in the identity partition as the sole
+Cloud relay operator anchor. Only authenticated PKI enrollment and renewal
+responses can install it; USB configuration, BLE, the CLI and device CA bundles cannot.
+The firmware retains the pending certificate and authority header separately from
+its usable identity so verification can retry without spending the one-use token
+again. Missing or malformed initial authority data cannot activate an identity.
 
 An installed certificate is distinct from broker presence. The broker establishes
 presence after mTLS authentication, asset lookup, revocation checks, and the
@@ -122,10 +130,20 @@ recovery. A fresh token is not silently substituted for an expired certificate.
 
 Lite opens an outbound TLS 1.3 connection authenticated with its issued identity.
 It refreshes signed time and reconnects every four minutes. A currently valid
-certificate with less than one day remaining is renewed over mTLS. The device
-continues using its stored certificate if renewal fails and that certificate
+certificate with less than one day remaining is renewed over mTLS. An existing
+identity without a Lite operator anchor also renews on the next connection,
+regardless of its remaining lifetime. A valid authority header in that response
+replaces the pin after the issued device identity verifies; an omitted header
+preserves the current pin, and a malformed header cannot overwrite it. The device
+retains renewal responses before verification so it can recover without spending
+the predecessor again. Before accepting a new certificate, it refreshes signed
+time again because the certificate's validity starts at issuance.
+It continues using its stored certificate if renewal fails and that certificate
 still passes validation after the request. It retries renewal on the next
 connection. An expired or invalid certificate cannot be used as a fallback.
+If renewal omits the header and no pin exists yet, the control connection can
+continue, but relay sessions remain unavailable and the next connection retries
+renewal.
 The device persists the signed-time floor and rejects rollback, invalid
 certificates, and unverified timestamps. A delayed fresh-time exchange over
 30 seconds fails.
@@ -160,12 +178,18 @@ mTLS is required.
 LAN discovery advertises the tenant and device principal to select an appropriate
 identity and locate paired sensors.
 This is only a selection hint: TLS still verifies the certificate chain and the
-CLI checks the device principal. The CLI sends its operator certificate chain,
-including intermediates. With the default mbedTLS firmware and an ML-DSA administration identity,
-provision a P-256 certificate for the same operator and set `WENDY_LITE_OPERATOR_CERT`
-to its PEM leaf plus full compatible CA chain and `WENDY_LITE_OPERATOR_KEY` to its
-private key. The CLI uses this identity for Lite request signing and device TLS.
-Cloud administration and enrollment authorization keep their existing identity.
+CLI checks the device principal. LAN clients supply a certificate chain compatible
+with the device's configured roots and TLS backend, including intermediates.
+LAN and legacy BLE retain their existing certificate policies.
+
+For Cloud relay, the CLI obtains a separate marked P-256 Lite operator leaf through
+the selected operator login. Its issuer is the separately pinned Lite Operator
+Authority, outside the primary operator's CA tree. An explicit override uses
+`WENDY_LITE_OPERATOR_CERT` for that PEM leaf and `WENDY_LITE_OPERATOR_KEY` for its
+matching private key; both must represent the selected operator. The same Lite
+key signs `create_lite_tunnel` requests and authenticates inner TLS. The CLI sends
+only the Lite leaf and verifies the device with the selected session's device CA
+trust. Cloud administration and enrollment authorization retain the primary identity.
 
 CLI access through Cloud requires an authorized tunnel, an end-to-end
 CLI/device mTLS handshake and a verified Cloud session grant. See
@@ -213,7 +237,8 @@ writes, and commands as soon as reset begins, including when the response is los
 
 Reset first commits a pending marker and a recovery copy of the unrelated
 configuration. It removes enrollment and legacy provisioning configuration before
-erasing the key, certificate, pending issuance, and identity binding. Device name,
+erasing the key, certificate, active and pending Lite operator anchor, pending
+issuance, and identity binding. Device name,
 Wi-Fi, unknown configuration fields, and the app partitions are preserved. The
 signed time floor also remains. Interrupted configuration writes can resume from
 the retained recovery copy; the copy is cleared only after a verified write.
