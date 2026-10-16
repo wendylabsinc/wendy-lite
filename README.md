@@ -21,6 +21,11 @@ Existing `sdkconfig` files retain their choices. Configure a fresh build to pick
 up the new defaults, including disabled WASM callbacks and host API exports. The ESP32-C61 still has no supported WASM runtime. Disabling
 WASM does not change partition layouts or reclaim existing WASM data partitions.
 
+The firmware catalog publishes only native OTA variants: generic ESP32-C5,
+ESP32-C6, ESP32-C61 and ESP32-S3, plus Seeed XIAO ESP32S3 and M5Stack StampS3.
+Legacy WASM-layout images, including the ESP32-P4 images, are available only as
+manual builds.
+
 ## Optional Bluetooth support
 
 Bluetooth is enabled by default. To omit the BLE transport and its controller/host
@@ -56,13 +61,13 @@ Wendy Lite firmware builds for five ESP-IDF targets:
 
 Each target except `esp32p4` has a **generic board** configuration (`boards/<target>_generic*.cfg`) that runs on the reference board above unmodified, using 4 MB flash, no PSRAM, and the system allocator for the WAMR pool. `esp32p4` has no generic board at all — a board-specific overlay is mandatory (see [ESP32-P4 notes](#esp32-p4-notes)).
 
-Beyond the generic boards, Wendy Lite has overlays for the following boards (from `catalog.json`), each with its own flash size, PSRAM, and peripherals:
+Beyond the generic boards, Wendy Lite has overlays for the following boards, each with its own flash size, PSRAM, and peripherals:
 
 | Board | Target | Flash | PSRAM | Notes |
 |---|---|---|---|---|
 | Waveshare ESP32-P4-WIFI6-Touch-LCD-4B | `esp32p4` | 32 MB | 32 MB | Wi-Fi/BT via on-board ESP32-C6 (SDIO/ESP-Hosted); 4″ 720×720 MIPI-DSI touch panel; WAMR pool: 24 MiB from PSRAM |
 | DFRobot FireBeetle 2 ESP32-P4 (DFR1172) | `esp32p4` | 16 MB | 32 MB | Wi-Fi/BT via on-board ESP32-C6 (SDIO/ESP-Hosted); headless; WAMR pool: 24 MiB from PSRAM |
-| Seeed Studio XIAO ESP32S3 | `esp32s3` | 8 MB | 8 MB | Native Wi-Fi/BT; native app support (OTA partition layout); no WASM app support |
+| Seeed Studio XIAO ESP32S3 | `esp32s3` | 8 MB | 8 MB | Native Wi-Fi/BT; native app support (OTA partition layout); bundled SensorLink camera/microphone for the Sense expansion board; no WASM app support |
 | M5Stack StampS3 | `esp32s3` | 8 MB | – | Native Wi-Fi/BT; native app support (OTA partition layout); no WASM app support |
 
 The targets share the same source tree. Per-target overrides live in `sdkconfig.defaults.<target>`. Running `idf.py set-target <target>` on its own selects that target's reference board; to select a specific board instead, pass its overlay argfile from `boards/` before `set-target` (e.g. `idf.py @boards/<board_cfg>.cfg set-target <target>`. See [ESP32-P4 notes](#esp32-p4-notes) below for `esp32p4`, which has no bare-target option).
@@ -98,6 +103,35 @@ idf.py build
 idf.py flash
 idf.py monitor
 ```
+
+### Seeed XIAO ESP32S3 SensorLink
+
+The `seeed_xiao_esp32s3_native` board overlay and released
+`esp32s3_seeed_xiao_native` firmware bundle SensorLink support for the XIAO
+ESP32S3 Sense expansion board. Channel 0 streams 800×600 MJPEG video. Channel 1
+streams signed 16-bit little-endian PCM audio at 16 kHz, mono, in 20 ms chunks.
+One stream can be active at a time, so stop camera viewing before listening to
+the microphone.
+
+After enrolling the device, use a Wendy CLI with SensorLink camera/audio support:
+
+```sh
+wendy device camera view --device wendy-lite:<device-hostname>.local
+wendy device audio list --device wendy-lite:<device-hostname>.local
+wendy device audio listen --device wendy-lite:<device-hostname>.local --id 1
+```
+
+USB also works with `--device wendy-lite:/dev/cu.usbmodem101`, using your board's
+serial port. Streaming stops on unsubscribe or disconnect. Sensors that fail to
+initialize are omitted from the manifest, and device management still starts.
+The PDM microphone has no presence detection, so a board without the Sense
+expansion can still advertise its audio channel without producing useful audio.
+
+Camera initialization runs before networking to reserve contiguous DMA memory.
+JPEG buffers use PSRAM with direct PSRAM DMA disabled. The board overlay also
+reserves 96 KiB of internal RAM for stacks and DMA and limits Wi-Fi buffers to
+match the native SensorLink app. Other board overlays leave SensorLink disabled.
+Configure a fresh build to apply these defaults, as described above.
 
 ### ESP32-C61 notes
 

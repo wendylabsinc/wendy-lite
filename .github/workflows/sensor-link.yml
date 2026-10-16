@@ -1,0 +1,17 @@
+name: SensorLink
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Test sensor availability and stream lifecycle
+        run: |
+          cmake -S components/wendy_sensor_link/tests -B build-sensor-tests -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-sensor-tests
+          ctest --test-dir build-sensor-tests --output-on-failure
