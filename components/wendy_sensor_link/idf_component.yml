@@ -1,0 +1,5 @@
+dependencies:
+  espressif/esp32-camera:
+    version: "^2.0.0"
+    rules:
+      - if: "target == esp32s3 && $CONFIG{WENDY_SENSOR_LINK_XIAO_ESP32S3} == True"
