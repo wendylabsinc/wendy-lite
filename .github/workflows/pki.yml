@@ -53,8 +53,8 @@ jobs:
           set -euo pipefail
           . "$IDF_PATH/export.sh"
           echo 'CONFIG_WENDY_CLOUD=y' > cloud.defaults
-          if [ "${{ matrix.wolfssl }}" = enabled ]; then
-            echo 'CONFIG_WENDY_PKI_WOLFSSL=y' >> cloud.defaults
+          if [ "${{ matrix.wolfssl }}" = disabled ]; then
+            echo 'CONFIG_WENDY_PKI_WOLFSSL=n' >> cloud.defaults
           fi
           defaults='sdkconfig.defaults;cloud.defaults'
           if [ "${{ matrix.bluetooth }}" = disabled ]; then
@@ -68,7 +68,7 @@ jobs:
           else
             grep -q '^# CONFIG_WENDY_PKI_WOLFSSL is not set$' sdkconfig
             if grep -q 'libwendy_wolfssl.a' build/*.map; then
-              echo 'Default firmware unexpectedly links wolfSSL'
+              echo 'mbedTLS firmware unexpectedly links wolfSSL'
               exit 1
             fi
           fi

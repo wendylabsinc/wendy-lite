@@ -61,8 +61,8 @@ share a 10-second deadline; outer control reads have a 30-second deadline.
 
 Build with ESP-IDF 5.5.4 and enable `CONFIG_WENDY_CLOUD=y` as described in
 [enrollment](cloud-enrollment.md). All images include PKI support. The relay uses
-ESP-IDF mbedTLS by default. Set `CONFIG_WENDY_PKI_WOLFSSL=y` to use wolfSSL for
-ML-DSA device or infrastructure certificate chains. Both profiles require
+wolfSSL by default for ML-DSA device or infrastructure certificate chains.
+Set `CONFIG_WENDY_PKI_WOLFSSL=n` to use ESP-IDF mbedTLS. Both profiles require
 compatible device, HTTPS and TSA trust, and use the separate P-256 Lite authority
 for relay operators and P-256 keys for session grant verification.
 Old WR01/WR02 firmware and unsigned relay opens are incompatible.
@@ -70,7 +70,7 @@ Old WR01/WR02 firmware and unsigned relay opens are incompatible.
 ## Verification
 
 ```sh
-cmake -S components/wendy_pki/tests -B build-pki
+cmake -S components/wendy_pki/tests -B build-pki -DWENDY_PKI_WOLFSSL=ON
 cmake --build build-pki
 ctest --test-dir build-pki --output-on-failure
 ```
@@ -88,7 +88,7 @@ outer shutdown/inner handshake, key rotation, resource use and crypto latency.
 ## Default image size
 
 WASM and its host API exports are opt-in through `boards/wasm.defaults`.
-On ESP32-C6 with ESP-IDF 5.5.4 and Cloud enabled:
+Historical measurements on ESP32-C6 with ESP-IDF 5.5.4 and Cloud enabled:
 
 | Build | Firmware bytes |
 | --- | ---: |
@@ -98,12 +98,10 @@ On ESP32-C6 with ESP-IDF 5.5.4 and Cloud enabled:
 | mbedTLS only, WASM enabled | 1,586,688 |
 | mbedTLS only, WASM and Bluetooth disabled | 1,012,544 |
 
-Removing wolfSSL saves 252,064 bytes against the no-WASM baseline. Combined with
-making WASM opt-in, the default saves 452,784 bytes, about 24.6%, and leaves
-547,312 bytes in the unchanged 1,933,312-byte factory partition. Both current
-configurations build; the default map has no wolfSSL, ML-DSA or WASM runtime.
-These are controlled local builds before the optional wolfSSL profile was restored,
-not measurements of deployed hardware or the current opt-in profile.
+In these builds, removing wolfSSL saved 252,064 bytes against the no-WASM baseline.
+These are controlled local builds before the wolfSSL profile was restored,
+not measurements of deployed hardware or the current default firmware, which
+includes wolfSSL and ML-DSA support.
 Existing sdkconfig files retain their settings, so use a fresh configuration
 when adopting these defaults. Partition layouts are unchanged.
 
@@ -114,8 +112,8 @@ TLS 1.3 disabled and do not describe the intended Cloud firmware. Confirm
 configuration when adopting changed defaults.
 
 Append `boards/no-ble.defaults` last to omit Bluetooth while retaining USB,
-Wi-Fi and Cloud. On this same C6 configuration it saves another 373,456 bytes
-compared with the Bluetooth-enabled default and leaves 920,768 bytes in the
-factory partition. Linker archive and symbol inspection confirms the BLE stack
-is absent. Both Bluetooth modes build; hardware behavior still needs validation.
+Wi-Fi and Cloud. In the historical mbedTLS-only C6 builds above, disabling
+Bluetooth saved 373,456 bytes and left 920,768 bytes in the factory partition.
+Linker archive and symbol inspection confirmed the BLE stack was absent.
+Both Bluetooth modes built; hardware behavior still needs validation.
 See [Bluetooth configuration](../README.md#optional-bluetooth-support).

@@ -103,7 +103,10 @@ CONFIG_BOOTLOADER_WDT_TIME_MS=40000
 # Start the enrollment task when Wi-Fi connects and enrollment is configured.
 CONFIG_WENDY_CLOUD=y
 
-# PKI uses mbedTLS for the outer client and inner operator TLS 1.3 server.
+# PKI uses wolfSSL to verify ML-DSA certificate chains.
+CONFIG_WENDY_PKI_WOLFSSL=y
+
+# Keep TLS 1.3 available for mbedTLS users and the optional PKI fallback.
 CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y
 CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE=y
 
