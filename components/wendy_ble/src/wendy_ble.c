@@ -472,7 +472,7 @@ static void _session_task(void *arg)
             continue;
 
         ESP_LOGI(TAG, "session started");
-        if (wble_tls_session_start() == ESP_OK) {
+        if (wble_tls_session_start(_enrolled, _provisioned) == ESP_OK) {
             // Drop a stale signal from a previous session before handing the
             // stream over, or the wait below would return immediately.
             xSemaphoreTake(_link_closed, 0);
@@ -534,9 +534,11 @@ esp_err_t wendy_ble_start(void)
         return ESP_ERR_INVALID_STATE;
     }
     if (_started) {
-        return wendy_conf_has_enrollment() == _enrolled &&
-               wendy_conf_is_provisioned() == _provisioned
-                   ? ESP_OK : ESP_ERR_INVALID_STATE;
+        if (wendy_conf_has_enrollment() == _enrolled &&
+            wendy_conf_is_provisioned() == _provisioned)
+            return ESP_OK;
+        ESP_LOGW(TAG, "BLE identity changed since startup; reboot required");
+        return ESP_ERR_INVALID_STATE;
     }
     _enrolled = wendy_conf_has_enrollment();
 #if !CONFIG_WENDY_PKI
@@ -595,6 +597,7 @@ esp_err_t wendy_ble_start(void)
         goto fail;
     }
 
+    // One task for the lifetime of the transport, reused for every connection.
     if (xTaskCreatePinnedToCore(_session_task, "wendy_ble",
                                 _enrolled ? PKI_SESSION_TASK_STACK : SESSION_TASK_STACK, NULL,
                                 CONFIG_WENDY_BLE_TASK_PRIORITY, NULL,

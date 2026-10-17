@@ -152,7 +152,9 @@ WendyCom channels. Missing, invalid, or expired enrollment credentials fail clos
 neither LAN nor BLE falls back to legacy or anonymous TLS. PKI-enrolled boards
 advertise the BLE identity service with mTLS required and accept same-tenant
 operators over TLS 1.3 on L2CAP. BLE keeps advertising when Wi-Fi is unavailable;
-connections require a valid stored PKI identity. Legacy BLE uses provisioning
+connections require a valid stored PKI identity. BLE retains its startup
+authentication policy and rejects sessions after an enrollment or provisioning
+change until reboot. Legacy BLE uses provisioning
 credentials and a trusted operator certificate for the same organization.
 Unprovisioned devices accept anonymous TLS connections over LAN
 and Bluetooth by default. `CONFIG_WENDY_BLE_REQUIRE_MTLS=y` disables anonymous

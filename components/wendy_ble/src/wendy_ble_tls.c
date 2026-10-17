@@ -34,6 +34,8 @@
 //--- globals ---//
 
 static bool _active;
+// Session-owned snapshots of the transport's boot policy. Live configuration
+// changes revoke access; they must never select a weaker backend this boot.
 static bool _provisioned;
 static bool _enrolled;
 #if CONFIG_WENDY_PKI
@@ -153,16 +155,22 @@ static void _free_contexts(void)
 
 //--- public functions ---//
 
-esp_err_t wble_tls_session_start(void)
+esp_err_t wble_tls_session_start(bool enrolled, bool provisioned)
 {
     static const char *pers = "wendy_ble_tls";
     esp_err_t result = ESP_FAIL;
 
     _active = false;
-    _enrolled = wendy_conf_has_enrollment();
-    _provisioned = wendy_conf_is_provisioned();
+    _enrolled = enrolled;
+    _provisioned = provisioned;
     if (wendy_pki_reset_in_progress()) {
         ESP_LOGW(TAG, "identity reset in progress; BLE connection rejected");
+        return ESP_ERR_INVALID_STATE;
+    }
+    // A physical config upload invalidates the live cache until reboot. Use
+    // the policy captured before advertising, not those empty cache values.
+    if (!_session_allowed()) {
+        ESP_LOGW(TAG, "BLE identity changed since startup; reboot required");
         return ESP_ERR_INVALID_STATE;
     }
     if (_enrolled) {

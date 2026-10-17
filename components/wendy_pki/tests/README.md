@@ -29,6 +29,13 @@ explicit USB trust selection and rejects partial or unauthorized bundles.
 The BLE stream accept path uses the stored identity without issuance or network
 time requests. Tests reject missing, expired, invalid and reset identities before
 calling the TLS backend.
+`ble_tls_lifecycle_test` compiles the production BLE session owner with a stubbed
+PKI accept boundary. It injects reset and enrollment changes before, during and
+after acceptance, including configuration-cache invalidation between sessions.
+It checks that the boot authentication policy prevents anonymous fallback,
+changed identities block I/O, teardown closes the accepted connection once, and
+the next session starts without a stale connection. These lifecycle assertions
+remain enabled in Release builds.
 `conf_test` uses the real nanopb decoder and configuration writer with an in-memory
 flash partition to check persistence, snapshot ownership across writes, and size
 limits. The verifier rejects malformed bundles and leaf certificates as roots.

@@ -19,7 +19,9 @@
 /// anonymous clients only when CONFIG_WENDY_BLE_REQUIRE_MTLS is disabled.
 /// PKI enrollment uses the enrolled identity and requires a same-tenant
 /// operator over TLS 1.3. Refuses any identity reset in progress.
-esp_err_t wble_tls_session_start(void);
+/// enrolled/provisioned are the policy captured by the transport at startup;
+/// a live configuration change rejects the session until reboot.
+esp_err_t wble_tls_session_start(bool enrolled, bool provisioned);
 
 /// Release everything. Safe whether or not the handshake succeeded.
 void wble_tls_session_end(void);

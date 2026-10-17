@@ -69,6 +69,12 @@ jobs:
               pathlib.Path('review.md').write_text('_No diff to review._\n')
               raise SystemExit(0)
 
+          # Never report a partial diff as a complete review. Large reviews
+          # require an explicit manual review instead of silently losing code.
+          if len(diff) > 200000:
+              raise SystemExit('PR diff exceeds the automated review budget; '
+                               'manual security review is required. No code was reviewed.')
+
           meta = json.load(open('pr_meta.json'))
           pr_number = meta['number']
           pr_title = meta['title']
@@ -145,7 +151,7 @@ jobs:
                       '<untrusted_pr_content>\n'
                       f'PR #{pr_number}: {pr_title}\n\n'
                       f'{pr_body}\n\n'
-                      f'## Diff\n```diff\n{diff[:40000]}\n```\n'
+                      f'## Diff\n```diff\n{diff}\n```\n'
                       '</untrusted_pr_content>'
                   ),
               }],

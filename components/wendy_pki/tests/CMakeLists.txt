@@ -53,6 +53,17 @@ add_test(NAME pki_public_timestamp_future_clock COMMAND public_time_test "${CMAK
 add_test(NAME pki_renewal_fallback COMMAND renewal_test "${CMAKE_CURRENT_LIST_DIR}/fixtures/device-key.der")
 set_tests_properties(pki_renewal_fallback PROPERTIES TIMEOUT 20)
 add_test(NAME pki_configuration_persistence COMMAND conf_test)
+
+# Exercise the production BLE session owner while injecting identity changes
+# through its public PKI boundary. Real TLS verification is covered below.
+add_executable(ble_tls_lifecycle_test ble_tls_lifecycle_test.c
+    ../../wendy_ble/src/wendy_ble_tls.c)
+target_include_directories(ble_tls_lifecycle_test PRIVATE stubs
+    ../../wendy_ble/src ../../wendy_conf/include ../../nanopb)
+target_compile_definitions(ble_tls_lifecycle_test PRIVATE
+    CONFIG_WENDY_PKI=1 CONFIG_WENDY_BLE_REQUIRE_MTLS=0)
+target_link_libraries(ble_tls_lifecycle_test PRIVATE pki)
+add_test(NAME ble_tls_session_lifecycle COMMAND ble_tls_lifecycle_test)
 if(WENDY_PKI_WOLFSSL)
     add_executable(mldsa_test mldsa_test.c)
     target_link_libraries(mldsa_test PRIVATE pki)

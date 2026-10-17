@@ -29,12 +29,32 @@ typedef unsigned TickType_t;
 typedef void *SemaphoreHandle_t;
 #define portMAX_DELAY UINT32_MAX
 #define pdPASS 1
-static inline SemaphoreHandle_t xSemaphoreCreateBinary(void) { return (void *)1; }
+extern bool test_fail_semaphore, test_fail_task;
+extern unsigned test_semaphore_calls, test_semaphores_allocated, test_semaphores_deleted;
+extern unsigned test_task_calls, test_tasks_created, test_task_stack;
+static inline SemaphoreHandle_t xSemaphoreCreateBinary(void) {
+    ++test_semaphore_calls;
+    if (test_fail_semaphore) return NULL;
+    void *sem = malloc(1);
+    assert(sem);
+    ++test_semaphores_allocated;
+    return sem;
+}
 static inline int xSemaphoreGive(SemaphoreHandle_t sem) { return 1; }
 static inline int xSemaphoreTake(SemaphoreHandle_t sem, TickType_t timeout) { return 1; }
-static inline void vSemaphoreDelete(SemaphoreHandle_t sem) {}
+static inline void vSemaphoreDelete(SemaphoreHandle_t sem) {
+    assert(sem);
+    ++test_semaphores_deleted;
+    free(sem);
+}
 static inline int xTaskCreatePinnedToCore(void (*fn)(void *), const char *name,
-        unsigned stack, void *arg, int priority, void *handle, int core) { return pdPASS; }
+        unsigned stack, void *arg, int priority, void *handle, int core) {
+    ++test_task_calls;
+    test_task_stack = stack;
+    if (test_fail_task) return 0;
+    ++test_tasks_created;
+    return pdPASS;
+}
 
 struct wendy_conf_span { const void *data; size_t size; };
 struct wendy_operator_auth { int unused; };

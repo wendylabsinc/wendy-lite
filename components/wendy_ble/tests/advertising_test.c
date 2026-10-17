@@ -6,6 +6,9 @@
 
 bool test_enrolled, test_provisioned, test_reset, test_invalid_cert;
 unsigned test_auth_calls, test_adv_starts;
+bool test_fail_semaphore, test_fail_task;
+unsigned test_semaphore_calls, test_semaphores_allocated, test_semaphores_deleted;
+unsigned test_task_calls, test_tasks_created, test_task_stack;
 struct test_hs_cfg ble_hs_cfg;
 struct ble_hs_adv_fields test_adv, test_rsp;
 const struct ble_gatt_svc_def *test_services;
@@ -16,7 +19,7 @@ void wble_l2cap_end_session(void) {}
 int wble_l2cap_wakeup_fd(void) { return -1; }
 bool wble_l2cap_can_read(void) { return false; }
 bool wble_l2cap_can_write(void) { return false; }
-esp_err_t wble_tls_session_start(void) { return ESP_FAIL; }
+esp_err_t wble_tls_session_start(bool enrolled, bool provisioned) { return ESP_FAIL; }
 void wble_tls_session_end(void) {}
 ssize_t wble_tls_read(void *buf, size_t len) { return WBLE_ERR_WANT_READ; }
 ssize_t wble_tls_write(const void *buf, size_t len) { return WBLE_ERR_WANT_WRITE; }
@@ -29,10 +32,16 @@ static void reset_fixture(void)
     free(_display_name);
     _device_id = _device_name = _display_name = NULL;
     _host_initialized = _started = _enrolled = _provisioned = false;
+    if (_link_closed)
+        vSemaphoreDelete(_link_closed);
     _link_closed = NULL;
+    assert(test_semaphores_allocated == test_semaphores_deleted);
     _mfg_data_len = 0;
     test_enrolled = test_provisioned = test_reset = test_invalid_cert = false;
     test_auth_calls = test_adv_starts = 0;
+    test_fail_semaphore = test_fail_task = false;
+    test_semaphore_calls = test_semaphores_allocated = test_semaphores_deleted = 0;
+    test_task_calls = test_tasks_created = test_task_stack = 0;
     test_adv = (struct ble_hs_adv_fields){0};
     test_rsp = (struct ble_hs_adv_fields){0};
     test_services = NULL;
@@ -94,6 +103,11 @@ static void test_pki_enrollment(void)
 #if CONFIG_WENDY_PKI
         assert(wendy_ble_start() == ESP_OK);
         assert_advertisement(1);
+        assert(test_task_calls == 1 && test_tasks_created == 1);
+        assert(test_task_stack == 24576);
+        assert(wendy_ble_start() == ESP_OK);
+        assert(test_task_calls == 1 && test_tasks_created == 1);
+        assert(test_semaphore_calls == 1);
 #else
         assert(wendy_ble_start() == ESP_ERR_INVALID_STATE);
         assert(test_adv_starts == 0 && !_host_initialized);
@@ -109,8 +123,12 @@ static void test_legacy_and_unprovisioned(void)
     assert(wendy_ble_start() == ESP_OK);
     assert(test_auth_calls == 1);
     assert_advertisement(1);
+    assert(test_task_calls == 1 && test_tasks_created == 1);
+    assert(test_task_stack == 4096);
     assert(wendy_ble_start() == ESP_OK);
     assert(test_adv_starts == 1);
+    assert(test_task_calls == 1 && test_tasks_created == 1);
+    assert(test_semaphore_calls == 1);
 
     reset_fixture();
     test_provisioned = true;
@@ -180,12 +198,57 @@ static void test_identity_change_blocks_restart(void)
 #endif
 }
 
+static void test_allocation_failure_retry(void)
+{
+    for (int enrolled = 0; enrolled <= CONFIG_WENDY_PKI; ++enrolled) {
+        for (int fail_task = 0; fail_task <= 1; ++fail_task) {
+            reset_fixture();
+            test_enrolled = enrolled;
+            test_provisioned = !enrolled;
+            test_fail_semaphore = !fail_task;
+            test_fail_task = fail_task;
+            assert(wendy_ble_start() == ESP_ERR_NO_MEM);
+            assert(!_started && _host_initialized);
+            assert(!_device_id && !_device_name && !_display_name && !_link_closed);
+            assert(test_adv_starts == 0 && test_tasks_created == 0);
+            assert(test_semaphore_calls == 1);
+            assert(test_semaphores_allocated == (unsigned)fail_task);
+            assert(test_semaphores_deleted == test_semaphores_allocated);
+            assert(test_task_calls == (unsigned)fail_task);
+
+            // The NimBLE host survives the failed startup. A later sync must
+            // still leave advertising off until the session task exists.
+            assert(ble_hs_cfg.sync_cb);
+            ble_hs_cfg.sync_cb();
+            assert(test_adv_starts == 0);
+
+            test_fail_semaphore = test_fail_task = false;
+            assert(wendy_ble_start() == ESP_OK);
+            assert_advertisement(1);
+            assert(test_tasks_created == 1);
+            assert(test_task_calls == (unsigned)fail_task + 1);
+            assert(test_task_stack == (enrolled ? 24576u : 4096u));
+            assert(test_semaphore_calls == 2);
+            assert(test_semaphores_allocated == test_semaphores_deleted + 1);
+
+            assert(wendy_ble_start() == ESP_OK);
+            struct ble_gap_event disconnect = { .type = BLE_GAP_EVENT_DISCONNECT };
+            assert(_gap_event(&disconnect, NULL) == 0);
+            assert(test_adv_starts == 2);
+            assert(test_tasks_created == 1);
+            assert(test_task_calls == (unsigned)fail_task + 1);
+            assert(test_semaphore_calls == 2);
+        }
+    }
+}
+
 int main(void)
 {
     test_pki_enrollment();
     test_legacy_and_unprovisioned();
     test_reset_blocks_start_and_restart();
     test_identity_change_blocks_restart();
+    test_allocation_failure_retry();
     reset_fixture();
     puts("BLE advertisement and GATT tests passed");
     return 0;
