@@ -68,7 +68,6 @@ wendy cloud login --email YOU@YOUR_ORGANIZATION
 wendy cloud enroll-device \
   --device wendy-lite:/dev/cu.usbmodemXXXX \
   --name lite-desk \
-  --broker-port 5055 \
   --time-url https://YOUR_TSA_ENDPOINT/v1/time \
   --device-roots device-ca-bundle.pem \
   --tsa-roots tsa-ca-bundle.pem \
@@ -76,8 +75,10 @@ wendy cloud enroll-device \
 wendy cloud discover
 ```
 
-The broker hostname defaults to the devices hostname used by wendy-agent for the
-selected Cloud session. Override it with `--broker-host`. Set
+The Lite broker defaults to `tunnel.wendy.dev:5055` for production Cloud and
+`tunnel.dev.wendy.dev:5055` for development Cloud, based on the selected session.
+No broker flags are needed for hosted Cloud. Self-hosted deployments can override
+the listener with `--broker-host` and `--broker-port`. Set
 `--csr-url https://csr.example/v1/TENANT_UUID` for custom CSR routing and
 `--time-url https://codesign.example/v1/time` to use RFC 3161.
 
