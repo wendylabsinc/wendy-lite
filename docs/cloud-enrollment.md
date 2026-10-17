@@ -12,35 +12,27 @@ No device private key passes through the CLI or the configuration protobuf.
 
 ## Build the firmware
 
-Use ESP-IDF 5.5.4. Firmware uses its bundled mbedTLS by default.
+Use ESP-IDF 5.5.4. Base firmware uses wolfSSL for PKI trust and TLS by default.
 
 PKI and the cloud connection task are enabled by default. The task starts after
 Wi-Fi connects and enrollment is configured. Build without deployment-specific roots:
 
 ```sh
+git submodule update --init components/wendy_wolfssl/wolfssl
 echo 'CONFIG_WENDY_CLOUD=y' > cloud.defaults
 idf.py -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;cloud.defaults' set-target esp32c6
 idf.py build
 ```
 
-For a PKI deployment with ML-DSA CA or operator certificates, enable the optional
-wolfSSL backend. `CONFIG_WENDY_PKI_WOLFSSL` defaults to `n`; standard images keep
-mbedTLS and do not compile wolfSSL. Initialize the pinned wolfSSL submodule before
-building the optional profile:
-
-```sh
-git submodule update --init components/wendy_wolfssl/wolfssl
-echo 'CONFIG_WENDY_PKI_WOLFSSL=y' > wolfssl.defaults
-idf.py -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;wolfssl.defaults' set-target esp32c6
-idf.py build
-```
+The base defaults set `CONFIG_WENDY_PKI_WOLFSSL=y` to verify ML-DSA-44,
+ML-DSA-65 and ML-DSA-87 certificates while keeping P-256 device keys.
 
 For an existing native app, enable **Wendy PKI / wolfSSL** in `idf.py menuconfig`
 or set `CONFIG_WENDY_PKI_WOLFSSL=y` in its active `sdkconfig`. A change to
 `sdkconfig.defaults` alone does not override a value already in `sdkconfig`.
 Keep the setting in the app's defaults as well if future clean builds need it.
-The optional backend verifies ML-DSA-44, ML-DSA-65 and ML-DSA-87 certificates and
-keeps P-256 device keys. It increases firmware size and memory use.
+Set `CONFIG_WENDY_PKI_WOLFSSL=n` to use mbedTLS without compiling wolfSSL.
+This reduces firmware size and memory use but cannot verify ML-DSA certificates.
 
 Provision compatible device, TSA and HTTPS CA bundles through the authorized USB
 connection using `--device-roots`, `--tsa-roots` and `--https-roots`. Obtain them
@@ -199,7 +191,7 @@ separate tinycloud development transport and must not be used as that secure pat
 ## Verification
 
 ```sh
-cmake -S components/wendy_pki/tests -B build-pki
+cmake -S components/wendy_pki/tests -B build-pki -DWENDY_PKI_WOLFSSL=ON
 cmake --build build-pki
 ctest --test-dir build-pki --output-on-failure
 ```
@@ -207,15 +199,16 @@ ctest --test-dir build-pki --output-on-failure
 The committed fixtures were generated with pki-core's `ca.Engine.IssueTimestamp`
 and P-256 certificate builder. They contain public test credentials only.
 See [the test instructions](../components/wendy_pki/tests/README.md) to regenerate
-them. CI runs host verification, including a Go-to-mbedTLS TLS 1.3 interoperability
-test, and builds the PKI-enabled C6 image. Hardware enrollment, latency and memory
-behavior still require a connected board and compatible deployment trust bundles.
+them. CI runs host verification, including Go-to-mbedTLS and Go-to-wolfSSL TLS 1.3
+interoperability tests, and builds the PKI-enabled C6 image. Hardware enrollment,
+latency and memory behavior still require a connected board and compatible
+deployment trust bundles.
 
 ## Firmware size
 
-The default firmware uses ESP-IDF's mbedTLS for TLS, P-256 certificate validation,
-signed time and session grants. The optional wolfSSL profile adds ML-DSA certificate
-verification. WASM is opt-in through
+The default firmware uses wolfSSL for PKI TLS, certificate validation and signed
+time, including ML-DSA certificate verification. Device keys and session grants
+remain P-256. WASM is opt-in through
 `boards/wasm.defaults`. See [relay size measurements](cloud-relay.md#default-image-size).
 
 
