@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <setjmp.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -7,6 +8,7 @@
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "cam_capture.h"
+#include "cam_loop.h"
 #include "mic.h"
 #include "wendy_com_sensor.h"
 #include "wendy_core_sensor.h"
@@ -33,6 +35,16 @@ static void (*frame_done)(uint32_t channel_id);
 static void (*while_frame_pending)(void);
 static unsigned stop_phase;
 static bool stop_by_disconnect;
+static char last_warning[256];
+
+void sensor_link_test_warning(const char *tag, const char *format, ...)
+{
+    (void)tag;
+    va_list args;
+    va_start(args, format);
+    vsnprintf(last_warning, sizeof(last_warning), format, args);
+    va_end(args);
+}
 
 static enum wcom_sensor_link_result subscribe(int client, uint32_t channel)
 {
@@ -283,6 +295,7 @@ static void test_sender_init_failure_retry(bool events_fail)
     fail_task = !events_fail;
     assert(wendy_sensor_link_init() == ESP_ERR_NO_MEM);
     assert(!registrations && !delegate && camera_deinits == 1 && mic_deinits == 1);
+    assert(cam_loop_start(7, 0) == WCOM_SENSOR_LINK_FAIL);
     assert(event_deletes == (events_fail ? 0u : 1u));
     fail_events = fail_task = false;
     assert(wendy_sensor_link_init() == ESP_OK);
@@ -293,6 +306,7 @@ static void test_sender_init_failure_retry(bool events_fail)
 
 static void test_subscription_lifecycle(void)
 {
+    assert(cam_loop_start(7, 0) == WCOM_SENSOR_LINK_FAIL);
     initialize();
     const uint32_t pair[] = {0, 1};
     assert(delegate->on_sensor_link_subscribe(7, NULL, 0) == WCOM_SENSOR_LINK_OK);
@@ -304,12 +318,14 @@ static void test_subscription_lifecycle(void)
 
     assert(subscribe(7, 0) == WCOM_SENSOR_LINK_OK);
     assert(subscribe(7, 0) == WCOM_SENSOR_LINK_OK);
-    assert(subscribe(8, 0) == WCOM_SENSOR_LINK_FAIL);
-    assert(subscribe(7, 1) == WCOM_SENSOR_LINK_FAIL);
+    assert(subscribe(8, 0) == WCOM_SENSOR_LINK_BUSY);
+    assert(strstr(last_warning, "requested client=8 channel=0"));
+    assert(strstr(last_warning, "owner client=7 channel=0 (pending, stopping=0)"));
+    assert(subscribe(7, 1) == WCOM_SENSOR_LINK_BUSY);
     assert(unsubscribe(8, 0) == WCOM_SENSOR_LINK_OK);
     assert(unsubscribe(7, 1) == WCOM_SENSOR_LINK_OK);
     delegate->on_sensor_link_disconnected(8);
-    assert(subscribe(8, 1) == WCOM_SENSOR_LINK_FAIL);
+    assert(subscribe(8, 1) == WCOM_SENSOR_LINK_BUSY);
 
     // Cancel a latched camera start before the sender can capture anything.
     assert(unsubscribe(7, 0) == WCOM_SENSOR_LINK_OK);
@@ -317,7 +333,7 @@ static void test_subscription_lifecycle(void)
     assert(!stream_begins && !captures && !mic_reads);
     assert(subscribe(8, 1) == WCOM_SENSOR_LINK_OK);
     delegate->on_sensor_link_disconnected(7);
-    assert(subscribe(7, 0) == WCOM_SENSOR_LINK_FAIL);
+    assert(subscribe(7, 0) == WCOM_SENSOR_LINK_BUSY);
     delegate->on_sensor_link_disconnected(8);
     run_sender_until_idle();
     assert(!stream_begins && !captures && !mic_reads);
@@ -335,12 +351,14 @@ static void stop_with_frame_in_flight(void)
         assert(unsubscribe(stream_client, 1 - stream_channel) == WCOM_SENSOR_LINK_OK);
         delegate->on_sensor_link_disconnected(stream_client + 1);
         assert(subscribe(stream_client, stream_channel) == WCOM_SENSOR_LINK_OK);
-        assert(subscribe(stream_client + 1, 1 - stream_channel) == WCOM_SENSOR_LINK_FAIL);
+        assert(subscribe(stream_client + 1, 1 - stream_channel) == WCOM_SENSOR_LINK_BUSY);
+        assert(strstr(last_warning, "active, stopping=0"));
         if (stop_by_disconnect) delegate->on_sensor_link_disconnected(stream_client);
         else assert(unsubscribe(stream_client, stream_channel) == WCOM_SENSOR_LINK_OK);
         // Neither a repeat subscription nor a switch may race stream teardown.
-        assert(subscribe(stream_client, stream_channel) == WCOM_SENSOR_LINK_FAIL);
-        assert(subscribe(stream_client + 1, 1 - stream_channel) == WCOM_SENSOR_LINK_FAIL);
+        assert(subscribe(stream_client, stream_channel) == WCOM_SENSOR_LINK_BUSY);
+        assert(strstr(last_warning, "active, stopping=1"));
+        assert(subscribe(stream_client + 1, 1 - stream_channel) == WCOM_SENSOR_LINK_BUSY);
         return;
     }
     assert(stop_phase == 2);

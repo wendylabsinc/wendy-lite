@@ -233,8 +233,14 @@ void wcom_cmd_set_app_delegate(const struct wcom_app_delegate *delegate)
 // WendyComResult, which has no general failure code beyond UNKNOWN_ERROR.
 static WendyComResult _to_com_result(enum wcom_sensor_link_result result)
 {
-    return result == WCOM_SENSOR_LINK_OK ? WendyComResult_WENDY_COM_RESULT_OK
-                                         : WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
+    switch (result) {
+    case WCOM_SENSOR_LINK_OK:
+        return WendyComResult_WENDY_COM_RESULT_OK;
+    case WCOM_SENSOR_LINK_BUSY:
+        return WendyComResult_WENDY_COM_RESULT_BUSY;
+    default:
+        return WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
+    }
 }
 
 WendyComResult wcom_cmd_sensor_link_get_manifest(wendy_lite_sensorlink_SensorManifest *out)

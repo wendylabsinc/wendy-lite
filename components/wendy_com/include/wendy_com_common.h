@@ -72,6 +72,7 @@ struct wcom_sensor_descriptor {
 enum wcom_sensor_link_result {
     WCOM_SENSOR_LINK_OK = 0,
     WCOM_SENSOR_LINK_FAIL,
+    WCOM_SENSOR_LINK_BUSY,
 };
 
 struct wcom_sensor_link_delegate {

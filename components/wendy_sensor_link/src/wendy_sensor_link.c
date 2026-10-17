@@ -60,7 +60,7 @@ static enum wcom_sensor_link_result sensor_link_subscribe(
                         (channel_ids[0] == 1 && s_microphone_ready))) {
         return WCOM_SENSOR_LINK_FAIL;
     }
-    return cam_loop_start(client_id, channel_ids[0]) ? WCOM_SENSOR_LINK_OK : WCOM_SENSOR_LINK_FAIL;
+    return cam_loop_start(client_id, channel_ids[0]);
 }
 
 static enum wcom_sensor_link_result sensor_link_unsubscribe(

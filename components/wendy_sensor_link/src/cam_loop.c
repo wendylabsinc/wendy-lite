@@ -226,19 +226,30 @@ esp_err_t cam_loop_init(void)
     return ESP_OK;
 }
 
-bool cam_loop_start(int client_id, uint32_t channel_id)
+enum wcom_sensor_link_result cam_loop_start(int client_id, uint32_t channel_id)
 {
     if (!s_events || channel_id > 1) {
-        return false;
+        return WCOM_SENSOR_LINK_FAIL;
     }
 
     taskENTER_CRITICAL(&s_lock);
     if (s_pending_valid || s_active_valid) {
         bool same = (s_pending_valid && s_pending_client_id == client_id && s_pending_channel_id == channel_id) ||
                     (s_active_valid && s_active_client_id == client_id && s_active_channel_id == channel_id);
-        bool accepted = same && !s_stopping;
+        if (same && !s_stopping) {
+            taskEXIT_CRITICAL(&s_lock);
+            return WCOM_SENSOR_LINK_OK;
+        }
+        bool pending = s_pending_valid;
+        int owner_client = pending ? s_pending_client_id : s_active_client_id;
+        uint32_t owner_channel = pending ? s_pending_channel_id : s_active_channel_id;
+        bool stopping = s_stopping;
         taskEXIT_CRITICAL(&s_lock);
-        return accepted;
+        ESP_LOGW(TAG, "stream busy: requested client=%d channel=%" PRIu32
+                 ", owner client=%d channel=%" PRIu32 " (%s, stopping=%d)",
+                 client_id, channel_id, owner_client, owner_channel,
+                 pending ? "pending" : "active", stopping);
+        return WCOM_SENSOR_LINK_BUSY;
     }
     xEventGroupClearBits(s_events, STOP_BIT);
     s_stopping = false;
@@ -248,7 +259,7 @@ bool cam_loop_start(int client_id, uint32_t channel_id)
     taskEXIT_CRITICAL(&s_lock);
 
     xEventGroupSetBits(s_events, START_BIT);
-    return true;
+    return WCOM_SENSOR_LINK_OK;
 }
 
 void cam_loop_stop(int client_id, uint32_t channel_id)
