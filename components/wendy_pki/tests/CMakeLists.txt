@@ -138,3 +138,14 @@ target_compile_definitions(link_permissions_test PRIVATE CONFIG_WENDY_COM_TASK_P
     CONFIG_WENDY_COM_TASK_CORE_AFFINITY=0)
 target_link_libraries(link_permissions_test PRIVATE capability_proto mbedtls)
 add_test(NAME wendycom_link_permissions COMMAND link_permissions_test)
+
+add_executable(tx_stall_test ../../wendy_com/tests/tx_stall_test.c)
+target_include_directories(tx_stall_test PRIVATE ../../wendy_com/tests/stubs stubs)
+target_compile_definitions(tx_stall_test PRIVATE CONFIG_WENDY_COM_TASK_PRIORITY=1
+    CONFIG_WENDY_COM_TASK_CORE_AFFINITY=0)
+target_compile_options(tx_stall_test PRIVATE -UNDEBUG)
+target_link_libraries(tx_stall_test PRIVATE capability_proto mbedtls)
+foreach(scenario socket stream want_read no_bytes progress)
+    add_test(NAME wendycom_tx_stall_${scenario} COMMAND tx_stall_test ${scenario})
+    set_tests_properties(wendycom_tx_stall_${scenario} PROPERTIES TIMEOUT 5)
+endforeach()

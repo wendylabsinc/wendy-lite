@@ -18,7 +18,10 @@
 
 static unsigned management_calls, stdin_calls, sensor_calls, disconnected_calls;
 static int sensor_client;
+static enum wcom_sensor_link_result subscription_result = WCOM_SENSOR_LINK_OK;
 static bool resetting;
+
+int64_t esp_timer_get_time(void) { return 1000; }
 
 ssize_t wendy_com_uart_read(wendy_com_uart_t *uart, void *data, size_t size) { return -1; }
 ssize_t wendy_com_uart_write(wendy_com_uart_t *uart, const void *data, size_t size) { return -1; }
@@ -54,7 +57,7 @@ static void info(const char **os, const char **version, const char **arch, const
 static enum wcom_sensor_link_result manifest(struct wcom_sensor_descriptor *sensors, size_t max, size_t *count)
 { sensor_calls++; *count = 0; return WCOM_SENSOR_LINK_OK; }
 static enum wcom_sensor_link_result subscribe(int id, const uint32_t *channels, size_t count)
-{ sensor_calls++; sensor_client = id; return WCOM_SENSOR_LINK_OK; }
+{ sensor_calls++; sensor_client = id; return subscription_result; }
 static void disconnected(int id) { disconnected_calls++; }
 
 struct wire {
@@ -179,6 +182,13 @@ static void check_device_commands(struct wire *wire, int id, uint8_t channel)
         assert(management_calls == initial_management);
     }
     assert(sensor_calls == initial_sensors + 3);
+    /* Preserve a source's busy result through dispatch and wire encoding. */
+    subscription_result = WCOM_SENSOR_LINK_BUSY;
+    assert(command(wire, id, channel, WendyComCommand_sensor_link_subscribe_tag) == WendyComResult_WENDY_COM_RESULT_BUSY);
+    subscription_result = WCOM_SENSOR_LINK_FAIL;
+    assert(command(wire, id, channel, WendyComCommand_sensor_link_subscribe_tag) == WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR);
+    subscription_result = WCOM_SENSOR_LINK_OK;
+    assert(command(wire, id, channel, WendyComCommand_sensor_link_subscribe_tag) == WendyComResult_WENDY_COM_RESULT_OK);
     assert(command(wire, id, channel, 0) == WendyComResult_WENDY_COM_RESULT_BAD_STATE);
     unsigned initial_stdin = stdin_calls;
     console_input(wire, id, channel);

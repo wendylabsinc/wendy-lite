@@ -2,6 +2,7 @@
 #include "wendy_com_link.h"
 #include "wendy_com_uart.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_tls.h"
 #include "esp_vfs_eventfd.h"
 #include "mbedtls/ssl.h"
@@ -19,6 +20,11 @@
 //--- literals ---//
 
 #define WCOM_TASK_STACK     8192
+
+// A vanished peer may leave its socket open until TCP's much longer retry
+// limit. Bound queued writes so their done handlers can return borrowed
+// sensor buffers. Successful writes renew this deadline, even during OTA.
+#define WCOM_TX_STALL_TIMEOUT_US (15LL * 1000 * 1000)
 
 #define WENDY_COM_LINK_ERR_UNKNOWN    -1
 #define WENDY_COM_LINK_ERR_WANT_READ  -2
@@ -51,6 +57,7 @@ struct wcom_link {
     struct wcom_tx_chunk *tx_chunk_first;
     struct wcom_tx_chunk *tx_chunk_last;
     size_t tx_chunk_offset;            // bytes already sent from tx_chunk_first
+    int64_t tx_deadline_us;            // renewed whenever a queued write progresses
     struct wcom_rx_chunk *rx_chunk_first;
     struct wcom_rx_chunk *rx_chunk_last;
     size_t rx_chunk_offset;            // bytes already received into rx_chunk_first
@@ -164,6 +171,7 @@ static void _clear_tx_queue(struct wcom_link *ch)
     ch->tx_chunk_first = NULL;
     ch->tx_chunk_last = NULL;
     ch->tx_chunk_offset = 0;
+    ch->tx_deadline_us = 0;
 }
 
 /// Bring a link down, notifying the state change handlers and then the link's
@@ -184,6 +192,23 @@ static void _link_interrupt(struct wcom_link *ch, enum wcom_link_state state)
         handler(link_id, state == WCOM_LINK_STATE_ERROR
                              ? WCOM_INTERRUPTION_CONNECTION_ERROR
                              : WCOM_INTERRUPTION_CONNECTION_CLOSED);
+}
+
+static int64_t _tx_stall_delay(const struct wcom_link *ch, int64_t now_us)
+{
+    if (ch->state != WCOM_LINK_STATE_CONNECTED || !ch->tx_chunk_first)
+        return -1;
+    int64_t remaining = ch->tx_deadline_us - now_us;
+    return remaining > 0 ? remaining : 0;
+}
+
+static bool _expire_stalled_tx(struct wcom_link *ch, int64_t now_us)
+{
+    if (_tx_stall_delay(ch, now_us) != 0)
+        return false;
+    ESP_LOGW(TAG, "tx stalled for 15 seconds on link %d, closing", ch->id);
+    _link_interrupt(ch, WCOM_LINK_STATE_ERROR);
+    return true;
 }
 
 static void _link_do_rx(struct wcom_link *ch)
@@ -237,11 +262,14 @@ static void _link_do_tx(struct wcom_link *ch)
         ssize_t n = _link_write(ch, data, remaining);
         if (n > 0) {
             ch->tx_need_read = false;
+            ch->tx_deadline_us = esp_timer_get_time() + WCOM_TX_STALL_TIMEOUT_US;
             ch->tx_chunk_offset += (size_t)n;
             if (ch->tx_chunk_offset >= chunk->size) {
                 ch->tx_chunk_first = chunk->next;
-                if (!ch->tx_chunk_first)
+                if (!ch->tx_chunk_first) {
                     ch->tx_chunk_last = NULL;
+                    ch->tx_deadline_us = 0;
+                }
                 ch->tx_chunk_offset = 0;
                 if (chunk->done_handler)
                     chunk->done_handler(ch->id, chunk, true);
@@ -275,7 +303,8 @@ static void _main(void *arg)
         // always watch the wakeup fd (signals new tx data or other internal events)
         int maxfd = _wakeup_efd;
         FD_SET(_wakeup_efd, &rfds);
-        int64_t uart_wait_us = -1; // -1 = no UART link has a pending deadline; 0 = one is due now
+        int64_t wait_us = -1; // -1 = no deadline; 0 = one is due now
+        int64_t now_us = esp_timer_get_time();
 
         for (int i = 0; i < WCOM_LINK_COUNT; i++) {
             struct wcom_link *ch = &_links[i];
@@ -285,6 +314,10 @@ static void _main(void *arg)
             if (ch->fd > maxfd)
                 maxfd = ch->fd;
 
+            int64_t tx_delay = _tx_stall_delay(ch, now_us);
+            if (tx_delay >= 0 && (wait_us < 0 || tx_delay < wait_us))
+                wait_us = tx_delay;
+
             // Only let the auto-close deadline run while a read is posted:
             // with no rx chunk queued, _link_do_rx() never reaches read(), so
             // nothing drains the fd and nothing refreshes the keep-alive
@@ -293,8 +326,8 @@ static void _main(void *arg)
             // poll that spins until the next chunk is queued.
             if (ch->type == LINK_TYPE_UART && ch->rx_chunk_first) {
                 int64_t delay = wendy_com_uart_auto_close_delay(ch->uart);
-                if (delay >= 0 && (uart_wait_us < 0 || delay < uart_wait_us))
-                    uart_wait_us = delay;
+                if (delay >= 0 && (wait_us < 0 || delay < wait_us))
+                    wait_us = delay;
             }
 
             // A stream link's fd is a readiness eventfd, not the transport.
@@ -347,14 +380,14 @@ static void _main(void *arg)
         }
 
         struct timeval zero_tv = {0, 0};
-        struct timeval uart_tv;
+        struct timeval deadline_tv;
         struct timeval *select_tv = NULL;
         if (progress_pending) {
             select_tv = &zero_tv;
-        } else if (uart_wait_us >= 0) {
-            uart_tv.tv_sec  = uart_wait_us / 1000000;
-            uart_tv.tv_usec = uart_wait_us % 1000000;
-            select_tv = &uart_tv;
+        } else if (wait_us >= 0) {
+            deadline_tv.tv_sec  = wait_us / 1000000;
+            deadline_tv.tv_usec = wait_us % 1000000;
+            select_tv = &deadline_tv;
         }
         if (select(maxfd + 1, &rfds, &wfds, NULL, select_tv) < 0)
             continue;
@@ -394,6 +427,8 @@ static void _main(void *arg)
         for (int i = 0; i < WCOM_LINK_COUNT; i++) {
             struct wcom_link *ch = &_links[i];
             if (ch->state != WCOM_LINK_STATE_CONNECTED || ch->fd < 0)
+                continue;
+            if (_expire_stalled_tx(ch, esp_timer_get_time()))
                 continue;
 
             bool readable, writable;
@@ -544,8 +579,10 @@ void wcom_send(int link_id, struct wcom_tx_chunk *chunk)
 
     if (ch->tx_chunk_last)
         ch->tx_chunk_last->next = chunk;
-    else
+    else {
         ch->tx_chunk_first = chunk;
+        ch->tx_deadline_us = esp_timer_get_time() + WCOM_TX_STALL_TIMEOUT_US;
+    }
 
     while (chunk->next)
         chunk = chunk->next;
@@ -602,6 +639,7 @@ int wcom_add_tls_link_with_permission(esp_tls_t *tls,
             ch->tx_chunk_first = NULL;
             ch->tx_chunk_last = NULL;
             ch->tx_chunk_offset = 0;
+            ch->tx_deadline_us = 0;
             ch->rx_chunk_first = NULL;
             ch->rx_chunk_last = NULL;
             ch->rx_chunk_offset = 0;
@@ -636,6 +674,7 @@ int wcom_add_uart_link(wendy_com_uart_t *uart, wcom_interruption_handler_t inter
             ch->tx_chunk_first = NULL;
             ch->tx_chunk_last = NULL;
             ch->tx_chunk_offset = 0;
+            ch->tx_deadline_us = 0;
             ch->rx_chunk_first = NULL;
             ch->rx_chunk_last = NULL;
             ch->rx_chunk_offset = 0;
@@ -677,6 +716,7 @@ static int _add_custom_link(enum link_type type, const struct wcom_stream_ops *o
             ch->tx_chunk_first = NULL;
             ch->tx_chunk_last = NULL;
             ch->tx_chunk_offset = 0;
+            ch->tx_deadline_us = 0;
             ch->rx_chunk_first = NULL;
             ch->rx_chunk_last = NULL;
             ch->rx_chunk_offset = 0;

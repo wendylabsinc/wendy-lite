@@ -111,6 +111,15 @@ management command and console input before calling delegates. It covers extra
 channels, stale client IDs, channel and link reuse, invalid permissions, reset
 revocation, and preserved operator/local access.
 
+`wendycom_tx_stall_*` compiles the production transport and SensorLink sender
+with a clock and a transport that can stop accepting bytes. It checks that
+`select()` wakes at the 15-second transmit deadline without a readiness event,
+including partial writes, no initial progress, and TLS-style WANT_READ retries.
+Timeout teardown returns the borrowed frame once, notifies disconnect once,
+and permits a new stream after the link slot is reused. Appending queued traffic
+does not extend the deadline. Successful writes do extend it, so a transfer
+lasting longer than the timeout and an idle connection remain connected.
+
 An outbound case exercises `pki_tls_connect` against Go's verifying TLS server.
 The device chain includes three intermediates and exceeds 16 KB for every ML-DSA
 profile. A host-only send adapter limits writes to 512 bytes and alternates them
