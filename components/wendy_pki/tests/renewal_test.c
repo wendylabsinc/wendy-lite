@@ -31,6 +31,8 @@ static int timestamp_calls;
 static const char *response_authority;
 static const char *fail_set;
 static int authority_writes, lite_accepts, operator_accepts, lan_accepts;
+static int stream_accepts;
+static wendy_pki_connection stream_connection;
 static bool have_key, have_binding, have_nonce, config_cleared, fail_clear;
 static int64_t reset_pending;
 static uint8_t stored_nonce[32], random_counter;
@@ -315,6 +317,7 @@ static void reset(void)
     response_authority = "valid-new-authority";
     fail_set = NULL;
     authority_writes = lite_accepts = operator_accepts = lan_accepts = 0;
+    stream_accepts = 0;
     have_key = have_binding = true;
     have_nonce = config_cleared = fail_clear = identity_resetting = false;
     reset_pending = 0;
@@ -600,6 +603,62 @@ static void test_post_issuance_time_and_recovery(void)
     }
 }
 
+static ssize_t unused_stream_read(void *context, void *data, size_t size)
+{
+    assert(0 && "the connection-flow test must not perform transport I/O");
+    return -1;
+}
+static ssize_t unused_stream_write(void *context, const void *data, size_t size)
+{
+    assert(0 && "the connection-flow test must not perform transport I/O");
+    return -1;
+}
+static int unused_stream_wait(void *context, bool writing, int64_t deadline)
+{
+    assert(0 && "the connection-flow test must not perform transport I/O");
+    return -1;
+}
+static void test_stream_stored_identity(void)
+{
+    const struct wendy_pki_stream stream = {
+        .context = &stream_connection,
+        .read = unused_stream_read, .write = unused_stream_write, .wait = unused_stream_wait,
+    };
+    wendy_pki_connection *connection = NULL;
+    reset();
+    assert(wendy_pki_accept_stream(&stream, &connection) == ESP_OK);
+    assert(connection == &stream_connection && connection->device_expires == stored_expiry);
+    assert(stream_accepts == 1 && identity_checks == 1);
+    assert(!renewal_calls && !broker_calls && !timestamp_calls);
+    assert(!lite_accepts && !operator_accepts && !lan_accepts);
+
+    /* Local BLE authentication uses existing enrollment. It must fail closed
+     * before opening TLS when identity recovery or validation prevents use. */
+    reset();
+    have_certificate = false;
+    assert(wendy_pki_accept_stream(&stream, &connection) != ESP_OK && !connection);
+    assert(!stream_accepts && !renewal_calls && !timestamp_calls);
+    reset();
+    stored_expiry = signed_now - 1;
+    assert(wendy_pki_accept_stream(&stream, &connection) != ESP_OK && !connection);
+    assert(!stream_accepts && !renewal_calls && !timestamp_calls);
+    reset();
+    invalid_certificate = true;
+    assert(wendy_pki_accept_stream(&stream, &connection) != ESP_OK && !connection);
+    assert(!stream_accepts);
+    reset();
+    reset_pending = 1;
+    assert(wendy_pki_accept_stream(&stream, &connection) != ESP_OK && !connection);
+    assert(!stream_accepts && !renewal_calls && !timestamp_calls);
+    reset();
+    struct wendy_pki_stream incomplete = stream;
+    incomplete.wait = NULL;
+    assert(wendy_pki_accept_stream(&incomplete, &connection) != ESP_OK && !connection);
+    assert(wendy_pki_accept_stream(NULL, &connection) != ESP_OK && !connection);
+    assert(wendy_pki_accept_stream(&stream, NULL) != ESP_OK);
+    assert(!stream_accepts);
+}
+
 int main(int argc, char **argv)
 {
     assert(argc == 2);
@@ -681,6 +740,7 @@ int main(int argc, char **argv)
     test_lite_authority_lifecycle();
     test_post_issuance_time_and_recovery();
     test_enrollment_reset();
+    test_stream_stored_identity();
     puts("renewal fallback, Lite authority lifecycle and local enrollment reset tests passed");
 }
 
@@ -702,6 +762,19 @@ int pki_tls_accept_lite(int fd, const uint8_t *key, size_t key_size, const char 
     assert(lite_authority[0] && roots.size == strlen(lite_authority));
     assert(!memcmp(roots.data, lite_authority, roots.size));
     return -1;
+}
+int pki_tls_accept_stream(const struct wendy_pki_stream *stream, const uint8_t *key,
+    size_t key_size, const char *cert, struct wendy_conf_span roots,
+    const char *tenant, wendy_pki_connection **out, int64_t deadline)
+{
+    stream_accepts++;
+    assert(stream->context == &stream_connection && stream->read && stream->write && stream->wait);
+    assert(key && key_size == key_der_size && !memcmp(key, key_der, key_size));
+    assert(!strcmp(cert, "stored") && !strcmp(tenant, config.tenant_id));
+    assert(roots.data == wendy_pki_device_roots_start && roots.size == build_roots_size);
+    assert(deadline > esp_timer_get_time());
+    *out = &stream_connection;
+    return 0;
 }
 
 int pki_relay_grant(wendy_pki_connection *c, const struct wendy_lite_trust *t, int64_t d) { (void)c; (void)t; (void)d; return -1; }

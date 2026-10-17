@@ -30,6 +30,23 @@ int wendy_pki_fd(void *connection);
 ssize_t wendy_pki_read(void *connection, void *data, size_t size);
 ssize_t wendy_pki_write(void *connection, const void *data, size_t size);
 
+/* Nonblocking encrypted-byte transport. read/write return a byte count, 0 for
+ * EOF, -2 for WANT_READ, -3 for WANT_WRITE, or -1 for failure. wait returns 0
+ * to retry or -1 on timeout/disconnect; deadline_us uses esp_timer_get_time().
+ * Callbacks and context are copied, but the caller owns the transport and must
+ * keep its context alive until wendy_pki_close(). */
+struct wendy_pki_stream {
+    void *context;
+    ssize_t (*read)(void *context, void *data, size_t size);
+    ssize_t (*write)(void *context, const void *data, size_t size);
+    int (*wait)(void *context, bool writing, int64_t deadline_us);
+};
+/* Authenticates a same-tenant operator using the enrolled identity. No legacy
+ * or anonymous fallback. Closing the connection never closes the transport. */
+esp_err_t wendy_pki_accept_stream(const struct wendy_pki_stream *stream,
+                                wendy_pki_connection **connection);
+bool wendy_pki_pending(wendy_pki_connection *connection);
+
 /* Takes ownership of fd on every outcome. No issuance or network time fetch. */
 esp_err_t wendy_pki_accept(int fd, wendy_pki_connection **connection);
 /* LAN additionally accepts same-tenant devices for SensorLink. The consumer

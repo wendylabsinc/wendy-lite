@@ -142,18 +142,19 @@ certificates, and unverified timestamps. A delayed fresh-time exchange over
 30 seconds fails.
 
 Configuration upload and enrollment challenges are restricted to the physical
-UART/USB link. The new PKI identity is used for Cloud and LAN connections. Once
+UART/USB link. The new PKI identity is used for Cloud, LAN, and BLE connections. Once
 enrollment is configured, the LAN server uses the verified stored identity and
 requires a clientAuth certificate with exactly one operator or device SPIFFE URI
 in the same tenant. Operators can manage the device; authenticated devices can
 only request the SensorLink manifest, subscribe, and unsubscribe. Device clients
 cannot send console input or invoke management commands, including through extra
 WendyCom channels. Missing, invalid, or expired enrollment credentials fail closed;
-the LAN server does not fall back to legacy or anonymous TLS. BLE requires
-legacy provisioning credentials and a trusted operator certificate for the same
-organization. BLE is disabled whenever PKI enrollment is configured, including
-devices that also retain legacy credentials, because BLE cannot use the stored
-PKI identity yet. Unprovisioned devices accept anonymous TLS connections over LAN
+neither LAN nor BLE falls back to legacy or anonymous TLS. PKI-enrolled boards
+advertise the BLE identity service with mTLS required and accept same-tenant
+operators over TLS 1.3 on L2CAP. BLE keeps advertising when Wi-Fi is unavailable;
+connections require a valid stored PKI identity. Legacy BLE uses provisioning
+credentials and a trusted operator certificate for the same organization.
+Unprovisioned devices accept anonymous TLS connections over LAN
 and Bluetooth by default. `CONFIG_WENDY_BLE_REQUIRE_MTLS=y` disables anonymous
 Bluetooth access. Configuration upload and enrollment still require USB/UART.
 

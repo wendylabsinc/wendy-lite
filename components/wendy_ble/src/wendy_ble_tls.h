@@ -17,7 +17,8 @@
 /// once the encrypted stream is usable. Provisioned devices authenticate a
 /// trusted operator from their organization. Unprovisioned devices allow
 /// anonymous clients only when CONFIG_WENDY_BLE_REQUIRE_MTLS is disabled.
-/// Refuses any configured PKI enrollment and any identity reset in progress.
+/// PKI enrollment uses the enrolled identity and requires a same-tenant
+/// operator over TLS 1.3. Refuses any identity reset in progress.
 esp_err_t wble_tls_session_start(void);
 
 /// Release everything. Safe whether or not the handshake succeeded.
@@ -28,7 +29,7 @@ void wble_tls_session_end(void);
 ssize_t wble_tls_read(void *buf, size_t len);
 ssize_t wble_tls_write(const void *buf, size_t len);
 
-/// True when mbedTLS holds already-decrypted bytes that no transport event
+/// True when TLS holds already-decrypted bytes that no transport event
 /// will announce. Without this a reader can park on a quiet wakeup fd while a
 /// whole record sits decrypted in the TLS buffer.
 bool wble_tls_pending(void);

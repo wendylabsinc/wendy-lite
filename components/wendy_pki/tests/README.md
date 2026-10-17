@@ -26,6 +26,9 @@ stubs. It checks fallback after failed renewal, retries on the next connection,
 expiry during renewal, rejection of expired or invalid stored identities, failed
 initial enrollment, and connections that do not yet need renewal. It also checks
 explicit USB trust selection and rejects partial or unauthorized bundles.
+The BLE stream accept path uses the stored identity without issuance or network
+time requests. Tests reject missing, expired, invalid and reset identities before
+calling the TLS backend.
 `conf_test` uses the real nanopb decoder and configuration writer with an in-memory
 flash partition to check persistence, snapshot ownership across writes, and size
 limits. The verifier rejects malformed bundles and leaf certificates as roots.
@@ -59,6 +62,12 @@ LAN cases also accept same-tenant device clients and assert the verified peer
 role. They reject wrong tenants, malformed or ambiguous identities, missing
 clientAuth, CA leaves, invalid dates, untrusted issuers, and signature tampering.
 The operator-only accept path rejects device clients, including relay clients.
+Callback stream cases exercise the PKI stream API used by BLE through fragmented reads and
+writes with forced retry responses. A valid operator exchanges application data;
+wrong tenants, device roles, missing or invalid certificates, TLS 1.2 and failed
+waits are rejected. The tests check buffered plaintext readiness, revocation
+during reset, refusal to detach a stream as a socket, and transport ownership
+after both accepted and rejected handshakes.
 The wolfSSL profile runs the same cases with ML-DSA-44, ML-DSA-65, and ML-DSA-87
 roots and P-256 device/operator keys. Set `IDF_PATH` to ESP-IDF 5.5.4 and install
 Go 1.27 or newer before configuring host tests.

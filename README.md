@@ -28,7 +28,12 @@ manual builds.
 
 ## Optional Bluetooth support
 
-Bluetooth is enabled by default. To omit the BLE transport and its controller/host
+Bluetooth is enabled by default. PKI-enrolled boards advertise their identity
+and accept same-tenant operators over TLS 1.3 on BLE L2CAP. Interactive
+`wendy discover` reads the GATT identity service to list these boards, including
+when Wi-Fi is unavailable. Enrollment itself still requires USB.
+
+To omit the BLE transport and its controller/host
 stack, append `boards/no-ble.defaults` last, after any board or WASM defaults:
 
 ```sh

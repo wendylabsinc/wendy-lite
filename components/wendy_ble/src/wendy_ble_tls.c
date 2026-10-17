@@ -35,6 +35,10 @@
 
 static bool _active;
 static bool _provisioned;
+static bool _enrolled;
+#if CONFIG_WENDY_PKI
+static wendy_pki_connection *_pki;
+#endif
 static struct wendy_operator_auth _operator_auth;
 
 static mbedtls_ssl_context      _ssl;
@@ -50,9 +54,50 @@ static mbedtls_ctr_drbg_context _ctr_drbg;
 
 static bool _session_allowed(void)
 {
-    return !wendy_pki_reset_in_progress() && !wendy_conf_has_enrollment() &&
+    return !wendy_pki_reset_in_progress() && wendy_conf_has_enrollment() == _enrolled &&
            wendy_conf_is_provisioned() == _provisioned;
 }
+
+#if CONFIG_WENDY_PKI
+static ssize_t _pki_recv(void *ctx, void *buf, size_t len)
+{
+    (void)ctx;
+    return _session_allowed() ? wble_l2cap_read(buf, len) : WBLE_ERR_UNKNOWN;
+}
+
+static ssize_t _pki_send(void *ctx, const void *buf, size_t len)
+{
+    (void)ctx;
+    return _session_allowed() ? wble_l2cap_write(buf, len) : WBLE_ERR_UNKNOWN;
+}
+
+static int _pki_wait(void *ctx, bool writing, int64_t deadline_us)
+{
+    (void)ctx;
+    int64_t left = deadline_us - esp_timer_get_time();
+    if (left <= 0 || !_session_allowed() || !wble_l2cap_session_alive())
+        return -1;
+    // Recheck identity and disconnect state at least every two seconds.
+    int64_t wait_ms = (left + 999) / 1000;
+    if (wait_ms > 2000)
+        wait_ms = 2000;
+    TickType_t ticks = pdMS_TO_TICKS(wait_ms);
+    if (!ticks)
+        ticks = 1;
+    if (writing)
+        wble_l2cap_wait_writable(ticks);
+    else
+        wble_l2cap_wait_readable(ticks);
+    return _session_allowed() && wble_l2cap_session_alive() &&
+           esp_timer_get_time() < deadline_us ? 0 : -1;
+}
+
+static const struct wendy_pki_stream _pki_stream = {
+    .read = _pki_recv,
+    .write = _pki_send,
+    .wait = _pki_wait,
+};
+#endif
 
 /// mbedTLS BIO. The L2CAP layer already speaks in WANT_READ / WANT_WRITE, so
 /// this is a pure translation; the receive ring below it is what makes a
@@ -114,6 +159,32 @@ esp_err_t wble_tls_session_start(void)
     esp_err_t result = ESP_FAIL;
 
     _active = false;
+    _enrolled = wendy_conf_has_enrollment();
+    _provisioned = wendy_conf_is_provisioned();
+    if (wendy_pki_reset_in_progress()) {
+        ESP_LOGW(TAG, "identity reset in progress; BLE connection rejected");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (_enrolled) {
+#if CONFIG_WENDY_PKI
+        // Use the enrolled identity and operator verification from LAN/Cloud.
+        // A PKI failure must never fall back to legacy or anonymous TLS.
+        result = wendy_pki_accept_stream(&_pki_stream, &_pki);
+        if (result != ESP_OK)
+            return result;
+        if (!_session_allowed()) {
+            wendy_pki_close(_pki);
+            _pki = NULL;
+            return ESP_ERR_INVALID_STATE;
+        }
+        _active = true;
+        ESP_LOGI(TAG, "PKI operator handshake complete");
+        return ESP_OK;
+#else
+        return ESP_ERR_INVALID_STATE;
+#endif
+    }
+
     mbedtls_ssl_init(&_ssl);
     mbedtls_ssl_config_init(&_conf);
     mbedtls_x509_crt_init(&_own_cert);
@@ -122,17 +193,6 @@ esp_err_t wble_tls_session_start(void)
     mbedtls_entropy_init(&_entropy);
     mbedtls_ctr_drbg_init(&_ctr_drbg);
 
-    if (wendy_conf_has_enrollment()) {
-        ESP_LOGW(TAG, "PKI identity is not supported over BLE; use LAN or Cloud");
-        result = ESP_ERR_INVALID_STATE;
-        goto fail;
-    }
-    if (wendy_pki_reset_in_progress()) {
-        ESP_LOGW(TAG, "identity reset in progress; BLE connection rejected");
-        result = ESP_ERR_INVALID_STATE;
-        goto fail;
-    }
-    _provisioned = wendy_conf_is_provisioned();
 #if CONFIG_WENDY_BLE_REQUIRE_MTLS
     if (!_provisioned) {
         ESP_LOGW(TAG, "BLE requires provisioned credentials; use USB for setup");
@@ -274,6 +334,14 @@ fail:
 
 void wble_tls_session_end(void)
 {
+    if (_enrolled) {
+#if CONFIG_WENDY_PKI
+        wendy_pki_close(_pki);
+        _pki = NULL;
+#endif
+        _active = false;
+        return;
+    }
     if (_active)
         mbedtls_ssl_close_notify(&_ssl);
     _active = false;
@@ -282,14 +350,24 @@ void wble_tls_session_end(void)
 
 bool wble_tls_pending(void)
 {
-    return _active && _session_allowed() &&
-           mbedtls_ssl_get_bytes_avail(&_ssl) > 0;
+    if (!_active || !_session_allowed())
+        return false;
+#if CONFIG_WENDY_PKI
+    if (_enrolled)
+        return wendy_pki_pending(_pki);
+#endif
+    return mbedtls_ssl_get_bytes_avail(&_ssl) > 0;
 }
 
 ssize_t wble_tls_read(void *buf, size_t len)
 {
     if (!_active || !_session_allowed())
         return WBLE_ERR_UNKNOWN;
+
+#if CONFIG_WENDY_PKI
+    if (_enrolled)
+        return wendy_pki_read(_pki, buf, len);
+#endif
 
     int ret = mbedtls_ssl_read(&_ssl, buf, len);
     if (ret > 0)
@@ -311,6 +389,11 @@ ssize_t wble_tls_write(const void *buf, size_t len)
 {
     if (!_active || !_session_allowed())
         return WBLE_ERR_UNKNOWN;
+
+#if CONFIG_WENDY_PKI
+    if (_enrolled)
+        return wendy_pki_write(_pki, buf, len);
+#endif
 
     int ret = mbedtls_ssl_write(&_ssl, buf, len);
     if (ret > 0)

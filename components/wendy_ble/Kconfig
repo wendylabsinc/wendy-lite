@@ -9,8 +9,8 @@ menu "Wendy BLE (WendyCom transport)"
             as a central.
 
             Provisioned devices require a verified operator certificate from
-            the device's organization. Devices with PKI
-            enrollment use LAN or Cloud; BLE does not support their identity yet.
+            the device's organization. PKI-enrolled devices advertise too and
+            use their enrolled identity for TLS 1.3 operator authentication.
 
             This component owns the NimBLE stack: it calls nimble_port_init(),
             installs the host sync callback and drives advertising. No other
@@ -42,13 +42,14 @@ menu "Wendy BLE (WendyCom transport)"
         depends on WENDY_BLE
         help
             When set, the device neither advertises nor opens the L2CAP server
-            unless it has legacy provisioning credentials with a valid Wendy
-            device identity. Clients need a trusted operator certificate from
-            the same organization.
+            unless it has PKI enrollment or legacy provisioning credentials
+            with a valid Wendy device identity. Clients need a trusted
+            operator certificate from the same organization.
 
             When unset, an unprovisioned device serves the embedded self-signed
             certificate without requiring a client certificate. Configured PKI
-            enrollment always disables BLE, even if legacy credentials exist.
+            enrollment always uses PKI authentication, even if legacy
+            credentials exist; an unavailable PKI identity rejects connections.
 
     config WENDY_BLE_TASK_PRIORITY
         int "BLE session task priority"

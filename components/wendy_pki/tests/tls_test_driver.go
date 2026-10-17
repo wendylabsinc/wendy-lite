@@ -112,7 +112,8 @@ func main() {
 		"lan-operator", "lan-device", "lan-device-wrong-tenant", "lan-device-wrong-eku", "lan-device-missing-eku",
 		"lan-device-ca", "lan-device-duplicate-uri", "lan-device-extra-uri", "lan-device-missing-uri",
 		"lan-device-expired", "lan-device-future", "lan-device-untrusted", "lan-device-tampered", "lan-no-client",
-		"lite-valid", "lite-wrong-role", "lite-wrong-tenant", "lite-unmarked", "lite-extra-eku", "lite-untrusted", "lite-primary-operator", "lite-lan-device"}
+		"lite-valid", "lite-wrong-role", "lite-wrong-tenant", "lite-unmarked", "lite-extra-eku", "lite-untrusted", "lite-primary-operator", "lite-lan-device",
+		"stream-valid", "stream-wrong-tenant", "stream-device", "stream-no-client", "stream-expired", "stream-untrusted", "stream-tls12", "stream-timeout"}
 	for _, name := range cases {
 		expiry := time.Now().Add(time.Hour)
 		usages := []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
@@ -154,11 +155,11 @@ func main() {
 		switch name {
 		case "relay-operator-expiry":
 			expiry = time.Now().Add(90 * time.Second)
-		case "expired", "lan-device-expired":
+		case "expired", "lan-device-expired", "stream-expired":
 			expiry = time.Now().Add(-time.Minute)
-		case "wrong-tenant", "lan-device-wrong-tenant", "lite-wrong-tenant":
+		case "wrong-tenant", "lan-device-wrong-tenant", "lite-wrong-tenant", "stream-wrong-tenant":
 			uri = strings.Replace(uri, "2558fd76", "3558fd76", 1)
-		case "wrong-role", "lite-wrong-role", "lite-lan-device":
+		case "wrong-role", "lite-wrong-role", "lite-lan-device", "stream-device":
 			uri = tenant + "device/lite-test"
 		case "wrong-eku", "lan-device-wrong-eku":
 			usages = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
@@ -166,7 +167,7 @@ func main() {
 			usages = nil
 		case "lite-extra-eku":
 			usages = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}
-		case "untrusted", "lan-device-untrusted", "lite-untrusted":
+		case "untrusted", "lan-device-untrusted", "lite-untrusted", "stream-untrusted":
 			issuer, err = newIssuer()
 			must(err)
 		}
@@ -192,7 +193,7 @@ func main() {
 		if name == "lan-operator" {
 			mode = "valid"
 		}
-		if name == "lite-valid" {
+		if name == "lite-valid" || name == "stream-valid" {
 			mode = "valid"
 		}
 		args := []string{filepath.Join(directory, "key.der"), filepath.Join(directory, "server.pem"), filepath.Join(directory, "root.pem"), mode}
@@ -204,6 +205,13 @@ func main() {
 			args[2], args[3] = filepath.Join(directory, "lite-root.pem"), "lite-"+mode
 			if name == "lite-lan-device" {
 				args[2], args[3] = filepath.Join(directory, "root.pem"), "lan-reject"
+			}
+		}
+		stream := strings.HasPrefix(name, "stream-")
+		if stream {
+			args[3] = "stream-" + mode
+			if name == "stream-timeout" {
+				args[3] = "stream-timeout"
 			}
 		}
 		relay := strings.HasPrefix(name, "relay-") && name != "relay-device-client"
@@ -290,10 +298,10 @@ func main() {
 		must(err)
 		must(conn.SetDeadline(time.Now().Add(4 * time.Second)))
 		cfg := &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: pool, ServerName: "localhost", Certificates: []tls.Certificate{cert}}
-		if name == "no-client" || name == "lan-no-client" {
+		if name == "no-client" || name == "lan-no-client" || name == "stream-no-client" {
 			cfg.Certificates = nil
 		}
-		if name == "tls12" {
+		if name == "tls12" || name == "stream-tls12" {
 			cfg.MinVersion = tls.VersionTLS12
 			cfg.MaxVersion = tls.VersionTLS12
 		}
@@ -316,6 +324,15 @@ func main() {
 					}
 				} else if err == nil {
 					panic("invalid relay grant accepted")
+				}
+			} else if stream {
+				_, err = client.Write([]byte("hello"))
+				must(err)
+				var response [5]byte
+				_, err = io.ReadFull(client, response[:])
+				must(err)
+				if string(response[:]) != "world" {
+					panic("invalid stream application data")
 				}
 			} else {
 				switch name {
