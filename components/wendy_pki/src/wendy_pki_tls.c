@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <psa/crypto.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <netdb.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,14 +16,28 @@
 
 static int io_recv(void *context, unsigned char *buf, size_t size)
 {
-    int n = recv(*(int *)context, buf, size, 0);
+    wendy_pki_connection *c = context;
+    if (c->stream.read) {
+        ssize_t n = c->stream.read(c->stream.context, buf, size);
+        if (n == -2) return MBEDTLS_ERR_SSL_WANT_READ;
+        if (n == -3) return MBEDTLS_ERR_SSL_WANT_WRITE;
+        return n < 0 || (size_t)n > size || n > INT_MAX ? MBEDTLS_ERR_SSL_INTERNAL_ERROR : (int)n;
+    }
+    int n = recv(c->fd, buf, size, 0);
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
         return MBEDTLS_ERR_SSL_WANT_READ;
     return n < 0 ? MBEDTLS_ERR_SSL_INTERNAL_ERROR : n;
 }
 static int io_send(void *context, const unsigned char *buf, size_t size)
 {
-    int n = send(*(int *)context, buf, size, 0);
+    wendy_pki_connection *c = context;
+    if (c->stream.write) {
+        ssize_t n = c->stream.write(c->stream.context, buf, size);
+        if (n == -2) return MBEDTLS_ERR_SSL_WANT_READ;
+        if (n == -3) return MBEDTLS_ERR_SSL_WANT_WRITE;
+        return n <= 0 || (size_t)n > size || n > INT_MAX ? MBEDTLS_ERR_SSL_INTERNAL_ERROR : (int)n;
+    }
+    int n = send(c->fd, buf, size, 0);
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
         return MBEDTLS_ERR_SSL_WANT_WRITE;
     return n < 0 ? MBEDTLS_ERR_SSL_INTERNAL_ERROR : n;
@@ -66,7 +81,7 @@ static int configure(wendy_pki_connection *c, int server, const uint8_t *key,
             mbedtls_ssl_conf_own_cert(&c->config, &c->certificate, &c->key)) return -1;
     }
     if (mbedtls_ssl_setup(&c->ssl, &c->config)) return -1;
-    mbedtls_ssl_set_bio(&c->ssl, &c->fd, io_send, io_recv, NULL);
+    mbedtls_ssl_set_bio(&c->ssl, c, io_send, io_recv, NULL);
     return 0;
 }
 static int wait_socket(wendy_pki_connection *c, int error, int64_t deadline)
@@ -76,6 +91,10 @@ static int wait_socket(wendy_pki_connection *c, int error, int64_t deadline)
     int64_t left = deadline - esp_timer_get_time();
     if (left <= 0)
         return -1;
+    if (c->stream.wait) {
+        if (wendy_pki_reset_in_progress()) return -1;
+        return c->stream.wait(c->stream.context, error == MBEDTLS_ERR_SSL_WANT_WRITE, deadline);
+    }
     fd_set rd, wr;
     FD_ZERO(&rd);
     FD_ZERO(&wr);
@@ -88,6 +107,7 @@ static int wait_socket(wendy_pki_connection *c, int error, int64_t deadline)
 }
 static int detach_socket(wendy_pki_connection *c)
 {
+    if (!c || c->stream.read || c->fd < 0) return -1;
     int64_t deadline = esp_timer_get_time() + 10000000;
     unsigned char byte;
     for (;;) {
@@ -200,6 +220,12 @@ ssize_t wendy_pki_write(void *v, const void *b, size_t n)
     if (wendy_pki_reset_in_progress() ||
         (c->relay_expires_us && esp_timer_get_time() >= c->relay_expires_us)) return -1;
     return result(c, mbedtls_ssl_write(&c->ssl, b, n));
+}
+bool wendy_pki_pending(wendy_pki_connection *c)
+{
+    return c && !wendy_pki_reset_in_progress() &&
+        (!c->relay_expires_us || esp_timer_get_time() < c->relay_expires_us) &&
+        mbedtls_ssl_get_bytes_avail(&c->ssl) > 0;
 }
 #include "wendy_pki_http_response.h"
 static int write_all(wendy_pki_connection *c, const void *b, size_t n, int64_t deadline)
@@ -322,16 +348,25 @@ int pki_http_post(const char *url, const char *type, const char *token, const vo
  * accept a same-tenant device, with its role fixed for the TLS 1.3 session. */
 static int accept_peer(int fd, const uint8_t *key, size_t key_size, const char *cert,
                        struct wendy_conf_span roots, const char *tenant,
-                       wendy_pki_connection **out, int64_t deadline, bool allow_device, bool lite)
+                       wendy_pki_connection **out, int64_t deadline, bool allow_device, bool lite,
+                       const struct wendy_pki_stream *stream)
 {
+    if (out) *out = NULL;
+    if (!out || !key || !key_size || !cert || !tenant ||
+        (stream && (!stream->read || !stream->write || !stream->wait))) {
+        if (fd >= 0) close(fd);
+        return -1;
+    }
     wendy_pki_connection *c = calloc(1, sizeof *c);
-    if (!c) { close(fd); return -1; }
+    if (!c) { if (fd >= 0) close(fd); return -1; }
     c->fd = fd;
-    if (fd < 0 || fd >= FD_SETSIZE || fcntl(fd, F_SETFL, O_NONBLOCK) < 0) goto fail;
+    if (stream) c->stream = *stream;
+    else if (fd < 0 || fd >= FD_SETSIZE || fcntl(fd, F_SETFL, O_NONBLOCK) < 0) goto fail;
     if (configure(c, 1, key, key_size, cert, roots)) goto fail;
     int r;
     while ((r = mbedtls_ssl_handshake(&c->ssl)) != 0)
         if (wait_socket(c, r, deadline)) goto fail;
+    if (stream && (wendy_pki_reset_in_progress() || esp_timer_get_time() >= deadline)) goto fail;
     const mbedtls_x509_crt *peer = mbedtls_ssl_get_peer_cert(&c->ssl);
     if (!peer || mbedtls_ssl_get_verify_result(&c->ssl)) goto fail;
     enum wendy_peer_role role = wendy_pki_verify_peer(peer->raw.p, peer->raw.len, tenant);
@@ -352,21 +387,32 @@ int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, const char *cert
                    struct wendy_conf_span roots, const char *tenant,
                    wendy_pki_connection **out, int64_t deadline)
 {
-    return accept_peer(fd, key, key_size, cert, roots, tenant, out, deadline, false, false);
+    return accept_peer(fd, key, key_size, cert, roots, tenant, out, deadline, false, false, NULL);
+}
+
+int pki_tls_accept_stream(const struct wendy_pki_stream *stream,
+                          const uint8_t *key, size_t key_size, const char *cert,
+                          struct wendy_conf_span roots, const char *tenant,
+                          wendy_pki_connection **out, int64_t deadline)
+{
+    if (out) *out = NULL;
+    if (!stream || wendy_pki_reset_in_progress() || esp_timer_get_time() >= deadline)
+        return -1;
+    return accept_peer(-1, key, key_size, cert, roots, tenant, out, deadline, false, false, stream);
 }
 
 int pki_tls_accept_lan(int fd, const uint8_t *key, size_t key_size, const char *cert,
                        struct wendy_conf_span roots, const char *tenant,
                        wendy_pki_connection **out, int64_t deadline)
 {
-    return accept_peer(fd, key, key_size, cert, roots, tenant, out, deadline, true, false);
+    return accept_peer(fd, key, key_size, cert, roots, tenant, out, deadline, true, false, NULL);
 }
 
 int pki_tls_accept_lite(int fd, const uint8_t *key, size_t key_size, const char *cert,
                        struct wendy_conf_span roots, const char *tenant,
                        wendy_pki_connection **out, int64_t deadline)
 {
-    return accept_peer(fd, key, key_size, cert, roots, tenant, out, deadline, false, true);
+    return accept_peer(fd, key, key_size, cert, roots, tenant, out, deadline, false, true, NULL);
 }
 
 enum wendy_peer_role wendy_pki_get_peer_role(const wendy_pki_connection *connection)

@@ -27,6 +27,7 @@ struct wendy_pki_connection
     WOLFSSL_CTX *ctx;
     WOLFSSL *ssl;
     uint64_t socket_read_bytes, socket_written_bytes;
+    int stream_want;
 #else
     mbedtls_ssl_config config;
     mbedtls_ssl_context ssl;
@@ -34,6 +35,7 @@ struct wendy_pki_connection
     mbedtls_pk_context key;
 #endif
     int fd;
+    struct wendy_pki_stream stream;
     enum wendy_peer_role peer_role;
     uint8_t device_hash[32], operator_hash[32], operator_spki_hash[32];
     time_t device_expires, operator_expires;
@@ -53,6 +55,10 @@ int pki_http_post_enrollment(const char *url, const char *type, const char *toke
 
 int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, const char *cert,
                    struct wendy_conf_span roots, const char *tenant, wendy_pki_connection **out, int64_t deadline);
+int pki_tls_accept_stream(const struct wendy_pki_stream *stream,
+                          const uint8_t *key, size_t key_size, const char *cert,
+                          struct wendy_conf_span roots, const char *tenant,
+                          wendy_pki_connection **out, int64_t deadline);
 int pki_tls_accept_lan(int fd, const uint8_t *key, size_t key_size, const char *cert,
                       struct wendy_conf_span roots, const char *tenant,
                       wendy_pki_connection **out, int64_t deadline);

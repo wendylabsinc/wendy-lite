@@ -653,7 +653,8 @@ esp_err_t wendy_pki_connect(wendy_pki_connection **connection)
 }
 
 static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
-    const struct wendy_lite_trust *trust, bool allow_device)
+    const struct wendy_lite_trust *trust, bool allow_device,
+    const struct wendy_pki_stream *stream)
 {
     pthread_once(&crypto_once, init_crypto);
     WendyConfEnrollment cfg = WendyConfEnrollment_init_zero;
@@ -678,7 +679,10 @@ static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
         goto done;
     int64_t deadline = esp_timer_get_time() + (trust ? 10000000 : 15000000);
     int accepted;
-    if (trust)
+    if (stream)
+        accepted = pki_tls_accept_stream(stream, key, key_size, (char *)cert,
+                                        data.device_roots, cfg.tenant_id, connection, deadline);
+    else if (trust)
     {
         if (load_blob(h, "lite_ca", &lite_ca, &lite_ca_size))
         {
@@ -722,7 +726,7 @@ static esp_err_t accept_peer(int fd, wendy_pki_connection **connection,
 {
     pthread_mutex_lock(&identity_lock);
     esp_err_t result = ESP_ERR_INVALID_STATE;
-    if (identity_use_allowed()) result = accept_identity_peer(fd, connection, trust, allow_device);
+    if (identity_use_allowed()) result = accept_identity_peer(fd, connection, trust, allow_device, NULL);
     else close(fd);
     pthread_mutex_unlock(&identity_lock);
     return result;
@@ -731,6 +735,20 @@ static esp_err_t accept_peer(int fd, wendy_pki_connection **connection,
 esp_err_t wendy_pki_accept(int fd, wendy_pki_connection **connection)
 {
     return accept_peer(fd, connection, NULL, false);
+}
+
+esp_err_t wendy_pki_accept_stream(const struct wendy_pki_stream *stream,
+                                wendy_pki_connection **connection)
+{
+    if (connection) *connection = NULL;
+    if (!stream || !stream->read || !stream->write || !stream->wait || !connection)
+        return ESP_ERR_INVALID_ARG;
+    pthread_mutex_lock(&identity_lock);
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    if (identity_use_allowed())
+        result = accept_identity_peer(-1, connection, NULL, false, stream);
+    pthread_mutex_unlock(&identity_lock);
+    return result;
 }
 esp_err_t wendy_pki_accept_lan(int fd, wendy_pki_connection **connection)
 {

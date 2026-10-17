@@ -41,6 +41,8 @@ static const char *TAG = "wendy_ble";
 #define ADV_ITVL_MAX_MS  150
 
 #define SESSION_TASK_STACK  4096
+// PKI identity verification uses the same stack budget as the LAN server.
+#define PKI_SESSION_TASK_STACK  24576
 
 // Company identifier 0xFFFF is the range the Bluetooth SIG reserves for
 // internal use and testing, which is what a device ID in an advertisement is.
@@ -93,6 +95,7 @@ static const ble_uuid128_t _uuid_mtls         = WENDY_BLE_UUID128(0x05);
 static bool  _host_initialized;
 static bool  _started;
 static bool  _provisioned;
+static bool  _enrolled;
 static uint8_t _own_addr_type;
 
 static char *_device_id;
@@ -163,7 +166,7 @@ static int _info_access(uint16_t conn_handle, uint16_t attr_handle,
     // Both are little-endian on the wire, which is also the native byte order
     // on every target this builds for.
     uint16_t psm  = CONFIG_WENDY_BLE_PSM;
-    uint8_t  mtls = _provisioned ? 1 : 0;
+    uint8_t  mtls = (_enrolled || _provisioned) ? 1 : 0;
 
     const void *data;
     uint16_t len;
@@ -208,7 +211,7 @@ static int _gap_event(struct ble_gap_event *event, void *arg);
 /// in the scan response, where there is room for it.
 static void _start_advertising(void)
 {
-    if (wendy_pki_reset_in_progress() || wendy_conf_has_enrollment() ||
+    if (wendy_pki_reset_in_progress() || wendy_conf_has_enrollment() != _enrolled ||
         wendy_conf_is_provisioned() != _provisioned)
         return;
 
@@ -375,7 +378,7 @@ static void _build_mfg_data(void)
  * Waits for a peer to open the channel, runs the TLS handshake, then hands
  * the encrypted stream to the wcom task and waits for the link to die.
  *
- * Ownership rule: exactly one task touches the mbedTLS context at a time.
+ * Ownership rule: exactly one task touches the TLS context at a time.
  * This task owns it up to wcom_core_exec(); the wcom task owns it from when
  * that operation runs until the link is removed (which also happens on the
  * wcom task); ownership comes back here only once _link_closed is signalled.
@@ -416,7 +419,7 @@ static int _stream_wakeup_fd(void *ctx)
 static bool _stream_can_read(void *ctx)
 {
     (void)ctx;
-    // Decrypted bytes already inside mbedTLS count as readable: no transport
+    // Decrypted bytes already inside TLS count as readable: no transport
     // event is coming to announce them.
     return wble_tls_pending() || wble_l2cap_can_read();
 }
@@ -469,7 +472,7 @@ static void _session_task(void *arg)
             continue;
 
         ESP_LOGI(TAG, "session started");
-        if (wble_tls_session_start() == ESP_OK) {
+        if (wble_tls_session_start(_enrolled, _provisioned) == ESP_OK) {
             // Drop a stale signal from a previous session before handing the
             // stream over, or the wait below would return immediately.
             xSemaphoreTake(_link_closed, 0);
@@ -526,30 +529,37 @@ esp_err_t wendy_ble_start(void)
 {
     esp_err_t err = ESP_OK;
 
-    if (wendy_conf_has_enrollment()) {
-        ESP_LOGW(TAG, "PKI identity is not supported over BLE; use LAN or Cloud");
-        return ESP_ERR_INVALID_STATE;
-    }
     if (wendy_pki_reset_in_progress()) {
         ESP_LOGW(TAG, "identity reset in progress; BLE disabled");
         return ESP_ERR_INVALID_STATE;
     }
+    if (_started) {
+        if (wendy_conf_has_enrollment() == _enrolled &&
+            wendy_conf_is_provisioned() == _provisioned)
+            return ESP_OK;
+        ESP_LOGW(TAG, "BLE identity changed since startup; reboot required");
+        return ESP_ERR_INVALID_STATE;
+    }
+    _enrolled = wendy_conf_has_enrollment();
+#if !CONFIG_WENDY_PKI
+    if (_enrolled) {
+        ESP_LOGW(TAG, "PKI enrollment requires CONFIG_WENDY_PKI for BLE");
+        return ESP_ERR_INVALID_STATE;
+    }
+#endif
     _provisioned = wendy_conf_is_provisioned();
 #if CONFIG_WENDY_BLE_REQUIRE_MTLS
-    if (!_provisioned) {
+    if (!_enrolled && !_provisioned) {
         ESP_LOGW(TAG, "BLE requires provisioned credentials; use USB for setup");
         return ESP_ERR_INVALID_STATE;
     }
 #endif
     struct wendy_conf_span cert = wendy_conf_get_certificate();
     struct wendy_operator_auth auth;
-    if (_provisioned && wendy_operator_auth_init(&auth, cert.data, cert.size)) {
+    if (!_enrolled && _provisioned && wendy_operator_auth_init(&auth, cert.data, cert.size)) {
         ESP_LOGE(TAG, "device certificate has no valid Wendy device identity; not advertising");
         return ESP_ERR_INVALID_STATE;
     }
-
-    if (_started)
-        return ESP_OK;
 
     // Snapshot the identity for the life of the advertisement. wendy_conf
     // fixes these at init and never changes them, so the copies are belt and
@@ -587,8 +597,9 @@ esp_err_t wendy_ble_start(void)
         goto fail;
     }
 
+    // One task for the lifetime of the transport, reused for every connection.
     if (xTaskCreatePinnedToCore(_session_task, "wendy_ble",
-                                SESSION_TASK_STACK, NULL,
+                                _enrolled ? PKI_SESSION_TASK_STACK : SESSION_TASK_STACK, NULL,
                                 CONFIG_WENDY_BLE_TASK_PRIORITY, NULL,
                                 CONFIG_WENDY_BLE_TASK_CORE_AFFINITY) != pdPASS) {
         ESP_LOGE(TAG, "session task creation failed");
@@ -598,7 +609,9 @@ esp_err_t wendy_ble_start(void)
 
     _started = true;
 
-    if (_provisioned)
+    if (_enrolled)
+        ESP_LOGI(TAG, "PKI mTLS enabled: same-tenant operator certificate required");
+    else if (_provisioned)
         ESP_LOGI(TAG, "mTLS enabled: same-organization operator certificate required");
     else
         ESP_LOGI(TAG, "unprovisioned: clients may connect without a certificate");

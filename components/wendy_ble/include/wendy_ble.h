@@ -27,12 +27,14 @@ esp_err_t wendy_ble_host_init(void);
 /// organization as their Wendy device identity. Unprovisioned devices serve
 /// the embedded self-signed certificate without client verification when
 /// CONFIG_WENDY_BLE_REQUIRE_MTLS is disabled.
-/// PKI enrollment is not supported over BLE; those devices
-/// use LAN or Cloud, even if legacy credentials are also present.
+/// PKI-enrolled devices advertise with mTLS enabled and use their enrolled
+/// identity to authenticate same-tenant operators over TLS 1.3. They never
+/// fall back to legacy credentials or anonymous TLS.
 ///
-/// Returns ESP_ERR_INVALID_STATE during identity reset, with PKI enrollment,
-/// with invalid legacy credentials, or when an unprovisioned device requires
-/// mTLS. Nothing is advertised on initial startup in those cases.
+/// Returns ESP_ERR_INVALID_STATE during identity reset, with PKI enrollment
+/// in a build without PKI support, with invalid legacy credentials, or when
+/// an unprovisioned device requires mTLS. Nothing is advertised on initial
+/// startup in those cases.
 esp_err_t wendy_ble_start(void);
 
 #ifdef __cplusplus

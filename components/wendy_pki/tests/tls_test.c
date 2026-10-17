@@ -58,7 +58,7 @@ static void outbound(unsigned port, const unsigned char *key, size_t kn,
     size_t written = 0, received = 0;
     char response[5];
     while (written < 5) {
-        int n = wendy_pki_write(c, "hello" + written, 5 - written);
+        int n = wendy_pki_write(c, &"hello"[written], 5 - written);
         if (n > 0) written += (size_t)n;
         else wait_io(c, n);
     }
@@ -69,6 +69,101 @@ static void outbound(unsigned port, const unsigned char *key, size_t kn,
     }
     assert(!memcmp(response, "world", sizeof response));
     wendy_pki_close(c);
+}
+
+/* BLE supplies a byte stream rather than a socket. Keep the backing socket
+ * outside the TLS connection and force fragmented reads, writes and retries. */
+struct test_stream {
+    int fd;
+    unsigned reads, writes, partial_reads, partial_writes;
+    unsigned blocked_reads, blocked_writes, read_waits, write_waits;
+    unsigned opposite_reads, opposite_writes, injected_wait;
+    bool fail_wait;
+};
+static ssize_t stream_read(void *context, void *buffer, size_t size) {
+    struct test_stream *s = context;
+    if (++s->reads == 1) {
+        s->opposite_reads++;
+        s->injected_wait = 2;
+        return -3;
+    }
+    if (s->reads % 3 == 1) {
+        s->blocked_reads++;
+        return -2;
+    }
+    if (size > 73) { size = 73; s->partial_reads++; }
+    ssize_t n = recv(s->fd, buffer, size, 0);
+    return n < 0 && (errno == EAGAIN || errno == EINTR) ? -2 : n;
+}
+static ssize_t stream_write(void *context, const void *buffer, size_t size) {
+    struct test_stream *s = context;
+    if (++s->writes == 1) {
+        s->opposite_writes++;
+        s->injected_wait = 1;
+        return -2;
+    }
+    if (s->writes % 3 == 1) {
+        s->blocked_writes++;
+        return -3;
+    }
+    if (size > 61) { size = 61; s->partial_writes++; }
+    ssize_t n = send(s->fd, buffer, size, 0);
+    return n < 0 && (errno == EAGAIN || errno == EINTR) ? -3 : n;
+}
+static int stream_wait(void *context, bool writing, int64_t deadline) {
+    struct test_stream *s = context;
+    if (writing) s->write_waits++; else s->read_waits++;
+    if (s->fail_wait) return -1;
+    if (s->injected_wait) {
+        assert(writing == (s->injected_wait == 2));
+        s->injected_wait = 0;
+        return 0;
+    }
+    int64_t remaining = deadline - esp_timer_get_time();
+    if (remaining <= 0) return -1;
+    struct pollfd fd = {.fd = s->fd, .events = writing ? POLLOUT : POLLIN};
+    return poll(&fd, 1, (int)((remaining + 999) / 1000)) == 1 ? 0 : -1;
+}
+static void stream_exchange(wendy_pki_connection *c, struct test_stream *s) {
+    assert(wendy_pki_fd(c) == -1);
+    /* A stream cannot be handed off as a TCP fd, and failure must retain it. */
+    assert(wendy_pki_detach(c) == -1);
+    char hello[5];
+    size_t received = 0, written = 0;
+    while (received < sizeof hello) {
+        size_t size = received ? sizeof hello - received : 1;
+        ssize_t n = wendy_pki_read(c, hello + received, size);
+        if (n > 0) {
+            received += (size_t)n;
+            /* One-byte application reads must leave decrypted data visible
+             * even when no additional transport packet arrives. */
+            if (received == 1) assert(wendy_pki_pending(c));
+        } else {
+            assert(n == -2 || n == -3);
+            assert(!stream_wait(s, n == -3, esp_timer_get_time() + 3000000));
+        }
+    }
+    assert(!memcmp(hello, "hello", sizeof hello));
+    assert(!wendy_pki_pending(c));
+    while (written < 5) {
+        ssize_t n = wendy_pki_write(c, &"world"[written], 5 - written);
+        if (n > 0) written += (size_t)n;
+        else {
+            assert(n == -2 || n == -3);
+            assert(!stream_wait(s, n == -3, esp_timer_get_time() + 3000000));
+        }
+    }
+    assert(s->partial_reads && s->partial_writes &&
+           s->blocked_reads && s->blocked_writes && s->read_waits && s->write_waits);
+    assert(s->opposite_reads && s->opposite_writes && !s->injected_wait);
+    resetting = true;
+    assert(wendy_pki_read(c, hello, 1) == -1);
+    assert(wendy_pki_write(c, "x", 1) == -1);
+    resetting = false;
+    wendy_pki_close(c);
+    /* The BLE/L2CAP owner still owns its stream after TLS teardown. */
+    assert(fcntl(s->fd, F_GETFD) >= 0);
+    close(s->fd);
 }
 
 int main(int argc, char **argv) {
@@ -120,16 +215,39 @@ int main(int argc, char **argv) {
     int fd = accept(listener, NULL, NULL); close(listener); assert(fd >= 0);
     wendy_pki_connection *c = NULL;
     const char *mode = argv[4];
+    bool stream_mode = !strncmp(mode, "stream-", 7);
+    if (stream_mode) mode += 7;
     bool lite = !strncmp(mode, "lite-", 5);
     if (lite) mode += 5;
     bool lan = !strncmp(mode, "lan-", 4);
     if (lan) mode += 4;
-    int rc = (lite ? pki_tls_accept_lite : lan ? pki_tls_accept_lan : pki_tls_accept)(fd, key, kn, (char *)cert, (struct wendy_conf_span){root, rn},
-        "2558fd76-afc7-466e-9613-6b715296a526", &c, esp_timer_get_time() + 3000000);
+    struct test_stream transport = {.fd = fd, .fail_wait = !strcmp(mode, "timeout")};
+    const struct wendy_pki_stream stream = {
+        .context = &transport, .read = stream_read, .write = stream_write, .wait = stream_wait,
+    };
+    int rc;
+    if (stream_mode) {
+        assert(!fcntl(fd, F_SETFL, O_NONBLOCK));
+        rc = pki_tls_accept_stream(&stream, key, kn, (char *)cert,
+            (struct wendy_conf_span){root, rn}, "2558fd76-afc7-466e-9613-6b715296a526",
+            &c, esp_timer_get_time() + 3000000);
+    } else {
+        rc = (lite ? pki_tls_accept_lite : lan ? pki_tls_accept_lan : pki_tls_accept)(fd, key, kn, (char *)cert, (struct wendy_conf_span){root, rn},
+            "2558fd76-afc7-466e-9613-6b715296a526", &c, esp_timer_get_time() + 3000000);
+    }
     free(key); free(cert); free(root);
-    if (!strcmp(mode, "reject")) { if (c) wendy_pki_close(c); return rc ? 0 : 1; }
+    if (!strcmp(mode, "reject") || !strcmp(mode, "timeout")) {
+        if (c) wendy_pki_close(c);
+        if (stream_mode) {
+            assert(fcntl(fd, F_GETFD) >= 0);
+            if (transport.fail_wait) assert(transport.read_waits + transport.write_waits > 0);
+            close(fd);
+        }
+        return rc ? 0 : 1;
+    }
     if (rc) return 2;
     assert(wendy_pki_get_peer_role(c) == (!strcmp(mode, "valid-device") ? WENDY_PEER_ROLE_DEVICE : WENDY_PEER_ROLE_OPERATOR));
+    if (stream_mode) { stream_exchange(c, &transport); return 0; }
     if (!strcmp(mode, "valid-device"))
         assert(pki_relay_grant(c, NULL, esp_timer_get_time() + 3000000) == -1);
     if (argc == 8) {

@@ -26,3 +26,18 @@ esp_err_t wendy_pki_reset(const char *expected_device_id, const char *nonce_hex)
 }
 
 bool wendy_pki_reset_in_progress(void) { return false; }
+
+esp_err_t wendy_pki_accept_stream(const struct wendy_pki_stream *stream,
+                                wendy_pki_connection **connection)
+{
+    if (connection) *connection = NULL;
+    if (!stream || !stream->read || !stream->write || !stream->wait || !connection)
+        return ESP_ERR_INVALID_ARG;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+bool wendy_pki_pending(wendy_pki_connection *connection)
+{
+    (void)connection;
+    return false;
+}

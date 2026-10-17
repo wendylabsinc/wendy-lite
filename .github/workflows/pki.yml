@@ -22,6 +22,13 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: '1.27.x'
+      - name: Verify BLE advertising and enrollment states
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          cmake -S components/wendy_ble/tests -B build-ble-tests -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          cmake --build build-ble-tests -j2
+          ctest --test-dir build-ble-tests --output-on-failure
       - name: Verify pki-core timestamp and certificate fixtures
         shell: bash
         run: |

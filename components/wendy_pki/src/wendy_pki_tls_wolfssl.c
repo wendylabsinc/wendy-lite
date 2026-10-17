@@ -42,6 +42,17 @@ static int io_recv(WOLFSSL *ssl, char *buf, int size, void *context)
 {
     (void)ssl;
     wendy_pki_connection *c = context;
+    if (c->stream.read) {
+        ssize_t n = c->stream.read(c->stream.context, buf, (size_t)size);
+        // wolfSSL aliases its callback WANT_READ/WANT_WRITE codes. Retain the
+        // actual transport direction for wait() and the public retry result.
+        c->stream_want = n == -2 || n == -3 ? (int)n : 0;
+        if (n == -2) return WOLFSSL_CBIO_ERR_WANT_READ;
+        if (n == -3) return WOLFSSL_CBIO_ERR_WANT_WRITE;
+        if (n > 0 && n <= size) c->socket_read_bytes += (uint64_t)n;
+        return n == 0 ? WOLFSSL_CBIO_ERR_CONN_CLOSE :
+            n < 0 || n > size ? WOLFSSL_CBIO_ERR_GENERAL : (int)n;
+    }
     int n = recv(c->fd, buf, size, 0);
     if (n > 0) c->socket_read_bytes += (unsigned)n;
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
@@ -52,6 +63,14 @@ static int io_send(WOLFSSL *ssl, char *buf, int size, void *context)
 {
     (void)ssl;
     wendy_pki_connection *c = context;
+    if (c->stream.write) {
+        ssize_t n = c->stream.write(c->stream.context, buf, (size_t)size);
+        c->stream_want = n == -2 || n == -3 ? (int)n : 0;
+        if (n == -2) return WOLFSSL_CBIO_ERR_WANT_READ;
+        if (n == -3) return WOLFSSL_CBIO_ERR_WANT_WRITE;
+        if (n > 0 && n <= size) c->socket_written_bytes += (uint64_t)n;
+        return n <= 0 || n > size ? WOLFSSL_CBIO_ERR_GENERAL : (int)n;
+    }
     int n = send(c->fd, buf, size, 0);
     if (n > 0) c->socket_written_bytes += (unsigned)n;
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
@@ -75,6 +94,11 @@ static int wait_socket(wendy_pki_connection *c, int error, int64_t deadline)
     int64_t left = deadline - esp_timer_get_time();
     if (left <= 0)
         return -1;
+    if (c->stream.wait) {
+        if (wendy_pki_reset_in_progress()) return -1;
+        bool writing = c->stream_want ? c->stream_want == -3 : error == WOLFSSL_ERROR_WANT_WRITE;
+        return c->stream.wait(c->stream.context, writing, deadline);
+    }
     fd_set rd, wr;
     FD_ZERO(&rd);
     FD_ZERO(&wr);
@@ -87,6 +111,7 @@ static int wait_socket(wendy_pki_connection *c, int error, int64_t deadline)
 }
 static int detach_socket(wendy_pki_connection *c)
 {
+    if (!c || c->stream.read || c->fd < 0) return -1;
     int64_t deadline = esp_timer_get_time() + 10000000;
     unsigned char byte;
     for (;;) {
@@ -244,6 +269,8 @@ static ssize_t result(wendy_pki_connection *c, int n)
     int e = wolfSSL_get_error(c->ssl, n);
     if (e == WOLFSSL_ERROR_ZERO_RETURN &&
         (wolfSSL_get_shutdown(c->ssl) & WOLFSSL_RECEIVED_SHUTDOWN)) return 0;
+    if (c->stream_want && (e == WOLFSSL_ERROR_WANT_READ || e == WOLFSSL_ERROR_WANT_WRITE))
+        return c->stream_want;
     return e == WOLFSSL_ERROR_WANT_READ ? -2 : e == WOLFSSL_ERROR_WANT_WRITE ? -3 : -1;
 }
 ssize_t wendy_pki_read(void *v, void *b, size_t n)
@@ -251,6 +278,7 @@ ssize_t wendy_pki_read(void *v, void *b, size_t n)
     wendy_pki_connection *c = v;
     if (wendy_pki_reset_in_progress() || n > INT_MAX ||
         (c->relay_expires_us && esp_timer_get_time() >= c->relay_expires_us)) return -1;
+    c->stream_want = 0;
     return result(c, wolfSSL_read(c->ssl, b, n));
 }
 ssize_t wendy_pki_write(void *v, const void *b, size_t n)
@@ -258,7 +286,14 @@ ssize_t wendy_pki_write(void *v, const void *b, size_t n)
     wendy_pki_connection *c = v;
     if (wendy_pki_reset_in_progress() || n > INT_MAX ||
         (c->relay_expires_us && esp_timer_get_time() >= c->relay_expires_us)) return -1;
+    c->stream_want = 0;
     return result(c, wolfSSL_write(c->ssl, b, n));
+}
+bool wendy_pki_pending(wendy_pki_connection *c)
+{
+    return c && !wendy_pki_reset_in_progress() &&
+        (!c->relay_expires_us || esp_timer_get_time() < c->relay_expires_us) &&
+        wolfSSL_pending(c->ssl) > 0;
 }
 #include "wendy_pki_http_response.h"
 static int write_all(wendy_pki_connection *c, const void *b, size_t n, int64_t deadline)
@@ -385,18 +420,22 @@ int pki_http_post(const char *url, const char *type, const char *token, const vo
  * accept a same-tenant device, with its role fixed for the TLS 1.3 session. */
 static int accept_peer(int fd, const uint8_t *key, size_t key_size, const char *cert,
                        struct wendy_conf_span roots, const char *tenant,
-                       wendy_pki_connection **out, int64_t deadline, bool allow_device, bool lite)
+                       wendy_pki_connection **out, int64_t deadline, bool allow_device, bool lite,
+                       const struct wendy_pki_stream *stream)
 {
+    if (out) *out = NULL;
     pthread_once(&tls_once, init_tls);
     if (!tls_ready || !key || !key_size || key_size > INT_MAX || !cert ||
-        !roots.data || !roots.size || roots.size > 16384 || !tenant) {
-        close(fd);
+        !roots.data || !roots.size || roots.size > 16384 || !tenant || !out ||
+        (stream && (!stream->read || !stream->write || !stream->wait))) {
+        if (fd >= 0) close(fd);
         return -1;
     }
     wendy_pki_connection *c = calloc(1, sizeof *c);
-    if (!c) { close(fd); return -1; }
+    if (!c) { if (fd >= 0) close(fd); return -1; }
     c->fd = fd;
-    if (fd < 0 || fd >= FD_SETSIZE || fcntl(fd, F_SETFL, O_NONBLOCK) < 0) goto fail;
+    if (stream) c->stream = *stream;
+    else if (fd < 0 || fd >= FD_SETSIZE || fcntl(fd, F_SETFL, O_NONBLOCK) < 0) goto fail;
     c->ctx = wolfSSL_CTX_new(wolfTLSv1_3_server_method());
     if (!c->ctx) goto fail;
     // Build the complete certificate flight before nonblocking socket writes.
@@ -414,8 +453,13 @@ static int accept_peer(int fd, const uint8_t *key, size_t key_size, const char *
     wolfSSL_SetIOReadCtx(c->ssl, c);
     wolfSSL_SetIOWriteCtx(c->ssl, c);
     int r;
-    while ((r = wolfSSL_accept(c->ssl)) != WOLFSSL_SUCCESS)
+    for (;;) {
+        c->stream_want = 0;
+        r = wolfSSL_accept(c->ssl);
+        if (r == WOLFSSL_SUCCESS) break;
         if (wait_socket(c, wolfSSL_get_error(c->ssl, r), deadline)) goto fail;
+    }
+    if (stream && (wendy_pki_reset_in_progress() || esp_timer_get_time() >= deadline)) goto fail;
     WOLFSSL_X509 *peer = wolfSSL_get_peer_certificate(c->ssl);
     int peer_size = 0;
     const uint8_t *peer_der = peer ? wolfSSL_X509_get_der(peer, &peer_size) : NULL;
@@ -441,21 +485,32 @@ int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, const char *cert
                    struct wendy_conf_span roots, const char *tenant,
                    wendy_pki_connection **out, int64_t deadline)
 {
-    return accept_peer(fd, key, key_size, cert, roots, tenant, out, deadline, false, false);
+    return accept_peer(fd, key, key_size, cert, roots, tenant, out, deadline, false, false, NULL);
+}
+
+int pki_tls_accept_stream(const struct wendy_pki_stream *stream,
+                          const uint8_t *key, size_t key_size, const char *cert,
+                          struct wendy_conf_span roots, const char *tenant,
+                          wendy_pki_connection **out, int64_t deadline)
+{
+    if (out) *out = NULL;
+    if (!stream || wendy_pki_reset_in_progress() || esp_timer_get_time() >= deadline)
+        return -1;
+    return accept_peer(-1, key, key_size, cert, roots, tenant, out, deadline, false, false, stream);
 }
 
 int pki_tls_accept_lan(int fd, const uint8_t *key, size_t key_size, const char *cert,
                        struct wendy_conf_span roots, const char *tenant,
                        wendy_pki_connection **out, int64_t deadline)
 {
-    return accept_peer(fd, key, key_size, cert, roots, tenant, out, deadline, true, false);
+    return accept_peer(fd, key, key_size, cert, roots, tenant, out, deadline, true, false, NULL);
 }
 
 int pki_tls_accept_lite(int fd, const uint8_t *key, size_t key_size, const char *cert,
                        struct wendy_conf_span roots, const char *tenant,
                        wendy_pki_connection **out, int64_t deadline)
 {
-    return accept_peer(fd, key, key_size, cert, roots, tenant, out, deadline, false, true);
+    return accept_peer(fd, key, key_size, cert, roots, tenant, out, deadline, false, true, NULL);
 }
 
 enum wendy_peer_role wendy_pki_get_peer_role(const wendy_pki_connection *connection)
