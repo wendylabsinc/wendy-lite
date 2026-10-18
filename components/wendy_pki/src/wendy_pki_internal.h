@@ -61,3 +61,7 @@ int pki_tls_accept_lite(int fd, const uint8_t *key, size_t key_size, const char 
                        wendy_pki_connection **out, int64_t deadline);
 
 int pki_relay_grant(wendy_pki_connection *, const struct wendy_lite_trust *, int64_t deadline);
+
+int pki_tls_mesh_stream(const struct wendy_pki_stream*, bool server, const char* tenant,
+    const char* device, const char* peer, const uint8_t* key, size_t key_size,
+    const char* cert, struct wendy_conf_span roots, wendy_pki_connection** out);

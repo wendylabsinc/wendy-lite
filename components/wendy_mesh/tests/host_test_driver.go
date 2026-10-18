@@ -104,74 +104,107 @@ func main() {
 	wrong := certificate("wrong", tenant, device, false)
 	foreign := certificate("foreign", device, router, false)
 	expired := certificate("expired", tenant, router, true)
-	for _, test := range []struct {
-		name, alpn string
-		cert       tls.Certificate
-		version    uint16
-		accept     bool
-	}{
-		{"valid", "wendy-local-mesh-leaf/3", good, tls.VersionTLS13, true},
-		{"legacy-v2", "wendy-local-mesh-leaf/2", good, tls.VersionTLS13, false},
-		{"wrong-router", "wendy-local-mesh-leaf/3", wrong, tls.VersionTLS13, false},
-		{"wrong-tenant", "wendy-local-mesh-leaf/3", foreign, tls.VersionTLS13, false},
-		{"wrong-alpn", "wendy-local-mesh-ble/3", good, tls.VersionTLS13, false},
-		{"missing-alpn", "", good, tls.VersionTLS13, false},
-		{"expired", "wendy-local-mesh-leaf/3", expired, tls.VersionTLS13, false},
-		{"tls12", "wendy-local-mesh-leaf/3", good, tls.VersionTLS12, false},
-	} {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
-		must(err)
-		done := make(chan error, 1)
-		go func() {
-			conn, err := listener.Accept()
-			if err != nil {
-				done <- err
-				return
-			}
-			defer conn.Close()
-			conn.SetDeadline(time.Now().Add(8 * time.Second))
-			preface := make([]byte, 36)
-			_, err = io.ReadFull(conn, preface)
-			if err != nil {
-				done <- err
-				return
-			}
-			tu, _ := hex.DecodeString(strings.ReplaceAll(tenant, "-", ""))
-			du, _ := hex.DecodeString(strings.ReplaceAll(device, "-", ""))
-			expected := append(append([]byte("WML3"), tu...), du...)
-			if !bytes.Equal(preface, expected) {
-				done <- fmt.Errorf("bad preface")
-				return
-			}
-			cfg := &tls.Config{MinVersion: test.version, MaxVersion: test.version, Certificates: []tls.Certificate{test.cert}, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: pool, SessionTicketsDisabled: true}
-			if test.alpn != "" {
-				cfg.NextProtos = []string{test.alpn}
-			}
-			server := tls.Server(conn, cfg)
-			err = server.Handshake()
-			if test.accept && err == nil {
-				st := server.ConnectionState()
-				if st.Version != tls.VersionTLS13 || st.NegotiatedProtocol != "wendy-local-mesh-leaf/3" || st.DidResume || len(st.PeerCertificates) == 0 {
-					err = fmt.Errorf("bad TLS state")
+	for _, mode := range []string{"tcp", "client", "server"} {
+		for _, test := range []struct {
+			name, alpn string
+			cert       tls.Certificate
+			version    uint16
+			accept     bool
+		}{
+			{"valid", "wendy-local-mesh-leaf/3", good, tls.VersionTLS13, true},
+			{"legacy-v2", "wendy-local-mesh-leaf/2", good, tls.VersionTLS13, false},
+			{"wrong-router", "wendy-local-mesh-leaf/3", wrong, tls.VersionTLS13, false},
+			{"wrong-tenant", "wendy-local-mesh-leaf/3", foreign, tls.VersionTLS13, false},
+			{"wrong-alpn", "wendy-local-mesh-ble/3", good, tls.VersionTLS13, false},
+			{"missing-alpn", "", good, tls.VersionTLS13, false},
+			{"expired", "wendy-local-mesh-leaf/3", expired, tls.VersionTLS13, false},
+			{"tls12", "wendy-local-mesh-leaf/3", good, tls.VersionTLS12, false},
+		} {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			must(err)
+			done := make(chan error, 1)
+			go func() {
+				conn, err := listener.Accept()
+				if err != nil {
+					done <- err
+					return
 				}
+				defer conn.Close()
+				conn.SetDeadline(time.Now().Add(8 * time.Second))
+
+				var server *tls.Conn
+				cfg := &tls.Config{MinVersion: test.version, MaxVersion: test.version, Certificates: []tls.Certificate{test.cert}, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: pool, SessionTicketsDisabled: true}
+				if test.alpn != "" {
+					cfg.NextProtos = []string{test.alpn}
+				}
+				tu, _ := hex.DecodeString(strings.ReplaceAll(tenant, "-", ""))
+				if mode == "server" {
+					du, _ := hex.DecodeString(strings.ReplaceAll(router, "-", ""))
+					_, err = conn.Write(append(append([]byte("WML3"), tu...), du...))
+					if err != nil {
+						done <- err
+						return
+					}
+					// No DNS name on mesh certificates. Still independently verify
+					// the server's chain and exact SPIFFE URI in this test client.
+					cfg.InsecureSkipVerify = true
+					cfg.VerifyConnection = func(st tls.ConnectionState) error {
+						chain := x509.NewCertPool()
+						for _, cert := range st.PeerCertificates[1:] {
+							chain.AddCert(cert)
+						}
+						_, err := st.PeerCertificates[0].Verify(x509.VerifyOptions{Roots: pool, Intermediates: chain})
+						if err != nil {
+							return err
+						}
+						uris := st.PeerCertificates[0].URIs
+						if len(uris) != 1 || uris[0].String() != "spiffe://wendy.sh/tenant/"+tenant+"/device/"+device {
+							return fmt.Errorf("wrong server principal")
+						}
+						return nil
+					}
+					server = tls.Client(conn, cfg)
+				} else {
+					preface := make([]byte, 36)
+					_, err = io.ReadFull(conn, preface)
+					if err != nil {
+						done <- err
+						return
+					}
+					du, _ := hex.DecodeString(strings.ReplaceAll(device, "-", ""))
+					expected := append(append([]byte("WML3"), tu...), du...)
+					if !bytes.Equal(preface, expected) {
+						done <- fmt.Errorf("bad preface")
+						return
+					}
+					server = tls.Server(conn, cfg)
+				}
+				err = server.Handshake()
+				if test.accept && err == nil {
+					st := server.ConnectionState()
+					if st.Version != tls.VersionTLS13 || st.NegotiatedProtocol != "wendy-local-mesh-leaf/3" || st.DidResume || len(st.PeerCertificates) == 0 {
+						err = fmt.Errorf("bad TLS state")
+					}
+				}
+				if !test.accept {
+					err = nil
+				}
+				done <- err
+			}()
+			expectation := "reject"
+			if test.accept {
+				expectation = "accept"
 			}
-			if !test.accept {
-				err = nil
+			port := fmt.Sprint(listener.Addr().(*net.TCPAddr).Port)
+			cmd := exec.Command(os.Args[2], filepath.Join(dir, "leaf.der"), filepath.Join(dir, "leaf.pem"), filepath.Join(dir, "roots.pem"), port, tenant, device, router, expectation)
+			cmd.Env = append(os.Environ(), "MESH_STREAM_MODE="+mode)
+			output, err := cmd.CombinedOutput()
+			listener.Close()
+			serverErr := <-done
+			if err != nil || serverErr != nil {
+				panic(fmt.Sprintf("%s: C=%v Go=%v output=%s", test.name, err, serverErr, output))
 			}
-			done <- err
-		}()
-		expectation := "reject"
-		if test.accept {
-			expectation = "accept"
+			fmt.Println("PASS mesh TLS", mode, test.name)
 		}
-		port := fmt.Sprint(listener.Addr().(*net.TCPAddr).Port)
-		cmd := exec.Command(os.Args[2], filepath.Join(dir, "leaf.der"), filepath.Join(dir, "leaf.pem"), filepath.Join(dir, "roots.pem"), port, tenant, device, router, expectation)
-		output, err := cmd.CombinedOutput()
-		listener.Close()
-		serverErr := <-done
-		if err != nil || serverErr != nil {
-			panic(fmt.Sprintf("%s: C=%v Go=%v output=%s", test.name, err, serverErr, output))
-		}
-		fmt.Println("PASS mesh TLS", test.name)
 	}
 }

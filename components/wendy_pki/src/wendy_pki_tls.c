@@ -186,15 +186,16 @@ int wendy_pki_detach(wendy_pki_connection *c)
         wendy_pki_close(c);
     return fd;
 }
-static int connect_client(const char* host, unsigned port, const uint8_t* key, size_t key_size,
+static int open_tls(const char* host, unsigned port, const uint8_t* key, size_t key_size,
     const char* cert, struct wendy_conf_span roots, wendy_pki_connection** out, const char* tenant,
-    const char* device, const char* router)
+    const char* device, const char* router, const struct wendy_pki_stream* stream, bool server)
 {
     if (out)
         *out = NULL;
     bool mesh = tenant != NULL;
-    if (!out || !roots.data || !roots.size || !host || !host[0] || strlen(host) > 253 || !port
-        || port > 65535)
+    if (!out || !roots.data || !roots.size
+        || (stream ? (!mesh || !stream->read || !stream->write || !stream->wait)
+                   : (!host || !host[0] || strlen(host) > 253 || !port || port > 65535)))
         return -1;
     if (mesh
         && (!device || !router || !wendy_identity_uuid((const unsigned char*)tenant, strlen(tenant))
@@ -211,7 +212,7 @@ static int connect_client(const char* host, unsigned port, const uint8_t* key, s
     struct addrinfo hints = { .ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM },
                     *addresses = NULL;
     /* Parse local credentials before starting the broker's TCP deadline. */
-    if (configure(c, 0, key, key_size, cert, roots))
+    if (configure(c, server, key, key_size, cert, roots))
         goto fail;
     if (mesh)
     {
@@ -232,46 +233,52 @@ static int connect_client(const char* host, unsigned port, const uint8_t* key, s
     }
     else if (mbedtls_ssl_set_hostname(&c->ssl, host))
         goto fail;
-    stage = "DNS";
-    char service[6];
-    snprintf(service, sizeof service, "%u", port);
-    if ((tls_error = getaddrinfo(host, service, &hints, &addresses)) != 0)
-        goto fail;
-    int64_t deadline = esp_timer_get_time() + 15000000;
-    stage = "TCP connect";
-    for (struct addrinfo* a = addresses; a; a = a->ai_next)
+    int64_t deadline = esp_timer_get_time() + 30000000;
+    if (stream)
+        c->stream = *stream;
+    else
     {
-        c->fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
-        if (c->fd < 0)
-            continue;
-        if (c->fd >= FD_SETSIZE)
+        stage = "DNS";
+        char service[6];
+        snprintf(service, sizeof service, "%u", port);
+        if ((tls_error = getaddrinfo(host, service, &hints, &addresses)) != 0)
+            goto fail;
+        deadline = esp_timer_get_time() + 15000000;
+        stage = "TCP connect";
+        for (struct addrinfo* a = addresses; a; a = a->ai_next)
         {
+            c->fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+            if (c->fd < 0)
+                continue;
+            if (c->fd >= FD_SETSIZE)
+            {
+                close(c->fd);
+                c->fd = -1;
+                continue;
+            }
+            fcntl(c->fd, F_SETFL, O_NONBLOCK);
+            int r = connect(c->fd, a->ai_addr, a->ai_addrlen);
+            if (r == 0)
+                break;
+            if (errno == EINPROGRESS && !wait_socket(c, MBEDTLS_ERR_SSL_WANT_WRITE, deadline))
+            {
+                int e = 0;
+                socklen_t n = sizeof e;
+                if (!getsockopt(c->fd, SOL_SOCKET, SO_ERROR, &e, &n) && !e)
+                    break;
+            }
             close(c->fd);
             c->fd = -1;
-            continue;
         }
-        fcntl(c->fd, F_SETFL, O_NONBLOCK);
-        int r = connect(c->fd, a->ai_addr, a->ai_addrlen);
-        if (r == 0)
-            break;
-        if (errno == EINPROGRESS && !wait_socket(c, MBEDTLS_ERR_SSL_WANT_WRITE, deadline))
-        {
-            int e = 0;
-            socklen_t n = sizeof e;
-            if (!getsockopt(c->fd, SOL_SOCKET, SO_ERROR, &e, &n) && !e)
-                break;
-        }
-        close(c->fd);
-        c->fd = -1;
+        freeaddrinfo(addresses);
+        addresses = NULL;
+        if (c->fd < 0)
+            goto fail;
     }
-    freeaddrinfo(addresses);
-    addresses = NULL;
-    if (c->fd < 0)
-        goto fail;
     if (mesh)
     {
         uint8_t preface[36] = { 'W', 'M', 'L', '3' };
-        const char* uuids[] = { tenant, device };
+        const char* uuids[] = { tenant, server ? router : device };
         for (unsigned u = 0; u < 2; u++)
         {
             unsigned offset = 4 + u * 16;
@@ -291,15 +298,19 @@ static int connect_client(const char* host, unsigned port, const uint8_t* key, s
                 preface[offset++] = value;
             }
         }
+        uint8_t received[36];
         size_t written = 0;
         while (written < sizeof preface)
         {
-            int sent = io_send(c, preface + written, sizeof preface - written);
+            int sent = server ? io_recv(c, received + written, sizeof received - written)
+                              : io_send(c, preface + written, sizeof preface - written);
             if (sent > 0)
                 written += sent;
             else if (wait_socket(c, sent, deadline))
                 goto fail;
         }
+        if (server && memcmp(received, preface, sizeof preface))
+            goto fail;
     }
     stage = "TLS handshake";
     int r;
@@ -364,7 +375,7 @@ static int connect_client(const char* host, unsigned port, const uint8_t* key, s
     *out = c;
     return 0;
 fail:
-    ESP_LOGW("wendy_pki", "TLS client failed at %s (%s:%u, tls=%d, errno=%d)", stage, host, port,
+    ESP_LOGW("wendy_pki", "TLS peer failed at %s (%s:%u, tls=%d, errno=%d)", stage, host, port,
         tls_error, errno);
     if (addresses)
         freeaddrinfo(addresses);
@@ -374,13 +385,36 @@ fail:
 int pki_tls_connect(const char* host, unsigned port, const uint8_t* key, size_t key_size,
     const char* cert, struct wendy_conf_span roots, wendy_pki_connection** out)
 {
-    return connect_client(host, port, key, key_size, cert, roots, out, NULL, NULL, NULL);
+    return open_tls(host, port, key, key_size, cert, roots, out, NULL, NULL, NULL, NULL, false);
 }
 int pki_tls_mesh_connect(const char* host, unsigned port, const char* tenant, const char* device,
     const char* router, const uint8_t* key, size_t key_size, const char* cert,
     struct wendy_conf_span roots, wendy_pki_connection** out)
 {
-    return connect_client(host, port, key, key_size, cert, roots, out, tenant, device, router);
+    return open_tls(host, port, key, key_size, cert, roots, out, tenant, device, router, NULL, false);
+}
+int pki_tls_mesh_stream(const struct wendy_pki_stream* stream, bool server,
+    const char* tenant, const char* device, const char* peer, const uint8_t* key,
+    size_t key_size, const char* cert, struct wendy_conf_span roots, wendy_pki_connection** out)
+{
+    return open_tls("radio", 0, key, key_size, cert, roots, out,
+        tenant, device, peer, stream, server);
+}
+/* Readiness is only a hint. Stream callbacks may wake spuriously. */
+int wendy_pki_wait(wendy_pki_connection* c, bool writing, int64_t deadline)
+{
+    if (!c || wendy_pki_reset_in_progress()) return -1;
+    if (!writing && wendy_pki_pending(c)) return 1;
+    int64_t left = deadline - esp_timer_get_time();
+    if (left <= 0) return 0;
+    if (c->stream.wait)
+        return c->stream.wait(c->stream.context, writing, deadline) < 0 ? -1 : 1;
+    if (c->fd < 0 || c->fd >= FD_SETSIZE) return -1;
+    fd_set set;
+    FD_ZERO(&set);
+    FD_SET(c->fd, &set);
+    struct timeval timeout = { left / 1000000, left % 1000000 };
+    return select(c->fd + 1, writing ? NULL : &set, writing ? &set : NULL, NULL, &timeout);
 }
 int wendy_pki_mesh_sign(wendy_pki_connection* c, const char* principal, const void* body,
     size_t size, uint8_t signature[80], size_t* signature_size)

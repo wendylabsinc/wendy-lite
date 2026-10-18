@@ -28,6 +28,7 @@ static bool distinct_issued_certificate, stored_is_issued, pending_is_issued;
 static bool issuance_received, fail_post_issue_time;
 static time_t issued_not_before, issued_expiry;
 static int timestamp_calls;
+static bool reject_radio_time;
 static uint64_t mesh_reserved;
 static int mesh_connect_calls;
 static bool mesh_tls_failure;
@@ -221,6 +222,7 @@ size_t wendy_pki_time_request(uint8_t out[128], const uint8_t nonce[32]) { retur
 int wendy_pki_verify_time(const uint8_t *input, size_t size, const uint8_t nonce[32],
                           const uint8_t *roots, size_t roots_size, time_t floor, time_t *out)
 {
+    if (reject_radio_time && input && size == 3 && !memcmp(input, "tsa", 3)) return -1;
     assert(roots == (config.provision_trust ? usb_roots : wendy_pki_tsa_roots_start));
     *out = issuance_received && distinct_issued_certificate ? issued_not_before : signed_now;
     return 0;
@@ -686,6 +688,51 @@ int pki_tls_mesh_connect(const char* host, unsigned port, const char* tenant, co
     *out = &stream_connection;
     return 0;
 }
+int pki_tls_mesh_stream(const struct wendy_pki_stream* stream, bool server,
+    const char* tenant, const char* device, const char* router, const uint8_t* key,
+    size_t key_size, const char* cert, struct wendy_conf_span roots, wendy_pki_connection** out)
+{
+    return pki_tls_mesh_connect("stream", 0, tenant, device, router, key, key_size, cert, roots, out);
+}
+struct radio_time_io { size_t read, written; uint8_t response[7], request[256]; };
+static ssize_t radio_time_read(void* context, void* data, size_t n)
+{
+    struct radio_time_io* io = context;
+    if (io->read == sizeof io->response) return 0;
+    if (n > 2) n = 2;
+    if (n > sizeof io->response - io->read) n = sizeof io->response - io->read;
+    memcpy(data, io->response + io->read, n); io->read += n; return n;
+}
+static ssize_t radio_time_write(void* context, const void* data, size_t n)
+{
+    struct radio_time_io* io = context;
+    if (n > 2) n = 2;
+    assert(n <= sizeof io->request - io->written);
+    memcpy(io->request + io->written, data, n); io->written += n; return n;
+}
+static void test_mesh_radio_time(void)
+{
+    const char* peer = "12345678-9abc-4def-8123-000000000003";
+    for (int scenario = 0; scenario < 4; ++scenario) {
+        reset();
+        strcpy(config.device_id, "12345678-9abc-4def-8123-000000000002");
+        struct radio_time_io io = { .response = {0,0,0,3,'t','s','a'} };
+        if (scenario == 1) io.response[1] = 2; // >64 KiB
+        if (scenario == 2) io.response[3] = 0; // empty
+        reject_radio_time = scenario == 3; // signature/nonce verifier rejects
+        struct wendy_pki_stream stream = { .context = &io, .read = radio_time_read,
+            .write = radio_time_write, .wait = unused_stream_wait };
+        struct wendy_pki_mesh_identity identity;
+        wendy_pki_connection* connection = NULL;
+        esp_err_t result = wendy_pki_mesh_stream(&stream, false, peer, &connection, &identity);
+        assert((result == ESP_OK) == (scenario == 0));
+        assert(!timestamp_calls && !renewal_calls && !broker_calls);
+        assert(io.written == 9 && !memcmp(io.request, "WMT3", 4));
+        if (scenario == 0) { assert(mesh_reserved == 1024 && mesh_connect_calls == 1); wendy_pki_close(connection); }
+        else assert(!connection && !mesh_connect_calls && !mesh_reserved);
+    }
+    reject_radio_time = false;
+}
 static void test_mesh_identity(void)
 {
     const char* router = "12345678-9abc-4def-8123-000000000003";
@@ -821,6 +868,7 @@ int main(int argc, char **argv)
     test_stream_stored_identity();
 #if CONFIG_WENDY_MESH_LEAF
     test_mesh_identity();
+    test_mesh_radio_time();
 #endif
     puts("renewal fallback, Lite authority lifecycle and local enrollment reset tests passed");
 }

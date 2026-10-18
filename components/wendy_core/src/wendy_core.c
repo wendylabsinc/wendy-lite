@@ -45,6 +45,7 @@
 
 #if CONFIG_WENDY_WIFI_ENABLED
 #include "wendy_wifi.h"
+#include "wendy_mesh.h"
 #include "wendy_com.h"
 #endif
 
@@ -1014,6 +1015,11 @@ esp_err_t wendy_core_init(void)
         ESP_LOGW(TAG, "WiFi init failed (running without WiFi)");
     }
 #endif /* CONFIG_WENDY_WIFI_ENABLED */
+#if CONFIG_WENDY_MESH_LEAF
+    err = wendy_mesh_start();
+    if (err != ESP_OK) ESP_LOGW(TAG, "mesh not started: %s", esp_err_to_name(err));
+#endif
+
 
     /* ── App start gate: honor the reboot params ─────────────────────── */
 
