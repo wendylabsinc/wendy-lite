@@ -58,8 +58,11 @@ CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=247
 # input size. IDF's dynamic allocator can allocate only the current record's
 # size, so use fixed buffers to keep that bound equal to the allocation.
 CONFIG_MBEDTLS_DYNAMIC_BUFFER=n
-# ML-DSA-65 peer chains need the full TLS record-sized input buffer.
+# Mixed ML-DSA-65/87 chains need full TLS records plus handshake reassembly.
 CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+# Use the system allocator so boards with PSRAM can keep large TLS buffers
+# outside the internal RAM reserved for DMA and task stacks.
+CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y
 
 # App-facing networking (sockets, DNS, TLS)
 CONFIG_WENDY_NET=n
@@ -102,7 +105,7 @@ CONFIG_BOOTLOADER_WDT_TIME_MS=40000
 # Start the enrollment task when Wi-Fi connects and enrollment is configured.
 CONFIG_WENDY_CLOUD=y
 
-# esp-pqc verifies ML-DSA-65 certificate chains and timestamp signatures.
+# esp-pqc verifies ML-DSA-65 identities/timestamps and ML-DSA-65/87 CAs.
 # Device keys and relay grants remain P-256; PQ key exchange is not required.
 CONFIG_LIBOQS_ENABLED=y
 CONFIG_LIBOQS_ENABLE_SIG_ML_DSA=y

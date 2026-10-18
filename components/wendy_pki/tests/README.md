@@ -1,7 +1,7 @@
 # PKI interoperability tests
 
 The host tests build the pinned esp-pqc mbedTLS 4 and liboqs libraries with
-ML-DSA-65 verification. Initialize nested dependencies with
+ML-DSA-65 identity signatures and ML-DSA-65/87 CA verification. Initialize nested dependencies with
 `git submodule update --init --recursive components/esp-pqc`, set `IDF_PATH` to
 ESP-IDF 6.0.3, and install Go 1.27 or newer before configuring:
 
@@ -85,7 +85,13 @@ waits are rejected. The tests check buffered plaintext readiness, revocation
 during reset, refusal to detach a stream as a socket, and transport ownership
 after both accepted and rejected handshakes.
 The same cases run with ML-DSA-65 roots and P-256 device/operator keys.
-ML-DSA-44 and ML-DSA-87 chains must be rejected.
+A separate case authenticates a P-256 device and an ML-DSA-65 operator through
+the complete enrollment chain: an ML-DSA-87 root and customer CA followed by
+ML-DSA-65 tenant and identity CAs. The operator chain crosses the 16 KiB TLS
+record boundary. Tampered signatures from either ML-DSA-87 CA are rejected.
+The server must advertise ML-DSA-65 CertificateVerify and must not advertise
+ML-DSA-44 or ML-DSA-87. Operator leaves using either unsupported parameter set
+fail authentication.
 
 `operator_auth_test_driver.go` creates temporary signed certificates for the
 legacy LAN/BLE authentication helper. Unit checks cover device tenant extraction,
@@ -144,8 +150,8 @@ A second Mbed TLS client negotiates 512-byte TLS records and sends a valid
 ML-DSA-65-signed P-256 operator chain to the production stream server. This
 exercises incoming handshake reassembly across records, separately from the
 transport callbacks' short reads. Incoming Certificate handshakes remain bounded
-by the configured 16 KiB input buffer; a valid chain exceeding that limit is
-rejected. The outgoing patch does not enlarge this bound.
+to 32 KiB while TLS records remain bounded to 16 KiB. A valid chain exceeding the
+handshake limit is rejected.
 Firmware disables IDF dynamic buffers because their allocation can follow the
 current record's size while the bundled library bounds reassembly against the
 configured input size. The fixed-buffer host tests cover the chosen allocation

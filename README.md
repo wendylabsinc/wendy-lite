@@ -9,7 +9,8 @@ Wendy Lite also supports native applications, written in C and C++ and built usi
 Build with ESP-IDF 6.0.3, or ESP-IDF 6.1 for the ESP32-S31 preview target.
 Initialize nested dependencies with
 `git submodule update --init --recursive`. The pinned esp-pqc component supplies
-mbedTLS 4 and ML-DSA-65 certificate verification; P-256 device keys remain supported.
+mbedTLS 4, ML-DSA-65 operator identities, and ML-DSA-65/87 CA verification;
+P-256 device keys remain supported.
 CI uses `espressif/idf:v6.0.3` for existing targets and `espressif/idf:v6.1`
 for ESP32-S31. To build ESP32-C6 with the same container:
 

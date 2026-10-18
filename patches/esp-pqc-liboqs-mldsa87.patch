@@ -1,0 +1,103 @@
+--- a/src/sig/ml_dsa/mldsa-native_ml-dsa-87_ref/integration/liboqs/config_c.h
++++ b/src/sig/ml_dsa/mldsa-native_ml-dsa-87_ref/integration/liboqs/config_c.h
+@@ -25,11 +25,34 @@
+ #endif
+ #endif /* !__ASSEMBLER__ */
+ 
++/* ESP builds supply the standalone Keccak header through CMake. */
++#if !defined(OQS_ESP32_BUILD)
+ /* Use OQS's FIPS202 via glue headers */
+ #define MLD_CONFIG_FIPS202_CUSTOM_HEADER \
+   "../../integration/liboqs/fips202_glue.h"
+ #define MLD_CONFIG_FIPS202X4_CUSTOM_HEADER \
+   "../../integration/liboqs/fips202x4_glue.h"
++#endif
++
++#if defined(OQS_ESP32_BUILD)
++/* Keep the large matrix and polynomial temporaries off the task stack.
++ * mldsa-native zeroizes these allocations and reports allocation failures. */
++#if (!defined(MLD_HEAP_TEMPORARIES) || MLD_HEAP_TEMPORARIES) && \
++    !defined(LIBOQS_MLD_EXTERNAL_ALLOC)
++#define MLD_CONFIG_REDUCE_RAM
++#define MLD_CONFIG_CUSTOM_ALLOC_FREE
++#if !defined(__ASSEMBLER__)
++#include <stdlib.h>
++#define MLD_CUSTOM_ALLOC(v, T, N) T *v = (T *)malloc(sizeof(T) * (N))
++#define MLD_CUSTOM_FREE(v, T, N) free(v)
++#endif
++#endif
++
++#if defined(LIBOQS_MLD_VERIFY_ONLY)
++#define MLD_CONFIG_NO_KEYPAIR_API
++#define MLD_CONFIG_NO_SIGN_API
++#endif
++#endif
+ 
+ /******************************************************************************
+  * Name:        MLD_CONFIG_PARAMETER_SET
+--- a/src/sig/ml_dsa/sig_ml_dsa_87.c
++++ b/src/sig/ml_dsa/sig_ml_dsa_87.c
+@@ -49,6 +49,11 @@
+ #endif
+ 
+ OQS_API OQS_STATUS OQS_SIG_ml_dsa_87_keypair(uint8_t *public_key, uint8_t *secret_key) {
++#if defined(OQS_ESP32_BUILD) && defined(LIBOQS_MLD_VERIFY_ONLY)
++	(void)public_key;
++	(void)secret_key;
++	return OQS_ERROR;
++#else
+ #if defined(OQS_ENABLE_SIG_ml_dsa_87_x86_64)
+ #if defined(OQS_DIST_BUILD)
+ 	if (OQS_CPU_has_extension(OQS_CPU_EXT_AVX2) && OQS_CPU_has_extension(OQS_CPU_EXT_BMI2) && OQS_CPU_has_extension(OQS_CPU_EXT_POPCNT)) {
+@@ -72,9 +77,18 @@
+ #else
+ 	return (OQS_STATUS) PQCP_MLDSA_NATIVE_MLDSA87_C_keypair(public_key, secret_key);
+ #endif
++#endif
+ }
+ 
+ OQS_API OQS_STATUS OQS_SIG_ml_dsa_87_sign(uint8_t *signature, size_t *signature_len, const uint8_t *message, size_t message_len, const uint8_t *secret_key) {
++#if defined(OQS_ESP32_BUILD) && defined(LIBOQS_MLD_VERIFY_ONLY)
++	(void)signature;
++	(void)signature_len;
++	(void)message;
++	(void)message_len;
++	(void)secret_key;
++	return OQS_ERROR;
++#else
+ #if defined(OQS_ENABLE_SIG_ml_dsa_87_x86_64)
+ #if defined(OQS_DIST_BUILD)
+ 	if (OQS_CPU_has_extension(OQS_CPU_EXT_AVX2) && OQS_CPU_has_extension(OQS_CPU_EXT_BMI2) && OQS_CPU_has_extension(OQS_CPU_EXT_POPCNT)) {
+@@ -98,6 +112,7 @@
+ #else
+ 	return (OQS_STATUS) PQCP_MLDSA_NATIVE_MLDSA87_C_signature(signature, signature_len, message, message_len, NULL, 0, secret_key);
+ #endif
++#endif
+ }
+ 
+ OQS_API OQS_STATUS OQS_SIG_ml_dsa_87_verify(const uint8_t *message, size_t message_len, const uint8_t *signature, size_t signature_len, const uint8_t *public_key) {
+@@ -126,6 +141,16 @@
+ #endif
+ }
+ OQS_API OQS_STATUS OQS_SIG_ml_dsa_87_sign_with_ctx_str(uint8_t *signature, size_t *signature_len, const uint8_t *message, size_t message_len, const uint8_t *ctx_str, size_t ctx_str_len, const uint8_t *secret_key) {
++#if defined(OQS_ESP32_BUILD) && defined(LIBOQS_MLD_VERIFY_ONLY)
++	(void)signature;
++	(void)signature_len;
++	(void)message;
++	(void)message_len;
++	(void)ctx_str;
++	(void)ctx_str_len;
++	(void)secret_key;
++	return OQS_ERROR;
++#else
+ #if defined(OQS_ENABLE_SIG_ml_dsa_87_x86_64)
+ #if defined(OQS_DIST_BUILD)
+ 	if (OQS_CPU_has_extension(OQS_CPU_EXT_AVX2) && OQS_CPU_has_extension(OQS_CPU_EXT_BMI2) && OQS_CPU_has_extension(OQS_CPU_EXT_POPCNT)) {
+@@ -149,6 +174,7 @@
+ #else
+ 	return (OQS_STATUS) PQCP_MLDSA_NATIVE_MLDSA87_C_signature(signature, signature_len, message, message_len, ctx_str, ctx_str_len, secret_key);
+ #endif
++#endif
+ }
+ 
+ OQS_API OQS_STATUS OQS_SIG_ml_dsa_87_verify_with_ctx_str(const uint8_t *message, size_t message_len, const uint8_t *signature, size_t signature_len, const uint8_t *ctx_str, size_t ctx_str_len, const uint8_t *public_key) {

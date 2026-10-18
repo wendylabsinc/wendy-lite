@@ -29,7 +29,19 @@ EKUs and URIs, duplicate URIs, mismatched private keys, nonce mismatches,
 rollback, damaged signatures, and truncated responses. Peer hashes are checked
 against SHA-256 of the sole expected URI, including rejection of duplicate URIs.
 
-The esp-pqc host tests accept ML-DSA-65 chains and reject the retained ML-DSA-44
-and ML-DSA-87 fixtures. The separate
-Go TLS interoperability driver generates its own temporary ML-DSA operator and
-device chains for all three parameter sets.
+The esp-pqc host tests accept ML-DSA-65 and ML-DSA-87 CAs. Timestamp signers and
+operator TLS identities remain restricted to ML-DSA-65; ML-DSA-44 remains
+unsupported in every role.
+
+The `mixed87-*` fixtures reproduce the enrollment chain with an ML-DSA-87 root
+and customer CA, ML-DSA-65 tenant and identity CAs, and a P-256 device leaf.
+They cover valid chains, damaged signatures from either ML-DSA-87 CA, and
+disallowed ML-DSA-44 and HashML-DSA-87 CA algorithms. Each `mixed87-ca-*` fixture
+contains only the altered CA; the test inserts it into the shared valid chain.
+Operator leaf fixtures
+check that CA support does not admit ML-DSA-87 or ML-DSA-44 TLS identities.
+To regenerate only these fixtures while retaining the existing disposable
+device key, append `mixed-only` to the generator command above.
+
+The Go TLS interoperability driver generates separate temporary keys and
+certificates to authenticate the complete mixed chain over TLS 1.3.

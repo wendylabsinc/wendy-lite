@@ -26,6 +26,30 @@ static unsigned char *load(const char *dir, const char *name, size_t *n)
     return p;
 }
 
+/* Replace one CA while retaining the complete authenticated device chain. */
+static unsigned char *replace_pem_certificate(const unsigned char *chain,
+    size_t chain_size, size_t index, const unsigned char *replacement,
+    size_t replacement_size, size_t *size)
+{
+    const char end_marker[] = "-----END CERTIFICATE-----\n";
+    const size_t marker_size = sizeof end_marker - 1;
+    size_t begin = 0, end = 0;
+    for (size_t i = 0; i <= index; i++) {
+        begin = end;
+        while (end + marker_size <= chain_size &&
+               memcmp(chain + end, end_marker, marker_size)) end++;
+        assert(end + marker_size <= chain_size);
+        end += marker_size;
+    }
+    *size = chain_size - (end - begin) + replacement_size;
+    unsigned char *result = malloc(*size);
+    assert(result);
+    memcpy(result, chain, begin);
+    memcpy(result + begin, replacement, replacement_size);
+    memcpy(result + begin + replacement_size, chain + end, chain_size - end);
+    return result;
+}
+
 /* Locate SignerInfo.signatureAlgorithm independently of certificate OIDs. */
 typedef struct { unsigned char *raw, *body; size_t size; } test_der;
 static test_der next_der(unsigned char **cursor, const unsigned char *end, unsigned tag)
@@ -118,8 +142,9 @@ int main(int argc, char **argv)
         size_t root_n;
         snprintf(name, sizeof name, "%s-root.pem", levels[level]);
         unsigned char *root = load(argv[1], name, &root_n);
-        const int supported = !strcmp(levels[level], "65");
-        assert((wendy_pki_verify_roots(root, root_n) == 0) == supported);
+        const int supported_ca = strcmp(levels[level], "44") != 0;
+        const int supported_signer = !strcmp(levels[level], "65");
+        assert((wendy_pki_verify_roots(root, root_n) == 0) == supported_ca);
         snprintf(name, sizeof name, "%s-identity-valid.der", levels[level]);
         unsigned char *peer = load(argv[1], name, &n);
         uint8_t peer_hash[32];
@@ -141,8 +166,8 @@ int main(int argc, char **argv)
             int result = wendy_pki_verify_time(response, n, nonce, root, root_n, 0, &verified);
             printf("ML-DSA %s timestamp %s: %d\n", levels[level], times[i], result);
             fflush(stdout);
-            assert(i == 0 && supported ? result == 0 && verified == signed_time : result != 0 && verified == 123);
-            if (i == 0 && supported) {
+            assert(i == 0 && supported_signer ? result == 0 && verified == signed_time : result != 0 && verified == 123);
+            if (i == 0 && supported_signer) {
                 reject_signature_algorithm_variants(response, n, nonce, root, root_n);
                 assert(wendy_pki_verify_time(response, n, nonce, root, root_n, signed_time + 1, &verified) != 0);
                 assert(verified == signed_time);
@@ -180,8 +205,8 @@ int main(int argc, char **argv)
             int result = wendy_pki_verify_identity(identity, n, root, root_n, key, key_n, principal, signed_time, &expires);
             printf("ML-DSA %s P-256 identity %s: %d\n", levels[level], identities[i], result);
             fflush(stdout);
-            assert(i == 0 && supported ? result == 0 && expires == signed_time + 3600 : result != 0 && expires == 123);
-            if (i == 0 && supported) {
+            assert(i == 0 && supported_ca ? result == 0 && expires == signed_time + 3600 : result != 0 && expires == 123);
+            if (i == 0 && supported_ca) {
                 assert(wendy_pki_verify_identity(identity, n, root, root_n, wrong_key, wrong_key_n, principal, signed_time, &expires) != 0);
                 assert(wendy_pki_verify_identity(identity, n, root, root_n, key, key_n, principal, signed_time + 3601, &expires) != 0);
             }
@@ -189,7 +214,44 @@ int main(int argc, char **argv)
         }
         free(root);
     }
+    size_t root_n;
+    unsigned char *root = load(argv[1], "mixed87-root.pem", &root_n);
+    assert(wendy_pki_verify_roots(root, root_n) == 0);
+    size_t valid_size;
+    unsigned char *valid_chain = load(argv[1], "mixed87-identity-valid.pem", &valid_size);
+    const char *mixed[] = {"valid", "tampered-intermediate", "tampered-issuer", "hash87-intermediate", "44-intermediate"};
+    for (size_t i = 0; i < sizeof mixed / sizeof *mixed; i++) {
+        unsigned char *chain = valid_chain;
+        n = valid_size;
+        if (i) {
+            char name[128];
+            snprintf(name, sizeof name, "mixed87-ca-%s.pem", mixed[i]);
+            size_t ca_size;
+            unsigned char *ca = load(argv[1], name, &ca_size);
+            size_t index = !strcmp(mixed[i], "tampered-issuer") ? 2 : 3;
+            chain = replace_pem_certificate(valid_chain, valid_size, index,
+                ca, ca_size, &n);
+            free(ca);
+        }
+        time_t expires = 123;
+        int result = wendy_pki_verify_identity(chain, n, root, root_n,
+            key, key_n, principal, signed_time, &expires);
+        printf("Mixed ML-DSA-87 CA chain %s: %d\n", mixed[i], result);
+        assert(i == 0 ? result == 0 && expires == signed_time + 3600 : result != 0 && expires == 123);
+        if (i) free(chain);
+    }
+    free(valid_chain);
+    free(root);
+    for (size_t i = 0; i < sizeof levels / sizeof *levels; i++) {
+        char name[128];
+        snprintf(name, sizeof name, "mixed87-operator-%s.der", levels[i]);
+        unsigned char *operator = load(argv[1], name, &n);
+        int result = wendy_pki_verify_operator(operator, n,
+            "2558fd76-afc7-466e-9613-6b715296a526");
+        assert((result == 0) == !strcmp(levels[i], "65"));
+        free(operator);
+    }
     free(nonce); free(key); free(wrong_key);
-    puts("ML-DSA-65 verification and unsupported parameter-set tests passed");
+    puts("ML-DSA-65 identities and ML-DSA-65/87 CA verification tests passed");
     return 0;
 }

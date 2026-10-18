@@ -10,7 +10,7 @@ find_package(Threads REQUIRED)
 set(OQS_BUILD_ONLY_LIB ON CACHE BOOL "" FORCE)
 set(OQS_USE_OPENSSL OFF CACHE BOOL "" FORCE)
 set(OQS_DIST_BUILD OFF CACHE BOOL "" FORCE)
-set(OQS_MINIMAL_BUILD "SIG_ml_dsa_65" CACHE STRING "" FORCE)
+set(OQS_MINIMAL_BUILD "SIG_ml_dsa_65;SIG_ml_dsa_87" CACHE STRING "" FORCE)
 # Prevent liboqs from imposing Release/-DNDEBUG on the firmware tests.
 set(CMAKE_BUILD_TYPE None)
 add_subdirectory("${OQS_ROOT}" liboqs EXCLUDE_FROM_ALL)

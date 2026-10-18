@@ -43,6 +43,10 @@ func main() {
 	if len(os.Args) > 2 {
 		profile = os.Args[2]
 	}
+	if profile == "mixed87" {
+		exerciseMixedMLDSACAs(directory)
+		return
+	}
 	newIssuer := func() (crypto.Signer, error) {
 		switch profile {
 		case "p256":
@@ -362,6 +366,9 @@ func main() {
 		}
 		fmt.Println("PASS", profile, name)
 	}
+	if profile == "mldsa65" {
+		exerciseMixedMLDSACAs(directory)
+	}
 
 	// Exercise the firmware's outbound role. Three ML-DSA-65 intermediates
 	// cross the TLS record boundary, with a P-256 device key.
@@ -442,6 +449,11 @@ func main() {
 		exerciseTruncatedOutboundCertificate(directory, broker, pool)
 		largeOperator, _, _ := leaf("oversized operator", time.Now().Add(time.Hour), []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, tenant+"operator/11111111-1111-4111-8111-111111111111", issuer, parent, 0)
 		largeOperator.Certificate = append(largeOperator.Certificate, chain[1:]...)
+		// Repeating the trusted root preserves a valid certification path but
+		// forces the Certificate message over the bounded reassembly buffer.
+		for size := chainBytes; size <= 32768; size += len(rootDER) {
+			largeOperator.Certificate = append(largeOperator.Certificate, rootDER)
+		}
 		exerciseOversizedIncomingCertificate(directory, pool, largeOperator)
 	}
 	if profile == "p256" {
@@ -465,14 +477,151 @@ func exerciseRecordFragmentedPeer(directory string) {
 	fmt.Println("PASS mldsa65 incoming-512-byte-records")
 }
 
-// Outgoing Certificate fragmentation does not enlarge the incoming handshake
-// allocator. A valid but oversized peer chain must still fail closed.
+// Enrollment CAs use 87 at the root/customer tiers and 65 at the tenant and
+// identity tiers. Exercise that complete chain with a P-256 device and a real
+// ML-DSA-65 operator CertificateVerify, rather than only P-256 operator keys.
+func exerciseMixedMLDSACAs(directory string) {
+	newKey := func(params mldsa.Parameters) *mldsa.PrivateKey {
+		key, err := mldsa.GenerateKey(params)
+		must(err)
+		return key
+	}
+	rootKey := newKey(mldsa.MLDSA87())
+	newCA := func(serial int64, name string) *x509.Certificate {
+		return &x509.Certificate{SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: name}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	}
+	root := newCA(500, "mixed ML-DSA-87 root")
+	rootDER, err := x509.CreateCertificate(rand.Reader, root, root, rootKey.Public(), rootKey)
+	must(err)
+	rootPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: rootDER})
+	rootPath := filepath.Join(directory, "mixed-root.pem")
+	must(os.WriteFile(rootPath, rootPEM, 0600))
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(rootPEM)
+	parent, issuer := root, rootKey
+	var chain [][]byte
+	for index, params := range []mldsa.Parameters{mldsa.MLDSA87(), mldsa.MLDSA65(), mldsa.MLDSA65()} {
+		key := newKey(params)
+		ca := newCA(int64(501+index), fmt.Sprintf("mixed intermediate %d", index))
+		der, err := x509.CreateCertificate(rand.Reader, ca, parent, key.Public(), issuer)
+		must(err)
+		chain = append([][]byte{der}, chain...)
+		parent, issuer = ca, key
+	}
+	makeLeaf := func(key crypto.Signer, role string) tls.Certificate {
+		uri, err := url.Parse("spiffe://wendy.sh/tenant/2558fd76-afc7-466e-9613-6b715296a526/" + role + "/mixed-test")
+		must(err)
+		template := &x509.Certificate{SerialNumber: big.NewInt(510), Subject: pkix.Name{CommonName: "mixed " + role}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), BasicConstraintsValid: true, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, DNSNames: []string{"localhost"}, URIs: []*url.URL{uri}}
+		if role == "device" {
+			template.ExtKeyUsage = append(template.ExtKeyUsage, x509.ExtKeyUsageServerAuth)
+		}
+		der, err := x509.CreateCertificate(rand.Reader, template, parent, key.Public(), issuer)
+		must(err)
+		return tls.Certificate{Certificate: append([][]byte{der}, chain...), PrivateKey: key}
+	}
+	deviceKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	must(err)
+	device := makeLeaf(deviceKey, "device")
+	deviceKeyDER, err := x509.MarshalPKCS8PrivateKey(deviceKey)
+	must(err)
+	keyPath, serverPath := filepath.Join(directory, "mixed-device-key.der"), filepath.Join(directory, "mixed-device.pem")
+	must(os.WriteFile(keyPath, deviceKeyDER, 0600))
+	var serverPEM []byte
+	for _, der := range device.Certificate {
+		serverPEM = append(serverPEM, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
+	}
+	must(os.WriteFile(serverPath, serverPEM, 0600))
+	for _, name := range []string{"valid-65-operator", "tampered-87-intermediate", "tampered-87-issuer-signature", "reject-87-operator", "reject-44-operator"} {
+		params := mldsa.MLDSA65()
+		if name == "reject-87-operator" {
+			params = mldsa.MLDSA87()
+		}
+		if name == "reject-44-operator" {
+			params = mldsa.MLDSA44()
+		}
+		operator := makeLeaf(newKey(params), "operator")
+		if name == "tampered-87-intermediate" || name == "tampered-87-issuer-signature" {
+			index := 3 // Customer CA signed by the ML-DSA-87 root.
+			if name == "tampered-87-issuer-signature" {
+				index = 2 // Tenant CA signed by the ML-DSA-87 customer CA.
+			}
+			operator.Certificate[index] = append([]byte{}, operator.Certificate[index]...)
+			operator.Certificate[index][len(operator.Certificate[index])-1] ^= 1
+		}
+		chainBytes := 0
+		for _, der := range operator.Certificate {
+			chainBytes += len(der)
+		}
+		if chainBytes <= 16384 {
+			panic("complete mixed CA operator chain must cross the 16 KiB TLS record boundary")
+		}
+		mode := "stream-reject"
+		if name == "valid-65-operator" {
+			mode = "stream-valid"
+		}
+		command := exec.Command(os.Args[1], keyPath, serverPath, rootPath, mode)
+		command.Stderr = os.Stderr
+		stdout, err := command.StdoutPipe()
+		must(err)
+		must(command.Start())
+		line, err := bufio.NewReader(stdout).ReadString('\n')
+		must(err)
+		raw, err := net.DialTimeout("tcp", "127.0.0.1:"+strings.TrimSpace(line), 3*time.Second)
+		must(err)
+		must(raw.SetDeadline(time.Now().Add(10 * time.Second)))
+		requested := false
+		client := tls.Client(raw, &tls.Config{
+			MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13,
+			RootCAs: pool, ServerName: "localhost",
+			GetClientCertificate: func(request *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+				requested = true
+				found65 := false
+				for _, algorithm := range request.SignatureSchemes {
+					if algorithm == tls.MLDSA44 || algorithm == tls.MLDSA87 {
+						return nil, fmt.Errorf("firmware advertised unsupported CertificateVerify algorithm %v", algorithm)
+					}
+					found65 = found65 || algorithm == tls.MLDSA65
+				}
+				if !found65 {
+					return nil, fmt.Errorf("firmware did not advertise ML-DSA-65 CertificateVerify")
+				}
+				return &operator, nil
+			},
+		})
+		handshake := client.Handshake()
+		if mode == "stream-valid" {
+			must(handshake)
+			_, err = client.Write([]byte("hello"))
+			must(err)
+			var reply [5]byte
+			_, err = io.ReadFull(client, reply[:])
+			must(err)
+			if string(reply[:]) != "world" || !requested {
+				panic("mixed CA chain did not authenticate and exchange application data")
+			}
+		} else if handshake == nil {
+			var reply [1]byte
+			if _, err = client.Read(reply[:]); err == nil {
+				panic("invalid mixed CA operator was accepted")
+			}
+		}
+		raw.Close()
+		must(command.Wait())
+		if !requested {
+			panic("mixed CA test failed before reaching client certificate authentication")
+		}
+		fmt.Printf("PASS mixed87 %s operator_chain_bytes=%d\n", name, chainBytes)
+	}
+}
+
+// Incoming Certificate reassembly remains bounded even when every certificate
+// is valid and the TLS records themselves respect the 16 KiB record limit.
 func exerciseOversizedIncomingCertificate(directory string, roots *x509.CertPool, operator tls.Certificate) {
 	chainBytes := 0
 	for _, cert := range operator.Certificate {
 		chainBytes += len(cert)
 	}
-	if chainBytes <= 16384 {
+	if chainBytes <= 32768 {
 		panic("oversized peer fixture must exceed the incoming handshake buffer")
 	}
 	command := exec.Command(os.Args[1], filepath.Join(directory, "key.der"), filepath.Join(directory, "server.pem"), filepath.Join(directory, "root.pem"), "stream-reject")

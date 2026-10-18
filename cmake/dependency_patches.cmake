@@ -53,10 +53,34 @@ function(wendy_patch_mbedtls source)
     get_filename_component(project_dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
     wendy_prepare_patched_tree("${source}" "${destination}"
         "${project_dir}/patches/esp-pqc-mbedtls4-private-headers.patch"
-        "${project_dir}/patches/esp-pqc-mbedtls-tls13-certificate-fragmentation.patch")
+        "${project_dir}/patches/esp-pqc-mbedtls-tls13-certificate-fragmentation.patch"
+        "${project_dir}/patches/esp-pqc-mbedtls-mldsa87-ca.patch")
     foreach(target __idf_mbedtls mbedtls mbedx509 tfpsacrypto builtin extras platform utilities everest p256-m)
         wendy_redirect_dependency_target(${target} "${source}" "${destination}")
+        if(TARGET ${target} AND (NOT ESP_PLATFORM OR CONFIG_MBEDTLS_SSL_TLS1_3_SIG_MLDSA65))
+            # The inline key buffer layout must match in every consumer.
+            target_compile_definitions(${target} PUBLIC MBEDTLS_X509_MLDSA87=)
+        endif()
     endforeach()
+    if(TARGET ml_dsa_87_ref)
+        get_filename_component(oqs_source "${source}/../../liboqs/liboqs" ABSOLUTE)
+        wendy_patch_liboqs("${oqs_source}")
+    endif()
+endfunction()
+
+function(wendy_patch_liboqs source)
+    set(destination "${CMAKE_BINARY_DIR}/wendy_patched/liboqs")
+    get_filename_component(project_dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
+    wendy_prepare_patched_tree("${source}" "${destination}"
+        "${project_dir}/patches/esp-pqc-liboqs-mldsa87.patch")
+    wendy_redirect_dependency_target(ml_dsa_87_ref "${source}" "${destination}")
+    if(ESP_PLATFORM)
+        target_include_directories(ml_dsa_87_ref PRIVATE "${source}/../ports")
+        target_compile_definitions(ml_dsa_87_ref PRIVATE
+            MLD_CONFIG_FIPS202_CUSTOM_HEADER="esp_mld_fips202_glue.h"
+            MLD_CONFIG_SERIAL_FIPS202_ONLY MLD_POLY_UNIFORM_NBLOCKS=5
+            LIBOQS_MLD_VERIFY_ONLY)
+    endif()
 endfunction()
 
 function(wendy_patch_wamr)

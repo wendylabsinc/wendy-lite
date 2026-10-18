@@ -101,6 +101,14 @@ func main() {
 	out := os.Args[1]
 	must(os.MkdirAll(out, 0755))
 	write := func(n string, b []byte) { must(os.WriteFile(filepath.Join(out, n), b, 0644)) }
+	if len(os.Args) > 2 && os.Args[2] == "mixed-only" {
+		raw, err := os.ReadFile(filepath.Join(out, "device-key.der"))
+		must(err)
+		device, err := x509.ParseECPrivateKey(raw)
+		must(err)
+		mixedFixtures(device, write)
+		return
+	}
 	nonce := make([]byte, 32)
 	for i := range nonce {
 		nonce[i] = byte(i + 1)
@@ -223,4 +231,71 @@ func main() {
 		}
 		fmt.Println("generated ML-DSA", prefix, "mixed-chain fixtures")
 	}
+	mixedFixtures(device, write)
+}
+
+// Keep the production chain shape: ML-DSA-87 root and customer CA,
+// ML-DSA-65 tenant and identity CAs, then a P-256 device or ML-DSA operator.
+func mixedFixtures(device *ecdsa.PrivateKey, write func(string, []byte)) {
+	rootKey, err := mldsa.GenerateKey(mldsa.MLDSA87())
+	must(err)
+	rt := template(100, "Disposable mixed ML-DSA-87 root", true)
+	rt.MaxPathLen = 3
+	root := cert(rt, rt, rootKey.Public(), rootKey)
+	write("mixed87-root.pem", pemCert(root))
+	var parent = root
+	var signer crypto.Signer = rootKey
+	var chain []*x509.Certificate
+	for index, params := range []mldsa.Parameters{mldsa.MLDSA87(), mldsa.MLDSA65(), mldsa.MLDSA65()} {
+		key, err := mldsa.GenerateKey(params)
+		must(err)
+		t := template(int64(101+index), fmt.Sprintf("Disposable mixed CA %d", index), true)
+		t.MaxPathLen = 2 - index
+		t.MaxPathLenZero = t.MaxPathLen == 0
+		parent = cert(t, parent, key.Public(), signer)
+		signer = key
+		chain = append([]*x509.Certificate{parent}, chain...)
+	}
+	uri, err := url.Parse(principal)
+	must(err)
+	t := template(110, "Disposable mixed P-256 device", false)
+	t.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}
+	t.URIs = []*url.URL{uri}
+	deviceCert := cert(t, parent, device.Public(), signer)
+	bundle := pemCert(deviceCert)
+	for _, ca := range chain {
+		bundle = append(bundle, pemCert(ca)...)
+	}
+	write("mixed87-identity-valid.pem", bundle)
+	for _, kind := range []string{"tampered-intermediate", "tampered-issuer", "hash87-intermediate", "44-intermediate"} {
+		index := 2
+		if kind == "tampered-issuer" {
+			index = 1
+		}
+		raw := append([]byte{}, chain[index].Raw...)
+		if kind == "tampered-intermediate" || kind == "tampered-issuer" {
+			raw[len(raw)-1] ^= 1
+		} else {
+			// Replace all pure ML-DSA-87 OIDs in this CA only. Both
+			// signature AlgorithmIdentifiers and its SPKI are disallowed.
+			replacement := byte(34) // HashML-DSA-87 with SHA-512.
+			if kind == "44-intermediate" {
+				replacement = 17
+			}
+			raw = bytes.ReplaceAll(raw, oid(2, 16, 840, 1, 101, 3, 4, 3, 19), oid(2, 16, 840, 1, 101, 3, 4, 3, int(replacement)))
+		}
+		write("mixed87-ca-"+kind+".pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: raw}))
+	}
+	operatorURI, err := url.Parse("spiffe://wendy.sh/tenant/2558fd76-afc7-466e-9613-6b715296a526/operator/test")
+	must(err)
+	for index, params := range []mldsa.Parameters{mldsa.MLDSA44(), mldsa.MLDSA65(), mldsa.MLDSA87()} {
+		key, err := mldsa.GenerateKey(params)
+		must(err)
+		t := template(int64(120+index), "Disposable mixed operator", false)
+		t.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
+		t.URIs = []*url.URL{operatorURI}
+		leaf := cert(t, parent, key.Public(), signer)
+		write(fmt.Sprintf("mixed87-operator-%d.der", []int{44, 65, 87}[index]), leaf.Raw)
+	}
+	fmt.Println("generated mixed ML-DSA-87 CA / ML-DSA-65 identity fixtures")
 }

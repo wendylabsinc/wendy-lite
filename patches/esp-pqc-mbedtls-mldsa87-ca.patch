@@ -1,0 +1,344 @@
+diff --git a/include/mbedtls/oid.h b/include/mbedtls/oid.h
+index bc8938ac37..07f23543eb 100644
+--- a/include/mbedtls/oid.h
++++ b/include/mbedtls/oid.h
+@@ -270,6 +270,7 @@
+  * Pure ML-DSA-65 for X.509. Enabled with \c MBEDTLS_SSL_TLS1_3_SIG_MLDSA65.
+  */
+ #define MBEDTLS_OID_MLDSA65                 MBEDTLS_OID_NIST_ALG "\x03\x12"
++#define MBEDTLS_OID_MLDSA87                 MBEDTLS_OID_NIST_ALG "\x03\x13"
+ 
+ #if defined(MBEDTLS_X509_USE_C)
+ /**
+diff --git a/library/ssl_misc.h b/library/ssl_misc.h
+index 3a363da517..f19069eec5 100644
+--- a/library/ssl_misc.h
++++ b/library/ssl_misc.h
+@@ -382,13 +382,24 @@ uint32_t mbedtls_ssl_get_extension_mask(unsigned int extension_type);
+    implicit sequence number. */
+ #define MBEDTLS_SSL_HEADER_LEN 13
+ 
++/* The TLS record limit remains 16 KiB. Reserve separate bounded headroom
++ * for the fork's in-place reassembly of a mixed ML-DSA CA chain. A final
++ * record can also contain bytes belonging to the next handshake message. */
++#if defined(MBEDTLS_X509_MLDSA87)
++#define MBEDTLS_SSL_MAX_HANDSHAKE_LEN 32768
++#define MBEDTLS_SSL_HANDSHAKE_HEADROOM MBEDTLS_SSL_MAX_HANDSHAKE_LEN
++#else
++#define MBEDTLS_SSL_MAX_HANDSHAKE_LEN MBEDTLS_SSL_IN_CONTENT_LEN
++#define MBEDTLS_SSL_HANDSHAKE_HEADROOM 0
++#endif
++
+ #if !defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+ #define MBEDTLS_SSL_IN_BUFFER_LEN  \
+-    ((MBEDTLS_SSL_HEADER_LEN) + (MBEDTLS_SSL_IN_PAYLOAD_LEN))
++    ((MBEDTLS_SSL_HEADER_LEN) + (MBEDTLS_SSL_IN_PAYLOAD_LEN) + MBEDTLS_SSL_HANDSHAKE_HEADROOM)
+ #else
+ #define MBEDTLS_SSL_IN_BUFFER_LEN  \
+     ((MBEDTLS_SSL_HEADER_LEN) + (MBEDTLS_SSL_IN_PAYLOAD_LEN) \
+-     + (MBEDTLS_SSL_CID_IN_LEN_MAX))
++     + (MBEDTLS_SSL_CID_IN_LEN_MAX) + MBEDTLS_SSL_HANDSHAKE_HEADROOM)
+ #endif
+ 
+ #if !defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+diff --git a/library/ssl_msg.c b/library/ssl_msg.c
+index 87d64788bd..31978c83f3 100644
+--- a/library/ssl_msg.c
++++ b/library/ssl_msg.c
+@@ -2943,6 +2943,11 @@ int mbedtls_ssl_prepare_handshake_record(mbedtls_ssl_context *ssl)
+         }
+ 
+         ssl->in_hslen = mbedtls_ssl_hs_hdr_len(ssl) + ssl_get_hs_total_len(ssl);
++        if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_STREAM &&
++            ssl->in_hslen > MBEDTLS_SSL_MAX_HANDSHAKE_LEN) {
++            MBEDTLS_SSL_DEBUG_MSG(1, ("handshake message exceeds reassembly limit"));
++            return MBEDTLS_ERR_SSL_BUFFER_TOO_SMALL;
++        }
+     }
+ 
+     MBEDTLS_SSL_DEBUG_MSG(3, ("handshake message: msglen ="
+diff --git a/library/x509.c b/library/x509.c
+index d7bc5d2dfb..de86a31c9f 100644
+--- a/library/x509.c
++++ b/library/x509.c
+@@ -768,6 +768,11 @@ int mbedtls_x509_get_sig_alg(const mbedtls_x509_buf *sig_oid, const mbedtls_x509
+         }
+     }
+ 
++    /* Pure ML-DSA AlgorithmIdentifier parameters must be absent. */
++    if ((*pk_alg == MBEDTLS_PK_SIGALG_MLDSA65 ||
++         *pk_alg == MBEDTLS_PK_SIGALG_MLDSA87) && sig_params->tag != 0) {
++        return MBEDTLS_ERR_X509_INVALID_ALG;
++    }
+     return 0;
+ }
+ 
+diff --git a/library/x509_crt.c b/library/x509_crt.c
+index 6ef56d4f0c..b0c11d3143 100644
+--- a/library/x509_crt.c
++++ b/library/x509_crt.c
+@@ -234,7 +234,7 @@ static int x509_profile_check_key(const mbedtls_x509_crt_profile *profile,
+ 
+ #if defined(MBEDTLS_SSL_TLS1_3_SIG_MLDSA65) && \
+     defined(MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS)
+-    if (pk_alg == MBEDTLS_PK_MLDSA65) {
++    if (pk_alg == MBEDTLS_PK_MLDSA65 || pk_alg == MBEDTLS_PK_MLDSA87) {
+         if (mbedtls_pk_get_bitlen(pk) > 0) {
+             return 0;
+         }
+@@ -2062,7 +2062,8 @@ static int x509_crt_verifycrl(mbedtls_x509_crt *crt, mbedtls_x509_crt *ca,
+             flags |= MBEDTLS_X509_BADCRL_BAD_PK;
+         }
+ 
+-        if (crl_list->sig_pk == MBEDTLS_PK_SIGALG_MLDSA65) {
++        if (crl_list->sig_pk == MBEDTLS_PK_SIGALG_MLDSA65 ||
++            crl_list->sig_pk == MBEDTLS_PK_SIGALG_MLDSA87) {
+             verify_input = crl_list->tbs.p;
+             verify_input_len = crl_list->tbs.len;
+         } else {
+@@ -2136,7 +2137,8 @@ static int x509_crt_check_signature(const mbedtls_x509_crt *child,
+     const unsigned char *verify_input;
+     size_t verify_input_len;
+ 
+-    if (child->sig_pk == MBEDTLS_PK_SIGALG_MLDSA65) {
++    if (child->sig_pk == MBEDTLS_PK_SIGALG_MLDSA65 ||
++            child->sig_pk == MBEDTLS_PK_SIGALG_MLDSA87) {
+         /* Pure ML-DSA: verify over the raw TBS, no pre-hash. */
+         verify_input = child->tbs.p;
+         verify_input_len = child->tbs.len;
+diff --git a/library/x509_oid.c b/library/x509_oid.c
+index 6053f531c6..0622689c77 100644
+--- a/library/x509_oid.c
++++ b/library/x509_oid.c
+@@ -478,6 +478,13 @@ static const oid_sig_alg_t oid_sig_alg[] =
+         /* TBSCertificate is digested with SHA-512 before ML-DSA verify (X.509). */
+         MBEDTLS_MD_SHA512,   MBEDTLS_PK_SIGALG_MLDSA65,
+     },
++#endif
++#if defined(MBEDTLS_X509_MLDSA87) && defined(PSA_WANT_ALG_SHA_512)
++    {
++        OID_DESCRIPTOR(MBEDTLS_OID_MLDSA87, "id-ml-dsa-87", "ML-DSA-87"),
++        /* Profile marker only: verification uses the complete TBS. */
++        MBEDTLS_MD_SHA512, MBEDTLS_PK_SIGALG_MLDSA87,
++    },
+ #endif
+     {
+         NULL_OID_DESCRIPTOR,
+diff --git a/tf-psa-crypto/extras/mldsa65_oqs.c b/tf-psa-crypto/extras/mldsa65_oqs.c
+index 13e1ab5f71..d384e7e988 100644
+--- a/tf-psa-crypto/extras/mldsa65_oqs.c
++++ b/tf-psa-crypto/extras/mldsa65_oqs.c
+@@ -90,3 +90,19 @@ int mbedtls_pk_mldsa65_oqs_verify(mbedtls_pk_context *pk,
+ }
+ 
+ #endif /* MBEDTLS_SSL_TLS1_3_SIG_MLDSA65 && (MBEDTLS_X509_USE_C || MBEDTLS_SSL_PROTO_TLS1_3) */
++
++#if defined(MBEDTLS_X509_MLDSA87)
++/* CA verification only: no ML-DSA-87 private-key or TLS signature support. */
++#include <oqs/sig.h>
++int mbedtls_pk_mldsa87_oqs_verify(mbedtls_pk_context *pk,
++                                const unsigned char *msg, size_t msg_len,
++                                const unsigned char *sig, size_t sig_len)
++{
++    if (pk == NULL || (msg == NULL && msg_len != 0) || sig == NULL ||
++        pk->pub_raw_len != 2592 || sig_len != 4627) {
++        return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
++    }
++    return OQS_SIG_ml_dsa_87_verify(msg, msg_len, sig, sig_len, pk->pub_raw)
++        == OQS_SUCCESS ? 0 : MBEDTLS_ERR_PK_INVALID_ALG;
++}
++#endif
+diff --git a/tf-psa-crypto/extras/pk.c b/tf-psa-crypto/extras/pk.c
+index 4d4909cb43..b40a5f6cbd 100644
+--- a/tf-psa-crypto/extras/pk.c
++++ b/tf-psa-crypto/extras/pk.c
+@@ -118,6 +118,10 @@ const mbedtls_pk_info_t *mbedtls_pk_info_from_type(mbedtls_pk_type_t pk_type)
+ #endif /* PSA_HAVE_ALG_SOME_ECDSA */
+         case MBEDTLS_PK_MLDSA65:
+             return &mbedtls_mldsa65_info;
++#if defined(MBEDTLS_X509_MLDSA87)
++        case MBEDTLS_PK_MLDSA87:
++            return &mbedtls_mldsa87_info;
++#endif
+         default:
+             return NULL;
+     }
+@@ -1221,8 +1225,8 @@ int mbedtls_pk_verify_ext(mbedtls_pk_sigalg_t type,
+         return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+     }
+ 
+-    if (type == MBEDTLS_PK_SIGALG_MLDSA65) {
+-        if (mbedtls_pk_get_type(ctx) != MBEDTLS_PK_MLDSA65) {
++    if (type == MBEDTLS_PK_SIGALG_MLDSA65 || type == MBEDTLS_PK_SIGALG_MLDSA87) {
++        if (mbedtls_pk_get_type(ctx) != (mbedtls_pk_type_t) type) {
+             return MBEDTLS_ERR_PK_TYPE_MISMATCH;
+         }
+         return mbedtls_pk_verify(ctx, md_alg, hash, hash_len, sig, sig_len);
+diff --git a/tf-psa-crypto/extras/pk_wrap.c b/tf-psa-crypto/extras/pk_wrap.c
+index 4391b47e58..3a0f4436d5 100644
+--- a/tf-psa-crypto/extras/pk_wrap.c
++++ b/tf-psa-crypto/extras/pk_wrap.c
+@@ -696,4 +696,37 @@ const mbedtls_pk_info_t mbedtls_mldsa65_info = {
+ #endif /* MBEDTLS_ECP_RESTARTABLE */
+ };
+ 
++#if defined(MBEDTLS_X509_MLDSA87)
++static int mldsa87_can_do(mbedtls_pk_type_t type)
++{
++    return type == MBEDTLS_PK_MLDSA87;
++}
++
++static int mldsa87_verify_wrap(mbedtls_pk_context *pk, mbedtls_md_type_t md_alg,
++                               const unsigned char *hash, size_t hash_len,
++                               const unsigned char *sig, size_t sig_len)
++{
++    (void) md_alg;
++    /* Verify exactly the byte string provided by the caller.
++     * TLS 1.3 passes the full verify structure; X.509 passes the selected
++     * TBSCertificate/CRL verification input from the X.509 verify path. */
++    return mbedtls_pk_mldsa87_oqs_verify(pk, hash, hash_len, sig, sig_len);
++}
++
++const mbedtls_pk_info_t mbedtls_mldsa87_info = {
++    .type = MBEDTLS_PK_MLDSA87,
++    .name = "MLDSA87",
++    .can_do = mldsa87_can_do,
++    .verify_func = mldsa87_verify_wrap,
++    .sign_func = NULL,
++#if defined(MBEDTLS_ECP_RESTARTABLE)
++    .verify_rs_func = NULL,
++    .sign_rs_func = NULL,
++    .rs_alloc_func = NULL,
++    .rs_free_func = NULL,
++#endif /* MBEDTLS_ECP_RESTARTABLE */
++};
++
++#endif
++
+ #endif /* MBEDTLS_PK_C */
+diff --git a/tf-psa-crypto/extras/pk_wrap.h b/tf-psa-crypto/extras/pk_wrap.h
+index 288d7c373e..90ca883d2c 100644
+--- a/tf-psa-crypto/extras/pk_wrap.h
++++ b/tf-psa-crypto/extras/pk_wrap.h
+@@ -88,6 +88,9 @@ extern const mbedtls_pk_info_t mbedtls_ecdsa_info;
+ #endif
+ 
+ extern const mbedtls_pk_info_t mbedtls_mldsa65_info;
++#if defined(MBEDTLS_X509_MLDSA87)
++extern const mbedtls_pk_info_t mbedtls_mldsa87_info;
++#endif
+ 
+ extern const mbedtls_pk_info_t mbedtls_ecdsa_opaque_info;
+ extern const mbedtls_pk_info_t mbedtls_rsa_opaque_info;
+diff --git a/tf-psa-crypto/extras/pkparse.c b/tf-psa-crypto/extras/pkparse.c
+index fae748beba..2472e8a26d 100644
+--- a/tf-psa-crypto/extras/pkparse.c
++++ b/tf-psa-crypto/extras/pkparse.c
+@@ -498,9 +498,9 @@ static int pk_get_pk_alg(unsigned char **p,
+         return MBEDTLS_ERR_PK_INVALID_ALG;
+     }
+ 
+-    if (*pk_alg == MBEDTLS_PK_MLDSA65 &&
+-        ((params->tag != MBEDTLS_ASN1_NULL && params->tag != 0) ||
+-         params->len != 0)) {
++    /* RFC 9881 requires absent parameters for pure ML-DSA. */
++    if ((*pk_alg == MBEDTLS_PK_MLDSA65 || *pk_alg == MBEDTLS_PK_MLDSA87) &&
++        (params->tag != 0 || params->len != 0)) {
+         return MBEDTLS_ERR_PK_INVALID_ALG;
+     }
+ 
+@@ -581,8 +581,9 @@ int mbedtls_pk_parse_subpubkey(unsigned char **p, const unsigned char *end,
+         }
+     } else
+ #endif /* PSA_WANT_KEY_TYPE_ECC_PUBLIC_KEY */
+-    if (pk_alg == MBEDTLS_PK_MLDSA65) {
+-        if (len != MBEDTLS_MLDSA65_PUBLIC_KEY_LEN) {
++    if (pk_alg == MBEDTLS_PK_MLDSA65 || pk_alg == MBEDTLS_PK_MLDSA87) {
++        size_t expected = pk_alg == MBEDTLS_PK_MLDSA65 ? 1952 : 2592;
++        if (len != expected) {
+             ret = MBEDTLS_ERR_PK_INVALID_PUBKEY;
+         } else if (len > MBEDTLS_PK_MAX_PUBKEY_RAW_LEN) {
+             ret = MBEDTLS_ERR_PK_BUFFER_TOO_SMALL;
+diff --git a/tf-psa-crypto/include/mbedtls/mldsa65_oqs.h b/tf-psa-crypto/include/mbedtls/mldsa65_oqs.h
+index 47f2598c4d..312a387f8f 100644
+--- a/tf-psa-crypto/include/mbedtls/mldsa65_oqs.h
++++ b/tf-psa-crypto/include/mbedtls/mldsa65_oqs.h
+@@ -29,4 +29,10 @@ int mbedtls_pk_mldsa65_oqs_verify(mbedtls_pk_context *pk,
+                                   const unsigned char *msg, size_t msg_len,
+                                   const unsigned char *sig, size_t sig_len);
+ 
++#if defined(MBEDTLS_X509_MLDSA87)
++int mbedtls_pk_mldsa87_oqs_verify(mbedtls_pk_context *pk,
++                                const unsigned char *msg, size_t msg_len,
++                                const unsigned char *sig, size_t sig_len);
++#endif
++
+ #endif /* MBEDTLS_MLDSA65_OQS_H */
+diff --git a/tf-psa-crypto/include/mbedtls/pk.h b/tf-psa-crypto/include/mbedtls/pk.h
+index 1d5c4290b2..84254c7343 100644
+--- a/tf-psa-crypto/include/mbedtls/pk.h
++++ b/tf-psa-crypto/include/mbedtls/pk.h
+@@ -53,6 +53,8 @@ typedef enum {
+     MBEDTLS_PK_SIGALG_ECDSA,        // MBEDTLS_PK_ALG_ECDSA
+     /** ML-DSA-65 (FIPS 204, RFC 9881); must match \c MBEDTLS_PK_MLDSA65 */
+     MBEDTLS_PK_SIGALG_MLDSA65 = 7,
++    /** ML-DSA-87 certificate verification only. */
++    MBEDTLS_PK_SIGALG_MLDSA87 = 8,
+ } mbedtls_pk_sigalg_t;
+ 
+ /**
+@@ -103,8 +105,12 @@ typedef struct mbedtls_pk_info_t mbedtls_pk_info_t;
+ #endif
+ 
+ /* PQC pubkey headroom, only when ML-DSA-65 is enabled since pub_raw is inline in every mbedtls_pk_context and some live on the stack; 1952 is the FIPS 204 raw key length pkparse.c copies in, spelled out because mldsa65_oqs.h includes this header. */
+-#if defined(MBEDTLS_SSL_TLS1_3_SIG_MLDSA65)
++#if defined(MBEDTLS_SSL_TLS1_3_SIG_MLDSA65) || defined(MBEDTLS_X509_MLDSA87)
++#if defined(MBEDTLS_X509_MLDSA87)
++#define MBEDTLS_PK_PQC_MAX_PUBKEY_RAW_LEN 2592
++#else
+ #define MBEDTLS_PK_PQC_MAX_PUBKEY_RAW_LEN 1952
++#endif
+ #if MBEDTLS_PK_PQC_MAX_PUBKEY_RAW_LEN > MBEDTLS_PK_MAX_PUBKEY_RAW_LEN
+ #undef MBEDTLS_PK_MAX_PUBKEY_RAW_LEN
+ #define MBEDTLS_PK_MAX_PUBKEY_RAW_LEN MBEDTLS_PK_PQC_MAX_PUBKEY_RAW_LEN
+diff --git a/tf-psa-crypto/include/mbedtls/private/pk_private.h b/tf-psa-crypto/include/mbedtls/private/pk_private.h
+index bccf0d79c4..dfea1b240f 100644
+--- a/tf-psa-crypto/include/mbedtls/private/pk_private.h
++++ b/tf-psa-crypto/include/mbedtls/private/pk_private.h
+@@ -27,6 +27,7 @@ typedef enum {
+     MBEDTLS_PK_ECKEY_DH,
+     MBEDTLS_PK_OPAQUE,
+     MBEDTLS_PK_MLDSA65 = 7,
++    MBEDTLS_PK_MLDSA87 = 8,
+ } mbedtls_pk_type_t;
+ 
+ /**
+diff --git a/tf-psa-crypto/utilities/crypto_oid.h b/tf-psa-crypto/utilities/crypto_oid.h
+index 8151abb98e..9e2cc17b4a 100644
+--- a/tf-psa-crypto/utilities/crypto_oid.h
++++ b/tf-psa-crypto/utilities/crypto_oid.h
+@@ -162,6 +162,7 @@
+ 
+ /** id-ml-dsa-65 (RFC 9881) */
+ #define MBEDTLS_OID_MLDSA65                     MBEDTLS_OID_NIST_ALG "\x03\x12" /**< id-ml-dsa-65 OBJECT IDENTIFIER ::= { joint-iso-itu-t(2) country(16) us(840) organization(1) gov(101) csor(3) nistAlgorithm(4) sigAlgs(3) 18 } */
++#define MBEDTLS_OID_MLDSA87                 MBEDTLS_OID_NIST_ALG "\x03\x13"
+ 
+ /*
+  * EC key algorithms from RFC 5480
+diff --git a/tf-psa-crypto/utilities/oid.c b/tf-psa-crypto/utilities/oid.c
+index 110ee04e03..615bcbec86 100644
+--- a/tf-psa-crypto/utilities/oid.c
++++ b/tf-psa-crypto/utilities/oid.c
+@@ -136,6 +136,12 @@ static const oid_pk_alg_t oid_pk_alg[] =
+         OID_DESCRIPTOR(MBEDTLS_OID_MLDSA65,             "id-ml-dsa-65",     "ML-DSA-65"),
+         MBEDTLS_PK_MLDSA65,
+     },
++#if defined(MBEDTLS_X509_MLDSA87)
++    {
++        OID_DESCRIPTOR(MBEDTLS_OID_MLDSA87, "id-ml-dsa-87", "ML-DSA-87"),
++        MBEDTLS_PK_MLDSA87,
++    },
++#endif
+     {
+         NULL_OID_DESCRIPTOR,
+         MBEDTLS_PK_NONE,

@@ -220,6 +220,7 @@ static const uint8_t ec_oid[] = {0x2a, 0x86, 0x48, 0xce, 0x3d, 2, 1};
 static const uint8_t p256_oid[] = {0x2a, 0x86, 0x48, 0xce, 0x3d, 3, 1, 7};
 static const uint8_t p384_oid[] = {0x2b, 0x81, 4, 0, 0x22};
 static const uint8_t mldsa65_oid[] = {0x60, 0x86, 0x48, 1, 0x65, 3, 4, 3, 18};
+static const uint8_t mldsa87_oid[] = {0x60, 0x86, 0x48, 1, 0x65, 3, 4, 3, 19};
 
 static int public_key_parts(der spki, der *id, der *params, der *key)
 {
@@ -254,6 +255,10 @@ int wendy_pki_certificate_policy(const mbedtls_x509_crt *cert, bool trust_anchor
         if (mbedtls_pk_get_bitlen(&cert->pk) < 2048) return -1;
     } else if (bytes(id, mldsa65_oid, sizeof mldsa65_oid)) {
         if (params.n || key.n != 1953) return -1;
+    } else if (bytes(id, mldsa87_oid, sizeof mldsa87_oid)) {
+        /* Existing PKI roots and intermediates use ML-DSA-87. Operator and
+         * timestamp signing keys remain on ML-DSA-65. */
+        if (params.n || key.n != 2593 || !cert->MBEDTLS_PRIVATE(ca_istrue)) return -1;
     } else {
         return -1;
     }
@@ -264,7 +269,8 @@ int wendy_pki_certificate_policy(const mbedtls_x509_crt *cert, bool trust_anchor
     if (take(&input, 0x30, &outer) || input.n || take(&outer, 0x30, &tbs) ||
         take(&outer, 0x30, &signature_algorithm) || take(&signature_algorithm, 6, &id))
         return -1;
-    if (bytes(id, mldsa65_oid, sizeof mldsa65_oid))
+    if (bytes(id, mldsa65_oid, sizeof mldsa65_oid) ||
+        bytes(id, mldsa87_oid, sizeof mldsa87_oid))
         return signature_algorithm.n ? -1 : 0;
     const uint8_t rsa_prefix[] = {0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 1, 1};
     const uint8_t ec_prefix[] = {0x2a, 0x86, 0x48, 0xce, 0x3d, 4, 3};
@@ -628,8 +634,9 @@ enum wendy_peer_role wendy_pki_verify_peer(const uint8_t *data, size_t size,
         return WENDY_PEER_ROLE_NONE;
     mbedtls_x509_crt *crt = parse_cert(data, size);
     if (!crt) return WENDY_PEER_ROLE_NONE;
-    enum wendy_peer_role result = crt->raw.len == size ? wendy_peer_auth_role(crt, tenant)
-                                                      : WENDY_PEER_ROLE_NONE;
+    enum wendy_peer_role result = crt->raw.len == size &&
+        !wendy_pki_certificate_policy(crt, false) ? wendy_peer_auth_role(crt, tenant)
+                                                 : WENDY_PEER_ROLE_NONE;
     free_cert(crt); return result;
 }
 
