@@ -30,7 +30,9 @@ jobs:
           cmake --build build-ble-tests -j2
           ctest --test-dir build-ble-tests --output-on-failure
       - name: Verify LAN enrollment guards
+        shell: bash
         run: |
+          . "$IDF_PATH/export.sh"
           cmake -S components/wendy_server/tests -B build-server-tests -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
           cmake --build build-server-tests -j2
           ctest --test-dir build-server-tests --output-on-failure
