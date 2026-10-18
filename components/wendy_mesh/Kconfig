@@ -1,0 +1,30 @@
+menu "Wendy signed mesh leaf"
+    config WENDY_MESH_LEAF
+        bool "Enable experimental signed mesh leaf"
+        default n
+        depends on WENDY_PKI && WENDY_WIFI_ENABLED && LWIP_IPV6
+        depends on IDF_TARGET_ESP32S3 && SPIRAM && !WENDY_WASM && !LWIP_IPV6_FORWARD
+        depends on LWIP_HOOK_IP6_ROUTE_CUSTOM
+        help
+            Source-only experimental profile for ESP32-S3 with PSRAM. Connect
+            to one explicitly pinned same-tenant Linux router over TLS 1.3.
+            No transit forwarding, donor role, discovery, or legacy fallback.
+            Requires fresh signed time and a canonical UUID enrollment.
+            Select the lwIP custom IPv6 route hook before enabling this option.
+
+    config WENDY_MESH_ROUTER_HOST
+        string "Explicit router IP address or hostname"
+        depends on WENDY_MESH_LEAF
+        default ""
+
+    config WENDY_MESH_ROUTER_DEVICE
+        string "Pinned router device UUID"
+        depends on WENDY_MESH_LEAF
+        default ""
+
+    config WENDY_MESH_ROUTER_PORT
+        int "Router leaf listener TCP port"
+        depends on WENDY_MESH_LEAF
+        range 1 65535
+        default 43024
+endmenu

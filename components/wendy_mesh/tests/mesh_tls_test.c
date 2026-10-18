@@ -1,0 +1,66 @@
+/* Production mbedTLS client exercised by independent Go TLS peers. */
+#include "wendy_pki_internal.h"
+#include "esp_timer.h"
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <sys/socket.h>
+
+bool wendy_pki_reset_in_progress(void)
+{
+    return false;
+}
+int64_t esp_timer_get_time(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (int64_t)t.tv_sec * 1000000 + t.tv_nsec / 1000;
+}
+ssize_t wendy_test_send(int fd, const void* buffer, size_t size, int flags)
+{
+    return send(fd, buffer, size, flags);
+}
+static void* load(const char* path, size_t* size)
+{
+    FILE* f = fopen(path, "rb");
+    assert(f);
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    assert(n > 0 && n <= 65536);
+    rewind(f);
+    uint8_t* out = calloc(1, n + 1);
+    assert(out && fread(out, 1, n, f) == (size_t)n);
+    fclose(f);
+    *size = n;
+    return out;
+}
+int main(int argc, char** argv)
+{
+    assert(argc == 9);
+    size_t kn, cn, rn;
+    uint8_t *key = load(argv[1], &kn), *cert = load(argv[2], &cn), *roots = load(argv[3], &rn);
+    wendy_pki_connection* connection = NULL;
+    int result
+        = pki_tls_mesh_connect("127.0.0.1", (unsigned)strtoul(argv[4], NULL, 10), argv[5], argv[6],
+            argv[7], key, kn, (char*)cert, (struct wendy_conf_span) { roots, rn }, &connection);
+    bool expected = strcmp(argv[8], "accept") == 0;
+    if ((result == 0) != expected)
+    {
+        fprintf(stderr, "unexpected TLS result %d\n", result);
+        return 1;
+    }
+    if (connection)
+    {
+        const char* expected_expiry = getenv("EXPECTED_MESH_EXPIRY");
+        assert(expected_expiry
+            && connection->operator_expires == (time_t)strtoll(expected_expiry, NULL, 10));
+        wendy_pki_close(connection);
+    }
+    memset(key, 0, kn);
+    free(key);
+    free(cert);
+    free(roots);
+    return 0;
+}

@@ -20,6 +20,9 @@
 #include "wendy_com.h"
 #include "wendy_server.h"
 #include "wendy_conf.h"
+#if CONFIG_WENDY_MESH_LEAF
+#include "wendy_mesh.h"
+#endif
 
 #if CONFIG_WENDY_CLOUD
 #include "wendy_cloud.h"
@@ -264,6 +267,10 @@ static bool start_services(void)
     if (!s_mdns_started)
         s_mdns_started = start_mdns_service() == ESP_OK;
     bool ready = s_mdns_started;
+#if CONFIG_WENDY_MESH_LEAF
+    if (wendy_conf_has_enrollment() && wendy_mesh_start() != ESP_OK)
+        ready = false;
+#endif
 
     // Initialize the mTLS server accessible via the local network
     if (!s_server_started) {

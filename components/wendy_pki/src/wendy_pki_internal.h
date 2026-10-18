@@ -1,6 +1,7 @@
 #pragma once
 #include "wendy_pki.h"
 #include "wendy_conf.h"
+#include "wendy_pki_mesh.h"
 #include <mbedtls/ssl.h>
 #include <mbedtls/x509_crt.h>
 #include <mbedtls/pk.h>
@@ -24,9 +25,18 @@ struct wendy_pki_connection
     uint8_t device_hash[32], operator_hash[32], operator_spki_hash[32];
     time_t device_expires, operator_expires;
     int64_t relay_expires_us;
+    /* Nonzero only for the separate, explicitly pinned mesh leaf transport. */
+    int64_t mesh_deadline_us;
+    char mesh_tenant[37];
+    char mesh_device[37];
+    uint8_t *mesh_roots;
+    size_t mesh_roots_size;
 };
 int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t key_size,
                     const char *cert, struct wendy_conf_span roots, wendy_pki_connection **out);
+int pki_tls_mesh_connect(const char *host, unsigned port, const char *tenant,
+    const char *device, const char *router, const uint8_t *key, size_t key_size,
+    const char *cert, struct wendy_conf_span roots, wendy_pki_connection **out);
 int pki_http_post(const char *url, const char *type, const char *token, const void *body,
                   size_t body_size, const uint8_t *key, size_t key_size, const char *cert,
                   struct wendy_conf_span roots, uint8_t **response, size_t *response_size);

@@ -6,6 +6,7 @@
 #include "nvs_flash.h"
 #include "wendy_conf.h"
 #include "wendy_pki_internal.h"
+#include "wendy_peer_identity.h"
 #include <unistd.h>
 #include "wendy_pki_verify.h"
 #include <pthread.h>
@@ -19,6 +20,10 @@
 #include <mbedtls/x509_csr.h>
 
 static const char *TAG = "wendy_pki";
+/* Historical NVS time is never a lease clock. Only a fresh nonce-bound reply
+ * establishes this boot's monotonic anchor, under identity_lock. */
+static time_t mesh_verified_seconds;
+static int64_t mesh_verified_monotonic_us;
 static pthread_once_t identity_once = PTHREAD_ONCE_INIT;
 static esp_err_t identity_ready = ESP_FAIL;
 /* Serialize issuance, status, and recovery so an in-flight enrollment cannot
@@ -254,6 +259,10 @@ static int refresh_time(nvs_handle_t h, const char *url,
         !wendy_pki_verify_time(response, response_size, nonce, data->tsa_roots.data,
                                data->tsa_roots.size, floor, &when))
         result = set_floor(h, when);
+    if (!result) {
+        mesh_verified_seconds = when;
+        mesh_verified_monotonic_us = esp_timer_get_time();
+    }
     free(response);
     return result;
 }
@@ -705,6 +714,97 @@ done:
     if (opened) nvs_close(h);
     return result;
 }
+
+#if CONFIG_WENDY_MESH_LEAF
+esp_err_t wendy_pki_mesh_connect(const char* host, unsigned port, const char* router,
+    wendy_pki_connection** connection, struct wendy_pki_mesh_identity* identity)
+{
+    if (!connection || !identity || !router
+        || !wendy_identity_uuid((const unsigned char*)router, strlen(router)))
+        return ESP_ERR_INVALID_ARG;
+    *connection = NULL;
+    memset(identity, 0, sizeof *identity);
+    pthread_mutex_lock(&identity_lock);
+    WendyConfEnrollment cfg = WendyConfEnrollment_init_zero;
+    struct wendy_conf_enrollment_data data = { 0 };
+    nvs_handle_t h = 0;
+    bool opened = false;
+    uint8_t *key = NULL, *cert = NULL;
+    size_t key_size = 0, cert_size = 0;
+    esp_err_t result = ESP_FAIL;
+    time_t expires = 0;
+    if (!identity_use_allowed() || !wendy_conf_is_current() || wendy_pki_crypto_init()
+        || wendy_conf_copy_enrollment(&cfg, &data) != ESP_OK
+        || validate_config_and_trust(&cfg, &data)
+        || !wendy_identity_uuid((const unsigned char*)cfg.device_id, strlen(cfg.device_id))
+        || !strcmp(cfg.device_id, router) || open_identity(&h) != ESP_OK)
+        goto done;
+    opened = true;
+    if (seed_clock(h, data.signed_time, data.tsa_roots) || refresh_time(h, cfg.time_url, &data))
+        goto done;
+    char principal[106];
+    snprintf(principal, sizeof principal, "spiffe://wendy.sh/tenant/%.36s/device/%.36s",
+        cfg.tenant_id, cfg.device_id);
+    if (identity_key(h, &cfg, &key, &key_size) || load_blob(h, "certificate", &cert, &cert_size)
+        || wendy_pki_verify_identity(cert, cert_size, data.device_roots.data,
+            data.device_roots.size, key, key_size, principal, mesh_verified_seconds, &expires))
+        goto done;
+    if (pki_tls_mesh_connect(host, port, cfg.tenant_id, cfg.device_id, router, key, key_size,
+            (const char*)cert, data.device_roots, connection))
+        goto done;
+    if ((*connection)->operator_expires < expires)
+        expires = (*connection)->operator_expires;
+    if (!wendy_conf_is_current() || wendy_pki_reset_in_progress()
+        || esp_timer_get_time() - mesh_verified_monotonic_us >= INT64_C(300000000)
+        || expires <= mesh_verified_seconds + 30
+        || wendy_pki_sha256(data.device_roots.data, data.device_roots.size, identity->trust_hash))
+    {
+        wendy_pki_close(*connection);
+        *connection = NULL;
+        goto done;
+    }
+    uint64_t reserved = 0;
+    size_t reserved_size = sizeof reserved;
+    esp_err_t status = nvs_get_blob(h, "mesh_revision", &reserved, &reserved_size);
+    if ((status != ESP_ERR_NVS_NOT_FOUND && (status != ESP_OK || reserved_size != sizeof reserved))
+        || reserved > UINT64_MAX - 1025)
+        goto done;
+    uint64_t next = reserved + 1024;
+    if (nvs_set_blob(h, "mesh_revision", &next, sizeof next) != ESP_OK || nvs_commit(h) != ESP_OK)
+        goto done;
+    memcpy(identity->tenant, cfg.tenant_id, 37);
+    memcpy(identity->device, cfg.device_id, 37);
+    identity->certificate_expires = expires;
+    identity->verified_seconds = mesh_verified_seconds;
+    identity->verified_monotonic_us = mesh_verified_monotonic_us;
+    identity->revision_first = reserved + 1;
+    identity->revision_limit = next + 1;
+    (*connection)->device_expires = expires;
+    int64_t lifetime = expires - mesh_verified_seconds;
+    if (lifetime > 300)
+        lifetime = 300;
+    (*connection)->mesh_deadline_us = mesh_verified_monotonic_us + lifetime * INT64_C(1000000);
+    result = ESP_OK;
+done:
+    if (result != ESP_OK && *connection)
+    {
+        wendy_pki_close(*connection);
+        *connection = NULL;
+    }
+    if (key)
+    {
+        erase(key, key_size);
+        free(key);
+    }
+    free(cert);
+    free(data.storage);
+    erase(cfg.token, sizeof cfg.token);
+    if (opened)
+        nvs_close(h);
+    pthread_mutex_unlock(&identity_lock);
+    return result;
+}
+#endif
 
 static esp_err_t accept_peer(int fd, wendy_pki_connection **connection,
                               const struct wendy_lite_trust *trust, bool allow_device)
