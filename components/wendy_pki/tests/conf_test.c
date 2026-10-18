@@ -415,6 +415,9 @@ int main(void)
 {
     memset(flash, 0xff, sizeof flash);
     wendy_conf_init();
+    char public_tenant[37] = "stale", public_device[65] = "stale";
+    wendy_conf_enrollment_identity(public_tenant, public_device);
+    assert(!public_tenant[0] && !public_device[0]);
     WendyConfEnrollment cfg;
     struct wendy_conf_enrollment_data first, next;
     assert(wendy_conf_copy_enrollment(&cfg, &first) == ESP_ERR_INVALID_STATE);
@@ -422,12 +425,16 @@ int main(void)
     assert(write_config("first-root", 10, "seed", 4) == ESP_OK);
     _load_conf(); /* Simulate restart and remapping the persisted partition. */
     assert(wendy_conf_copy_enrollment(&cfg, &first) == ESP_OK);
+    wendy_conf_enrollment_identity(public_tenant, public_device);
+    assert(!strcmp(public_tenant, cfg.tenant_id) && !strcmp(public_device, cfg.device_id));
     assert(cfg.provision_trust && !cfg.device_roots.arg && !cfg.signed_time.arg);
     assert(first.device_roots.size == 10 && !memcmp(first.device_roots.data, "first-root", 10));
     assert(first.tsa_roots.size == 10 && !memcmp(first.tsa_roots.data, "first-root", 10));
     assert(first.https_roots.size == 10 && !memcmp(first.https_roots.data, "first-root", 10));
     assert(first.signed_time.size == 4 && !memcmp(first.signed_time.data, "seed", 4));
     assert(write_config("second-root", 11, NULL, 0) == ESP_OK);
+    wendy_conf_enrollment_identity(public_tenant, public_device);
+    assert(!public_tenant[0] && !public_device[0]);
     assert(!memcmp(first.device_roots.data, "first-root", 10));
     _load_conf();
     assert(wendy_conf_copy_enrollment(&cfg, &next) == ESP_OK);

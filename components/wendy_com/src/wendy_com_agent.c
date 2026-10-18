@@ -7,6 +7,7 @@
 #include "wendy_com_link.h"
 #include "wendy_com_cmd.h"
 #include "wendy_pki.h"
+#include "wendy_conf.h"
 #include "wendy_com_capabilities.h"
 #include "wendy_com_msg.pb.h"
 #include "esp_log.h"
@@ -399,6 +400,8 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
         resp->data.enrollment_challenge.roughtime_supported = false;
 #endif
         wcom_enrollment_capabilities(&resp->data.enrollment_challenge);
+        wendy_conf_enrollment_identity(resp->data.enrollment_challenge.tenant_id,
+                                      resp->data.enrollment_challenge.device_id);
         resp->result = wendy_pki_challenge(cmd->params.enrollment_challenge.status_only, resp->data.enrollment_challenge.nonce_hex,
                          &resp->data.enrollment_challenge.enrolled) == ESP_OK
             ? WendyComResult_WENDY_COM_RESULT_OK : WendyComResult_WENDY_COM_RESULT_BAD_STATE;

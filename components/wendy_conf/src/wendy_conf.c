@@ -662,6 +662,17 @@ done:
     return result;
 }
 
+void wendy_conf_enrollment_identity(char tenant[37], char device[65])
+{
+    tenant[0] = device[0] = 0;
+    pthread_mutex_lock(&s_cache_lock);
+    if (s_cache.valid && s_cache.conf.has_enrollment) {
+        snprintf(tenant, 37, "%s", s_cache.conf.enrollment.tenant_id);
+        snprintf(device, 65, "%s", s_cache.conf.enrollment.device_id);
+    }
+    pthread_mutex_unlock(&s_cache_lock);
+}
+
 bool wendy_conf_has_enrollment(void)
 {
     pthread_mutex_lock(&s_cache_lock);
