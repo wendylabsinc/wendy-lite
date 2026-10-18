@@ -8,11 +8,13 @@ int main(void)
     WendyComEnrollmentChallenge challenge = WendyComEnrollmentChallenge_init_zero;
     /* Clear preexisting values so a reused response cannot retain capabilities. */
     challenge.enrollment_reset_supported = !EXPECT_RESET;
+    challenge.uuid_enrollment_supported = !EXPECT_RESET;
     challenge.cloud_enrollment_supported = !EXPECT_CLOUD;
     challenge.mldsa_verification_supported = !EXPECT_MLDSA;
     wcom_enrollment_capabilities(&challenge);
     assert(challenge.has_cloud_enrollment_supported);
     assert(challenge.enrollment_reset_supported == EXPECT_RESET);
+    assert(challenge.uuid_enrollment_supported == EXPECT_RESET);
     assert(challenge.cloud_enrollment_supported == EXPECT_CLOUD);
     assert(challenge.has_mldsa_verification_supported);
     assert(challenge.mldsa_verification_supported == EXPECT_MLDSA);
@@ -25,6 +27,7 @@ int main(void)
     pb_istream_t input = pb_istream_from_buffer(wire, output.bytes_written);
     assert(pb_decode(&input, WendyComEnrollmentChallenge_fields, &decoded));
     assert(decoded.has_cloud_enrollment_supported);
+    assert(decoded.uuid_enrollment_supported == EXPECT_RESET);
     assert(decoded.cloud_enrollment_supported == EXPECT_CLOUD);
     assert(decoded.has_mldsa_verification_supported);
     assert(decoded.mldsa_verification_supported == EXPECT_MLDSA);

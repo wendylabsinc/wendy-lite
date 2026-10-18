@@ -36,6 +36,8 @@ WendyComResult wcom_stdio_pump_detach(int id, uint32_t event)
 size_t wendy_stdio_put_stdin_data(const void *data, size_t size)
 { assert(size == 5 && !memcmp(data, "input", 5)); stdin_calls++; return size; }
 bool wendy_pki_reset_in_progress(void) { return resetting; }
+void wendy_conf_enrollment_identity(char tenant[37], char device[65])
+{ tenant[0] = device[0] = 0; }
 void wendy_pki_builtin_trust(bool *ready, bool *tsa_ready)
 { management_calls++; *ready = *tsa_ready = false; }
 esp_err_t wendy_pki_challenge(bool status, char nonce[65], bool *enrolled)

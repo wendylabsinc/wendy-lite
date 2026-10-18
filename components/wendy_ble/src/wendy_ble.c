@@ -343,15 +343,16 @@ static void _log_heap(const char *when)
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 }
 
-/// Pack the device ID into the manufacturer-data payload advertised in the
-/// scan response: two bytes of company ID followed by the ID itself.
+/// The scan response carries the compact hardware ID. The GATT identity
+/// characteristic carries the full enrolled PKI ID used for TLS pinning.
 static void _build_mfg_data(void)
 {
     _mfg_data_len = 0;
-    if (!_device_id || !_device_id[0])
+    const char *hardware_id = wendy_conf_get_device_id();
+    if (!hardware_id || !hardware_id[0])
         return;
 
-    size_t id_len = strlen(_device_id);
+    size_t id_len = strlen(hardware_id);
     if (id_len > DEVICE_ID_ADV_MAX) {
         // Truncating would put a wrong ID on the air, and a wrong ID is worse
         // than no device: a scan would show an identity that matches nothing.
@@ -360,13 +361,13 @@ static void _build_mfg_data(void)
         // way to surface it.
         ESP_LOGE(TAG, "device id '%s' is %u bytes, more than the %d that fit "
                       "in the advertisement",
-                 _device_id, (unsigned)id_len, DEVICE_ID_ADV_MAX);
+                 hardware_id, (unsigned)id_len, DEVICE_ID_ADV_MAX);
         esp_system_abort("wendy_ble: device id too long to advertise");
     }
 
     _mfg_data[0] = MFG_COMPANY_ID_LO;
     _mfg_data[1] = MFG_COMPANY_ID_HI;
-    memcpy(&_mfg_data[2], _device_id, id_len);
+    memcpy(&_mfg_data[2], hardware_id, id_len);
     _mfg_data_len = (uint8_t)(2 + id_len);
 }
 
@@ -560,6 +561,14 @@ esp_err_t wendy_ble_start(void)
     // fixes these at init and never changes them, so the copies are belt and
     // braces: they keep the advertisement owning the bytes it hands to NimBLE.
     _device_id    = strdup(wendy_conf_get_device_id());
+    if (_enrolled) {
+        char tenant[37], device[65];
+        wendy_conf_enrollment_identity(tenant, device);
+        if (device[0]) {
+            free(_device_id);
+            _device_id = strdup(device);
+        }
+    }
     _device_name  = strdup(wendy_conf_get_resolved_device_name());
     _display_name = strdup(wendy_conf_get_resolved_device_display_name());
     if (!_device_id || !_device_name || !_display_name) {

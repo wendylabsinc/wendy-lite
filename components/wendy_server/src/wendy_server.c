@@ -263,6 +263,7 @@ static void _server_task(void *arg)
         struct wendy_conf_enrollment_data enrollment_data = {0};
         if (wendy_conf_copy_enrollment(&enrollment, &enrollment_data) == ESP_OK) {
             mdns_service_txt_item_set("_wendy-lite", "_tcp", "tenant", enrollment.tenant_id);
+            mdns_service_txt_item_set("_wendy-lite", "_tcp", "id", enrollment.device_id);
             char principal[160];
             snprintf(principal, sizeof principal, "spiffe://wendy.sh/tenant/%s/device/%s",
                      enrollment.tenant_id, enrollment.device_id);

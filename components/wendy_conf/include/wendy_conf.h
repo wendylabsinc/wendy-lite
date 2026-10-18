@@ -35,6 +35,10 @@ void wendy_conf_init(void);
  * a write. Enrolled sessions must stop using a cached policy in this state. */
 bool wendy_conf_is_current(void);
 
+/* Copies only public enrollment identifiers, never credentials. Empty when
+ * configuration is absent or awaiting reboot. */
+void wendy_conf_enrollment_identity(char tenant[37], char device[65]);
+
 /**
  * Write a protobuf-encoded WendyConf message to the wendy_conf partition.
  * The message must not exceed the maximum size returned by

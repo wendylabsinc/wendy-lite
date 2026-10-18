@@ -3,12 +3,17 @@
 Wendy Lite can join a Wendy local mesh as an IPv6 endpoint through one explicitly
 configured peer over Wi-Fi TCP, BLE L2CAP, or ESP-NOW. The build is opt-in and limited to native ESP32-S3
 profiles with PSRAM. The Seeed XIAO ESP32S3 profile compiles with ESP-IDF 6.0.3.
-This feature has not been flashed or tested on hardware. Other targets, boards
+The BLE image boots on an ESP32-S3 DevKit with 8 MB PSRAM and starts its L2CAP
+listener. An authenticated mesh connection has not yet been verified on hardware. Other targets, boards
 without PSRAM, WASM profiles and IPv6 forwarding are excluded by Kconfig.
 
 The leaf uses its existing Cloud enrollment, P-256 device key, device certificate,
 tenant trust roots and signed-time authority. Both device and tenant IDs must be
-canonical UUIDs. It never enrolls a device or changes its membership. A matching
+canonical UUIDs. Updated firmware reports `uuid_enrollment_supported` over USB;
+the matching CLI assigns a new UUID during enrollment. Older `lite-<hardware-id>`
+identities require explicit unenrollment and re-enrollment before joining this
+mesh. Flashing firmware preserves the existing enrollment. The mesh never enrolls
+a device or changes its membership. A matching
 Linux agent with the opt-in `leafListen` adapter is required. Its implementation
 is tracked in [WendyOS PR 2376](https://github.com/wendylabsinc/WendyOS/pull/2376).
 
