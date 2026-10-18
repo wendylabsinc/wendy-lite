@@ -1,0 +1,387 @@
+#include <inttypes.h>
+#include <math.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+
+#include "bsp/esp_mosaico.h"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "lvgl.h"
+#include "wendy_cloud.h"
+#include "wendy_conf.h"
+#include "wendy_core.h"
+#include "wendy_pki.h"
+#include "wendy_wifi.h"
+
+static const char *TAG = "mosaico_dashboard";
+
+#define COLOR_BACKGROUND 0x0B1420
+#define COLOR_PANEL      0x152333
+#define COLOR_LINE       0x294054
+#define COLOR_TEXT       0xF0F5FA
+#define COLOR_MUTED      0x9BAFC2
+#define COLOR_ACCENT     0x60E6C5
+#define COLOR_WARNING    0xFFD080
+#define COLOR_ERROR      0xFF9B95
+#define SAMPLE_PERIOD_MS 40
+#define STATUS_PERIOD_US INT64_C(1000000)
+#define RETRY_PERIOD_US  INT64_C(1000000)
+#define PLOT_SIZE        144
+#define BUBBLE_SIZE      20
+#define BUBBLE_RANGE     54
+
+typedef struct {
+    float accel[3];
+    float gyro[3];
+} motion_sample_t;
+
+/* The BSP's LVGL lock protects this state, including touch callbacks. */
+static struct {
+    lv_obj_t *live;
+    lv_obj_t *motion_state;
+    lv_obj_t *bubble;
+    lv_obj_t *accel[3];
+    lv_obj_t *gyro[3];
+    lv_obj_t *hint;
+    lv_obj_t *pause_text;
+    lv_obj_t *zero_button;
+    lv_obj_t *enrollment;
+    lv_obj_t *wifi;
+    lv_obj_t *cloud;
+    lv_obj_t *footer;
+    motion_sample_t sample;
+    float zero_x;
+    float zero_y;
+    bool paused;
+    bool sample_valid;
+} ui;
+
+static lv_obj_t *label(lv_obj_t *parent, const char *text, int x, int y,
+                       int width, const lv_font_t *font, uint32_t color)
+{
+    lv_obj_t *obj = lv_label_create(parent);
+    lv_label_set_text(obj, text);
+    lv_label_set_long_mode(obj, LV_LABEL_LONG_CLIP);
+    lv_obj_set_pos(obj, x, y);
+    lv_obj_set_width(obj, width);
+    lv_obj_set_style_text_font(obj, font, 0);
+    lv_obj_set_style_text_color(obj, lv_color_hex(color), 0);
+    return obj;
+}
+
+static lv_obj_t *box(lv_obj_t *parent, int x, int y, int width, int height,
+                     uint32_t color, int radius)
+{
+    lv_obj_t *obj = lv_obj_create(parent);
+    lv_obj_remove_style_all(obj);
+    lv_obj_remove_flag(obj, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_pos(obj, x, y);
+    lv_obj_set_size(obj, width, height);
+    lv_obj_set_style_bg_color(obj, lv_color_hex(color), 0);
+    lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(obj, radius, 0);
+    return obj;
+}
+
+static void position_bubble(void)
+{
+    /* This is an acceleration-based tilt indicator, not an orientation filter.
+     * Limit displacement radially so large movements stay inside the ring. */
+    float x = ui.sample.accel[0] - ui.zero_x;
+    float y = ui.sample.accel[1] - ui.zero_y;
+    float length = sqrtf(x * x + y * y);
+    if (length > 1.0f) {
+        x /= length;
+        y /= length;
+    }
+    const int center = (PLOT_SIZE - BUBBLE_SIZE) / 2;
+    lv_obj_set_pos(ui.bubble, center + (int)lroundf(x * BUBBLE_RANGE),
+                  center - (int)lroundf(y * BUBBLE_RANGE));
+}
+
+static void update_motion_state(void)
+{
+    lv_label_set_text(ui.live, ui.paused ? "PAUSED" : "LIVE");
+    lv_obj_set_style_text_color(ui.live,
+        lv_color_hex(ui.paused ? COLOR_WARNING : COLOR_ACCENT), 0);
+    lv_label_set_text(ui.pause_text, ui.paused ? "Resume motion" : "Pause motion");
+    lv_label_set_text(ui.motion_state, !ui.sample_valid ? "IMU unavailable" :
+                      ui.paused ? "Motion paused" : "25 Hz / live");
+    lv_obj_set_style_text_color(ui.motion_state,
+        lv_color_hex(!ui.sample_valid ? COLOR_ERROR : COLOR_MUTED), 0);
+}
+
+static void pause_clicked(lv_event_t *event)
+{
+    (void)event;
+    ui.paused = !ui.paused;
+    update_motion_state();
+}
+
+static void zero_clicked(lv_event_t *event)
+{
+    (void)event;
+    if (!ui.sample_valid) {
+        return;
+    }
+    ui.zero_x = ui.sample.accel[0];
+    ui.zero_y = ui.sample.accel[1];
+    position_bubble();
+    lv_label_set_text(ui.hint, "Tilt reference saved");
+}
+
+static lv_obj_t *button(lv_obj_t *parent, const char *text, int x,
+                        bool primary, lv_event_cb_t callback, lv_obj_t **caption)
+{
+    lv_obj_t *obj = lv_button_create(parent);
+    lv_obj_remove_style_all(obj);
+    lv_obj_set_pos(obj, x, 310);
+    lv_obj_set_size(obj, 216, 44);
+    lv_obj_set_style_radius(obj, 12, 0);
+    lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(obj,
+        lv_color_hex(primary ? COLOR_ACCENT : COLOR_LINE), 0);
+    lv_obj_set_style_bg_opa(obj, LV_OPA_70, LV_STATE_PRESSED);
+    lv_obj_set_style_opa(obj, LV_OPA_40, LV_STATE_DISABLED);
+    lv_obj_add_event_cb(obj, callback, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *text_obj = label(obj, text, 0, 0, 216, &lv_font_montserrat_16,
+                               primary ? COLOR_BACKGROUND : COLOR_TEXT);
+    lv_obj_set_style_text_align(text_obj, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_center(text_obj);
+    if (caption) {
+        *caption = text_obj;
+    }
+    return obj;
+}
+
+static void create_dashboard(lv_display_t *display)
+{
+    lv_obj_t *screen = lv_display_get_screen_active(display);
+    lv_obj_remove_style_all(screen);
+    lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_color(screen, lv_color_hex(COLOR_BACKGROUND), 0);
+    lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
+
+    label(screen, "Mosaico", 20, 12, 300, &lv_font_montserrat_28, COLOR_TEXT);
+    ui.live = label(screen, "LIVE", 364, 22, 96, &lv_font_montserrat_16, COLOR_ACCENT);
+    lv_obj_set_style_text_align(ui.live, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_t *name = label(screen, wendy_conf_get_resolved_device_display_name(),
+                           20, 49, 440, &lv_font_montserrat_16, COLOR_MUTED);
+    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+
+    lv_obj_t *motion = box(screen, 16, 78, 448, 222, COLOR_PANEL, 18);
+    label(motion, "Motion", 16, 12, 180, &lv_font_montserrat_20, COLOR_TEXT);
+    ui.motion_state = label(motion, "Waiting for IMU", 224, 16, 208,
+                             &lv_font_montserrat_16, COLOR_MUTED);
+    lv_obj_set_style_text_align(ui.motion_state, LV_TEXT_ALIGN_RIGHT, 0);
+
+    lv_obj_t *plot = box(motion, 16, 52, PLOT_SIZE, PLOT_SIZE,
+                         COLOR_BACKGROUND, LV_RADIUS_CIRCLE);
+    lv_obj_set_style_border_color(plot, lv_color_hex(COLOR_LINE), 0);
+    lv_obj_set_style_border_width(plot, 1, 0);
+    box(plot, 0, PLOT_SIZE / 2, PLOT_SIZE, 1, COLOR_LINE, 0);
+    box(plot, PLOT_SIZE / 2, 0, 1, PLOT_SIZE, COLOR_LINE, 0);
+    lv_obj_t *ring = box(plot, 43, 43, 58, 58, COLOR_BACKGROUND, LV_RADIUS_CIRCLE);
+    lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(ring, 1, 0);
+    lv_obj_set_style_border_color(ring, lv_color_hex(COLOR_LINE), 0);
+    ui.bubble = box(plot, 62, 62, BUBBLE_SIZE, BUBBLE_SIZE, COLOR_ACCENT, LV_RADIUS_CIRCLE);
+    lv_obj_add_flag(ui.bubble, LV_OBJ_FLAG_HIDDEN);
+
+    label(motion, "ACCEL / g", 202, 52, 112, &lv_font_montserrat_16, COLOR_MUTED);
+    label(motion, "GYRO / dps", 320, 52, 116, &lv_font_montserrat_16, COLOR_MUTED);
+    static const char *axes[] = {"X", "Y", "Z"};
+    for (int axis = 0; axis < 3; ++axis) {
+        int y = 82 + 28 * axis;
+        label(motion, axes[axis], 176, y, 24, &lv_font_montserrat_16, COLOR_MUTED);
+        ui.accel[axis] = label(motion, "--", 202, y, 110, &lv_font_montserrat_20, COLOR_TEXT);
+        ui.gyro[axis] = label(motion, "--", 320, y, 116, &lv_font_montserrat_20, COLOR_TEXT);
+    }
+    ui.hint = label(motion, "Hold still, tap Zero tilt", 176, 179, 256,
+                     &lv_font_montserrat_16, COLOR_MUTED);
+
+    button(screen, "Pause motion", 16, true, pause_clicked, &ui.pause_text);
+    ui.zero_button = button(screen, "Zero tilt", 248, false, zero_clicked, NULL);
+    lv_obj_add_state(ui.zero_button, LV_STATE_DISABLED);
+
+    lv_obj_t *status = box(screen, 16, 366, 448, 78, COLOR_PANEL, 18);
+    label(status, "ENROLLMENT", 14, 12, 152, &lv_font_montserrat_16, COLOR_MUTED);
+    label(status, "WI-FI", 170, 12, 116, &lv_font_montserrat_16, COLOR_MUTED);
+    label(status, "CLOUD", 304, 12, 130, &lv_font_montserrat_16, COLOR_MUTED);
+    ui.enrollment = label(status, "Checking", 14, 40, 152, &lv_font_montserrat_16, COLOR_TEXT);
+    ui.wifi = label(status, "Checking", 170, 40, 116, &lv_font_montserrat_16, COLOR_TEXT);
+    ui.cloud = label(status, "Checking", 304, 40, 130, &lv_font_montserrat_16, COLOR_TEXT);
+    ui.footer = label(screen, "Wendy Lite", 20, 454, 440, &lv_font_montserrat_16, COLOR_MUTED);
+}
+
+static void render_motion(const motion_sample_t *sample, bool valid)
+{
+    if (!valid) {
+        ui.sample_valid = false;
+        lv_obj_add_flag(ui.bubble, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_state(ui.zero_button, LV_STATE_DISABLED);
+        for (int axis = 0; axis < 3; ++axis) {
+            lv_label_set_text(ui.accel[axis], "--");
+            lv_label_set_text(ui.gyro[axis], "--");
+        }
+    } else if (!ui.paused) {
+        ui.sample = *sample;
+        ui.sample_valid = true;
+        char value[24];
+        for (int axis = 0; axis < 3; ++axis) {
+            /* Use libc formatting; LVGL's optional float formatter is not required. */
+            snprintf(value, sizeof value, "%+.2f", (double)sample->accel[axis]);
+            lv_label_set_text(ui.accel[axis], value);
+            snprintf(value, sizeof value, "%+.1f", (double)sample->gyro[axis]);
+            lv_label_set_text(ui.gyro[axis], value);
+        }
+        position_bubble();
+        lv_obj_remove_flag(ui.bubble, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_state(ui.zero_button, LV_STATE_DISABLED);
+    }
+    update_motion_state();
+}
+
+static void status_value(lv_obj_t *obj, const char *text, uint32_t color)
+{
+    lv_label_set_text(obj, text);
+    lv_obj_set_style_text_color(obj, lv_color_hex(color), 0);
+}
+
+static void render_status(esp_err_t enrollment_result, bool enrolled, bool resetting,
+                          bool wifi, wendy_cloud_state_t cloud, int64_t now)
+{
+    status_value(ui.enrollment,
+        resetting ? "Resetting" : enrollment_result != ESP_OK ? "Unavailable" :
+        enrolled ? "Enrolled" : "Not enrolled",
+        resetting || enrollment_result != ESP_OK ? COLOR_WARNING :
+        enrolled ? COLOR_ACCENT : COLOR_MUTED);
+    status_value(ui.wifi, wifi ? "Connected" : "Offline", wifi ? COLOR_ACCENT : COLOR_MUTED);
+    const char *cloud_text = "Idle";
+    uint32_t cloud_color = COLOR_MUTED;
+    switch (cloud) {
+    case WENDY_CLOUD_STATE_CONNECTED:
+        cloud_text = "Connected";
+        cloud_color = COLOR_ACCENT;
+        break;
+    case WENDY_CLOUD_STATE_CONNECTING:
+        cloud_text = "Connecting";
+        cloud_color = COLOR_WARNING;
+        break;
+    case WENDY_CLOUD_STATE_DISCONNECTED:
+        cloud_text = "Offline";
+        break;
+    case WENDY_CLOUD_STATE_ERROR:
+        cloud_text = "Error";
+        cloud_color = COLOR_ERROR;
+        break;
+    default:
+        break;
+    }
+    status_value(ui.cloud, cloud_text, cloud_color);
+    uint64_t seconds = (uint64_t)(now / INT64_C(1000000));
+    char text[96];
+    snprintf(text, sizeof text, "Up %02" PRIu64 ":%02u:%02u   |   Internal heap %u KiB",
+             seconds / 3600, (unsigned)(seconds / 60 % 60), (unsigned)(seconds % 60),
+             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) / 1024));
+    lv_label_set_text(ui.footer, text);
+}
+
+static bool read_motion(motion_sample_t *sample)
+{
+    if (bsp_imu_get_accel(&sample->accel[0], &sample->accel[1], &sample->accel[2]) != ESP_OK ||
+        bsp_imu_get_gyro(&sample->gyro[0], &sample->gyro[1], &sample->gyro[2]) != ESP_OK) {
+        return false;
+    }
+    for (int axis = 0; axis < 3; ++axis) {
+        if (!isfinite(sample->accel[axis]) || !isfinite(sample->gyro[axis])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void dashboard_task(void *argument)
+{
+    (void)argument;
+    bsp_board_variant_t variant;
+    esp_err_t result = bsp_board_variant_get(&variant);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "Board revision unavailable (%s); Wendy management remains active",
+                 esp_err_to_name(result));
+        vTaskDelete(NULL);
+        return;
+    }
+    ESP_LOGI(TAG, "Starting dashboard on Mosaico v%s",
+             variant == BSP_BOARD_VARIANT_V1_0 ? "1.0" : "1.1/1.2");
+
+    const bsp_display_config_t display_config = BSP_DISPLAY_DEFAULT_CONFIG();
+    lv_display_t *display = bsp_display_start_with_config(&display_config);
+    if (!display || !bsp_display_lock(1000)) {
+        ESP_LOGE(TAG, "Display unavailable; Wendy management remains active");
+        vTaskDelete(NULL);
+        return;
+    }
+    create_dashboard(display);
+    bsp_display_unlock();
+
+    result = bsp_imu_init();
+    if (result == ESP_OK) {
+        const bsp_imu_config_t config = BSP_IMU_CONFIG_DEFAULT();
+        result = bsp_imu_start(&config);
+    }
+    bool imu_ready = result == ESP_OK;
+    if (!imu_ready) {
+        ESP_LOGW(TAG, "IMU unavailable (%s); device status remains active", esp_err_to_name(result));
+    }
+
+    int64_t next_status = 0;
+    int64_t next_motion = 0;
+    bool motion_valid = false;
+    motion_sample_t sample = {0};
+    esp_err_t enrollment_result = ESP_FAIL;
+    bool enrolled = false;
+    bool resetting = false;
+    bool wifi = false;
+    wendy_cloud_state_t cloud = WENDY_CLOUD_STATE_IDLE;
+    for (;;) {
+        int64_t now = esp_timer_get_time();
+        bool status_due = now >= next_status;
+        bool motion_due = imu_ready && now >= next_motion;
+        if (motion_due) {
+            motion_valid = read_motion(&sample);
+            next_motion = now + (motion_valid ? SAMPLE_PERIOD_MS * INT64_C(1000) : RETRY_PERIOD_US);
+        }
+        if (status_due) {
+            /* Status-only does not create or replace the USB enrollment nonce. */
+            char nonce[65] = {0};
+            enrollment_result = wendy_pki_challenge(true, nonce, &enrolled);
+            resetting = wendy_pki_reset_in_progress();
+            wifi = wendy_wifi_is_connected();
+            cloud = wendy_cloud_get_state();
+            next_status = now + STATUS_PERIOD_US;
+        }
+        if (bsp_display_lock(100)) {
+            if (motion_due || !imu_ready) {
+                render_motion(&sample, motion_valid);
+            }
+            if (status_due) {
+                render_status(enrollment_result, enrolled, resetting, wifi, cloud, now);
+            }
+            bsp_display_unlock();
+        }
+        vTaskDelay(pdMS_TO_TICKS(SAMPLE_PERIOD_MS));
+    }
+}
+
+void app_main(void)
+{
+    ESP_ERROR_CHECK(wendy_core_init());
+    if (xTaskCreate(dashboard_task, "mosaico_dashboard", 6144, NULL, 3, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "Cannot start dashboard task; Wendy management remains active");
+    }
+}
