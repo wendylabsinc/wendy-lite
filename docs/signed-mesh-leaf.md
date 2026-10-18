@@ -25,7 +25,8 @@ The leaf's address is `fd45:b891:567f::/48` followed by the final 80 bits of its
 device UUID. A point-to-point lwIP interface carries TCP, UDP and ICMPv6 to
 authorized mesh addresses. The leaf advertises only its own exact `/128` and
 does not forward packets for other devices. It has no Internet donor role.
-IPv6 extension headers, IPv6 fragments, raw IPv4 and IP-in-IP are unsupported.
+IPv6 extension headers, IPv6 fragments and raw IPv4 are unsupported.
+The optional Cloud uplink profile below permits leased IPv4-in-IPv6 traffic.
 The MTU is 1320 bytes; the carrier can split one packet into two bounded frames.
 
 The existing WendyCom/SensorLink listener becomes dual-stack when this profile
@@ -298,3 +299,52 @@ idf.py -B build-mesh-ble -D SDKCONFIG=sdkconfig.mesh-ble \
 Here `mesh-ble.defaults` is your edited copy of `mesh-examples/ble.defaults`.
 The example memory profile is unsuitable for boards with a different PSRAM
 interface or flash capacity.
+
+
+## Cloud fallback through a mesh gateway
+
+`CONFIG_WENDY_MESH_CLOUD_UPLINK=y` enables an IPv4 Internet borrower for a
+Cloud-enabled mesh leaf. Set `CONFIG_WENDY_MESH_GATEWAY_DEVICE` to the enrolled
+UUID of a Linux router with Internet sharing enabled. It defaults to the pinned
+mesh peer. All participating routers must use mesh protocol v3 and the Linux
+leaf packet gate must support leased IPv4-in-IPv6. A v2 router cannot bridge the
+v3 leaf mesh. No protocol downgrade is attempted.
+
+After two failed Cloud connection attempts, the leaf authenticates the pinned
+gateway at its mesh ULA on port 18867 using TLS 1.3 and ALPN
+`wendy-mesh-internet/1`. This uses the existing Linux lease protocol. The gateway
+assigns an address in `10.88.0.0/16`, and keeps it valid only while the authenticated
+control connection sends heartbeats. The leaf encapsulates IPv4 packets in IPv6
+between its own ULA and the gateway ULA. Inner packets are limited to 1280 bytes,
+TCP, UDP and ICMP, without options, fragments or nested tunnels. IPv6 Internet
+borrowing and Internet donation by Lite are not implemented.
+
+The borrowed IPv4 default and gateway DNS resolver carry the existing Cloud
+protocol, including signed time, certificate renewal and operator handoff. TLS
+continues to authenticate the Lite device and Cloud directly. The gateway does
+not receive its private key or terminate its Cloud TLS session. The leaf needs
+an existing valid enrollment and fresh signed time obtained during mesh setup.
+This cannot bootstrap an unenrolled device or recover an expired identity.
+
+A separate worker checks the direct path every minute. It queries the saved
+physical resolver and establishes Cloud TLS, with both sockets bound to the
+physical interface. Two successful checks restore the direct default and DNS.
+A failed probe resets that success count. Resolver answers are bounded to a
+1024-byte A response; unsupported or truncated answers keep the mesh fallback.
+A route change wakes the Cloud connector. Existing operator connections may
+need to reconnect during failover or recovery.
+
+Borrowed routes are withdrawn on control failure, route-proof expiry, identity
+reset, credential expiry or mesh-session loss. DNS restoration changes only
+entries still owned by the borrower and preserves observed DHCP updates. Mesh
+links already refresh their signed-time session every five minutes; that refresh
+also withdraws this lease and may interrupt Cloud traffic. Gateway selection is
+explicit, with no multi-gateway discovery or failover in this draft.
+
+The profile allocates two additional 32 KiB worker stacks and temporary TLS
+state. It is disabled by default pending a physical memory and failover test.
+Host tests cover packet bounds, lease addresses, independent DNS parsing,
+identity lifecycle and Go-to-C gateway TLS interoperability. The ESP32-S3 BLE
+profile builds with the borrower enabled. End-to-end Cloud failover on hardware
+has not been verified. The isolated Linux kernel test could not run to completion
+because the available container exposes network sysctls read-only.

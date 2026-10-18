@@ -61,7 +61,7 @@ target_link_libraries(mesh_identity_test PRIVATE mbedtls mbedx509 tfpsacrypto Th
 
 enable_testing()
 add_test(NAME mesh_identity_persistence COMMAND mesh_identity_test "${CMAKE_CURRENT_LIST_DIR}/fixtures/device-key.der")
-add_library(mesh_protocol STATIC ../../wendy_mesh/src/wendy_mesh_protocol.c ../../wendy_mesh/src/wendy_mesh_directory.c)
+add_library(mesh_protocol STATIC ../../wendy_mesh/src/wendy_mesh_uplink_protocol.c ../../wendy_mesh/src/wendy_mesh_protocol.c ../../wendy_mesh/src/wendy_mesh_directory.c)
 target_include_directories(mesh_protocol PUBLIC ../../wendy_mesh/include)
 target_link_libraries(mesh_protocol PUBLIC pki)
 target_compile_options(mesh_protocol PRIVATE -Wall -Wextra -Werror)
@@ -190,3 +190,21 @@ add_executable(mesh_datagram_test ../../wendy_mesh/tests/datagram_test.c
 target_include_directories(mesh_datagram_test PRIVATE ../../wendy_mesh/include)
 target_compile_options(mesh_datagram_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 add_test(NAME mesh_datagram_reliability COMMAND mesh_datagram_test)
+
+add_executable(mesh_uplink_protocol_test ../../wendy_mesh/tests/uplink_test.c)
+target_link_libraries(mesh_uplink_protocol_test PRIVATE mesh_protocol)
+target_compile_options(mesh_uplink_protocol_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME mesh_uplink_packets COMMAND mesh_uplink_protocol_test)
+add_executable(dns_probe_test dns_probe_test.c)
+target_include_directories(dns_probe_test PRIVATE ../src)
+target_compile_options(dns_probe_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME uplink_direct_dns_bounds COMMAND dns_probe_test)
+
+add_executable(mesh_uplink_identity_test renewal_test.c ../src/wendy_pki_crypto.c)
+target_include_directories(mesh_uplink_identity_test PRIVATE stubs ../include ../src
+    ../../wendy_conf/include ../../nanopb)
+target_compile_definitions(mesh_uplink_identity_test PRIVATE CONFIG_WENDY_MESH_LEAF=1
+    CONFIG_WENDY_MESH_CLOUD_UPLINK=1)
+target_link_libraries(mesh_uplink_identity_test PRIVATE mbedtls mbedx509 tfpsacrypto Threads::Threads)
+add_test(NAME mesh_uplink_identity_lifecycle COMMAND mesh_uplink_identity_test
+    "${CMAKE_CURRENT_LIST_DIR}/fixtures/device-key.der")

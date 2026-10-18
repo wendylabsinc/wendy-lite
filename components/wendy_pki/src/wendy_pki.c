@@ -887,6 +887,80 @@ esp_err_t wendy_pki_mesh_stream(const struct wendy_pki_stream* stream, bool serv
 
 #endif
 
+#if CONFIG_WENDY_MESH_CLOUD_UPLINK
+/* Reuse this boot's fresh signed time and existing credentials. A borrowed
+ * uplink cannot bootstrap enrollment, rotate identity, or accept a new pin. */
+static esp_err_t uplink_connect(const char* host, const char* gateway, const char* interface, const char* resolver,
+    wendy_pki_connection** connection, int64_t* deadline)
+{
+    if (!connection || !deadline || (gateway && (!host ||
+        !wendy_identity_uuid((const unsigned char*)gateway, strlen(gateway)))))
+        return ESP_ERR_INVALID_ARG;
+    *connection = NULL;
+    *deadline = 0;
+    pthread_mutex_lock(&identity_lock);
+    WendyConfEnrollment cfg = WendyConfEnrollment_init_zero;
+    struct wendy_conf_enrollment_data data = { 0 };
+    nvs_handle_t h = 0;
+    bool opened = false;
+    uint8_t *key = NULL, *cert = NULL;
+    size_t key_size = 0, cert_size = 0;
+    time_t expires = 0;
+    esp_err_t result = ESP_FAIL;
+    int64_t now = esp_timer_get_time();
+    if (!identity_use_allowed() || !wendy_conf_is_current() || mesh_verified_seconds <= 0
+        || now < mesh_verified_monotonic_us
+        || now - mesh_verified_monotonic_us >= INT64_C(300000000)
+        || wendy_conf_copy_enrollment(&cfg, &data) != ESP_OK
+        || validate_config_and_trust(&cfg, &data) || open_identity(&h) != ESP_OK)
+        goto done;
+    opened = true;
+    char principal[106];
+    snprintf(principal, sizeof principal, "spiffe://wendy.sh/tenant/%.36s/device/%.36s",
+        cfg.tenant_id, cfg.device_id);
+    time_t verified_now = mesh_verified_seconds + (now - mesh_verified_monotonic_us) / 1000000;
+    if (identity_key(h, &cfg, &key, &key_size) || load_blob(h, "certificate", &cert, &cert_size)
+        || wendy_pki_verify_identity(cert, cert_size, data.device_roots.data,
+            data.device_roots.size, key, key_size, principal, verified_now, &expires)) goto done;
+    int status = gateway
+        ? pki_tls_gateway_connect(host, 18867, cfg.tenant_id, cfg.device_id, gateway, key, key_size,
+            (const char*)cert, data.device_roots, connection)
+        : pki_tls_bound_connect(cfg.broker_host, cfg.broker_port, interface, resolver, key, key_size,
+            (const char*)cert, data.https_roots, connection);
+    if (status || !wendy_conf_is_current() || wendy_pki_reset_in_progress()) goto done;
+    if (gateway && (*connection)->operator_expires < expires)
+        expires = (*connection)->operator_expires;
+    int64_t lifetime = expires - mesh_verified_seconds;
+    if (lifetime > 300) lifetime = 300;
+    *deadline = mesh_verified_monotonic_us + lifetime * INT64_C(1000000);
+    if (*deadline <= esp_timer_get_time()) goto done;
+    (*connection)->relay_expires_us = *deadline;
+    result = ESP_OK;
+done:
+    if (result != ESP_OK && *connection) { wendy_pki_close(*connection); *connection = NULL; }
+    if (key) { erase(key, key_size); free(key); }
+    free(cert);
+    free(data.storage);
+    erase(cfg.token, sizeof cfg.token);
+    if (opened) nvs_close(h);
+    pthread_mutex_unlock(&identity_lock);
+    return result;
+}
+esp_err_t wendy_pki_gateway_connect(const char* host, const char* gateway,
+    wendy_pki_connection** connection, int64_t* deadline)
+{
+    return uplink_connect(host, gateway, NULL, NULL, connection, deadline);
+}
+bool wendy_pki_probe_direct(const char* interface, const char* resolver)
+{
+    wendy_pki_connection* connection = NULL;
+    int64_t deadline;
+    bool ok = uplink_connect(NULL, NULL, interface, resolver, &connection, &deadline) == ESP_OK;
+    wendy_pki_close(connection);
+    return ok;
+}
+#endif
+
 static esp_err_t accept_peer(int fd, wendy_pki_connection **connection,
                               const struct wendy_lite_trust *trust, bool allow_device)
 {

@@ -784,6 +784,58 @@ static void test_mesh_identity(void)
     puts("mesh fresh-time gate, durable revision blocks, commit failures and reset guard passed");
 }
 #endif
+#if CONFIG_WENDY_MESH_CLOUD_UPLINK
+static int gateway_calls, direct_calls;
+int pki_tls_gateway_connect(const char* host, unsigned port, const char* tenant,
+    const char* device, const char* router, const uint8_t* key, size_t key_size,
+    const char* cert, struct wendy_conf_span roots, wendy_pki_connection** out)
+{
+    assert(port == 18867 && !strcmp(host, "fd00::1"));
+    gateway_calls++;
+    return pki_tls_mesh_connect(host, port, tenant, device, router, key, key_size, cert, roots, out);
+}
+int pki_tls_bound_connect(const char* host, unsigned port, const char* interface,
+    const char* resolver, const uint8_t* key, size_t key_size, const char* cert,
+    struct wendy_conf_span roots, wendy_pki_connection** out)
+{
+    assert(!strcmp(host, config.broker_host) && port == config.broker_port);
+    assert(!strcmp(interface, "st0") && !strcmp(resolver, "192.0.2.53"));
+    assert(roots.data == wendy_pki_https_roots_start);
+    direct_calls++;
+    *out = &stream_connection;
+    return 0;
+}
+static void test_gateway_identity(void)
+{
+    reset(); gateway_calls = direct_calls = 0;
+    strcpy(config.device_id, "12345678-9abc-4def-8123-000000000002");
+    const char* gateway = "12345678-9abc-4def-8123-000000000003";
+    wendy_pki_connection* connection = NULL;
+    int64_t deadline;
+    mesh_verified_seconds = 0;
+    assert(wendy_pki_gateway_connect("fd00::1", gateway, &connection, &deadline) != ESP_OK);
+    assert(!gateway_calls && !connection);
+    mesh_verified_seconds = signed_now; mesh_verified_monotonic_us = 0;
+    assert(wendy_pki_gateway_connect("fd00::1", gateway, &connection, &deadline) == ESP_OK);
+    assert(gateway_calls == 1 && deadline == INT64_C(300000000));
+    assert(connection->relay_expires_us == deadline);
+    assert(!renewal_calls && !timestamp_calls && !mesh_reserved && !commit_calls);
+    assert(wendy_pki_probe_direct("st0", "192.0.2.53") && direct_calls == 1);
+    monotonic_us = INT64_C(300000000);
+    assert(wendy_pki_gateway_connect("fd00::1", gateway, &connection, &deadline) != ESP_OK);
+    assert(!connection && gateway_calls == 1);
+    monotonic_us = 0; reset_pending = 1;
+    assert(wendy_pki_gateway_connect("fd00::1", gateway, &connection, &deadline) != ESP_OK);
+    assert(!connection && gateway_calls == 1);
+    reset_pending = 0; invalid_certificate = true;
+    assert(wendy_pki_gateway_connect("fd00::1", gateway, &connection, &deadline) != ESP_OK);
+    assert(!connection && gateway_calls == 1);
+    invalid_certificate = false; config_cleared = true;
+    assert(wendy_pki_gateway_connect("fd00::1", gateway, &connection, &deadline) != ESP_OK);
+    assert(!connection && gateway_calls == 1);
+    strcpy(config.device_id, "lite-test"); reset();
+}
+#endif
 int main(int argc, char **argv)
 {
     assert(argc == 2);
@@ -869,6 +921,9 @@ int main(int argc, char **argv)
 #if CONFIG_WENDY_MESH_LEAF
     test_mesh_identity();
     test_mesh_radio_time();
+#endif
+#if CONFIG_WENDY_MESH_CLOUD_UPLINK
+    test_gateway_identity();
 #endif
     puts("renewal fallback, Lite authority lifecycle and local enrollment reset tests passed");
 }

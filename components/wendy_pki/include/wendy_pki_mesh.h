@@ -49,3 +49,9 @@ esp_err_t wendy_pki_mesh_stream(const struct wendy_pki_stream* stream, bool serv
     const char* peer, wendy_pki_connection** connection, struct wendy_pki_mesh_identity* identity);
 /* 1: wake/readiness hint, 0: timeout, -1: closed/error. */
 int wendy_pki_wait(wendy_pki_connection* connection, bool writing, int64_t deadline_us);
+
+/* Authenticated Internet lease control, pinned to the exact gateway UUID.
+ * Uses recent signed time from mesh establishment, never unauthenticated time. */
+esp_err_t wendy_pki_gateway_connect(const char* host, const char* gateway,
+    wendy_pki_connection** connection, int64_t* deadline_us);
+bool wendy_pki_probe_direct(const char* interface, const char* resolver);

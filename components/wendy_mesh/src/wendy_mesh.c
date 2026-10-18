@@ -1,4 +1,10 @@
 #include "wendy_mesh.h"
+#include "wendy_mesh_uplink.h"
+#if CONFIG_WENDY_MESH_CLOUD_UPLINK
+#include "wendy_cloud.h"
+#include "lwip/dns.h"
+#include "lwip/ip4.h"
+#endif
 #include "wendy_mesh_radio.h"
 #include "wendy_mesh_directory.h"
 #include "wendy_conf.h"
@@ -49,6 +55,16 @@ struct mesh_state
     int64_t own_deadline_us;
     bool interface_added;
     atomic_bool active;
+#if CONFIG_WENDY_MESH_CLOUD_UPLINK
+    struct netif uplink_netif;
+    struct netif* direct_netif;
+    ip_addr_t previous_dns[DNS_MAX_SERVERS], gateway_dns;
+    uint8_t gateway[16], lease[4];
+    int64_t uplink_deadline;
+    atomic_bool uplink_active, uplink_workers_ready;
+    atomic_uint generation, direct_successes;
+    bool uplink_added;
+#endif
 };
 /* Protocol storage has a compile-time cap, including the certificate decode
  * workspace. TLS/X.509 allocations are separately bounded by input limits. */
@@ -72,7 +88,11 @@ static int64_t signed_now(struct mesh_state* s, int64_t now)
 }
 static bool ip_profile(const uint8_t* p, size_t n)
 {
-    return wm_ip_valid(p, n) && (p[6] == 6 || p[6] == 17 || p[6] == 58);
+    return wm_ip_valid(p, n) && (p[6] == 6 || p[6] == 17 || p[6] == 58
+#if CONFIG_WENDY_MESH_CLOUD_UPLINK
+        || (p[6] == 4 && wm_uplink_ip4(p + 40, n - 40))
+#endif
+    );
 }
 static err_t output_ip6(struct netif* netif, struct pbuf* p, const ip6_addr_t* destination)
 {
@@ -92,6 +112,45 @@ static err_t output_ip6(struct netif* netif, struct pbuf* p, const ip6_addr_t* d
     pthread_mutex_unlock(&state_lock);
     return allowed && xQueueSend(s->queue, &packet, 0) == pdTRUE ? ERR_OK : ERR_RTE;
 }
+#if CONFIG_WENDY_MESH_CLOUD_UPLINK
+static err_t uplink_output(struct netif* netif, struct pbuf* p, const ip4_addr_t* destination)
+{
+    (void)destination;
+    struct mesh_state* s = netif->state;
+    struct queued_packet packet;
+    if (!atomic_load(&s->active) || !atomic_load(&s->uplink_active)
+        || p->tot_len > 1280 || pbuf_copy_partial(p, packet.data + 40, p->tot_len, 0) != p->tot_len)
+        return ERR_RTE;
+    int64_t now = esp_timer_get_time();
+    pthread_mutex_lock(&state_lock);
+    bool allowed = identity_live(s, now) && s->own_deadline_us > now
+        && s->uplink_deadline > now && wm_directory_address(&s->directory, s->gateway, now);
+    packet.size = allowed ? wm_uplink_wrap(packet.data, s->own_address, s->gateway,
+        s->lease, packet.data + 40, p->tot_len) : 0;
+    pthread_mutex_unlock(&state_lock);
+    return packet.size && xQueueSend(s->queue, &packet, 0) == pdTRUE ? ERR_OK : ERR_RTE;
+}
+static err_t uplink_netif_init(struct netif* netif)
+{
+    netif->name[0] = 'w'; netif->name[1] = 'u';
+    netif->mtu = 1280;
+    netif->output = uplink_output;
+    return ERR_OK;
+}
+/* Called only on lwIP's core thread. Preserve DHCP changes made while we own
+ * the default, and restore only DNS entries which still contain our value. */
+static void uplink_down(struct mesh_state* s)
+{
+    atomic_store(&s->uplink_active, false);
+    if (!s->uplink_added) return;
+    if (netif_default == &s->uplink_netif) netif_set_default(s->direct_netif);
+    for (unsigned i = 0; i < DNS_MAX_SERVERS; i++)
+        if (ip_addr_cmp(dns_getserver(i), &s->gateway_dns))
+            dns_setserver(i, &s->previous_dns[i]);
+    netif_set_down(&s->uplink_netif);
+    netif_set_link_down(&s->uplink_netif);
+}
+#endif
 static err_t mesh_netif_init(struct netif* netif)
 {
     netif->name[0] = 'w';
@@ -129,6 +188,9 @@ static err_t change_netif(struct tcpip_api_call_data* data)
     }
     else if (s->interface_added)
     {
+#if CONFIG_WENDY_MESH_CLOUD_UPLINK
+        uplink_down(s);
+#endif
         netif_set_down(&s->netif);
         netif_set_link_down(&s->netif);
         netif_ip6_addr_set_state(&s->netif, 0, IP6_ADDR_INVALID);
@@ -378,10 +440,22 @@ static int receive_frame(struct mesh_state* s, uint8_t first)
         return 0;
     if (!allowed)
         return -1;
+    struct netif* input_netif = &s->netif;
+#if CONFIG_WENDY_MESH_CLOUD_UPLINK
+    if (ip[6] == 4) {
+        pthread_mutex_lock(&state_lock);
+        bool valid = atomic_load(&s->uplink_active) && s->uplink_deadline > now
+            && wm_uplink_unwrap(s->own_address, s->gateway, s->lease, ip, assembled);
+        pthread_mutex_unlock(&state_lock);
+        if (!valid) return 0;
+        ip += 40; assembled -= 40;
+        input_netif = &s->uplink_netif;
+    }
+#endif
     struct pbuf* p = pbuf_alloc(PBUF_RAW, assembled, PBUF_RAM);
     if (!p)
         return -1;
-    if (pbuf_take(p, ip, assembled) != ERR_OK || tcpip_input(p, &s->netif) != ERR_OK)
+    if (pbuf_take(p, ip, assembled) != ERR_OK || tcpip_input(p, input_netif) != ERR_OK)
     {
         pbuf_free(p);
         return -1;
@@ -445,6 +519,9 @@ static int session(struct mesh_state* s)
             struct netif_change change = { .s = s, .up = true };
             if (tcpip_api_call(change_netif, &change.call) != ERR_OK)
                 return -1;
+#if CONFIG_WENDY_MESH_CLOUD_UPLINK
+            atomic_fetch_add(&s->generation, 1);
+#endif
             atomic_store(&s->active, true);
             ESP_LOGI(TAG, "mesh leaf IP active after replay barrier");
         }
@@ -466,6 +543,12 @@ static int session(struct mesh_state* s)
             pthread_mutex_lock(&state_lock);
             bool live = wm_directory_address(&s->directory, queued.data + 24, now)
                 && s->own_deadline_us > now;
+#if CONFIG_WENDY_MESH_CLOUD_UPLINK
+            if (queued.data[6] == 4)
+                live = live && atomic_load(&s->uplink_active) && s->uplink_deadline > now
+                    && !memcmp(queued.data + 24, s->gateway, 16)
+                    && !memcmp(queued.data + 52, s->lease, 4);
+#endif
             pthread_mutex_unlock(&state_lock);
             if (live)
                 for (size_t offset = 0; offset < queued.size; offset += 1091)
@@ -491,12 +574,201 @@ static int session(struct mesh_state* s)
     }
     return -1;
 }
+#if CONFIG_WENDY_MESH_CLOUD_UPLINK
+struct uplink_change {
+    struct tcpip_api_call_data call;
+    struct mesh_state* s;
+    unsigned action, generation;
+    uint8_t lease[4];
+    int64_t deadline;
+    char direct_name[16], direct_dns[48];
+};
+static err_t change_uplink(struct tcpip_api_call_data* data)
+{
+    struct uplink_change* c = (struct uplink_change*)data;
+    struct mesh_state* s = c->s;
+    if (c->action == 0) { uplink_down(s); return ERR_OK; }
+    if (c->action == 2) {
+        struct netif* direct = s->direct_netif;
+        if (netif_default && netif_default != &s->uplink_netif && netif_default != &s->netif)
+            direct = netif_default;
+        if (direct && netif_is_up(direct) && netif_is_link_up(direct)
+            && !ip4_addr_isany_val(*netif_ip4_addr(direct)))
+            netif_index_to_name(netif_get_index(direct), c->direct_name);
+        for (unsigned i = 0; i < DNS_MAX_SERVERS && !c->direct_dns[0]; i++) {
+            const ip_addr_t* dns = dns_getserver(i);
+            if (ip_addr_cmp(dns, &s->gateway_dns)) dns = &s->previous_dns[i];
+            if (!ip_addr_isany(dns)) ipaddr_ntoa_r(dns, c->direct_dns, sizeof c->direct_dns);
+        }
+        return ERR_OK;
+    }
+    if (c->action == 3) {
+        if (!atomic_load(&s->uplink_active)) return ERR_RTE;
+        if (netif_default != &s->uplink_netif) s->direct_netif = netif_default;
+        for (unsigned i = 0; i < DNS_MAX_SERVERS; i++) {
+            if (!ip_addr_cmp(dns_getserver(i), &s->gateway_dns))
+                s->previous_dns[i] = *dns_getserver(i);
+            dns_setserver(i, &s->gateway_dns);
+        }
+        netif_set_default(&s->uplink_netif);
+        return ERR_OK;
+    }
+    if (!atomic_load(&s->active) || atomic_load(&s->generation) != c->generation
+        || c->deadline <= esp_timer_get_time()) return ERR_RTE;
+    if (!s->uplink_added) {
+        if (!netif_add_noaddr(&s->uplink_netif, s, uplink_netif_init, tcpip_input)) return ERR_IF;
+        s->uplink_added = true;
+    }
+    pthread_mutex_lock(&state_lock);
+    memcpy(s->lease, c->lease, 4);
+    s->uplink_deadline = c->deadline;
+    pthread_mutex_unlock(&state_lock);
+    ip4_addr_t address, mask, gateway;
+    memcpy(&address.addr, c->lease, 4);
+    mask.addr = PP_HTONL(0xffffffff);
+    gateway.addr = 0;
+    netif_set_addr(&s->uplink_netif, &address, &mask, &gateway);
+    if (netif_default != &s->uplink_netif) s->direct_netif = netif_default;
+    IP_SET_TYPE_VAL(s->gateway_dns, IPADDR_TYPE_V6);
+    memcpy(ip_2_ip6(&s->gateway_dns)->addr, s->gateway, 16);
+    for (unsigned i = 0; i < DNS_MAX_SERVERS; i++) {
+        s->previous_dns[i] = *dns_getserver(i);
+        dns_setserver(i, &s->gateway_dns);
+    }
+    netif_set_link_up(&s->uplink_netif);
+    netif_set_up(&s->uplink_netif);
+    netif_set_default(&s->uplink_netif);
+    atomic_store(&s->direct_successes, 0);
+    atomic_store(&s->uplink_active, true);
+    return ERR_OK;
+}
+static bool uplink_route_live(struct mesh_state* s, unsigned generation)
+{
+    if (!atomic_load(&s->active) || atomic_load(&s->generation) != generation
+        || !wendy_conf_is_current() || wendy_pki_reset_in_progress()) return false;
+    int64_t now = esp_timer_get_time();
+    pthread_mutex_lock(&state_lock);
+    bool valid = identity_live(s, now) && s->own_deadline_us > now
+        && wm_directory_address(&s->directory, s->gateway, now);
+    pthread_mutex_unlock(&state_lock);
+    return valid;
+}
+static int uplink_transfer(struct mesh_state* s, unsigned generation,
+    wendy_pki_connection* c, uint8_t* data, size_t size, bool writing, int64_t deadline)
+{
+    while (size) {
+        int64_t now = esp_timer_get_time();
+        if (!uplink_route_live(s, generation) || now >= deadline) return -1;
+        ssize_t n = writing ? wendy_pki_write(c, data, size) : wendy_pki_read(c, data, size);
+        if (n > 0) { data += n; size -= n; continue; }
+        if (n != -2 && n != -3) return -1;
+        int64_t slice = now + 200000;
+        if (slice > deadline) slice = deadline;
+        if (wendy_pki_wait(c, n == -3, slice) < 0) return -1;
+    }
+    return 0;
+}
+static void uplink_task(void* unused)
+{
+    (void)unused;
+    struct mesh_state* s = state;
+    bool cloud_started = false;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        unsigned generation = atomic_load(&s->generation);
+        if (!atomic_load(&s->uplink_workers_ready)) continue;
+        if (!uplink_route_live(s, generation)) continue;
+        /* Wi-Fi may never associate. Start Cloud once the mesh stack works so
+         * its normal direct attempts can request fallback without an AP event. */
+        if (!cloud_started) cloud_started = wendy_cloud_start() == ESP_OK;
+        if (!cloud_started || wendy_cloud_connect_failures() < 2) continue;
+        char host[48];
+        ip6_addr_t gateway = { 0 };
+        memcpy(gateway.addr, s->gateway, 16);
+        if (!ip6addr_ntoa_r(&gateway, host, sizeof host)) continue;
+        wendy_pki_connection* c = NULL;
+        int64_t expires = 0;
+        if (wendy_pki_gateway_connect(host, CONFIG_WENDY_MESH_GATEWAY_DEVICE, &c, &expires)
+            != ESP_OK) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; }
+        uint8_t response[3], lease[4];
+        int64_t deadline = esp_timer_get_time() + INT64_C(8000000);
+        if (expires < deadline) deadline = expires;
+        struct uplink_change change = { .s = s, .action = 1, .generation = generation,
+            .deadline = expires };
+        bool granted = !uplink_transfer(s, generation, c, response, sizeof response, false, deadline)
+            && wm_uplink_lease(response, lease);
+        if (granted) {
+            memcpy(change.lease, lease, 4);
+            granted = tcpip_api_call(change_uplink, &change.call) == ERR_OK;
+        }
+        if (granted) {
+            wendy_cloud_network_changed();
+            ESP_LOGI(TAG, "Cloud fallback using authenticated mesh gateway");
+        }
+        int64_t heartbeat = esp_timer_get_time();
+        bool recovered = false;
+        while (granted && atomic_load(&s->uplink_active) && uplink_route_live(s, generation)
+            && esp_timer_get_time() < expires) {
+            if (atomic_load(&s->direct_successes) >= 2) { recovered = true; break; }
+            int64_t now = esp_timer_get_time();
+            if (now - heartbeat >= INT64_C(10000000)) {
+                uint8_t byte = 1;
+                deadline = now + INT64_C(8000000);
+                if (expires < deadline) deadline = expires;
+                if (uplink_transfer(s, generation, c, &byte, 1, true, deadline)
+                    || uplink_transfer(s, generation, c, &byte, 1, false, deadline) || byte != 1)
+                    break;
+                change.action = 3;
+                if (tcpip_api_call(change_uplink, &change.call) != ERR_OK) break;
+                heartbeat = esp_timer_get_time();
+            }
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+        change.action = 0;
+        tcpip_api_call(change_uplink, &change.call);
+        wendy_pki_close(c);
+        if (recovered) {
+            wendy_cloud_reset_failures();
+            ESP_LOGI(TAG, "direct Cloud path recovered; mesh Internet lease withdrawn");
+        } else if (granted) ESP_LOGW(TAG, "mesh Internet lease lost; borrowed routes withdrawn");
+        if (granted) wendy_cloud_network_changed();
+        vTaskDelay(pdMS_TO_TICKS(5000));
+    }
+}
+/* Keep health checks separate from lease heartbeats: slow DNS or TLS must not
+ * prevent the borrower withdrawing an expired lease or refreshing a live one. */
+static void uplink_probe_task(void* unused)
+{
+    (void)unused;
+    struct mesh_state* s = state;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(60000));
+        if (!atomic_load(&s->uplink_active)) continue;
+        unsigned generation = atomic_load(&s->generation);
+        struct uplink_change c = { .s = s, .action = 2 };
+        tcpip_api_call(change_uplink, &c.call);
+        bool healthy = c.direct_name[0] && wendy_pki_probe_direct(c.direct_name, c.direct_dns);
+        if (!atomic_load(&s->uplink_active) || atomic_load(&s->generation) != generation) continue;
+        if (healthy) atomic_fetch_add(&s->direct_successes, 1);
+        else atomic_store(&s->direct_successes, 0);
+    }
+}
+#endif
 static void mesh_task(void* unused)
 {
     (void)unused;
     struct mesh_state* s = state;
+#if CONFIG_WENDY_MESH_CLOUD_UPLINK
+    TaskHandle_t uplink = NULL, probe = NULL;
+#endif
     for (;;)
     {
+#if CONFIG_WENDY_MESH_CLOUD_UPLINK
+        if (!uplink) xTaskCreate(uplink_task, "mesh_uplink", MESH_STACK_BYTES, NULL, 3, &uplink);
+        if (!probe) xTaskCreate(uplink_probe_task, "uplink_probe", MESH_STACK_BYTES, NULL, 2, &probe);
+        atomic_store(&s->uplink_workers_ready, uplink && probe);
+        if (!uplink || !probe) ESP_LOGW(TAG, "not enough task memory for Cloud fallback; mesh remains available");
+#endif
         if (wendy_conf_is_current() && wendy_conf_has_enrollment()
             && !wendy_pki_reset_in_progress())
             session(s);
@@ -545,6 +817,12 @@ esp_err_t wendy_mesh_start(void)
         return ESP_ERR_NO_MEM;
     }
     state = s;
+#if CONFIG_WENDY_MESH_CLOUD_UPLINK
+    if (wm_uuid_parse(CONFIG_WENDY_MESH_GATEWAY_DEVICE, router)) {
+        state = NULL; vQueueDelete(s->queue); free(s); return ESP_ERR_INVALID_ARG;
+    }
+    wm_address(router, s->gateway);
+#endif
     if (xTaskCreate(mesh_task, "wendy_mesh", MESH_STACK_BYTES, NULL, 4, &mesh_task_handle)
         != pdPASS)
     {

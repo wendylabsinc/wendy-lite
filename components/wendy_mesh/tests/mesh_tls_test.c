@@ -74,7 +74,11 @@ int main(int argc, char** argv)
     wendy_pki_connection* connection = NULL;
     int result, fd = -1;
     const char* mode = getenv("MESH_STREAM_MODE");
-    if (mode && strcmp(mode, "tcp")) {
+    if (mode && !strcmp(mode, "gateway")) {
+        result = pki_tls_gateway_connect("127.0.0.1", (unsigned)strtoul(argv[4], NULL, 10),
+            argv[5], argv[6], argv[7], key, kn, (char*)cert,
+            (struct wendy_conf_span) { roots, rn }, &connection);
+    } else if (mode && strcmp(mode, "tcp")) {
         fd = socket(AF_INET, SOCK_STREAM, 0);
         struct sockaddr_in address = { .sin_family = AF_INET,
             .sin_port = htons((unsigned)strtoul(argv[4], NULL, 10)),

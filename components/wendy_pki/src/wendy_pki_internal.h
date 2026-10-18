@@ -65,3 +65,10 @@ int pki_relay_grant(wendy_pki_connection *, const struct wendy_lite_trust *, int
 int pki_tls_mesh_stream(const struct wendy_pki_stream*, bool server, const char* tenant,
     const char* device, const char* peer, const uint8_t* key, size_t key_size,
     const char* cert, struct wendy_conf_span roots, wendy_pki_connection** out);
+
+int pki_tls_gateway_connect(const char* host, unsigned port, const char* tenant, const char* device,
+    const char* router, const uint8_t* key, size_t key_size, const char* cert,
+    struct wendy_conf_span roots, wendy_pki_connection** out);
+int pki_tls_bound_connect(const char* host, unsigned port, const char* interface, const char* resolver,
+    const uint8_t* key, size_t key_size, const char* cert,
+    struct wendy_conf_span roots, wendy_pki_connection** out);
