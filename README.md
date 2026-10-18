@@ -186,6 +186,10 @@ No published `espressif/wasm-micro-runtime` release lists `esp32c61` as a suppor
 
 ### ESP32-S31 notes
 
+The [Mosaico dashboard sample](samples/mosaico_dashboard/README.md) adds a native
+touch UI with live motion and Wendy device status for ESP-Mosaico. It uses a
+separately pinned ESP-IDF 6.2 development toolchain required by the board package.
+
 Use ESP-IDF 6.1 for ESP32-S31. The SDK still lists `esp32s31` as a
 [preview target](https://github.com/espressif/esp-idf/blob/v6.1/tools/idf_py_actions/constants.py),
 so pass `--preview` to `idf.py`. Other Wendy Lite targets remain on ESP-IDF 6.0.3.
