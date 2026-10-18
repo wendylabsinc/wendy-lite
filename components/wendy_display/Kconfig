@@ -1,0 +1,11 @@
+menu "Wendy display"
+    config WENDY_DISPLAY_ESP32S31_KORVO_1
+        bool "Show status on the ESP32-S31-Korvo-1 LCD"
+        default n
+        depends on IDF_TARGET_ESP32S31 && SPIRAM
+        help
+            Display a native status screen on the Korvo-1 SUB3 800x480 RGB
+            LCD, including uptime, free PSRAM, and Wi-Fi connection state.
+            Uses one 750 KiB PSRAM framebuffer with direct DMA and a small
+            background task. No LVGL or touchscreen support is required.
+endmenu

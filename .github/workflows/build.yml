@@ -139,6 +139,7 @@ jobs:
               assert not config.get("WENDY_USJ_USE_UART")
               assert "esp_driver_usb_serial_jtag" in components
               assert not config.get("WENDY_SENSOR_LINK_ESP32S31_KORVO_1")
+              assert not config.get("WENDY_DISPLAY_ESP32S31_KORVO_1")
               assert config["PARTITION_TABLE_CUSTOM_FILENAME"] == "partitions.ota.csv"
               assert flash["flash_settings"] == {
                   "flash_size": "4MB", "flash_mode": "dio", "flash_freq": "40m",
@@ -147,7 +148,7 @@ jobs:
               for option in ("SPIRAM", "SPIRAM_MODE_OCT", "SPIRAM_TRY_ALLOCATE_WIFI_LWIP",
                              "COMPILER_OPTIMIZATION_PERF", "WENDY_SENSOR_LINK_ESP32S31_KORVO_1",
                              "ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE", "CAMERA_XCLK_USE_LEDC",
-                             "CAMERA_OV3660", "CAMERA_SC101IOT"):
+                             "CAMERA_OV3660", "CAMERA_SC101IOT", "WENDY_DISPLAY_ESP32S31_KORVO_1"):
                   assert config.get(option), f"{option} must be enabled on Korvo-1"
               assert config["SPIRAM_SPEED"] == 200
               assert config["SPIRAM_MALLOC_RESERVE_INTERNAL"] == 98304
@@ -171,7 +172,8 @@ jobs:
               assert config["LWIP_TCP_WND_DEFAULT"] == 17280
               assert config["LWIP_TCP_RECVMBOX_SIZE"] == 14
               assert config["PARTITION_TABLE_CUSTOM_FILENAME"] == "partitions.ota.16mb.csv"
-              assert {"espressif__esp_video", "espressif__esp_codec_dev", "wendy_sensor_link"}.issubset(components)
+              assert {"espressif__esp_video", "espressif__esp_codec_dev", "wendy_sensor_link",
+                      "wendy_display", "esp_lcd"}.issubset(components)
               assert config.get("ESPTOOLPY_FLASHMODE_QIO")
               # IDF writes a DIO ROM header; its bootloader enables QIO.
               assert flash["flash_settings"] == {
@@ -206,7 +208,8 @@ jobs:
           for key in ("WENDY_USJ_USE_UART", "WENDY_USJ_UART_TX_GPIO", "WENDY_USJ_UART_RX_GPIO",
                       "ESP_CONSOLE_UART_DEFAULT", "ESP_CONSOLE_UART_NUM", "ESP_CONSOLE_UART_BAUDRATE",
                       "ESP_CONSOLE_SECONDARY_NONE", "ESPTOOLPY_NO_STUB", "SPIRAM_SPEED",
-                      "PARTITION_TABLE_CUSTOM_FILENAME", "WENDY_SENSOR_LINK_ESP32S31_KORVO_1"):
+                      "PARTITION_TABLE_CUSTOM_FILENAME", "WENDY_SENSOR_LINK_ESP32S31_KORVO_1",
+                      "WENDY_DISPLAY_ESP32S31_KORVO_1"):
               assert config.get(key) == release_config.get(key), f"Board setting differs for {key}"
           for key in ("WENDY_FIRMWARE_VERSION_MAJOR", "WENDY_FIRMWARE_VERSION_MINOR",
                       "WENDY_FIRMWARE_VERSION_PATCH", "APP_PROJECT_VER"):
