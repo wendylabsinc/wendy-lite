@@ -75,21 +75,34 @@ static int certificate_policy(void *context, mbedtls_x509_crt *cert, int depth,
     return 0;
 }
 
+static int configure_failed(const char *stage, int error)
+{
+    ESP_LOGE("wendy_pki", "TLS setup failed at %s (error=%d)", stage, error);
+    (void)stage;
+    (void)error;
+    return -1;
+}
+
 static int configure(wendy_pki_connection *c, int server, const uint8_t *key,
     size_t key_size, const char *cert, struct wendy_conf_span roots)
 {
     mbedtls_ssl_init(&c->ssl); mbedtls_ssl_config_init(&c->config);
     mbedtls_x509_crt_init(&c->roots); mbedtls_x509_crt_init(&c->certificate);
     mbedtls_pk_init(&c->key);
-    if (wendy_pki_crypto_init() || !roots.data || !roots.size || roots.size > 16384 ||
-        mbedtls_ssl_config_defaults(&c->config, server ? MBEDTLS_SSL_IS_SERVER : MBEDTLS_SSL_IS_CLIENT,
-            MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT)) return -1;
+    int r = wendy_pki_crypto_init();
+    if (r) return configure_failed("crypto initialization", r);
+    if (!roots.data || !roots.size || roots.size > 16384)
+        return configure_failed("CA bundle input", MBEDTLS_ERR_SSL_BAD_INPUT_DATA);
+    r = mbedtls_ssl_config_defaults(&c->config,
+        server ? MBEDTLS_SSL_IS_SERVER : MBEDTLS_SSL_IS_CLIENT,
+        MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT);
+    if (r) return configure_failed("mbedtls_ssl_config_defaults", r);
     unsigned char *copy = calloc(1, roots.size + 1);
-    if (!copy) return -1;
+    if (!copy) return configure_failed("CA bundle allocation", MBEDTLS_ERR_SSL_ALLOC_FAILED);
     memcpy(copy, roots.data, roots.size);
-    int r = mbedtls_x509_crt_parse(&c->roots, copy, roots.size + 1);
+    r = mbedtls_x509_crt_parse(&c->roots, copy, roots.size + 1);
     free(copy);
-    if (r) return -1;
+    if (r) return configure_failed("CA bundle parsing", r);
     mbedtls_ssl_conf_authmode(&c->config, MBEDTLS_SSL_VERIFY_REQUIRED);
     mbedtls_ssl_conf_cert_profile(&c->config, wendy_pki_certificate_profile());
     mbedtls_ssl_conf_verify(&c->config, certificate_policy, c);
@@ -101,13 +114,19 @@ static int configure(wendy_pki_connection *c, int server, const uint8_t *key,
     mbedtls_ssl_conf_tls13_key_exchange_modes(&c->config,
         MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL);
     if (key || cert) {
-        if (!key || !cert ||
-            mbedtls_x509_crt_parse(&c->certificate, (const unsigned char *)cert, strlen(cert)+1) ||
-            mbedtls_pk_parse_key(&c->key, key, key_size, NULL, 0) ||
-            mbedtls_pk_check_pair(&c->certificate.pk, &c->key) ||
-            mbedtls_ssl_conf_own_cert(&c->config, &c->certificate, &c->key)) return -1;
+        if (!key || !cert)
+            return configure_failed("identity input", MBEDTLS_ERR_SSL_BAD_INPUT_DATA);
+        r = mbedtls_x509_crt_parse(&c->certificate, (const unsigned char *)cert, strlen(cert)+1);
+        if (r) return configure_failed("identity certificate parsing", r);
+        r = mbedtls_pk_parse_key(&c->key, key, key_size, NULL, 0);
+        if (r) return configure_failed("private key parsing", r);
+        r = mbedtls_pk_check_pair(&c->certificate.pk, &c->key);
+        if (r) return configure_failed("certificate/key match", r);
+        r = mbedtls_ssl_conf_own_cert(&c->config, &c->certificate, &c->key);
+        if (r) return configure_failed("mbedtls_ssl_conf_own_cert", r);
     }
-    if (mbedtls_ssl_setup(&c->ssl, &c->config)) return -1;
+    r = mbedtls_ssl_setup(&c->ssl, &c->config);
+    if (r) return configure_failed("mbedtls_ssl_setup", r);
     mbedtls_ssl_set_bio(&c->ssl, c, io_send, io_recv, NULL);
     return 0;
 }

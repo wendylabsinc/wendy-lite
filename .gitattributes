@@ -6,5 +6,5 @@ components/wendy_pki/tests/lite-fixtures/*.bin binary
 components/wendy_pki/tests/mldsa-fixtures/*.bin binary
 components/wendy_pki/tests/mldsa-fixtures/*.der binary
 
-# Unified diff context lines use a single space for an empty source line.
-patches/*.patch whitespace=-blank-at-eol
+# Unified diff context adds a space before empty lines and tab-indented code.
+patches/*.patch whitespace=-blank-at-eol,-space-before-tab

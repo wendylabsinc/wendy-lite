@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -251,6 +252,9 @@ static void stream_exchange(wendy_pki_connection *c, struct test_stream *s) {
 }
 
 int main(int argc, char **argv) {
+    /* Rejected peers can close before TLS sends its alert. Match lwIP's
+     * error-return behavior instead of terminating the host adapter. */
+    assert(signal(SIGPIPE, SIG_IGN) != SIG_ERR);
     /* Reset revokes existing sessions before the client requests reboot. */
     wendy_pki_connection old = {0};
     resetting = true;

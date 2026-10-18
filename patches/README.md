@@ -30,14 +30,41 @@ required.
 
 The host TLS tests send chains larger than 16 KiB through socket and callback
 stream adapters. They force 512-byte writes and retry responses, and check both
-client and server certificate transmission. Incoming certificate messages remain
-bounded to the configured 16 KiB receive buffer; truncated and oversized messages
-must fail.
+client and server certificate transmission. The CA compatibility patch below
+allows incoming handshake messages up to 32 KiB; truncated and oversized
+messages must fail. Individual TLS records remain limited to 16 KiB.
 
 `CONFIG_MBEDTLS_DYNAMIC_BUFFER` must remain disabled. ESP-IDF 6.0.3 allocates a
 dynamic receive buffer from the first TLS record's size, while this mbedTLS fork
 uses the configured buffer limit during fragmented handshake reassembly. The
 project rejects that incompatible configuration before compilation.
+
+## ML-DSA-87 CA compatibility
+
+`esp-pqc-mbedtls-mldsa87-ca.patch` adds pure ML-DSA-87 public-key parsing and
+X.509 signature verification. It verifies the complete certificate TBS bytes
+through liboqs and rejects AlgorithmIdentifier parameters. It adds no TLS
+signature scheme or private-key support. Wendy's certificate policy permits
+ML-DSA-87 keys only on CA certificates, preserving P-256 device keys and
+ML-DSA-65 operator keys.
+
+The existing PKI uses ML-DSA-87 roots and intermediates above ML-DSA-65 issuers.
+These chains exceed one TLS record. The patch reserves 32 KiB of additional
+receive-buffer space for in-place handshake reassembly, including a final
+record that also carries the next message. It rejects a declared handshake
+length above 32 KiB before collecting fragments. Record-size checks stay at
+16 KiB. Fixed buffers are still required.
+
+The firmware selects `CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC` so boards with PSRAM
+can allocate these large buffers through their normal PSRAM-aware heap policy.
+Keeping mbedTLS on internal-only RAM can exhaust memory during TLS setup while
+sensor and networking tasks are running.
+
+`esp-pqc-liboqs-mldsa87.patch` uses the same ESP Keccak adapter and heap-backed
+temporary allocations as the ML-DSA-65 integration. The firmware builds the
+ML-DSA-87 reference implementation for verification only; signing and key
+generation return errors. Host tests cover mixed CA chains, invalid signatures,
+unsupported operator keys, and the TLS signature schemes advertised by servers.
 
 ## Host crypto headers
 

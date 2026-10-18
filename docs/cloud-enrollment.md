@@ -33,14 +33,17 @@ idf.py build
 
 The base defaults enable `CONFIG_MBEDTLS_USE_BUNDLED_PQC=y` and
 `CONFIG_MBEDTLS_SSL_TLS1_3_SIG_MLDSA65=y`. Device keys remain P-256.
-ML-DSA-44 and ML-DSA-87 certificates are not supported. Deployments using those
-issuers must issue compatible chains before moving devices to this firmware.
-Inbound TLS Certificate messages must fit within the 16 KiB receive buffer.
+ML-DSA-65 operator keys and ML-DSA-65/87 CA chains are supported. ML-DSA-87
+support is verification-only for CAs; it does not enable ML-DSA-87 operator
+keys or TLS CertificateVerify signatures. ML-DSA-44 remains unsupported.
+Inbound TLS handshake messages, including Certificate, are limited to 32 KiB.
 The build applies a [tracked mbedTLS fix](../patches/README.md) that fragments
 larger outgoing certificate chains into separate TLS records.
 Keep `CONFIG_MBEDTLS_DYNAMIC_BUFFER=n` and
 `CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384`. ESP-IDF's dynamic receive allocator
 does not match the bundled backend's handshake reassembly bounds.
+Select `CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y` so PSRAM-equipped boards can
+allocate the larger TLS buffers without exhausting internal RAM.
 
 For an existing native app, apply these options to its active `sdkconfig` and
 keep them in the app's defaults. A change to `sdkconfig.defaults` alone does not
@@ -50,7 +53,7 @@ from ESP-IDF 5 to ESP-IDF 6.
 Install compatible device, TSA and HTTPS CA bundles through the authorized USB
 connection using `--device-roots`, `--tsa-roots` and `--https-roots`. Obtain them
 from the PKI administrator. Each complete chain must use supported algorithms;
-a P-256 leaf beneath an ML-DSA issuer requires an ML-DSA-65 issuer. The firmware
+a P-256 leaf beneath an ML-DSA issuer requires an ML-DSA-65 or ML-DSA-87 CA. The firmware
 also verifies ECDSA timestamps, including Sigstore's P-384 signing certificates.
 The HTTPS bundle must also trust the configured broker hostname.
 
@@ -97,7 +100,7 @@ the listener with `--broker-host` and `--broker-port`. Set
 The CLI validates discovered or supplied roots and checks USB trust support
 before reserving an asset. Firmware advertises `mldsa_verification_supported` only
 when PKI and ML-DSA-65 verification are enabled. This capability covers ML-DSA-65;
-it does not imply support for ML-DSA-44 or ML-DSA-87. The CLI requires it before
+it does not imply support for ML-DSA-44 or ML-DSA-87 operator keys. The CLI requires it before
 accepting ML-DSA trust bundles, and the device validates every installed bundle.
 The firmware accepts at most eight CA certificates
 and 16 KiB per bundle; signed time plus all bundles must fit within 64 KiB.
