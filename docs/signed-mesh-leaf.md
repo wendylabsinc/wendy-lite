@@ -189,12 +189,16 @@ test substitutes for running the C lwIP interface on a physical board.
 ## BLE without access-point association
 
 Choose `CONFIG_WENDY_MESH_BLE=y` instead of TCP, enable
-`CONFIG_BT_NIMBLE_L2CAP_COC_MAX_NUM=2`, and set
+`CONFIG_BT_NIMBLE_L2CAP_COC_MAX_NUM=2` and
+`CONFIG_BT_NIMBLE_MSYS_1_BLOCK_SIZE=256`, and set
 `CONFIG_WENDY_MESH_BLE_PSM=129`. Keep `CONFIG_WENDY_BLE=y` and
 `CONFIG_WENDY_WIFI_ENABLED=y`. The latter initializes lwIP; BLE mesh starts
 even when there are no Wi-Fi credentials and no access-point connection.
 The mesh PSM must differ from the management PSM, which defaults to 128.
 The mesh owns a separate channel, receive ring and buffer pool.
+Its 240-byte SDU limit keeps NimBLE's receive grant at one packet per armed
+buffer, so a full receive ring can stop incoming traffic without overrunning
+the channel. Larger TLS records and IPv6 packets span multiple SDUs.
 
 Set `CONFIG_WENDY_MESH_ROUTER_DEVICE` to the Linux router's enrolled UUID.
 The host and TCP port settings are unused for BLE. Add this to the router's

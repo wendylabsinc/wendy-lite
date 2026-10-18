@@ -24,6 +24,7 @@ menu "Wendy signed mesh leaf"
         config WENDY_MESH_BLE
             bool "BLE L2CAP (Linux router dials this device)"
             depends on WENDY_BLE && BT_NIMBLE_L2CAP_COC_MAX_NUM >= 2
+            depends on BT_NIMBLE_MSYS_1_BLOCK_SIZE >= 248
         config WENDY_MESH_ESPNOW
             bool "ESP-NOW (ESP32 peer)"
     endchoice
