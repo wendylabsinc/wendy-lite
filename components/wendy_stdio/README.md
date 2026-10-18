@@ -11,19 +11,29 @@ three times as `stdin`/`stdout`/`stderr`. That VFS is a pure forwarder to the
 console device selected at compile time by Kconfig, and there is no runtime
 API to observe or redirect the data flowing through it.
 
-`wendy_stdio_init()` takes that path over:
+`wendy_stdio_init()` redirects the standard streams:
 
-1. unregisters the built-in `/dev/console` VFS,
-2. registers its own VFS at the same path,
-3. `freopen()`s `stdin`, `stdout` and `stderr` at it (the `FILE` objects live
+1. registers its own VFS at `/dev/wstdio`,
+2. `freopen()`s `stdin`, `stdout` and `stderr` at it (the `FILE` objects live
    in `_GLOBAL_REENT` and are shared by all tasks, so every task is
    retargeted), and restores the standard buffering (line-buffered `stdout`,
    unbuffered `stderr`).
 
-The replacement VFS behaves exactly like the original one: it opens the same
+The SDK console stays registered while each old stream closes. This keeps
+its descriptors reserved until `freopen()` releases them and prevents a stale
+stdio descriptor from closing or aliasing the underlying device. Repeated
+successful initialization is a no-op.
+
+The new VFS opens the same
 compile-time console device (`/dev/uart/N`, `/dev/usbserjtag`, `/dev/cdcacm`
 or `/dev/null`) and forwards reads and writes to it. In addition, every chunk
 written to `stdout`/`stderr` is passed to an application-registered handler.
+
+With `CONFIG_WENDY_USJ_USE_UART`, the wired transport owns physical UART input
+and output. The stdio VFS sends output only to its handler and reads only
+injected input, returning `EAGAIN` when empty. Console flags stay local and
+`fsync()` is a no-op, so application stdio cannot alter or drain management
+traffic. The SDK console remains available for boot and panic diagnostics.
 
 Because ESP-IDF's default log writer is plain `vprintf`, log messages travel
 through `stdout` and are captured too. Only early-boot and ISR logs
@@ -55,19 +65,19 @@ handler (`NULL` if none) so handlers can be chained. It may be called before
 or after `wendy_stdio_init()`; passing `NULL` unregisters.
 
 `wendy_stdio_put_stdin_data()` injects data into `stdin`: reads on the
-console first drain a 128-byte FIFO fed by this function, then fall back to
-the real console device, so injected and typed input may interleave. Bytes
+console first drain a 128-byte FIFO fed by this function. Unless Wendy owns
+the UART transport, reads then fall back to the real console device, so injected
+and typed input may interleave. Bytes
 that don't fit in the FIFO are dropped; the function returns the number of
 bytes accepted.
 
 ## Notes
 
 - The handler receives the post-stdio-buffering byte stream with plain `\n`
-  line endings — LF→CRLF conversion happens below, in the device VFS driver.
+  line endings. When forwarding to the physical console, LF→CRLF conversion
+  happens below, in the device VFS driver.
   With line-buffered `stdout`, log output arrives as whole lines.
 - The handler runs in the context of whatever task is printing.
-- Output produced between the unregister and the `freopen`s inside
-  `wendy_stdio_init()` is lost, so call it as early as possible (in this
-  project: first thing in `wendy_core_init()`).
+- Call initialization before starting application tasks that use stdio.
 - `select()` and termios are not forwarded (nothing in this project uses them
   on the console; `CONFIG_VFS_SUPPORT_TERMIOS` is disabled).

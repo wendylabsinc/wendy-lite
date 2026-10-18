@@ -39,8 +39,8 @@ ESP32-C61 and ESP32-S31 have no supported WASM runtime. Disabling
 WASM does not change partition layouts or reclaim existing WASM data partitions.
 
 The firmware catalog publishes only native OTA variants: generic ESP32-C5,
-ESP32-C6, ESP32-C61, ESP32-S3 and preview ESP32-S31, plus Seeed XIAO ESP32S3
-and M5Stack StampS3.
+ESP32-C6, ESP32-C61, ESP32-S3 and preview ESP32-S31, plus Seeed XIAO ESP32S3,
+M5Stack StampS3 and ESP32-S31-Korvo-1 V1.1.
 Legacy WASM-layout images, including the ESP32-P4 images, are available only as
 manual builds.
 
@@ -73,7 +73,8 @@ unavailable. The profile can be combined with `boards/wasm.defaults`; put
 ## Supported Hardware
 
 Wendy Lite has firmware configurations for six ESP-IDF targets. ESP32-S31 is
-a preview target and has not been tested on hardware.
+a preview target. The Korvo-1 profile has passed the hardware checks described
+in the [ESP32-S31 notes](#esp32-s31-notes).
 
 | Target | Reference board (Espressif dev kit) | Wi-Fi / BT |
 |---|---|---|
@@ -82,7 +83,7 @@ a preview target and has not been tested on hardware.
 | `esp32c61` | Espressif ESP32-C61-DevKitC | Native Wi-Fi 6 + BLE — no WASM app support yet, see [ESP32-C61 notes](#esp32-c61-notes) |
 | `esp32p4` | None (see [ESP32-P4 notes](#esp32-p4-notes)) | Via on-board ESP32-C6 over SDIO (ESP-Hosted) |
 | `esp32s3` | None | Native Wi-Fi + BLE |
-| `esp32s31` | None, generic preview profile | Native Wi-Fi + BLE; native apps only, see [ESP32-S31 notes](#esp32-s31-notes) |
+| `esp32s31` | Generic profile or ESP32-S31-Korvo-1 V1.1 | Native Wi-Fi + BLE; native apps only, see [ESP32-S31 notes](#esp32-s31-notes) |
 
 Each target except `esp32p4` has a generic board configuration in
 `boards/<target>_generic*.cfg` that uses 4 MB flash and leaves PSRAM disabled.
@@ -99,6 +100,7 @@ Beyond the generic boards, Wendy Lite has overlays for the following boards, eac
 | DFRobot FireBeetle 2 ESP32-P4 (DFR1172) | `esp32p4` | 16 MB | 32 MB | Wi-Fi/BT via on-board ESP32-C6 (SDIO/ESP-Hosted); headless; WAMR pool: 24 MiB from PSRAM |
 | Seeed Studio XIAO ESP32S3 | `esp32s3` | 8 MB | 8 MB | Native Wi-Fi/BT; native app support (OTA partition layout); bundled SensorLink camera/microphone for the Sense expansion board; no WASM app support |
 | M5Stack StampS3 | `esp32s3` | 8 MB | – | Native Wi-Fi/BT; native app support (OTA partition layout); no WASM app support |
+| Espressif ESP32-S31-Korvo-1 V1.1 | `esp32s31` | 16 MB | 16 MB | QIO flash at 80 MHz, octal PSRAM at 200 MHz; native apps; OV3660 camera and ES8389 microphones tested together over UART; preview |
 
 The targets share the same source tree. Per-target overrides live in `sdkconfig.defaults.<target>`. Running `idf.py set-target <target>` on its own selects that target's reference board; to select a specific board instead, pass its overlay argfile from `boards/` before `set-target` (e.g. `idf.py @boards/<board_cfg>.cfg set-target <target>`. See [ESP32-P4 notes](#esp32-p4-notes) below for `esp32p4`, which has no bare-target option).
 
@@ -169,7 +171,8 @@ expansion can still advertise its audio channel without producing useful audio.
 Camera initialization runs before networking to reserve contiguous DMA memory.
 JPEG buffers use PSRAM with direct PSRAM DMA disabled. The board overlay also
 reserves 96 KiB of internal RAM for stacks and DMA and limits Wi-Fi buffers to
-match the native SensorLink app. Other board overlays leave SensorLink disabled.
+match the native SensorLink app. The Korvo-1 overlay has its own SensorLink backend;
+other board overlays leave SensorLink disabled.
 Configure a fresh build to apply these defaults, as described above.
 
 ### ESP32-C61 notes
@@ -210,8 +213,146 @@ idf.py --preview -B build/esp32s31 -D SDKCONFIG=build/esp32s31/sdkconfig flash m
 Use the generated `build/esp32s31/flash_args` if flashing individual images with
 esptool. S31's bootloader starts at `0x2000`; do not reuse another target's offsets.
 
-This profile has not been tested on an ESP32-S31 board. Boot, USB enrollment,
-Wi-Fi, BLE, and OTA behavior still need hardware validation.
+#### ESP32-S31-Korvo-1 V1.1
+
+The `esp32s31_korvo_1_native` profile uses the
+[Korvo-1 V1.1 board's 16 MB flash and 16 MB PSRAM](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s31/esp32-s31-korvo-1/user_guide.html).
+It selects QIO flash at 80 MHz, octal PSRAM at 200 MHz, and `-O2` optimization.
+Both HP cores run at the SDK's default 320 MHz. The 16 MB partition table gives
+each OTA app slot 8,192,000 bytes. This layout differs from the generic profile,
+so select the Korvo profile for the initial full flash before using its OTA images.
+Use the generated `flash_args` when flashing individual images. ESP-IDF writes
+a DIO boot header for the ROM and enables QIO in the second-stage bootloader,
+so `flash_args` correctly reports `dio` even though the profile selects QIO.
+
+Build and flash with a local ESP-IDF 6.1 environment:
+
+```sh
+idf.py --preview -B build/esp32s31-korvo-1 \
+  -D SDKCONFIG=build/esp32s31-korvo-1/sdkconfig \
+  @boards/esp32s31_korvo_1_native.cfg set-target esp32s31
+idf.py --preview -B build/esp32s31-korvo-1 \
+  -D SDKCONFIG=build/esp32s31-korvo-1/sdkconfig build
+idf.py --preview -B build/esp32s31-korvo-1 \
+  -D SDKCONFIG=build/esp32s31-korvo-1/sdkconfig flash monitor
+```
+
+The pre-production S31 revision 0.0 board requires ROM flashing with `--no-stub`;
+esptool 5.6's stub failed at multiple baud rates. ESP-IDF 6.1's generated flash
+configuration already selects ROM flashing for `idf.py flash`. When invoking
+esptool directly, add `--no-stub` before `write-flash` and run from the build
+directory so the paths in `@flash_args` resolve correctly. The `flash_args` file
+contains image offsets and flash settings, but does not contain `--no-stub`.
+
+The firmware uses PSRAM for large allocations and reserves 96 KiB of internal
+RAM for DMA and task stacks. Wi-Fi uses the SDK's PSRAM defaults of 16 static RX
+and 16 static TX buffers. TCP send and receive windows are 17,280 bytes, with
+14 receive mailbox slots per socket. These are starting settings for concurrent
+streaming and device management, not measured throughput claims. PSRAM XiP stays
+disabled to avoid adding instruction traffic to the camera-buffer memory bus.
+
+SensorLink channel 0 exposes 640×480 MJPEG from either supported DVP module.
+OV3660 supplies JPEG directly; SC101IOT supplies YUV422 frames for the S31 JPEG
+encoder. Channel 1 exposes both ES8389 microphone channels as stereo signed
+16-bit little-endian PCM at 16 kHz. Camera and audio can stream together.
+The source sensor rates are 25 fps for OV3660 and 15 fps for SC101IOT; actual
+delivery rates depend on capture, encoding and the connection. The
+[official board definitions](https://docs.espressif.com/projects/esp-board-manager/en/latest/references/boards/esp32_s31_korvo_1.html)
+describe both camera variants. A missing sensor is omitted from the manifest.
+
+Connect the Korvo's USB Type-C port marked UART to enroll or manage the board.
+This port contains a USB-to-UART bridge connected to UART0, TX GPIO58 and RX
+GPIO59. Wendy uses 115200 baud and the same console/management escape protocol
+as its native USB transport. Select the bridge's serial device in the Wendy CLI.
+The Type-C power port carries no data; the USB-A host port is not the programming
+port. The ESP-IDF UART console provides boot and panic diagnostics. After
+startup, Wendy's stdio hook owns ordinary input and output and suppresses
+unframed logs while the serial port carries protocol traffic.
+
+After enrollment through the bridge, use the device's Wi-Fi hostname for sensor
+streaming. The 115200-baud serial connection is intended for setup and management:
+
+```sh
+wendy device camera view --device wendy-lite:<device-hostname>.local
+wendy device audio listen --device wendy-lite:<device-hostname>.local --id 1
+```
+
+To omit onboard sensor startup, disable
+`CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1` in this build's `menuconfig` and rebuild.
+The generic S31 profile does not enable these peripherals. Display, speaker
+playback, microSD, USB OTG and Ethernet are not initialized by the Korvo profile.
+The generic S31 profile keeps the USB Serial/JTAG management transport; the
+Korvo profile selects the UART bridge. Neither enables USB high-speed OTG.
+
+Native apps can call ESP-IDF drivers and add ESP-DSP or ESP-NN components.
+The firmware does not enable inference or DSP merely by selecting the board.
+[S31 PIE/SIMD instructions run only on CPU1](https://github.com/espressif/esp-idf/blob/v6.1/docs/en/api-reference/system/freertos_idf.rst).
+Place tasks that use those instructions on CPU1 and keep PIE calls out of ISRs
+and critical sections. Wi-Fi keeps its SDK default CPU0 affinity; other tasks
+retain their existing scheduling policy.
+
+Before comparing performance, record the exact firmware revision, camera module,
+transport and Wi-Fi signal strength. Measure camera alone, audio alone and both
+together, then repeat during OTA or a TLS connection. Track delivered frames,
+audio gaps, p95 latency, per-core load and the minimum free internal/DMA heap.
+Compare the generic and Korvo profiles with the same non-sensor workload to
+separate memory and compiler changes from the cost of sensor capture.
+
+An opt-in benchmark build exercises internal RAM and PSRAM copies, then compares
+an ESP-NN 1×1 convolution on CPU1 with its ANSI implementation. It validates the
+outputs before reporting timings and emits `WENDY_BENCH` JSON records, including
+heap snapshots every five seconds. Build it separately from the shipping profile:
+
+```sh
+idf.py --preview -B build/esp32s31-korvo-1-benchmark \
+  -D SDKCONFIG=build/esp32s31-korvo-1-benchmark/sdkconfig \
+  -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;boards/esp32s31_korvo_1_native.defaults;boards/esp32s31_korvo_1_benchmark.defaults' \
+  -D IDF_TARGET=esp32s31 build
+idf.py --preview -B build/esp32s31-korvo-1-benchmark \
+  -D SDKCONFIG=build/esp32s31-korvo-1-benchmark/sdkconfig flash monitor
+```
+
+The benchmark begins ten seconds after initialization. Use it to check memory
+bandwidth and the optimized kernel on the actual board; it does not measure
+end-to-end streaming performance. CI compiles this variant without publishing it
+in the firmware catalog.
+
+Save one boot's serial monitor output to a log file. Keep recording while camera
+and audio stream to include the periodic heap samples, then summarize the saved
+log:
+
+```sh
+python3 tools/korvo_benchmark.py /path/to/korvo.log
+python3 tools/korvo_benchmark.py /path/to/korvo.log --json
+```
+
+Hardware validation on 2026-10-18 used a Korvo-1 V1.1 with rev0.0 silicon,
+an OV3660 camera, ES8389 microphones and ESP-IDF 6.1. Boot confirmed 16 MB flash
+in QIO mode at 80 MHz, 16 MB PSRAM at 200 MHz with the SDK memory test passing,
+and a 320 MHz CPU clock. UART management reported native application support
+and both sensors. A 30.6-second serial test of the normal firmware exercised simultaneous capture,
+audio alone, camera restart, unsubscribe and management pings. All 19 completed
+640×480 JPEGs and 67 stereo PCM blocks validated without ordering or timestamp
+errors. Both microphone channels had nonzero samples without clipping. Two
+unfinished camera frames were cancelled during unsubscribe. These counts reflect
+the 115200-baud UART limit, not the sensors' full capture rates.
+
+The benchmark build measured the following with sensors initialized but idle:
+
+| Check | Measurement |
+|---|---|
+| Internal RAM copy, repeated 16 KiB block | 493.6 MiB/s |
+| PSRAM copy, repeated 256 KiB block | 44.3 MiB/s |
+| CPU1 INT8 1×1 convolution, ANSI | 3,873.4 µs per iteration |
+| CPU1 INT8 1×1 convolution, optimized | 619.4 µs per iteration, 6.25× faster |
+| Minimum free internal heap during the benchmark | 59,180 bytes |
+
+Copy contents and convolution outputs matched their references. These are
+single-run kernel measurements, not application throughput or latency guarantees.
+The generic S31 profile remains build-tested only. Wi-Fi streaming, enrollment,
+BLE connections, OTA rollback and the SC101IOT camera path still need hardware
+validation. Display, playback and other uninitialized peripherals are outside
+this profile's tested scope.
 
 ### ESP32-P4 notes
 

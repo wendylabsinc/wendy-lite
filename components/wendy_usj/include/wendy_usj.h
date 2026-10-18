@@ -9,12 +9,12 @@ extern "C" {
 #endif
 
 /**
- * Initialize the USB Serial/JTAG channel.
+ * Initialize the configured USB Serial/JTAG or UART bridge channel.
  */
 esp_err_t wendy_usj_init(void);
 
 /**
- * Write raw bytes to the USB Serial/JTAG port.
+ * Write raw bytes to the configured wired port.
  * Only active in console mode; calls in other modes are no-ops.
  */
 void wendy_usj_write(const void *data, size_t len);

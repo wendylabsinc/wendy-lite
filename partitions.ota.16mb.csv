@@ -1,0 +1,10 @@
+# Name,     Type, SubType, Offset,   Size,     Flags
+# 16 MB flash layout with OTA.
+# App partitions must start on a 64 KB boundary, so 0xFB0000-0xFC0000 is unused.
+nvs,        data, nvs,     0x9000,   0x6000,
+phy_init,   data, phy,     0xf000,   0x1000,
+ota_0,      app,  ota_0,   0x10000,  0x7D0000,
+ota_1,      app,  ota_1,   0x7E0000, 0x7D0000,
+otadata,    data, ota,     0xFC0000, 0x2000,
+wendy_pki,  data, nvs,     0xFC2000, 0x2C000,
+wendy_conf, data, 0x40,    0xFEE000, 0x12000,

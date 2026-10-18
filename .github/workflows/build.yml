@@ -109,9 +109,12 @@ jobs:
       - name: Verify ESP32-S31 native profile
         if: matrix.target == 'esp32s31'
         shell: bash
+        env:
+          BOARD_CFG: ${{ matrix.board_cfg }}
         run: |
           python - <<'PY'
           import json
+          import os
           from pathlib import Path
 
           build = Path("build")
@@ -121,14 +124,95 @@ jobs:
                          "WENDY_CORE_WATCHDOG", "BOOTLOADER_WDT_DISABLE_IN_USER_CODE",
                          "MBEDTLS_USE_BUNDLED_PQC", "MBEDTLS_SSL_TLS1_3_SIG_MLDSA65"):
               assert config.get(option), f"{option} must be enabled"
-          for option in ("WENDY_CORE_WASM_APP_SUPPORT", "SPIRAM", "MBEDTLS_DYNAMIC_BUFFER"):
+          for option in ("WENDY_CORE_WASM_APP_SUPPORT", "MBEDTLS_DYNAMIC_BUFFER"):
               assert not config.get(option), f"{option} must be disabled"
           assert config["BT_NIMBLE_L2CAP_COC_MAX_NUM"] == 1
           components = json.loads((build / "project_description.json").read_text())["build_components"]
           assert not {"espressif__wasm-micro-runtime", "wendy_wasm", "wendy_hal"}.intersection(components)
           flash = json.loads((build / "flasher_args.json").read_text())
           assert flash["bootloader"]["offset"] == "0x2000"
-          assert flash["flash_settings"]["flash_size"] == "4MB"
+          assert config.get("ESPTOOLPY_NO_STUB")
+          assert flash["extra_esptool_args"]["stub"] is False
+          assert flash["extra_esptool_args"]["chip"] == "esp32s31"
+          if os.environ["BOARD_CFG"] == "esp32s31_generic_native":
+              assert not config.get("SPIRAM")
+              assert not config.get("WENDY_USJ_USE_UART")
+              assert "esp_driver_usb_serial_jtag" in components
+              assert not config.get("WENDY_SENSOR_LINK_ESP32S31_KORVO_1")
+              assert config["PARTITION_TABLE_CUSTOM_FILENAME"] == "partitions.ota.csv"
+              assert flash["flash_settings"] == {
+                  "flash_size": "4MB", "flash_mode": "dio", "flash_freq": "40m",
+              }
+          elif os.environ["BOARD_CFG"] == "esp32s31_korvo_1_native":
+              for option in ("SPIRAM", "SPIRAM_MODE_OCT", "SPIRAM_TRY_ALLOCATE_WIFI_LWIP",
+                             "COMPILER_OPTIMIZATION_PERF", "WENDY_SENSOR_LINK_ESP32S31_KORVO_1",
+                             "ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE", "CAMERA_XCLK_USE_LEDC",
+                             "CAMERA_OV3660", "CAMERA_SC101IOT"):
+                  assert config.get(option), f"{option} must be enabled on Korvo-1"
+              assert config["SPIRAM_SPEED"] == 200
+              assert config["SPIRAM_MALLOC_RESERVE_INTERNAL"] == 98304
+              assert config["SPIRAM_MALLOC_ALWAYSINTERNAL"] == 1024
+              assert not config.get("SPIRAM_XIP_FROM_PSRAM")
+              assert config["ESP_DEFAULT_CPU_FREQ_MHZ"] == 320
+              assert config["FREERTOS_NUMBER_OF_CORES"] == 2
+              assert config.get("WENDY_USJ_USE_UART")
+              assert config.get("ESP_CONSOLE_UART_DEFAULT")
+              assert config["ESP_CONSOLE_UART_NUM"] == 0
+              assert config["ESP_CONSOLE_UART_BAUDRATE"] == 115200
+              assert config.get("ESP_CONSOLE_SECONDARY_NONE")
+              assert not config.get("ESP_CONSOLE_NONE")
+              assert config["WENDY_USJ_UART_TX_GPIO"] == 58
+              assert config["WENDY_USJ_UART_RX_GPIO"] == 59
+              assert "esp_driver_uart" in components
+              assert config["ESP_WIFI_STATIC_RX_BUFFER_NUM"] == 16
+              assert config["ESP_WIFI_STATIC_TX_BUFFER_NUM"] == 16
+              assert config["ESP_WIFI_RX_BA_WIN"] == 16
+              assert config["LWIP_TCP_SND_BUF_DEFAULT"] == 17280
+              assert config["LWIP_TCP_WND_DEFAULT"] == 17280
+              assert config["LWIP_TCP_RECVMBOX_SIZE"] == 14
+              assert config["PARTITION_TABLE_CUSTOM_FILENAME"] == "partitions.ota.16mb.csv"
+              assert {"espressif__esp_video", "espressif__esp_codec_dev", "wendy_sensor_link"}.issubset(components)
+              assert config.get("ESPTOOLPY_FLASHMODE_QIO")
+              # IDF writes a DIO ROM header; its bootloader enables QIO.
+              assert flash["flash_settings"] == {
+                  "flash_size": "16MB", "flash_mode": "dio", "flash_freq": "80m",
+              }
+              assert flash["otadata"]["offset"] == "0xfc0000"
+          else:
+              raise AssertionError(f"Unverified ESP32-S31 board: {os.environ['BOARD_CFG']}")
+          PY
+
+      - name: Compile ESP32-S31-Korvo-1 benchmark variant
+        if: matrix.board_cfg == 'esp32s31_korvo_1_native'
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          idf.py --preview -B build-korvo-benchmark \
+            -D SDKCONFIG="$PWD/build-korvo-benchmark/sdkconfig" \
+            -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;boards/esp32s31_korvo_1_native.defaults;boards/esp32s31_korvo_1_benchmark.defaults;version.defaults' \
+            -D IDF_TARGET=esp32s31 build
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          release = Path("build")
+          release_config = json.loads((release / "config/sdkconfig.json").read_text())
+          assert not release_config.get("WENDY_KORVO_BENCHMARK")
+          build = Path("build-korvo-benchmark")
+          config = json.loads((build / "config/sdkconfig.json").read_text())
+          assert config.get("WENDY_KORVO_BENCHMARK")
+          assert config["FREERTOS_NUMBER_OF_CORES"] == 2
+          assert config.get("NN_OPTIMIZED") and not config.get("NN_ANSI_C")
+          for key in ("WENDY_USJ_USE_UART", "WENDY_USJ_UART_TX_GPIO", "WENDY_USJ_UART_RX_GPIO",
+                      "ESP_CONSOLE_UART_DEFAULT", "ESP_CONSOLE_UART_NUM", "ESP_CONSOLE_UART_BAUDRATE",
+                      "ESP_CONSOLE_SECONDARY_NONE", "ESPTOOLPY_NO_STUB", "SPIRAM_SPEED",
+                      "PARTITION_TABLE_CUSTOM_FILENAME", "WENDY_SENSOR_LINK_ESP32S31_KORVO_1"):
+              assert config.get(key) == release_config.get(key), f"Board setting differs for {key}"
+          for key in ("WENDY_FIRMWARE_VERSION_MAJOR", "WENDY_FIRMWARE_VERSION_MINOR",
+                      "WENDY_FIRMWARE_VERSION_PATCH", "APP_PROJECT_VER"):
+              assert config.get(key) == release_config.get(key), f"Version differs for {key}"
+          components = json.loads((build / "project_description.json").read_text())["build_components"]
+          assert {"wendy_benchmark", "espressif__esp-nn"}.issubset(components)
           PY
 
       # Fail the release rather than ship a binary carrying the placeholder
@@ -153,14 +237,11 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           ASSET_NAME: ${{ matrix.asset_name }}
-          FLASH_SIZE: ${{ matrix.flash_size }}
         run: |
           . "$IDF_PATH/export.sh"
           cd build
           esptool.py --chip "$TARGET" merge_bin \
             -o "${ASSET_NAME}.bin" \
-            --flash_mode dio \
-            --flash_size "$FLASH_SIZE" \
             @flash_args
 
       - name: Upload build artifact

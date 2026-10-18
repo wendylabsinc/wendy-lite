@@ -10,4 +10,15 @@ menu "Wendy SensorLink"
             at a time. Requires PSRAM and the Sense camera/microphone board.
             Other ESP32-S3 boards may use different pins and must leave this
             disabled.
+
+    config WENDY_SENSOR_LINK_ESP32S31_KORVO_1
+        bool "Bundle ESP32-S31-Korvo-1 camera and dual microphones"
+        default n
+        depends on IDF_TARGET_ESP32S31 && !WENDY_CORE_WASM_APP_SUPPORT
+        help
+            Expose the Korvo-1 V1.1 DVP camera and ES8389 microphones through
+            SensorLink. Camera and audio can stream concurrently. Uses two
+            PSRAM camera buffers, hardware JPEG for raw sensors, and 16 kHz
+            stereo PCM audio. Requires the Korvo camera module and PSRAM;
+            configuration fails if PSRAM is disabled.
 endmenu

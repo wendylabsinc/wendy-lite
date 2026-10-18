@@ -27,8 +27,8 @@ static enum wcom_sensor_link_result sensor_link_get_manifest(
             .format_kind = WCOM_SENSOR_FORMAT_VIDEO,
             .format.video = {
                 .codec = wendy_lite_sensorlink_VideoFormat_Codec_MJPEG,
-                .width = 800,
-                .height = 600,
+                .width = CAM_FRAME_WIDTH,
+                .height = CAM_FRAME_HEIGHT,
                 .fps = 0,
             },
         };
@@ -36,14 +36,17 @@ static enum wcom_sensor_link_result sensor_link_get_manifest(
     if (s_microphone_ready && *sensor_count < max_sensors) {
         sensors[(*sensor_count)++] = (struct wcom_sensor_descriptor){
             .channel_id = 1,
-            // The SDK supports one input at a time.
+#if CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1
+            .input_id = 1,
+#else
             .input_id = 0,
+#endif
             .name = "microphone",
             .format_kind = WCOM_SENSOR_FORMAT_AUDIO,
             .format.audio = {
                 .codec = wendy_lite_sensorlink_AudioFormat_Codec_PCM_S16LE,
                 .sample_rate = MIC_SAMPLE_RATE_HZ,
-                .channels = 1,
+                .channels = MIC_CHANNELS,
             },
         };
     }
@@ -56,11 +59,15 @@ static enum wcom_sensor_link_result sensor_link_subscribe(
     if (count == 0) {
         return WCOM_SENSOR_LINK_OK;
     }
-    if (count != 1 || !((channel_ids[0] == 0 && s_camera_ready) ||
-                        (channel_ids[0] == 1 && s_microphone_ready))) {
+    if (!channel_ids || count > 2) {
         return WCOM_SENSOR_LINK_FAIL;
     }
-    return cam_loop_start(client_id, channel_ids[0]);
+    for (size_t i = 0; i < count; ++i) {
+        if (!((channel_ids[i] == 0 && s_camera_ready) || (channel_ids[i] == 1 && s_microphone_ready))) {
+            return WCOM_SENSOR_LINK_FAIL;
+        }
+    }
+    return cam_loop_start_many(client_id, channel_ids, count);
 }
 
 static enum wcom_sensor_link_result sensor_link_unsubscribe(
@@ -69,10 +76,22 @@ static enum wcom_sensor_link_result sensor_link_unsubscribe(
     if (count == 0) {
         return WCOM_SENSOR_LINK_OK;
     }
-    if (count != 1 || channel_ids[0] > 1) {
+#if CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1
+    const size_t max_channels = 2;
+#else
+    const size_t max_channels = 1;
+#endif
+    if (!channel_ids || count > max_channels) {
         return WCOM_SENSOR_LINK_FAIL;
     }
-    cam_loop_stop(client_id, channel_ids[0]);
+    for (size_t i = 0; i < count; ++i) {
+        if (channel_ids[i] > 1) {
+            return WCOM_SENSOR_LINK_FAIL;
+        }
+    }
+    for (size_t i = 0; i < count; ++i) {
+        cam_loop_stop(client_id, channel_ids[i]);
+    }
     return WCOM_SENSOR_LINK_OK;
 }
 

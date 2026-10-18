@@ -1,11 +1,36 @@
-menu "Wendy USJ (USB Serial/JTAG)"
+menu "Wendy wired console and management"
     config WENDY_USJ
-        bool "Enable USB Serial/JTAG wire channel"
+        bool "Enable wired console and management"
         depends on SOC_USB_SERIAL_JTAG_SUPPORTED
         default y if SOC_USB_SERIAL_JTAG_SUPPORTED
         help
-            Installs the USB Serial/JTAG driver which is used to output
-            logs but also to take control via the WendyCom protocol.
+            Installs the selected serial driver to output logs and accept
+            device management through the WendyCom protocol.
+
+    config WENDY_USJ_USE_UART
+        bool "Use UART0 through a USB-to-UART bridge"
+        depends on WENDY_USJ && SOC_UART_SUPPORTED && ESP_CONSOLE_UART && ESP_CONSOLE_UART_NUM = 0
+        default n
+        help
+            Use a board's UART0 programming bridge for the Wendy console and
+            WendyCom at 115200 baud, instead of native USB Serial/JTAG.
+            Keep the ESP-IDF console on UART0 for boot and panic diagnostics.
+            Wendy's stdio hook takes ownership of ordinary input and output
+            after startup, routing logs only when in console mode.
+
+    config WENDY_USJ_UART_TX_GPIO
+        int "UART0 TX GPIO"
+        depends on WENDY_USJ_USE_UART
+        default 58 if IDF_TARGET_ESP32S31
+        default -1
+        range -1 61
+
+    config WENDY_USJ_UART_RX_GPIO
+        int "UART0 RX GPIO"
+        depends on WENDY_USJ_USE_UART
+        default 59 if IDF_TARGET_ESP32S31
+        default -1
+        range -1 61
 
     config WENDY_USJ_TASK_PRIORITY
         int "USJ task priority"

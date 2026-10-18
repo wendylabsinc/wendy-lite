@@ -12,9 +12,16 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#if CONFIG_WENDY_USJ_USE_UART
+#include "freertos/semphr.h"
+#include "driver/uart.h"
+#include "driver/uart_vfs.h"
+#include "esp_rom_sys.h"
+#else
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
 #include "driver/usb_serial_jtag_select.h"
+#endif
 #include "esp_log.h"
 
 #include "wendy_com.h"
@@ -41,7 +48,67 @@ typedef enum {
 static atomic_int s_mode;
 
 static wendy_com_uart_t s_com_uart;
+#if !CONFIG_WENDY_USJ_USE_UART
 static atomic_bool s_host_disconnected;
+#endif
+
+#if CONFIG_WENDY_USJ_USE_UART
+#if !CONFIG_ESP_CONSOLE_UART || CONFIG_ESP_CONSOLE_UART_NUM != 0
+#error "Wendy UART ownership requires the ESP-IDF console on UART0"
+#endif
+
+static SemaphoreHandle_t s_uart_tx_mutex;
+static StaticSemaphore_t s_uart_tx_mutex_buf;
+
+// IDF 6.1 reports an enqueueable payload bound including the ring's descriptor
+// overhead. Serialize the capacity check and enqueue across protocol/console
+// writers, and only enqueue that bounded prefix. The UART ISR only frees space.
+static int _uart_write_bytes(const void *data, size_t size, bool console_only)
+{
+    if (xSemaphoreTake(s_uart_tx_mutex, 0) != pdTRUE)
+        return 0;
+    int n = 0;
+    if (!console_only || atomic_load(&s_mode) == USJ_MODE_CONSOLE) {
+        size_t available = 0;
+        if (uart_get_tx_buffer_free_size(UART_NUM_0, &available) != ESP_OK) {
+            n = -1;
+        } else if (available > 0) {
+            if (size > available) size = available;
+            if (size > 128) size = 128;
+            n = uart_write_bytes(UART_NUM_0, data, size);
+        }
+    }
+    xSemaphoreGive(s_uart_tx_mutex);
+    return n;
+}
+
+static bool _uart_write_ready(void)
+{
+    if (xSemaphoreTake(s_uart_tx_mutex, 0) != pdTRUE)
+        return false;
+    size_t available = 0;
+    bool ready = uart_get_tx_buffer_free_size(UART_NUM_0, &available) == ESP_OK && available > 0;
+    xSemaphoreGive(s_uart_tx_mutex);
+    return ready;
+}
+#endif
+
+static void _set_mode(usj_mode_t mode)
+{
+#if CONFIG_WENDY_USJ_USE_UART
+    // Only the serial input task leaves console mode. Wait for its current
+    // bounded console enqueue before closing the gate to future console
+    // writes. Transitions from COM run on the nonblocking WendyCom executor;
+    // no console writer can be active there, so they need no mutex wait.
+    if (atomic_load(&s_mode) == USJ_MODE_CONSOLE) {
+        xSemaphoreTake(s_uart_tx_mutex, portMAX_DELAY);
+        atomic_store(&s_mode, mode);
+        xSemaphoreGive(s_uart_tx_mutex);
+        return;
+    }
+#endif
+    atomic_store(&s_mode, mode);
+}
 
 
 static void _handle_esc_command(uint8_t cmd);
@@ -59,7 +126,7 @@ static void _on_com_interruption(int link_id, enum wcom_interruption_reason reas
         _handle_esc_command(s_com_uart.last_esc_cmd);
     } else {
         ESP_LOGI(TAG, "mode -> off");
-        atomic_store(&s_mode, USJ_MODE_OFF);
+        _set_mode(USJ_MODE_OFF);
     }
 }
 
@@ -68,22 +135,30 @@ static void _on_com_interruption(int link_id, enum wcom_interruption_reason reas
 // partial writes and retry when the driver ring buffer has room again.
 static ssize_t _com_write_bytes(const void *data, size_t size)
 {
+#if CONFIG_WENDY_USJ_USE_UART
+    int n = _uart_write_bytes(data, size, false);
+#else
     // The driver enqueues the whole request or none of it. Keep each write
     // within one USB packet, and shrink it if only part of the ring is free.
     if (size > 64) size = 64;
     int n;
     while ((n = usb_serial_jtag_write_bytes(data, size, 0)) == 0 && size > 1)
         size /= 2;
+#endif
     return n > 0 ? n : n == 0 ? WENDY_COM_UART_ERR_WANT_WRITE : WENDY_COM_UART_ERR_UNKNOWN;
 }
 
 static void _enter_com_exec(struct wcom_operation *op)
 {
+#if CONFIG_WENDY_USJ_USE_UART
+    int fd = open("/dev/uart/0", O_RDWR | O_NOCTTY | O_NONBLOCK);
+#else
     usb_serial_jtag_vfs_set_tx_line_endings(ESP_LINE_ENDINGS_LF);
     usb_serial_jtag_vfs_set_rx_line_endings(ESP_LINE_ENDINGS_LF);
     int fd = open("/dev/usbserjtag", O_RDWR | O_NOCTTY);
+#endif
     if (fd < 0) {
-        atomic_store(&s_mode, USJ_MODE_OFF);
+        _set_mode(USJ_MODE_OFF);
         return;
     }
 
@@ -103,11 +178,14 @@ static void _enter_com_exec(struct wcom_operation *op)
 
     wendy_com_uart_init(&s_com_uart, fd);
     s_com_uart.write_bytes = _com_write_bytes;
+#if CONFIG_WENDY_USJ_USE_UART
+    s_com_uart.write_ready = _uart_write_ready;
+#endif
 
     if (wcom_add_uart_link(&s_com_uart, _on_com_interruption) < 0) {
         close(fd);
         s_com_uart.fd = -1;
-        atomic_store(&s_mode, USJ_MODE_OFF);
+        _set_mode(USJ_MODE_OFF);
         return;
     }
 }
@@ -118,7 +196,7 @@ static void _handle_esc_command(uint8_t cmd)
     switch (cmd) {
         case WENDY_COM_UART_ESC_CMD_CONSOLE:
             ESP_LOGI(TAG, "entering console mode");
-            atomic_store(&s_mode, USJ_MODE_CONSOLE);
+            _set_mode(USJ_MODE_CONSOLE);
             break;
         case WENDY_COM_UART_ESC_CMD_ECHO:
             if (!wcom_is_running()) {
@@ -126,24 +204,24 @@ static void _handle_esc_command(uint8_t cmd)
                 break;
             }
             ESP_LOGI(TAG, "entering echo mode");
-            atomic_store(&s_mode, USJ_MODE_ECHO);
+            _set_mode(USJ_MODE_ECHO);
             break;
         case WENDY_COM_UART_ESC_CMD_COM:
             if (!wcom_is_running()) {
                 ESP_LOGI(TAG, "com mode rejected (WendyCom agent not available)");
                 // prevent any WendyCom message to be echoed
                 ESP_LOGI(TAG, "entering off mode");
-                atomic_store(&s_mode, USJ_MODE_OFF);
+                _set_mode(USJ_MODE_OFF);
                 break;
             }
             ESP_LOGI(TAG, "entering com mode");
-            atomic_store(&s_mode, USJ_MODE_COM);
+            _set_mode(USJ_MODE_COM);
             op.func = _enter_com_exec;
             wcom_exec(&op);
             break;
         case WENDY_COM_UART_ESC_CMD_OFF:
             ESP_LOGI(TAG, "entering off mode");
-            atomic_store(&s_mode, USJ_MODE_OFF);
+            _set_mode(USJ_MODE_OFF);
             break;
         case WENDY_COM_UART_ESC_CMD_KEEP_ALIVE:
         case WENDY_COM_UART_ESC_CMD_ESC:
@@ -167,7 +245,11 @@ static void _task_main(void *arg)
             continue;
         }
 
+#if CONFIG_WENDY_USJ_USE_UART
+        int n = uart_read_bytes(UART_NUM_0, &b, 1, pdMS_TO_TICKS(POLL_INTERVAL_MS));
+#else
         int n = usb_serial_jtag_read_bytes(&b, 1, pdMS_TO_TICKS(POLL_INTERVAL_MS));
+#endif
         if (n <= 0)
             continue;
 
@@ -178,7 +260,14 @@ static void _task_main(void *arg)
             esc_pending = false;
             mode = atomic_load(&s_mode);
         } else if (mode == USJ_MODE_ECHO) {
+#if CONFIG_WENDY_USJ_USE_UART
+            TickType_t started = xTaskGetTickCount();
+            while (_uart_write_bytes(&b, 1, false) == 0 &&
+                   xTaskGetTickCount() - started < pdMS_TO_TICKS(1000))
+                vTaskDelay(1);
+#else
             usb_serial_jtag_write_bytes(&b, 1, pdMS_TO_TICKS(1000));
+#endif
         } else if (mode == USJ_MODE_CONSOLE) {
             wendy_stdio_put_stdin_data(&b, 1);
         }
@@ -211,6 +300,37 @@ static int _com_thread_log_vprintf(const char *format, va_list args)
 
 esp_err_t wendy_usj_init(void)
 {
+#if CONFIG_WENDY_USJ_USE_UART
+    // Raw ROM output bypasses Wendy's stdio hook. Detach both ROM printf
+    // channels before UART0 becomes a binary management transport.
+    esp_rom_install_channel_putc(1, NULL);
+    esp_rom_install_channel_putc(2, NULL);
+    s_uart_tx_mutex = xSemaphoreCreateMutexStatic(&s_uart_tx_mutex_buf);
+    uart_config_t cfg = {
+        .baud_rate = 115200,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+    esp_err_t err = uart_param_config(UART_NUM_0, &cfg);
+    if (err != ESP_OK)
+        return err;
+    err = uart_set_pin(UART_NUM_0, CONFIG_WENDY_USJ_UART_TX_GPIO,
+                      CONFIG_WENDY_USJ_UART_RX_GPIO, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    if (err != ESP_OK)
+        return err;
+    err = uart_driver_install(UART_NUM_0, RX_BUF_SIZE, TX_BUF_SIZE, 0, NULL, 0);
+    if (err != ESP_OK)
+        return err;
+#if !CONFIG_ESP_CONSOLE_UART
+    uart_vfs_dev_register();
+#endif
+    uart_vfs_dev_use_driver(UART_NUM_0);
+    uart_vfs_dev_port_set_tx_line_endings(UART_NUM_0, ESP_LINE_ENDINGS_LF);
+    uart_vfs_dev_port_set_rx_line_endings(UART_NUM_0, ESP_LINE_ENDINGS_LF);
+#else
     wendy_usj_rom_print_usb_disable();
 
     usb_serial_jtag_driver_config_t cfg = {
@@ -226,6 +346,7 @@ esp_err_t wendy_usj_init(void)
         return err;
 
     usb_serial_jtag_vfs_use_driver();
+#endif
     s_com_uart.fd = -1;
     atomic_store(&s_mode, USJ_MODE_CONSOLE);
     s_prev_out_handler = wendy_stdio_set_out_data_handler(_out_data_handler);
@@ -244,6 +365,21 @@ void wendy_usj_write(const void *data, size_t len)
 {
     if (atomic_load(&s_mode) != USJ_MODE_CONSOLE)
         return;
+#if CONFIG_WENDY_USJ_USE_UART
+    const uint8_t *p = data;
+    TickType_t started = xTaskGetTickCount();
+    while (len > 0 && atomic_load(&s_mode) == USJ_MODE_CONSOLE) {
+        int n = _uart_write_bytes(p, len, true);
+        if (n < 0)
+            break;
+        p += n;
+        len -= n;
+        if (len == 0 || xTaskGetTickCount() - started >= pdMS_TO_TICKS(TX_TIMEOUT_MS))
+            break;
+        if (n == 0)
+            vTaskDelay(1);
+    }
+#else
     if (s_host_disconnected) {
         if (usb_serial_jtag_write_ready() && usb_serial_jtag_write_bytes("...", 3, 1) == 3) {
             s_host_disconnected = false;
@@ -254,6 +390,7 @@ void wendy_usj_write(const void *data, size_t len)
             s_host_disconnected = true;
         }
     }
+#endif
 }
 
 void wendy_usj_vprintf(const char *fmt, va_list args)
