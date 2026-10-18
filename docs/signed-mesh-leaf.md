@@ -3,8 +3,10 @@
 Wendy Lite can join a Wendy local mesh as an IPv6 endpoint through one explicitly
 configured peer over Wi-Fi TCP, BLE L2CAP, or ESP-NOW. The build is opt-in and limited to native ESP32-S3
 profiles with PSRAM. The Seeed XIAO ESP32S3 profile compiles with ESP-IDF 6.0.3.
-The BLE image boots on an ESP32-S3 DevKit with 8 MB PSRAM and starts its L2CAP
-listener. An authenticated mesh connection has not yet been verified on hardware. Other targets, boards
+The BLE image was tested on an ESP32-S3 DevKit with 8 MB PSRAM against a Linux
+router with no Wi-Fi credentials on the leaf. Logs confirmed mutual TLS,
+signed route leases and activation of the IPv6 interface after the replay
+barrier; the operator confirmed the BLE mesh worked. Other targets, boards
 without PSRAM, WASM profiles and IPv6 forwarding are excluded by Kconfig.
 
 The leaf uses its existing Cloud enrollment, P-256 device key, device certificate,
@@ -199,6 +201,9 @@ The mesh owns a separate channel, receive ring and buffer pool.
 Its 240-byte SDU limit keeps NimBLE's receive grant at one packet per armed
 buffer, so a full receive ring can stop incoming traffic without overrunning
 the channel. Larger TLS records and IPv6 packets span multiple SDUs.
+Bulk sends also reserve four blocks in NimBLE's smallest host buffer pool for
+credit updates, ATT and incoming HCI traffic. Under buffer pressure, sends
+back off so credit updates can keep the channel moving.
 
 Set `CONFIG_WENDY_MESH_ROUTER_DEVICE` to the Linux router's enrolled UUID.
 The host and TCP port settings are unused for BLE. Add this to the router's
@@ -276,8 +281,9 @@ certificates are required; radio mesh does not provide enrollment or renewal.
 The host tests exercise stream TLS client/server authentication, relayed time
 bounds and rejection, and ESP-NOW loss, reordering, duplicates, backpressure,
 stale epochs and stalled ACKs. Wi-Fi, BLE and ESP-NOW firmware variants compile
-for the 8 MB PSRAM ESP32-S3 DevKit with ESP-IDF 6.0.3. Actual radio throughput,
-coexistence, heap peaks and reconnection still need a two-device hardware test.
+for the 8 MB PSRAM ESP32-S3 DevKit with ESP-IDF 6.0.3. BLE was exercised against
+a Linux router on 2026-10-18. ESP-NOW between physical boards, radio throughput,
+coexistence, heap peaks and reconnection under load still need hardware tests.
 
 For the tested DevKit memory configuration, copy and edit one carrier example
 under [mesh-examples](mesh-examples/). Use the actual peer UUID, dial address
