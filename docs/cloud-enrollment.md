@@ -1,4 +1,8 @@
-# Real PKI enrollment for Wendy Lite
+# Enrollment for Wendy Lite
+
+Wendy Lite has one enrollment flow. Enrollment creates the device identity used
+for Cloud, LAN, and BLE. There is no separate provisioned state or credential
+import flow.
 
 `wendy cloud enroll-device` enrolls a USB-connected board with the PKI deployment
 selected by the operator's Wendy CLI session. A development login selects
@@ -34,7 +38,7 @@ Keep the setting in the app's defaults as well if future clean builds need it.
 Set `CONFIG_WENDY_PKI_WOLFSSL=n` to use mbedTLS without compiling wolfSSL.
 This reduces firmware size and memory use but cannot verify ML-DSA certificates.
 
-Provision compatible device, TSA and HTTPS CA bundles through the authorized USB
+Install compatible device, TSA and HTTPS CA bundles through the authorized USB
 connection using `--device-roots`, `--tsa-roots` and `--https-roots`. Obtain them
 from the PKI administrator. Each complete chain must use algorithms supported by
 the selected backend; issuing a P-256 leaf beneath an ML-DSA issuer still requires
@@ -53,7 +57,7 @@ images that predate them: flash over USB, and preserve any needed application da
 before installing. The identity partition is never erased by automatic NVS recovery.
 
 Private keys currently use software NVS custody. Hardware key protection, flash
-encryption, and secure boot provisioning are not implemented by this enrollment
+encryption, and secure boot setup are not implemented by this enrollment
 flow. Do not describe the resulting image as hardware-protected.
 
 ## Enroll
@@ -90,14 +94,14 @@ The firmware accepts at most eight CA certificates
 and 16 KiB per bundle; signed time plus all bundles must fit within 64 KiB.
 
 The bundles persist with the enrollment configuration in the `wendy_conf` flash
-partition and survive reboot. USB-provisioned trust takes precedence over embedded
-roots. Missing, partial, or malformed provisioned trust fails closed, with no
+partition and survive reboot. Trust installed over USB takes precedence over embedded
+roots. Missing, partial, or malformed installed trust fails closed, with no
 fallback to a different trust source. Network peers cannot write this configuration.
 Wi-Fi-only configuration updates preserve it; replacing or erasing the entire
 configuration removes it. Existing enrolled boards require operator recovery to
 change enrollment through the CLI. Those root bundles do not rotate remotely.
 The separate Lite operator anchor described below can rotate through authenticated
-renewal; device, TSA and HTTPS roots retain their provisioning policy.
+renewal; changes to device, TSA and HTTPS roots require USB enrollment recovery.
 
 The command obtains a device-generated nonce and a matching RFC 3161 timestamp
 before minting the credential. The board verifies its signature, TSA chain,
@@ -142,41 +146,44 @@ certificates, and unverified timestamps. A delayed fresh-time exchange over
 30 seconds fails.
 
 Configuration upload and enrollment challenges are restricted to the physical
-UART/USB link. The new PKI identity is used for Cloud, LAN, and BLE connections. Once
+UART/USB link. The enrolled identity is used for Cloud, LAN, and BLE connections. Once
 enrollment is configured, the LAN server uses the verified stored identity and
 requires a clientAuth certificate with exactly one operator or device SPIFFE URI
 in the same tenant. Operators can manage the device; authenticated devices can
 only request the SensorLink manifest, subscribe, and unsubscribe. Device clients
 cannot send console input or invoke management commands, including through extra
 WendyCom channels. Missing, invalid, or expired enrollment credentials fail closed;
-neither LAN nor BLE falls back to legacy or anonymous TLS. PKI-enrolled boards
+neither LAN nor BLE falls back to anonymous TLS. Enrolled boards
 advertise the BLE identity service with mTLS required and accept same-tenant
 operators over TLS 1.3 on L2CAP. BLE keeps advertising when Wi-Fi is unavailable;
 connections require a valid stored PKI identity. BLE retains its startup
-authentication policy and rejects sessions after an enrollment or provisioning
-change until reboot. Legacy BLE uses provisioning
-credentials and a trusted operator certificate for the same organization.
-Unprovisioned devices accept anonymous TLS connections over LAN
+authentication policy and rejects sessions after an enrollment change until reboot.
+Unenrolled devices accept anonymous TLS connections over LAN
 and Bluetooth by default. `CONFIG_WENDY_BLE_REQUIRE_MTLS=y` disables anonymous
 Bluetooth access. Configuration upload and enrollment still require USB/UART.
 
-Legacy LAN and BLE provisioning also require certificate chain validation and
-an explicit `clientAuth` leaf with exactly one
-`spiffe://wendy.sh/tenant/<tenant UUID>/operator/<subject>` URI. Legacy LAN also
-accepts `/device/<subject>` with the same SensorLink-only restrictions. BLE and
-Cloud relay access remain operator-only. The tenant must match the device
-certificate's sole `/device/` URI. Service, ambiguous, and missing identities are
-rejected. Legacy credentials without this
-device identity must be replaced over USB/UART. Missing or invalid credentials on
-a PKI-enrolled device never enable anonymous access. Discovery advertises whether
-mTLS is required.
+BLE and Cloud relay access remain operator-only. Client certificates must have
+exactly one `spiffe://wendy.sh/tenant/<tenant UUID>/operator/<subject>` URI.
+The tenant must match the device certificate's sole `/device/` URI. Service,
+ambiguous, and missing identities are rejected. Discovery advertises whether
+mTLS is required. Missing or invalid enrollment credentials never enable anonymous
+access.
+
+Older firmware could import a device key and certificate into configuration
+field 3, named `provisioning`. That field is reserved and no longer accepted.
+Boards with only those credentials refuse network access and require a local
+enrollment reset over USB/UART, followed by `wendy cloud enroll-device`. Boards
+that also have a valid enrollment continue to use their enrolled identity.
+The firmware does not interpret imported credentials as an enrolled identity or
+use anonymous access as a fallback. The configuration utility only edits the
+device name and Wi-Fi; it cannot import or export device credentials.
 
 LAN discovery advertises the tenant and device principal to select an appropriate
 identity and locate paired sensors.
 This is only a selection hint: TLS still verifies the certificate chain and the
 CLI checks the device principal. LAN clients supply a certificate chain compatible
 with the device's configured roots and TLS backend, including intermediates.
-LAN and legacy BLE retain their existing certificate policies.
+BLE clients also authenticate with a certificate from the enrolled tenant.
 
 For Cloud relay, the CLI obtains a separate marked P-256 Lite operator leaf through
 the selected operator login. Its issuer is the separately pinned Lite Operator
@@ -233,7 +240,7 @@ success before the CLI reboots. Existing network sessions stop accepting reads,
 writes, and commands as soon as reset begins, including when the response is lost.
 
 Reset first commits a pending marker and a recovery copy of the unrelated
-configuration. It removes enrollment and legacy provisioning configuration before
+configuration. It removes enrollment and any obsolete imported credentials before
 erasing the key, certificate, active and pending Lite operator anchor, pending
 issuance, and identity binding. Device name,
 Wi-Fi, unknown configuration fields, and the app partitions are preserved. The

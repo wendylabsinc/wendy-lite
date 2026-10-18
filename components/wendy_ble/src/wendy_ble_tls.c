@@ -1,7 +1,6 @@
 #include "wendy_ble_tls.h"
 #include "wendy_ble_l2cap.h"
 #include "wendy_conf.h"
-#include "wendy_operator_auth.h"
 #include "wendy_pki.h"
 
 #include <string.h>
@@ -34,19 +33,16 @@
 //--- globals ---//
 
 static bool _active;
-// Session-owned snapshots of the transport's boot policy. Live configuration
+// Session-owned snapshot of the transport's boot policy. Live configuration
 // changes revoke access; they must never select a weaker backend this boot.
-static bool _provisioned;
 static bool _enrolled;
 #if CONFIG_WENDY_PKI
 static wendy_pki_connection *_pki;
 #endif
-static struct wendy_operator_auth _operator_auth;
 
 static mbedtls_ssl_context      _ssl;
 static mbedtls_ssl_config       _conf;
 static mbedtls_x509_crt         _own_cert;
-static mbedtls_x509_crt         _ca_chain;
 static mbedtls_pk_context       _own_key;
 static mbedtls_entropy_context  _entropy;
 static mbedtls_ctr_drbg_context _ctr_drbg;
@@ -57,7 +53,7 @@ static mbedtls_ctr_drbg_context _ctr_drbg;
 static bool _session_allowed(void)
 {
     return !wendy_pki_reset_in_progress() && wendy_conf_has_enrollment() == _enrolled &&
-           wendy_conf_is_provisioned() == _provisioned;
+           (!_enrolled || wendy_conf_is_current());
 }
 
 #if CONFIG_WENDY_PKI
@@ -146,7 +142,6 @@ static void _free_contexts(void)
     mbedtls_ssl_free(&_ssl);
     mbedtls_ssl_config_free(&_conf);
     mbedtls_x509_crt_free(&_own_cert);
-    mbedtls_x509_crt_free(&_ca_chain);
     mbedtls_pk_free(&_own_key);
     mbedtls_ctr_drbg_free(&_ctr_drbg);
     mbedtls_entropy_free(&_entropy);
@@ -155,14 +150,13 @@ static void _free_contexts(void)
 
 //--- public functions ---//
 
-esp_err_t wble_tls_session_start(bool enrolled, bool provisioned)
+esp_err_t wble_tls_session_start(bool enrolled)
 {
     static const char *pers = "wendy_ble_tls";
     esp_err_t result = ESP_FAIL;
 
     _active = false;
     _enrolled = enrolled;
-    _provisioned = provisioned;
     if (wendy_pki_reset_in_progress()) {
         ESP_LOGW(TAG, "identity reset in progress; BLE connection rejected");
         return ESP_ERR_INVALID_STATE;
@@ -176,7 +170,7 @@ esp_err_t wble_tls_session_start(bool enrolled, bool provisioned)
     if (_enrolled) {
 #if CONFIG_WENDY_PKI
         // Use the enrolled identity and operator verification from LAN/Cloud.
-        // A PKI failure must never fall back to legacy or anonymous TLS.
+        // A PKI failure must never fall back to anonymous TLS.
         result = wendy_pki_accept_stream(&_pki_stream, &_pki);
         if (result != ESP_OK)
             return result;
@@ -196,28 +190,18 @@ esp_err_t wble_tls_session_start(bool enrolled, bool provisioned)
     mbedtls_ssl_init(&_ssl);
     mbedtls_ssl_config_init(&_conf);
     mbedtls_x509_crt_init(&_own_cert);
-    mbedtls_x509_crt_init(&_ca_chain);
     mbedtls_pk_init(&_own_key);
     mbedtls_entropy_init(&_entropy);
     mbedtls_ctr_drbg_init(&_ctr_drbg);
 
 #if CONFIG_WENDY_BLE_REQUIRE_MTLS
-    if (!_provisioned) {
-        ESP_LOGW(TAG, "BLE requires provisioned credentials; use USB for setup");
-        result = ESP_ERR_INVALID_STATE;
-        goto fail;
-    }
+    ESP_LOGW(TAG, "BLE requires enrollment; use USB for setup");
+    result = ESP_ERR_INVALID_STATE;
+    goto fail;
 #endif
 
-    struct wendy_conf_span cert = _provisioned ? wendy_conf_get_certificate()
-                                               : wendy_conf_get_default_certificate();
-    struct wendy_conf_span key = _provisioned ? wendy_conf_get_private_key()
-                                              : wendy_conf_get_default_private_key();
-    if (_provisioned && wendy_operator_auth_init(&_operator_auth, cert.data, cert.size)) {
-        ESP_LOGE(TAG, "device certificate has no valid Wendy device identity");
-        result = ESP_ERR_INVALID_STATE;
-        goto fail;
-    }
+    struct wendy_conf_span cert = wendy_conf_get_default_certificate();
+    struct wendy_conf_span key = wendy_conf_get_default_private_key();
 
     int ret = mbedtls_ctr_drbg_seed(&_ctr_drbg, mbedtls_entropy_func, &_entropy,
                                     (const unsigned char *)pers, strlen(pers));
@@ -246,19 +230,7 @@ esp_err_t wble_tls_session_start(bool enrolled, bool provisioned)
         goto fail;
     }
 
-    if (_provisioned) {
-        struct wendy_conf_span chain = wendy_conf_get_chain_of_trust();
-        ret = mbedtls_x509_crt_parse_der(&_ca_chain, chain.data, chain.size);
-        if (ret != 0) {
-            _log_mbedtls_error("parsing the chain of trust", ret);
-            goto fail;
-        }
-        mbedtls_ssl_conf_ca_chain(&_conf, &_ca_chain, NULL);
-        mbedtls_ssl_conf_authmode(&_conf, MBEDTLS_SSL_VERIFY_REQUIRED);
-        mbedtls_ssl_conf_verify(&_conf, wendy_operator_auth_verify, &_operator_auth);
-    } else {
-        mbedtls_ssl_conf_authmode(&_conf, MBEDTLS_SSL_VERIFY_NONE);
-    }
+    mbedtls_ssl_conf_authmode(&_conf, MBEDTLS_SSL_VERIFY_NONE);
 
     mbedtls_ssl_conf_rng(&_conf, mbedtls_ctr_drbg_random, &_ctr_drbg);
 
@@ -276,9 +248,7 @@ esp_err_t wble_tls_session_start(bool enrolled, bool provisioned)
 
     mbedtls_ssl_set_bio(&_ssl, NULL, _bio_send, _bio_recv, NULL);
 
-    ESP_LOGI(TAG, "handshake starting (%s)",
-             _provisioned ? "same-organization operator certificate required"
-                          : "unprovisioned, no client verification");
+    ESP_LOGI(TAG, "handshake starting (unenrolled, no client verification)");
 
     int64_t deadline = esp_timer_get_time() + HANDSHAKE_TIMEOUT_US;
     size_t heap_before = heap_caps_get_free_size(MALLOC_CAP_8BIT);
@@ -320,10 +290,6 @@ esp_err_t wble_tls_session_start(bool enrolled, bool provisioned)
     if (!_session_allowed()) {
         ESP_LOGW(TAG, "credentials changed during BLE handshake; connection rejected");
         result = ESP_ERR_INVALID_STATE;
-        goto fail;
-    }
-    if (_provisioned && mbedtls_ssl_get_verify_result(&_ssl) != 0) {
-        ESP_LOGW(TAG, "operator certificate verification failed");
         goto fail;
     }
 

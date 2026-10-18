@@ -29,6 +29,11 @@ jobs:
           cmake -S components/wendy_ble/tests -B build-ble-tests -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
           cmake --build build-ble-tests -j2
           ctest --test-dir build-ble-tests --output-on-failure
+      - name: Verify LAN enrollment guards
+        run: |
+          cmake -S components/wendy_server/tests -B build-server-tests -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          cmake --build build-server-tests -j2
+          ctest --test-dir build-server-tests --output-on-failure
       - name: Verify pki-core timestamp and certificate fixtures
         shell: bash
         run: |

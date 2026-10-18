@@ -23,18 +23,15 @@ esp_err_t wendy_ble_host_init(void);
 /// com_get_device_identity() serves to WendyCom, so a scan and an `identity`
 /// command can never disagree.
 ///
-/// Provisioned devices require a trusted operator certificate for the same
-/// organization as their Wendy device identity. Unprovisioned devices serve
-/// the embedded self-signed certificate without client verification when
-/// CONFIG_WENDY_BLE_REQUIRE_MTLS is disabled.
-/// PKI-enrolled devices advertise with mTLS enabled and use their enrolled
+/// Enrolled devices advertise with mTLS enabled and use their enrolled
 /// identity to authenticate same-tenant operators over TLS 1.3. They never
-/// fall back to legacy credentials or anonymous TLS.
+/// fall back to anonymous TLS. Unenrolled devices serve the embedded
+/// self-signed certificate without client verification when
+/// CONFIG_WENDY_BLE_REQUIRE_MTLS is disabled.
 ///
 /// Returns ESP_ERR_INVALID_STATE during identity reset, with PKI enrollment
-/// in a build without PKI support, with invalid legacy credentials, or when
-/// an unprovisioned device requires mTLS. Nothing is advertised on initial
-/// startup in those cases.
+/// in a build without PKI support, or when an unenrolled device requires
+/// mTLS. Nothing is advertised on initial startup in those cases.
 esp_err_t wendy_ble_start(void);
 
 #ifdef __cplusplus

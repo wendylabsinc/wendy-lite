@@ -12,9 +12,6 @@ PB_BIND(WendyConfWifiNetwork, WendyConfWifiNetwork, AUTO)
 PB_BIND(WendyConfWifi, WendyConfWifi, AUTO)
 
 
-PB_BIND(WendyConfCloudProvisioning, WendyConfCloudProvisioning, AUTO)
-
-
 PB_BIND(WendyConfEnrollment, WendyConfEnrollment, 2)
 
 

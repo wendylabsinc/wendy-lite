@@ -18,7 +18,7 @@ typedef enum {
 /**
  * Start the cloud connection task.
  * Must be called after nvs_flash_init() and WiFi up.
- * Returns ESP_ERR_INVALID_STATE if the device is not cloud-provisioned.
+ * Returns ESP_ERR_INVALID_STATE if the device has no enrollment configuration.
  */
 esp_err_t wendy_cloud_start(void);
 

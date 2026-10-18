@@ -174,6 +174,20 @@ static const uint8_t enrollment_fields[] = {
     0x22, 2, 0x0a, 0,
 };
 
+/* Model configuration persisted by an older firmware, bypassing upload checks. */
+static void load_stored_config(const uint8_t *encoded, size_t size)
+{
+    _invalidate_cache();
+    s_enrollment_required = false; /* A new boot starts with no cached policy. */
+    assert(size + HEADER_LEN <= sizeof flash);
+    memset(flash, 0xff, sizeof flash);
+    memcpy(flash, MAGIC, MAGIC_LEN);
+    for (size_t i = 0; i < 4; i++)
+        flash[MAGIC_LEN + i] = (size >> (8 * i)) & 0xff;
+    memcpy(flash + HEADER_LEN, encoded, size);
+    _load_conf();
+}
+
 static void load_reset_fixture(bool keep_fields)
 {
     uint8_t encoded[sizeof retained_fields + sizeof enrollment_fields];
@@ -193,17 +207,15 @@ static void load_reset_fixture(bool keep_fields)
     }
     memcpy(encoded + size, enrollment_fields, sizeof enrollment_fields);
     size += sizeof enrollment_fields;
-    assert(wendy_conf_write(encoded, size, WENDY_CONF_WRITE_MODE_REPLACE) == ESP_OK);
-    _load_conf();
-    assert(wendy_conf_has_enrollment() && wendy_conf_is_provisioned());
+    load_stored_config(encoded, size);
+    assert(wendy_conf_has_enrollment());
 }
 
 static void assert_reset_config(bool keep_fields)
 {
     assert(s_cache.valid);
     assert(!durable_journal_present);
-    assert(!wendy_conf_has_enrollment() && !wendy_conf_is_provisioned());
-    assert(!wendy_conf_get_enrolled());
+    assert(!wendy_conf_has_enrollment());
     assert(s_cache.pb_size == (keep_fields ? sizeof retained_fields : 0));
     if (keep_fields) {
         assert(!memcmp(s_cache.pb_data, retained_fields, sizeof retained_fields));
@@ -280,7 +292,7 @@ static void test_clear_enrollment_journal(void)
         fail_journal_commit_at = failure == 3 ? journal_commits + 1 : 0;
         unsigned erases = erase_calls, writes = write_calls;
         assert(wendy_conf_clear_enrollment() == ESP_FAIL);
-        assert(wendy_conf_has_enrollment() && wendy_conf_is_provisioned());
+        assert(wendy_conf_has_enrollment());
         assert(!durable_journal_present && !journal_open);
         assert(erase_calls == erases && write_calls == writes);
         fail_journal_open = fail_journal_read = fail_journal_set = false;
@@ -297,7 +309,7 @@ static void test_clear_enrollment_journal(void)
         fail_journal_erase = failure == 0;
         fail_journal_commit_at = failure == 1 ? journal_commits + 2 : 0;
         assert(wendy_conf_clear_enrollment() == ESP_FAIL);
-        assert(durable_journal_present && !wendy_conf_has_enrollment());
+        assert(durable_journal_present && wendy_conf_has_enrollment());
         unsigned erases = erase_calls, writes = write_calls;
         fail_journal_erase = false;
         fail_journal_commit_at = 0;
@@ -342,6 +354,61 @@ static void test_clear_enrollment_journal(void)
     durable_journal_size += sizeof enrollment_fields;
     assert(wendy_conf_clear_enrollment() == ESP_ERR_INVALID_STATE);
     assert(erase_calls == erases && write_calls == writes);
+}
+
+static void test_retired_credentials(void)
+{
+    const uint8_t retired[] = {0x1a, 11, 0x08, 1, 0x2a, 1, 'k', 0x32, 1, 'c', 0x3a, 1, 'r'};
+    const uint8_t wifi_update[] = {0x12, 0};
+    load_stored_config(retired, sizeof retired);
+    /* Old credentials cannot authenticate, and cannot enable anonymous TLS. */
+    assert(wendy_conf_has_enrollment());
+    WendyConfEnrollment cfg;
+    struct wendy_conf_enrollment_data data;
+    assert(wendy_conf_copy_enrollment(&cfg, &data) == ESP_ERR_INVALID_STATE);
+    assert(!data.storage);
+    unsigned erases = erase_calls, writes = write_calls;
+    assert(wendy_conf_write(retired, sizeof retired, WENDY_CONF_WRITE_MODE_REPLACE) == ESP_ERR_INVALID_ARG);
+    assert(wendy_conf_write(retired, sizeof retired, WENDY_CONF_WRITE_MODE_UPDATE) == ESP_ERR_INVALID_ARG);
+    assert(erase_calls == erases && write_calls == writes);
+    assert(wendy_conf_has_enrollment());
+    /* Wi-Fi updates preserve old fields and their authentication requirement. */
+    assert(wendy_conf_write(wifi_update, sizeof wifi_update, WENDY_CONF_WRITE_MODE_UPDATE) == ESP_OK);
+    assert(!wendy_conf_is_current() && wendy_conf_has_enrollment());
+    _load_conf();
+    assert(wendy_conf_has_enrollment());
+    assert(wendy_conf_clear_enrollment() == ESP_OK);
+    assert(!wendy_conf_has_enrollment());
+    assert(s_cache.pb_size == sizeof wifi_update);
+    assert(!memcmp(s_cache.pb_data, wifi_update, sizeof wifi_update));
+}
+
+static void test_enrollment_policy_survives_writes(void)
+{
+    const uint8_t wifi_only[] = {0x12, 0};
+    for (int failure = 0; failure < 2; failure++) {
+        load_stored_config(wifi_only, sizeof wifi_only);
+        assert(!wendy_conf_has_enrollment());
+        fail_erase = failure != 0;
+        assert(write_config("root", 4, NULL, 0) == (failure ? ESP_FAIL : ESP_OK));
+        /* Even the first enrollment upload must revoke existing anonymous access. */
+        assert(!wendy_conf_is_current() && wendy_conf_has_enrollment());
+        fail_erase = false;
+        _load_conf();
+        assert(wendy_conf_has_enrollment());
+        assert(wendy_conf_clear_enrollment() == ESP_OK);
+        assert(!wendy_conf_has_enrollment());
+    }
+    assert(write_config("root", 4, NULL, 0) == ESP_OK);
+    _load_conf();
+    fail_erase = true;
+    assert(wendy_conf_write(wifi_only, sizeof wifi_only, WENDY_CONF_WRITE_MODE_UPDATE) == ESP_FAIL);
+    assert(!wendy_conf_is_current() && wendy_conf_has_enrollment());
+    fail_erase = false;
+    _load_conf();
+    assert(wendy_conf_has_enrollment());
+    assert(wendy_conf_clear_enrollment() == ESP_OK);
+    assert(!wendy_conf_has_enrollment());
 }
 
 int main(void)
@@ -393,5 +460,10 @@ int main(void)
     free(large);
     test_clear_enrollment();
     test_clear_enrollment_journal();
+    /* Clear the deliberately corrupt journal from the preceding negative test. */
+    durable_journal_present = false;
+    durable_journal_size = 0;
+    test_retired_credentials();
+    test_enrollment_policy_survives_writes();
     puts("enrollment configuration persistence tests passed");
 }

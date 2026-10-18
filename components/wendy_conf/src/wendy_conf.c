@@ -24,6 +24,8 @@
 #define MAGIC_LEN  4
 #define HEADER_LEN 8
 #define RECOVERY_MAGIC "WCR1"
+/* The removed imported-credential field remains reserved on the wire. */
+#define RETIRED_ENROLLMENT_TAG 3
 
 #define WENDY_CONF_PART_SUBTYPE ((esp_partition_subtype_t)0x40)
 
@@ -45,10 +47,6 @@ struct conf_cache {
     struct wendy_conf_span      device_name;
     struct wendy_conf_span      network_ssid;
     struct wendy_conf_span      network_password;
-    struct wendy_conf_span      cloud_host;
-    struct wendy_conf_span      key_der;
-    struct wendy_conf_span      cert_der;
-    struct wendy_conf_span      chain_der;
     struct wendy_conf_span      enrollment_time;
     struct wendy_conf_span      device_roots, tsa_roots, https_roots;
 };
@@ -58,6 +56,9 @@ struct conf_cache {
 
 static pthread_mutex_t s_cache_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct conf_cache s_cache = CONF_CACHE_INIT;
+/* Keep authentication required while configuration is replaced or unreadable.
+ * Only a completed enrollment reset may clear this during the current boot. */
+static bool s_enrollment_required;
 
 /* 12 hex digits plus the terminator. Empty until built. */
 static char s_device_id[13];
@@ -71,6 +72,8 @@ static char s_resolved_device_name[CONFIG_WENDY_DEVICE_NAME_BUF_SIZE];
 
 
 //--- functions ---//
+
+static bool _scan_root_fields(const uint8_t *data, size_t size, uint32_t *mask);
 
 static void _build_device_id(void)
 {
@@ -203,16 +206,6 @@ static void _load_conf(void)
     s_cache.conf.wifi.networks[0].password.funcs.decode = _capture_span;
     s_cache.conf.wifi.networks[0].password.arg          = &s_cache.network_password;
 
-    s_cache.conf.provisioning.cloud_host.funcs.decode = _capture_span;
-    s_cache.conf.provisioning.cloud_host.arg          = &s_cache.cloud_host;
-
-    s_cache.conf.provisioning.key.funcs.decode   = _capture_span;
-    s_cache.conf.provisioning.key.arg            = &s_cache.key_der;
-    s_cache.conf.provisioning.cert.funcs.decode  = _capture_span;
-    s_cache.conf.provisioning.cert.arg           = &s_cache.cert_der;
-    s_cache.conf.provisioning.chain.funcs.decode = _capture_span;
-    s_cache.conf.provisioning.chain.arg          = &s_cache.chain_der;
-
     s_cache.conf.enrollment.signed_time.funcs.decode = _capture_span;
     s_cache.conf.enrollment.signed_time.arg = &s_cache.enrollment_time;
     s_cache.conf.enrollment.device_roots.funcs.decode = _capture_span;
@@ -222,7 +215,9 @@ static void _load_conf(void)
     s_cache.conf.enrollment.https_roots.funcs.decode = _capture_span;
     s_cache.conf.enrollment.https_roots.arg = &s_cache.https_roots;
     pb_istream_t stream = pb_istream_from_buffer(data + HEADER_LEN, pb_size);
-    bool ok = pb_decode_noinit(&stream, WendyConf_fields, &s_cache.conf);
+    uint32_t fields;
+    bool ok = pb_decode_noinit(&stream, WendyConf_fields, &s_cache.conf) &&
+              _scan_root_fields(data + HEADER_LEN, pb_size, &fields);
 
     if (!ok) {
         ESP_LOGE(TAG, "decode failed: %s", PB_GET_ERROR(&stream));
@@ -235,6 +230,10 @@ static void _load_conf(void)
     s_cache.pb_data = data + HEADER_LEN;
     s_cache.pb_size = pb_size;
     s_cache.valid   = true;
+    bool retired = (fields & (1u << RETIRED_ENROLLMENT_TAG)) != 0;
+    s_enrollment_required |= s_cache.conf.has_enrollment || retired;
+    if (retired && !s_cache.conf.has_enrollment)
+        ESP_LOGW(TAG, "Retired credentials require enrollment or reset over USB");
     ESP_LOGI(TAG, "loaded %" PRIu32 " bytes", pb_size);
 }
 
@@ -316,6 +315,14 @@ static esp_err_t _write_conf(const void *pb_data, size_t pb_size, enum wendy_con
     if (!pb_data)
         return ESP_ERR_INVALID_ARG;
 
+    uint32_t fields;
+    if (!_scan_root_fields(pb_data, pb_size, &fields))
+        return ESP_ERR_INVALID_ARG;
+    if (fields & (1u << RETIRED_ENROLLMENT_TAG)) {
+        ESP_LOGE(TAG, "Imported credentials are unsupported; enroll over USB");
+        return ESP_ERR_INVALID_ARG;
+    }
+
     // Check enrollment sizes and authorization before replacing persisted data.
     WendyConf tmp = WendyConf_init_zero;
     struct wendy_conf_span spans[4] = {0};
@@ -383,6 +390,7 @@ static esp_err_t _write_conf(const void *pb_data, size_t pb_size, enum wendy_con
 
     // The stored conf is about to be destroyed; make sure no getter can
     // return a view into it, even if the erase or write fails below.
+    s_enrollment_required |= tmp.has_enrollment;
     _invalidate_cache();
 
     esp_err_t err;
@@ -460,52 +468,10 @@ WendyConfWifiSecurity wendy_conf_get_network_security(void)
     return s_cache.conf.wifi.networks[0].security;
 }
 
-bool wendy_conf_get_enrolled(void)
-{
-    return s_cache.conf.provisioning.enrolled;
-}
-
-int32_t wendy_conf_get_org_id(void)
-{
-    return s_cache.conf.provisioning.org_id;
-}
-
-int32_t wendy_conf_get_asset_id(void)
-{
-    return s_cache.conf.provisioning.asset_id;
-}
-
-struct wendy_conf_span wendy_conf_get_cloud_host(void)
-{
-    return s_cache.cloud_host;
-}
-
-struct wendy_conf_span wendy_conf_get_private_key(void)
-{
-    return s_cache.key_der;
-}
-
-struct wendy_conf_span wendy_conf_get_certificate(void)
-{
-    return s_cache.cert_der;
-}
-
-struct wendy_conf_span wendy_conf_get_chain_of_trust(void)
-{
-    return s_cache.chain_der;
-}
-
 extern const uint8_t default_cert_der_start[] asm("_binary_default_cert_der_start");
 extern const uint8_t default_cert_der_end[]   asm("_binary_default_cert_der_end");
 extern const uint8_t default_key_der_start[]  asm("_binary_default_key_der_start");
 extern const uint8_t default_key_der_end[]    asm("_binary_default_key_der_end");
-
-bool wendy_conf_is_provisioned(void)
-{
-    return s_cache.key_der.size > 0
-        && s_cache.cert_der.size > 0
-        && s_cache.chain_der.size > 0;
-}
 
 struct wendy_conf_span wendy_conf_get_default_certificate(void)
 {
@@ -559,7 +525,7 @@ esp_err_t wendy_conf_clear_enrollment(void)
     if (result != ESP_OK)
         goto done;
     opened = true;
-    const uint32_t keep_mask = ~((1u << WendyConf_provisioning_tag) |
+    const uint32_t keep_mask = ~((1u << RETIRED_ENROLLMENT_TAG) |
                                  (1u << WendyConf_enrollment_tag));
     size_t journal_size = 0, kept_size = 0;
     result = nvs_get_blob(recovery, "retained", NULL, &journal_size);
@@ -645,6 +611,8 @@ done:
     if (opened)
         nvs_close(recovery);
     free(journal);
+    if (result == ESP_OK)
+        s_enrollment_required = false;
     pthread_mutex_unlock(&s_cache_lock);
     return result;
 }
@@ -697,7 +665,15 @@ done:
 bool wendy_conf_has_enrollment(void)
 {
     pthread_mutex_lock(&s_cache_lock);
-    bool present = s_cache.valid && s_cache.conf.has_enrollment;
+    bool present = s_enrollment_required;
     pthread_mutex_unlock(&s_cache_lock);
     return present;
+}
+
+bool wendy_conf_is_current(void)
+{
+    pthread_mutex_lock(&s_cache_lock);
+    bool current = s_cache.valid;
+    pthread_mutex_unlock(&s_cache_lock);
+    return current;
 }

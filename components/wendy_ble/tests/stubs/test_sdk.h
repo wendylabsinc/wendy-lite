@@ -57,21 +57,13 @@ static inline int xTaskCreatePinnedToCore(void (*fn)(void *), const char *name,
 }
 
 struct wendy_conf_span { const void *data; size_t size; };
-struct wendy_operator_auth { int unused; };
-extern bool test_enrolled, test_provisioned, test_reset, test_invalid_cert;
-extern unsigned test_auth_calls;
+extern bool test_enrolled, test_reset, test_current;
 static inline bool wendy_conf_has_enrollment(void) { return test_enrolled; }
-static inline bool wendy_conf_is_provisioned(void) { return test_provisioned; }
+static inline bool wendy_conf_is_current(void) { return test_current; }
 static inline bool wendy_pki_reset_in_progress(void) { return test_reset; }
-static inline struct wendy_conf_span wendy_conf_get_certificate(void) {
-    return (struct wendy_conf_span){ test_provisioned ? "legacy-cert" : NULL,
-                                    test_provisioned ? 11 : 0 };
-}
 static inline const char *wendy_conf_get_device_id(void) { return "lite-123"; }
 static inline const char *wendy_conf_get_resolved_device_name(void) { return "wendy-lite-123"; }
 static inline const char *wendy_conf_get_resolved_device_display_name(void) { return "Test Lite"; }
-static inline int wendy_operator_auth_init(struct wendy_operator_auth *auth,
-        const void *cert, size_t len) { ++test_auth_calls; return test_invalid_cert; }
 
 typedef struct { uint8_t type; } ble_uuid_t;
 typedef struct { ble_uuid_t u; uint8_t value[16]; } ble_uuid128_t;

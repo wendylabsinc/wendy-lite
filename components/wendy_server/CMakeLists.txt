@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "src/wendy_server.c"
+        "src/wendy_server_tls.c"
     INCLUDE_DIRS
         "include"
     REQUIRES

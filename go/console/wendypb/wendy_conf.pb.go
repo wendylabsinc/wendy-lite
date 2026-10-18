@@ -194,99 +194,6 @@ func (x *WendyConfWifi) GetNetworks() []*WendyConfWifiNetwork {
 	return nil
 }
 
-// Optional — absent means device boots unenrolled.
-type WendyConfCloudProvisioning struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Enrolled      bool                   `protobuf:"varint,1,opt,name=enrolled,proto3" json:"enrolled,omitempty"`
-	CloudHost     string                 `protobuf:"bytes,2,opt,name=cloud_host,json=cloudHost,proto3" json:"cloud_host,omitempty"`
-	OrgId         int32                  `protobuf:"varint,3,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"`
-	AssetId       int32                  `protobuf:"varint,4,opt,name=asset_id,json=assetId,proto3" json:"asset_id,omitempty"`
-	Key           []byte                 `protobuf:"bytes,5,opt,name=key,proto3" json:"key,omitempty"`
-	Cert          []byte                 `protobuf:"bytes,6,opt,name=cert,proto3" json:"cert,omitempty"`
-	Chain         []byte                 `protobuf:"bytes,7,opt,name=chain,proto3" json:"chain,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *WendyConfCloudProvisioning) Reset() {
-	*x = WendyConfCloudProvisioning{}
-	mi := &file_wendy_conf_proto_msgTypes[2]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *WendyConfCloudProvisioning) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*WendyConfCloudProvisioning) ProtoMessage() {}
-
-func (x *WendyConfCloudProvisioning) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_conf_proto_msgTypes[2]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use WendyConfCloudProvisioning.ProtoReflect.Descriptor instead.
-func (*WendyConfCloudProvisioning) Descriptor() ([]byte, []int) {
-	return file_wendy_conf_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *WendyConfCloudProvisioning) GetEnrolled() bool {
-	if x != nil {
-		return x.Enrolled
-	}
-	return false
-}
-
-func (x *WendyConfCloudProvisioning) GetCloudHost() string {
-	if x != nil {
-		return x.CloudHost
-	}
-	return ""
-}
-
-func (x *WendyConfCloudProvisioning) GetOrgId() int32 {
-	if x != nil {
-		return x.OrgId
-	}
-	return 0
-}
-
-func (x *WendyConfCloudProvisioning) GetAssetId() int32 {
-	if x != nil {
-		return x.AssetId
-	}
-	return 0
-}
-
-func (x *WendyConfCloudProvisioning) GetKey() []byte {
-	if x != nil {
-		return x.Key
-	}
-	return nil
-}
-
-func (x *WendyConfCloudProvisioning) GetCert() []byte {
-	if x != nil {
-		return x.Cert
-	}
-	return nil
-}
-
-func (x *WendyConfCloudProvisioning) GetChain() []byte {
-	if x != nil {
-		return x.Chain
-	}
-	return nil
-}
-
 // Operator-authorized Tier C bootstrap. Contains no device private key.
 type WendyConfEnrollment struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
@@ -310,7 +217,7 @@ type WendyConfEnrollment struct {
 
 func (x *WendyConfEnrollment) Reset() {
 	*x = WendyConfEnrollment{}
-	mi := &file_wendy_conf_proto_msgTypes[3]
+	mi := &file_wendy_conf_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -322,7 +229,7 @@ func (x *WendyConfEnrollment) String() string {
 func (*WendyConfEnrollment) ProtoMessage() {}
 
 func (x *WendyConfEnrollment) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_conf_proto_msgTypes[3]
+	mi := &file_wendy_conf_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -335,7 +242,7 @@ func (x *WendyConfEnrollment) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WendyConfEnrollment.ProtoReflect.Descriptor instead.
 func (*WendyConfEnrollment) Descriptor() ([]byte, []int) {
-	return file_wendy_conf_proto_rawDescGZIP(), []int{3}
+	return file_wendy_conf_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *WendyConfEnrollment) GetTenantId() string {
@@ -423,18 +330,17 @@ func (x *WendyConfEnrollment) GetProvisionTrust() bool {
 }
 
 type WendyConf struct {
-	state         protoimpl.MessageState      `protogen:"open.v1"`
-	DeviceName    *string                     `protobuf:"bytes,1,opt,name=device_name,json=deviceName,proto3,oneof" json:"device_name,omitempty"`
-	Wifi          *WendyConfWifi              `protobuf:"bytes,2,opt,name=wifi,proto3" json:"wifi,omitempty"`
-	Provisioning  *WendyConfCloudProvisioning `protobuf:"bytes,3,opt,name=provisioning,proto3" json:"provisioning,omitempty"`
-	Enrollment    *WendyConfEnrollment        `protobuf:"bytes,4,opt,name=enrollment,proto3" json:"enrollment,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	DeviceName    *string                `protobuf:"bytes,1,opt,name=device_name,json=deviceName,proto3,oneof" json:"device_name,omitempty"`
+	Wifi          *WendyConfWifi         `protobuf:"bytes,2,opt,name=wifi,proto3" json:"wifi,omitempty"`
+	Enrollment    *WendyConfEnrollment   `protobuf:"bytes,4,opt,name=enrollment,proto3" json:"enrollment,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WendyConf) Reset() {
 	*x = WendyConf{}
-	mi := &file_wendy_conf_proto_msgTypes[4]
+	mi := &file_wendy_conf_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -446,7 +352,7 @@ func (x *WendyConf) String() string {
 func (*WendyConf) ProtoMessage() {}
 
 func (x *WendyConf) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_conf_proto_msgTypes[4]
+	mi := &file_wendy_conf_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -459,7 +365,7 @@ func (x *WendyConf) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WendyConf.ProtoReflect.Descriptor instead.
 func (*WendyConf) Descriptor() ([]byte, []int) {
-	return file_wendy_conf_proto_rawDescGZIP(), []int{4}
+	return file_wendy_conf_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *WendyConf) GetDeviceName() string {
@@ -472,13 +378,6 @@ func (x *WendyConf) GetDeviceName() string {
 func (x *WendyConf) GetWifi() *WendyConfWifi {
 	if x != nil {
 		return x.Wifi
-	}
-	return nil
-}
-
-func (x *WendyConf) GetProvisioning() *WendyConfCloudProvisioning {
-	if x != nil {
-		return x.Provisioning
 	}
 	return nil
 }
@@ -502,16 +401,7 @@ const file_wendy_conf_proto_rawDesc = "" +
 	"\x06hidden\x18\x04 \x01(\bR\x06hidden\x122\n" +
 	"\bsecurity\x18\x05 \x01(\x0e2\x16.WendyConfWifiSecurityR\bsecurity\"B\n" +
 	"\rWendyConfWifi\x121\n" +
-	"\bnetworks\x18\x01 \x03(\v2\x15.WendyConfWifiNetworkR\bnetworks\"\xc5\x01\n" +
-	"\x1aWendyConfCloudProvisioning\x12\x1a\n" +
-	"\benrolled\x18\x01 \x01(\bR\benrolled\x12\x1d\n" +
-	"\n" +
-	"cloud_host\x18\x02 \x01(\tR\tcloudHost\x12\x15\n" +
-	"\x06org_id\x18\x03 \x01(\x05R\x05orgId\x12\x19\n" +
-	"\basset_id\x18\x04 \x01(\x05R\aassetId\x12\x10\n" +
-	"\x03key\x18\x05 \x01(\fR\x03key\x12\x12\n" +
-	"\x04cert\x18\x06 \x01(\fR\x04cert\x12\x14\n" +
-	"\x05chain\x18\a \x01(\fR\x05chain\"\x86\x03\n" +
+	"\bnetworks\x18\x01 \x03(\v2\x15.WendyConfWifiNetworkR\bnetworks\"\x86\x03\n" +
 	"\x13WendyConfEnrollment\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1b\n" +
 	"\tdevice_id\x18\x02 \x01(\tR\bdeviceId\x12\x14\n" +
@@ -529,16 +419,15 @@ const file_wendy_conf_proto_rawDesc = "" +
 	" \x01(\fR\btsaRoots\x12\x1f\n" +
 	"\vhttps_roots\x18\v \x01(\fR\n" +
 	"httpsRoots\x12'\n" +
-	"\x0fprovision_trust\x18\f \x01(\bR\x0eprovisionTrust\"\xdc\x01\n" +
+	"\x0fprovision_trust\x18\f \x01(\bR\x0eprovisionTrust\"\xaf\x01\n" +
 	"\tWendyConf\x12$\n" +
 	"\vdevice_name\x18\x01 \x01(\tH\x00R\n" +
 	"deviceName\x88\x01\x01\x12\"\n" +
-	"\x04wifi\x18\x02 \x01(\v2\x0e.WendyConfWifiR\x04wifi\x12?\n" +
-	"\fprovisioning\x18\x03 \x01(\v2\x1b.WendyConfCloudProvisioningR\fprovisioning\x124\n" +
+	"\x04wifi\x18\x02 \x01(\v2\x0e.WendyConfWifiR\x04wifi\x124\n" +
 	"\n" +
 	"enrollment\x18\x04 \x01(\v2\x14.WendyConfEnrollmentR\n" +
 	"enrollmentB\x0e\n" +
-	"\f_device_name*\xaa\x01\n" +
+	"\f_device_nameJ\x04\b\x03\x10\x04R\fprovisioning*\xaa\x01\n" +
 	"\x15WendyConfWifiSecurity\x12(\n" +
 	"$WENDY_CONF_WIFI_SECURITY_UNSPECIFIED\x10\x00\x12!\n" +
 	"\x1dWENDY_CONF_WIFI_SECURITY_OPEN\x10\x01\x12!\n" +
@@ -558,26 +447,24 @@ func file_wendy_conf_proto_rawDescGZIP() []byte {
 }
 
 var file_wendy_conf_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_wendy_conf_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_wendy_conf_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_wendy_conf_proto_goTypes = []any{
-	(WendyConfWifiSecurity)(0),         // 0: WendyConfWifiSecurity
-	(*WendyConfWifiNetwork)(nil),       // 1: WendyConfWifiNetwork
-	(*WendyConfWifi)(nil),              // 2: WendyConfWifi
-	(*WendyConfCloudProvisioning)(nil), // 3: WendyConfCloudProvisioning
-	(*WendyConfEnrollment)(nil),        // 4: WendyConfEnrollment
-	(*WendyConf)(nil),                  // 5: WendyConf
+	(WendyConfWifiSecurity)(0),   // 0: WendyConfWifiSecurity
+	(*WendyConfWifiNetwork)(nil), // 1: WendyConfWifiNetwork
+	(*WendyConfWifi)(nil),        // 2: WendyConfWifi
+	(*WendyConfEnrollment)(nil),  // 3: WendyConfEnrollment
+	(*WendyConf)(nil),            // 4: WendyConf
 }
 var file_wendy_conf_proto_depIdxs = []int32{
 	0, // 0: WendyConfWifiNetwork.security:type_name -> WendyConfWifiSecurity
 	1, // 1: WendyConfWifi.networks:type_name -> WendyConfWifiNetwork
 	2, // 2: WendyConf.wifi:type_name -> WendyConfWifi
-	3, // 3: WendyConf.provisioning:type_name -> WendyConfCloudProvisioning
-	4, // 4: WendyConf.enrollment:type_name -> WendyConfEnrollment
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	3, // 3: WendyConf.enrollment:type_name -> WendyConfEnrollment
+	4, // [4:4] is the sub-list for method output_type
+	4, // [4:4] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_wendy_conf_proto_init() }
@@ -585,14 +472,14 @@ func file_wendy_conf_proto_init() {
 	if File_wendy_conf_proto != nil {
 		return
 	}
-	file_wendy_conf_proto_msgTypes[4].OneofWrappers = []any{}
+	file_wendy_conf_proto_msgTypes[3].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wendy_conf_proto_rawDesc), len(file_wendy_conf_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   5,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
