@@ -277,10 +277,16 @@ wendy device camera view --device wendy-lite:<device-hostname>.local
 wendy device audio listen --device wendy-lite:<device-hostname>.local --id 1
 ```
 
+The optional SUB3 800×480 RGB display shows a native Wendy status page with
+uptime, free PSRAM and Wi-Fi connection status. It uses one 768,000-byte PSRAM
+framebuffer and refreshes status once per second. Touch input is not enabled.
+To omit display startup, disable `CONFIG_WENDY_DISPLAY_ESP32S31_KORVO_1` in
+this build's `menuconfig` and rebuild.
+
 To omit onboard sensor startup, disable
 `CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1` in this build's `menuconfig` and rebuild.
-The generic S31 profile does not enable these peripherals. Display, speaker
-playback, microSD, USB OTG and Ethernet are not initialized by the Korvo profile.
+The generic S31 profile does not enable these peripherals. Speaker playback,
+microSD, USB OTG and Ethernet are not initialized by the Korvo profile.
 The generic S31 profile keeps the USB Serial/JTAG management transport; the
 Korvo profile selects the UART bridge. Neither enables USB high-speed OTG.
 
@@ -337,7 +343,14 @@ errors. Both microphone channels had nonzero samples without clipping. Two
 unfinished camera frames were cancelled during unsubscribe. These counts reflect
 the 115200-baud UART limit, not the sensors' full capture rates.
 
-The benchmark build measured the following with sensors initialized but idle:
+The SUB3 display was subsequently enabled and its Wendy status page and updating
+uptime were visually confirmed on the board. A repeated 30.9-second UART test
+with the display active validated 21 VGA JPEGs and 69 stereo PCM blocks, with
+no ordering, timestamp or payload errors. Camera restart and management pings
+also passed while the display continued refreshing.
+
+The benchmark build measured the following with sensors initialized but idle,
+before display support was enabled:
 
 | Check | Measurement |
 |---|---|
@@ -351,8 +364,8 @@ Copy contents and convolution outputs matched their references. These are
 single-run kernel measurements, not application throughput or latency guarantees.
 The generic S31 profile remains build-tested only. Wi-Fi streaming, enrollment,
 BLE connections, OTA rollback and the SC101IOT camera path still need hardware
-validation. Display, playback and other uninitialized peripherals are outside
-this profile's tested scope.
+validation. Playback and other uninitialized peripherals are outside this
+profile's tested scope.
 
 ### ESP32-P4 notes
 
