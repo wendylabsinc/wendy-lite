@@ -28,6 +28,10 @@ static bool distinct_issued_certificate, stored_is_issued, pending_is_issued;
 static bool issuance_received, fail_post_issue_time;
 static time_t issued_not_before, issued_expiry;
 static int timestamp_calls;
+static uint64_t mesh_reserved;
+static int mesh_connect_calls;
+static bool mesh_tls_failure;
+static int64_t monotonic_us, mesh_connect_delay;
 static const char *response_authority;
 static const char *fail_set;
 static int authority_writes, lite_accepts, operator_accepts, lan_accepts;
@@ -63,7 +67,7 @@ int settimeofday(const struct timeval *tv, const struct timezone *tz)
     clock_now = tv->tv_sec;
     return 0;
 }
-int64_t esp_timer_get_time(void) { return 0; }
+int64_t esp_timer_get_time(void) { return monotonic_us; }
 void esp_fill_random(void *out, size_t size) { memset(out, ++random_counter, size); }
 esp_err_t nvs_flash_init_partition(const char *p) { return ESP_OK; }
 esp_err_t nvs_open_from_partition(const char *p, const char *n, int mode, nvs_handle_t *h)
@@ -115,7 +119,8 @@ esp_err_t nvs_get_blob(nvs_handle_t h, const char *name, void *out, size_t *size
 {
     const void *data;
     size_t n;
-    if (!strcmp(name, "nonce") && have_nonce) { data = stored_nonce; n = sizeof stored_nonce; }
+    if (!strcmp(name, "mesh_revision") && mesh_reserved) { data=&mesh_reserved; n=sizeof mesh_reserved; }
+    else if (!strcmp(name, "nonce") && have_nonce) { data = stored_nonce; n = sizeof stored_nonce; }
     else if (!strcmp(name, "key") && have_key)
     {
         data = key_der;
@@ -150,6 +155,10 @@ esp_err_t nvs_get_blob(nvs_handle_t h, const char *name, void *out, size_t *size
 esp_err_t nvs_set_blob(nvs_handle_t h, const char *name, const void *data, size_t size)
 {
     if (fail_set && !strcmp(name, fail_set)) return ESP_FAIL;
+    if (!strcmp(name, "mesh_revision")) {
+        assert(size==sizeof mesh_reserved);
+        memcpy(&mesh_reserved,data,size);
+    }
     if (!strcmp(name, "nonce")) {
         assert(size == sizeof stored_nonce);
         memcpy(stored_nonce, data, size);
@@ -197,6 +206,7 @@ esp_err_t wendy_conf_copy_enrollment(WendyConfEnrollment *out,
 }
 
 const char *wendy_conf_get_device_id(void) { return "441bf6804824"; }
+bool wendy_conf_is_current(void) { return !config_cleared; }
 esp_err_t wendy_conf_clear_enrollment(void)
 {
     clear_calls++;
@@ -305,6 +315,7 @@ void cJSON_Delete(cJSON *o) { free(o); }
 
 static void reset(void)
 {
+    mesh_reserved=0;mesh_connect_calls=0;monotonic_us=mesh_connect_delay=0;mesh_tls_failure=false;
     pending_certificate = issuance_success = false;
     strcpy(lite_authority, "old-authority-pem");
     pending_authority[0] = 0;
@@ -659,6 +670,73 @@ static void test_stream_stored_identity(void)
     assert(!stream_accepts);
 }
 
+#if CONFIG_WENDY_MESH_LEAF
+int pki_tls_mesh_connect(const char* host, unsigned port, const char* tenant, const char* device,
+    const char* router, const uint8_t* key, size_t key_size, const char* cert,
+    struct wendy_conf_span roots, wendy_pki_connection** out)
+{
+    mesh_connect_calls++;
+    assert(!strcmp(tenant, config.tenant_id) && !strcmp(device, config.device_id));
+    if (mesh_tls_failure)
+        return -1;
+    assert(roots.data == wendy_pki_device_roots_start && strcmp(device, router));
+    memset(&stream_connection, 0, sizeof stream_connection);
+    stream_connection.operator_expires = signed_now + 3600;
+    monotonic_us += mesh_connect_delay;
+    *out = &stream_connection;
+    return 0;
+}
+static void test_mesh_identity(void)
+{
+    const char* router = "12345678-9abc-4def-8123-000000000003";
+    wendy_pki_connection* connection = NULL;
+    struct wendy_pki_mesh_identity identity;
+    reset();
+    assert(wendy_pki_mesh_connect("router", 43024, router, &connection, &identity) != ESP_OK);
+    assert(!timestamp_calls && !mesh_connect_calls);
+    strcpy(config.device_id, "12345678-9abc-4def-8123-000000000002");
+    assert(wendy_pki_mesh_connect("router", 43024, router, &connection, &identity) == ESP_OK);
+    assert(
+        identity.revision_first == 1 && identity.revision_limit == 1025 && mesh_reserved == 1024);
+    assert(identity.verified_seconds == signed_now && identity.verified_monotonic_us == 0
+        && timestamp_calls == 1);
+    assert(connection->mesh_deadline_us == INT64_C(300000000));
+    assert(wendy_pki_mesh_connect("router", 43024, router, &connection, &identity) == ESP_OK);
+    assert(identity.revision_first == 1025 && identity.revision_limit == 2049
+        && mesh_reserved == 2048);
+    int calls = mesh_connect_calls;
+    fail_set = "mesh_revision";
+    assert(wendy_pki_mesh_connect("router", 43024, router, &connection, &identity) != ESP_OK
+        && mesh_connect_calls == ++calls && connection == NULL);
+    fail_set = NULL;
+    fail_commit = commit_calls + 1;
+    assert(wendy_pki_mesh_connect("router", 43024, router, &connection, &identity) != ESP_OK
+        && mesh_connect_calls == ++calls && connection == NULL);
+    fail_commit = 0;
+    issuance_received = fail_post_issue_time = true;
+    uint64_t reserved = mesh_reserved;
+    assert(wendy_pki_mesh_connect("router", 43024, router, &connection, &identity) != ESP_OK
+        && mesh_connect_calls == calls && mesh_reserved == reserved);
+    issuance_received = fail_post_issue_time = false;
+    mesh_reserved = UINT64_MAX - 500;
+    assert(wendy_pki_mesh_connect("router", 43024, router, &connection, &identity) != ESP_OK
+        && mesh_connect_calls == ++calls && connection == NULL);
+    mesh_reserved = 0;
+    mesh_tls_failure = true;
+    assert(wendy_pki_mesh_connect("router", 43024, router, &connection, &identity) != ESP_OK
+        && mesh_reserved == 0);
+    mesh_tls_failure = false;
+    mesh_connect_delay = INT64_C(300000000);
+    assert(wendy_pki_mesh_connect("router", 43024, router, &connection, &identity) != ESP_OK
+        && connection == NULL);
+    mesh_connect_delay = 0;
+    reset_pending = 1;
+    assert(wendy_pki_mesh_connect("router", 43024, router, &connection, &identity) != ESP_OK);
+    strcpy(config.device_id, "lite-test");
+    reset();
+    puts("mesh fresh-time gate, durable revision blocks, commit failures and reset guard passed");
+}
+#endif
 int main(int argc, char **argv)
 {
     assert(argc == 2);
@@ -741,6 +819,9 @@ int main(int argc, char **argv)
     test_post_issuance_time_and_recovery();
     test_enrollment_reset();
     test_stream_stored_identity();
+#if CONFIG_WENDY_MESH_LEAF
+    test_mesh_identity();
+#endif
     puts("renewal fallback, Lite authority lifecycle and local enrollment reset tests passed");
 }
 

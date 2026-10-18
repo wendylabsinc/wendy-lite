@@ -16,7 +16,7 @@ if(CONFIG_WENDY_PKI)
         string(TOLOWER "${kind}" lower_kind)
         file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/${lower_kind}_roots.pem" "${bundle}")
     endforeach()
-    set(pki_backend_sources "src/wendy_pki_verify.c" "src/wendy_pki_tls.c")
+    set(pki_backend_sources "src/wendy_pki_verify.c" "src/wendy_pki_tls.c" "src/wendy_pki_mesh_crypto.c")
     idf_component_register(SRCS "src/wendy_operator_auth.c" "src/wendy_lite_authority.c" "src/wendy_pki_crypto.c" "src/wendy_lite_grant.c" "src/wendy_pki.c" ${pki_backend_sources}
         INCLUDE_DIRS "include" REQUIRES mbedtls esp-pqc wendy_conf nvs_flash esp_timer esp_hw_support http_parser lwip pthread)
     foreach(kind device tsa https)

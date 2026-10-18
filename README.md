@@ -22,6 +22,11 @@ docker run --rm -v "$PWD:/project" -w /project espressif/idf:v6.0.3 \
 
 Use a fresh build directory and configuration when upgrading from ESP-IDF 5.
 
+An opt-in [signed mesh leaf profile](docs/signed-mesh-leaf.md) is available for
+native ESP32-S3 builds with PSRAM. It connects to one pinned Linux mesh router
+and has a 125-second startup quarantine. The source and host tests are available;
+hardware validation is still pending.
+
 ## Optional WASM support
 
 Firmware builds omit the WASM runtime by default. To enable it on a supported

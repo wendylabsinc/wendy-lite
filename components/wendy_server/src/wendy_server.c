@@ -180,7 +180,11 @@ static void _server_task(void *arg)
 {
     bool enrolled = wendy_conf_has_enrollment();
 
+#if CONFIG_WENDY_MESH_LEAF
+    int listen_fd = socket(AF_INET6, SOCK_STREAM, 0);
+#else
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+#endif
     if (listen_fd < 0) {
         ESP_LOGE(TAG, "socket() failed: %d", errno);
         vTaskDelete(NULL);
@@ -190,11 +194,27 @@ static void _server_task(void *arg)
     int opt = 1;
     setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
+#if CONFIG_WENDY_MESH_LEAF
+    /* The same authenticated WendyCom listener serves LAN IPv4 and mesh IPv6. */
+    int v6_only = 0;
+    if (setsockopt(listen_fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6_only, sizeof v6_only) < 0) {
+        ESP_LOGE(TAG, "dual-stack listener setup failed: %d", errno);
+        close(listen_fd);
+        vTaskDelete(NULL);
+        return;
+    }
+    struct sockaddr_in6 addr = {
+        .sin6_family = AF_INET6,
+        .sin6_addr = IN6ADDR_ANY_INIT,
+        .sin6_port = htons(WENDY_SERVER_PORT),
+    };
+#else
     struct sockaddr_in addr = {
         .sin_family      = AF_INET,
         .sin_addr.s_addr = htonl(INADDR_ANY),
         .sin_port        = htons(WENDY_SERVER_PORT),
     };
+#endif
 
     if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         ESP_LOGE(TAG, "bind() failed: %d", errno);
@@ -254,7 +274,7 @@ static void _server_task(void *arg)
 
 
     for (;;) {
-        struct sockaddr_in client_addr;
+        struct sockaddr_storage client_addr;
         socklen_t client_len = sizeof(client_addr);
         int client_fd = accept(listen_fd, (struct sockaddr *)&client_addr, &client_len);
         if (client_fd < 0) {
@@ -351,7 +371,7 @@ static void _server_task(void *arg)
             continue;
         }
 
-        ESP_LOGI(TAG, "accepted TLS connection from %s", inet_ntoa(client_addr.sin_addr));
+        ESP_LOGI(TAG, "accepted TLS connection (address family %d)", client_addr.ss_family);
 
         struct _add_link_op *op = calloc(1, sizeof(*op));
         if (!op) {
