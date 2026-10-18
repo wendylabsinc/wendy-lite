@@ -8,14 +8,9 @@ set(EXTRA_COMPONENT_DIRS
     "${CMAKE_CURRENT_LIST_DIR}/components"
 )
 
-# No published espressif/wasm-micro-runtime release lists esp32c61 as a
-# supported target yet, so every component that exists solely to bridge
-# native code to WASM guests is dropped from the build on this target
-# (see the "target != esp32c61" rules in their idf_component.yml files and
-# the ESP32-C61 notes in README.md). This must be based on IDF_TARGET here
-# rather than left to a board argfile's -DEXCLUDE_COMPONENTS=..., since
-# that only applies if set-target happens to be invoked through it.
-if(IDF_TARGET STREQUAL "esp32c61")
+# The pinned WAMR release supports neither C61 nor S31. Exclude WASM adapters
+# by target so this also applies when building without a board argfile.
+if(IDF_TARGET STREQUAL "esp32c61" OR IDF_TARGET STREQUAL "esp32s31")
     set(EXCLUDE_COMPONENTS
         wendy_wasm wendy_hal wendy_hal_export wendy_app_usb wendy_ble_export
         wendy_callback wendy_safety wendy_storage wendy_net wendy_sys
@@ -24,6 +19,12 @@ if(IDF_TARGET STREQUAL "esp32c61")
 endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+if(IDF_TARGET STREQUAL "esp32s31")
+    include($ENV{IDF_PATH}/tools/cmake/version.cmake)
+    if("${IDF_VERSION_MAJOR}.${IDF_VERSION_MINOR}" VERSION_LESS "6.1")
+        message(FATAL_ERROR "ESP32-S31 requires ESP-IDF 6.1 or newer. Use idf.py --preview with ESP-IDF 6.1.")
+    endif()
+endif()
 # Follow the enabled main-component dependencies. Optional WASM adapters must
 # not pull their runtime into native firmware builds.
 idf_build_set_property(MINIMAL_BUILD ON)

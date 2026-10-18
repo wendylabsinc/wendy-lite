@@ -1,0 +1,15 @@
+# Target: ESP32-S31, preview support in ESP-IDF 6.1.
+CONFIG_IDF_TARGET="esp32s31"
+
+# Generic native profile: 4 MB flash, DIO at 40 MHz, no PSRAM dependency.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_40M=y
+CONFIG_SPIRAM=n
+
+# Native applications use two OTA slots within the 4 MB flash layout.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.ota.csv"
+
+# espressif/wasm-micro-runtime 2.4.0~1 does not support this target.
+CONFIG_WENDY_CORE_WASM_APP_SUPPORT=n

@@ -2,4 +2,4 @@ dependencies:
   espressif/wasm-micro-runtime:
     version: "~2.4.0"
     rules:
-      - if: "$CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True"
+      - if: "target != esp32s31 && $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True"

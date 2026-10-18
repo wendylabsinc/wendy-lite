@@ -55,7 +55,7 @@ dependencies:
     dependencies:
     - name: espressif/wasm-micro-runtime
       rules:
-      - if: $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
+      - if: target != esp32s31 && $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
       version: ~2.4.0
     source:
       path: components/wendy_app_usb
@@ -75,7 +75,7 @@ dependencies:
     dependencies:
     - name: espressif/wasm-micro-runtime
       rules:
-      - if: $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
+      - if: target != esp32s31 && $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
       version: ~2.4.0
     - name: wendy_safety
       override_path: ../wendy_safety
@@ -91,7 +91,7 @@ dependencies:
     dependencies:
     - name: espressif/wasm-micro-runtime
       rules:
-      - if: $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
+      - if: target != esp32s31 && $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
       version: ~2.4.0
     - name: wendy_wasm
       override_path: ../wendy_wasm
@@ -139,7 +139,7 @@ dependencies:
     dependencies:
     - name: espressif/wasm-micro-runtime
       rules:
-      - if: $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
+      - if: target != esp32s31 && $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
       version: ~2.4.0
     - name: wendy_safety
       override_path: ../wendy_safety
@@ -153,7 +153,7 @@ dependencies:
     dependencies:
     - name: espressif/wasm-micro-runtime
       rules:
-      - if: $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
+      - if: target != esp32s31 && $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
       version: ~2.4.0
     source:
       path: components/wendy_otel
@@ -175,7 +175,7 @@ dependencies:
     dependencies:
     - name: espressif/wasm-micro-runtime
       rules:
-      - if: $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
+      - if: target != esp32s31 && $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
       version: ~2.4.0
     source:
       path: components/wendy_safety
@@ -199,7 +199,7 @@ dependencies:
     dependencies:
     - name: espressif/wasm-micro-runtime
       rules:
-      - if: $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
+      - if: target != esp32s31 && $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
       version: ~2.4.0
     - name: wendy_safety
       override_path: ../wendy_safety
@@ -217,7 +217,7 @@ dependencies:
     dependencies:
     - name: espressif/wasm-micro-runtime
       rules:
-      - if: $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
+      - if: target != esp32s31 && $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
       version: ~2.4.0
     - name: wendy_safety
       override_path: ../wendy_safety
@@ -229,7 +229,7 @@ dependencies:
     dependencies:
     - name: espressif/wasm-micro-runtime
       rules:
-      - if: $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
+      - if: target != esp32s31 && $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
       version: ~2.4.0
     - name: wendy_callback
       override_path: ../wendy_callback
@@ -245,7 +245,7 @@ dependencies:
     dependencies:
     - name: espressif/wasm-micro-runtime
       rules:
-      - if: $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
+      - if: target != esp32s31 && $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
       version: ~2.4.0
     - name: wendy_callback
       override_path: ../wendy_callback
@@ -269,7 +269,7 @@ dependencies:
     dependencies:
     - name: espressif/wasm-micro-runtime
       rules:
-      - if: $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
+      - if: target != esp32s31 && $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
       version: ~2.4.0
     - name: wendy_safety
       override_path: ../wendy_safety
@@ -283,7 +283,7 @@ dependencies:
       version: '>=5.3.0'
     - name: espressif/wasm-micro-runtime
       rules:
-      - if: $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
+      - if: target != esp32s31 && $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
       version: ~2.4.0
     source:
       path: components/wendy_wasm
@@ -337,6 +337,6 @@ direct_dependencies:
 - wendy_wasi_shim
 - wendy_wasm
 - wendy_wifi
-manifest_hash: d2d87bd01a64ce197c42b9aa4de04647abf23e8ed231ed80cd59cd5e90cb14d1
+manifest_hash: 0c4c6e4c1b0e45a8cf37f892b3eca2691c334d7cba37dae4a64735fcf2109db8
 target: esp32c6
 version: 3.0.0

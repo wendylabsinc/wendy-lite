@@ -1,17 +1,19 @@
 name: PKI enrollment
 on:
   pull_request:
-    branches: [main, gab/relay]
   push:
     branches: [main]
 
 jobs:
   verify:
+    strategy:
+      matrix:
+        idf_version: [v6.0.3, v6.1]
     runs-on: ubuntu-latest
     permissions:
       contents: read
     container:
-      image: espressif/idf:v6.0.3
+      image: espressif/idf:${{ matrix.idf_version }}
     steps:
       - uses: actions/checkout@v7
         with:

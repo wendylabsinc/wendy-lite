@@ -26,6 +26,14 @@
             "flash_size": "4MB"
         },
         {
+            "name": "esp32s31_native",
+            "target": "esp32s31",
+            "board_cfg": "esp32s31_generic_native",
+            "flash_size": "4MB",
+            "idf_version": "v6.1",
+            "preview": true
+        },
+        {
             "name": "esp32s3_seeed_xiao_native",
             "target": "esp32s3",
             "board_cfg": "seeed_xiao_esp32s3_native",
@@ -54,6 +62,10 @@
         {
             "name": "esp32s3",
             "display_name": "ESP32-S3"
+        },
+        {
+            "name": "esp32s31",
+            "display_name": "ESP32-S31 (preview)"
         }
     ],
     "boards": [
@@ -80,6 +92,12 @@
             "display_name": "Generic ESP32-S3 board, 4MB flash",
             "binary": "esp32s3_native",
             "target": "esp32s3"
+        },
+        {
+            "name": "esp32s31_generic_native",
+            "display_name": "Generic ESP32-S31 board, 4MB flash, preview",
+            "binary": "esp32s31_native",
+            "target": "esp32s31"
         },
         {
             "name": "esp32s3_seeed_xiao_native",

@@ -6,7 +6,6 @@ on:
     branches: [main]
     tags: ['v*']
   pull_request:
-    branches: [main]
 
 jobs:
   # catalog.json is the single source of truth for the set of firmware variants.
@@ -25,7 +24,7 @@ jobs:
           # catalog.json names are unprefixed (e.g. "esp32c5"); artifacts,
           # release assets, and GCS publish paths have a wendy_mcu_ prefix,
           # stored as asset_name here for downstream jobs to use.
-          echo "matrix=$(jq -c '{include: (.binaries | map(. + {asset_name: ("wendy_mcu_" + .name)}))}' catalog.json)" >> "$GITHUB_OUTPUT"
+          echo "matrix=$(jq -c '{include: (.binaries | map({idf_version: "v6.0.3", preview: false} + . + {asset_name: ("wendy_mcu_" + .name)}))}' catalog.json)" >> "$GITHUB_OUTPUT"
 
   build:
     needs: catalog
@@ -34,7 +33,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.catalog.outputs.matrix) }}
     container:
-      image: espressif/idf:v6.0.3
+      image: espressif/idf:${{ matrix.idf_version }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -90,17 +89,47 @@ jobs:
         env:
           BOARD_CFG: ${{ matrix.board_cfg }}
           TARGET: ${{ matrix.target }}
+          PREVIEW: ${{ matrix.preview }}
         run: |
-          . $IDF_PATH/export.sh
+          . "$IDF_PATH/export.sh"
+          idf_args=()
+          if [ "$PREVIEW" = true ]; then
+            idf_args+=(--preview)
+          fi
           # boards/<board>.cfg is a one-line idf.py argfile holding
           # "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;boards/<board>.defaults".
           # Read it and suffix version.defaults so it is applied last and wins
           # (kconfgen applies --defaults files in order, later overriding
           # earlier). It has to go on set-target: that is what regenerates
           # sdkconfig from the whole chain.
-          idf.py "$(cat "boards/${BOARD_CFG}.cfg");version.defaults" \
+          idf.py "${idf_args[@]}" "$(cat "boards/${BOARD_CFG}.cfg");version.defaults" \
             set-target "$TARGET"
-          idf.py build
+          idf.py "${idf_args[@]}" build
+
+      - name: Verify ESP32-S31 native profile
+        if: matrix.target == 'esp32s31'
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          build = Path("build")
+          config = json.loads((build / "config/sdkconfig.json").read_text())
+          for option in ("WENDY_USJ", "WENDY_WIFI_ENABLED", "WENDY_BLE",
+                         "BT_NIMBLE_ENABLED", "WENDY_CLOUD", "WENDY_PKI",
+                         "WENDY_CORE_WATCHDOG", "BOOTLOADER_WDT_DISABLE_IN_USER_CODE",
+                         "MBEDTLS_USE_BUNDLED_PQC", "MBEDTLS_SSL_TLS1_3_SIG_MLDSA65"):
+              assert config.get(option), f"{option} must be enabled"
+          for option in ("WENDY_CORE_WASM_APP_SUPPORT", "SPIRAM", "MBEDTLS_DYNAMIC_BUFFER"):
+              assert not config.get(option), f"{option} must be disabled"
+          assert config["BT_NIMBLE_L2CAP_COC_MAX_NUM"] == 1
+          components = json.loads((build / "project_description.json").read_text())["build_components"]
+          assert not {"espressif__wasm-micro-runtime", "wendy_wasm", "wendy_hal"}.intersection(components)
+          flash = json.loads((build / "flasher_args.json").read_text())
+          assert flash["bootloader"]["offset"] == "0x2000"
+          assert flash["flash_settings"]["flash_size"] == "4MB"
+          PY
 
       # Fail the release rather than ship a binary carrying the placeholder
       # version under a vX.Y.Z tag. sdkconfig.h is what the firmware sources
@@ -126,7 +155,7 @@ jobs:
           ASSET_NAME: ${{ matrix.asset_name }}
           FLASH_SIZE: ${{ matrix.flash_size }}
         run: |
-          . $IDF_PATH/export.sh
+          . "$IDF_PATH/export.sh"
           cd build
           esptool.py --chip "$TARGET" merge_bin \
             -o "${ASSET_NAME}.bin" \

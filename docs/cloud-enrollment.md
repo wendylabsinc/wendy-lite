@@ -12,8 +12,10 @@ No device private key passes through the CLI or the configuration protobuf.
 
 ## Build the firmware
 
-Use ESP-IDF 6.0.3. Firmware uses the pinned esp-pqc mbedTLS 4 backend for PKI
-trust and TLS, with ML-DSA-65 certificate verification.
+Use ESP-IDF 6.0.3, or ESP-IDF 6.1 for the
+[ESP32-S31 preview target](../README.md#esp32-s31-notes). Firmware uses the pinned
+esp-pqc mbedTLS 4 backend for PKI trust and TLS, with ML-DSA-65 certificate
+verification.
 
 PKI and the cloud connection task are enabled by default. The task starts after
 Wi-Fi connects and enrollment is configured. Build without deployment-specific roots:
