@@ -1,6 +1,9 @@
 /* Host adapter for the production TLS implementation. Go drives real TLS peers. */
 #include "wendy_pki_internal.h"
+#include "wendy_pki_crypto.h"
+#include "wendy_pki_certificate_policy.h"
 #include "esp_timer.h"
+#include <mbedtls/net_sockets.h>
 #include <assert.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -26,11 +29,27 @@ static bool resetting;
 bool wendy_pki_reset_in_progress(void) { return resetting; }
 
 static bool short_writes;
+static bool truncate_certificate, certificate_record;
+static size_t record_remaining;
 static unsigned send_calls, partial_sends, blocked_sends;
 /* The production TLS source is compiled with send renamed to this adapter.
  * Alternate short writes with EAGAIN so each handshake flight must resume. */
 ssize_t wendy_test_send(int fd, const void *buffer, size_t size, int flags) {
     if (short_writes) {
+        if (truncate_certificate && certificate_record && !record_remaining) {
+            /* End the transport after one intact encrypted Certificate record,
+             * before the remainder of the handshake message can be sent. */
+            assert(!shutdown(fd, SHUT_WR));
+            errno = ECONNRESET;
+            return -1;
+        }
+        if (!record_remaining) {
+            const unsigned char *record = buffer;
+            assert(size >= 5 && size == 5 + ((size_t)record[3] << 8) + record[4]);
+            record_remaining = size;
+            if (truncate_certificate && record[0] == MBEDTLS_SSL_MSG_APPLICATION_DATA)
+                certificate_record = true;
+        }
         if (++send_calls % 2 == 0) {
             blocked_sends++;
             errno = EAGAIN;
@@ -41,7 +60,12 @@ ssize_t wendy_test_send(int fd, const void *buffer, size_t size, int flags) {
             partial_sends++;
         }
     }
-    return send(fd, buffer, size, flags);
+    ssize_t n = send(fd, buffer, size, flags);
+    if (short_writes && n > 0) {
+        assert((size_t)n <= record_remaining);
+        record_remaining -= (size_t)n;
+    }
+    return n;
 }
 static void wait_io(wendy_pki_connection *c, int result) {
     assert(result == -2 || result == -3);
@@ -49,11 +73,19 @@ static void wait_io(wendy_pki_connection *c, int result) {
     assert(poll(&fd, 1, 3000) == 1);
 }
 static void outbound(unsigned port, const unsigned char *key, size_t kn,
-                     const unsigned char *cert, const unsigned char *root, size_t rn) {
+                     const unsigned char *cert, const unsigned char *root, size_t rn,
+                     bool truncate) {
     short_writes = true;
+    truncate_certificate = truncate;
     wendy_pki_connection *c = NULL;
-    assert(pki_tls_connect("localhost", port, key, kn, (const char *)cert,
-        (struct wendy_conf_span){root, rn}, &c) == 0);
+    int connected = pki_tls_connect("localhost", port, key, kn, (const char *)cert,
+        (struct wendy_conf_span){root, rn}, &c);
+    if (truncate) {
+        assert(connected && !c && certificate_record && !record_remaining);
+        assert(partial_sends && blocked_sends);
+        return;
+    }
+    assert(!connected);
     assert(c && partial_sends && blocked_sends);
     size_t written = 0, received = 0;
     char response[5];
@@ -69,6 +101,58 @@ static void outbound(unsigned port, const unsigned char *key, size_t kn,
     }
     assert(!memcmp(response, "world", sizeof response));
     wendy_pki_close(c);
+}
+
+/* A second Mbed TLS endpoint negotiates 512-byte TLS records so the production
+ * server receives a valid Certificate across records, within its fixed bound. */
+static void fragmented_client(const char *port, const unsigned char *key_der, size_t kn,
+                              const unsigned char *cert_pem, size_t cn,
+                              const unsigned char *roots_pem, size_t rn) {
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config config;
+    mbedtls_x509_crt cert, roots;
+    mbedtls_pk_context key;
+    mbedtls_net_context net;
+    mbedtls_ssl_init(&ssl); mbedtls_ssl_config_init(&config);
+    mbedtls_x509_crt_init(&cert); mbedtls_x509_crt_init(&roots);
+    mbedtls_pk_init(&key); mbedtls_net_init(&net);
+    assert(!wendy_pki_crypto_init());
+    assert(!mbedtls_x509_crt_parse(&cert, cert_pem, cn + 1));
+    assert(!mbedtls_x509_crt_parse(&roots, roots_pem, rn + 1));
+    assert(!mbedtls_pk_parse_key(&key, key_der, kn, NULL, 0));
+    assert(!mbedtls_ssl_config_defaults(&config, MBEDTLS_SSL_IS_CLIENT,
+        MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT));
+    mbedtls_ssl_conf_authmode(&config, MBEDTLS_SSL_VERIFY_REQUIRED);
+    mbedtls_ssl_conf_ca_chain(&config, &roots, NULL);
+    mbedtls_ssl_conf_cert_profile(&config, wendy_pki_certificate_profile());
+    mbedtls_ssl_conf_min_tls_version(&config, MBEDTLS_SSL_VERSION_TLS1_3);
+    mbedtls_ssl_conf_max_tls_version(&config, MBEDTLS_SSL_VERSION_TLS1_3);
+    mbedtls_ssl_conf_tls13_key_exchange_modes(&config,
+        MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL);
+    assert(!mbedtls_ssl_conf_max_frag_len(&config, MBEDTLS_SSL_MAX_FRAG_LEN_512));
+    assert(!mbedtls_ssl_conf_own_cert(&config, &cert, &key));
+    assert(!mbedtls_ssl_setup(&ssl, &config));
+    assert(!mbedtls_ssl_set_hostname(&ssl, "localhost"));
+    assert(!mbedtls_net_connect(&net, "127.0.0.1", port, MBEDTLS_NET_PROTO_TCP));
+    struct timeval timeout = {.tv_sec = 3};
+    assert(!setsockopt(net.fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout));
+    assert(!setsockopt(net.fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout));
+    mbedtls_ssl_set_bio(&ssl, &net, mbedtls_net_send, mbedtls_net_recv, NULL);
+    assert(!mbedtls_ssl_handshake(&ssl));
+    assert(!mbedtls_ssl_get_verify_result(&ssl));
+    assert(mbedtls_ssl_get_max_out_record_payload(&ssl) <= 512);
+    assert(cert.raw.len > 512);
+    assert(mbedtls_ssl_write(&ssl, (const unsigned char *)"hello", 5) == 5);
+    unsigned char response[5];
+    size_t received = 0;
+    while (received < sizeof response) {
+        int n = mbedtls_ssl_read(&ssl, response + received, sizeof response - received);
+        assert(n > 0); received += (size_t)n;
+    }
+    assert(!memcmp(response, "world", sizeof response));
+    mbedtls_ssl_free(&ssl); mbedtls_ssl_config_free(&config);
+    mbedtls_x509_crt_free(&cert); mbedtls_x509_crt_free(&roots);
+    mbedtls_pk_free(&key); mbedtls_net_free(&net);
 }
 
 /* BLE supplies a byte stream rather than a socket. Keep the backing socket
@@ -202,8 +286,14 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (argc == 6) {
-        assert(!strcmp(argv[4], "connect"));
-        outbound((unsigned)strtoul(argv[5], NULL, 10), key, kn, cert, root, rn);
+        if (!strcmp(argv[4], "fragment-client")) {
+            fragmented_client(argv[5], key, kn, cert, cn, root, rn);
+            free(key); free(cert); free(root);
+            return 0;
+        }
+        bool truncate = !strcmp(argv[4], "connect-truncated");
+        assert(truncate || !strcmp(argv[4], "connect"));
+        outbound((unsigned)strtoul(argv[5], NULL, 10), key, kn, cert, root, rn, truncate);
         free(key); free(cert); free(root);
         return 0;
     }

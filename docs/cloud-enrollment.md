@@ -16,34 +16,42 @@ No device private key passes through the CLI or the configuration protobuf.
 
 ## Build the firmware
 
-Use ESP-IDF 5.5.4. Base firmware uses wolfSSL for PKI trust and TLS by default.
+Use ESP-IDF 6.0.3, or ESP-IDF 6.1 for the
+[ESP32-S31 preview target](../README.md#esp32-s31-notes). Firmware uses the pinned
+esp-pqc mbedTLS 4 backend for PKI trust and TLS, with ML-DSA-65 certificate
+verification.
 
 PKI and the cloud connection task are enabled by default. The task starts after
 Wi-Fi connects and enrollment is configured. Build without deployment-specific roots:
 
 ```sh
-git submodule update --init components/wendy_wolfssl/wolfssl
+git submodule update --init --recursive components/esp-pqc
 echo 'CONFIG_WENDY_CLOUD=y' > cloud.defaults
 idf.py -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;cloud.defaults' set-target esp32c6
 idf.py build
 ```
 
-The base defaults set `CONFIG_WENDY_PKI_WOLFSSL=y` to verify ML-DSA-44,
-ML-DSA-65 and ML-DSA-87 certificates while keeping P-256 device keys.
+The base defaults enable `CONFIG_MBEDTLS_USE_BUNDLED_PQC=y` and
+`CONFIG_MBEDTLS_SSL_TLS1_3_SIG_MLDSA65=y`. Device keys remain P-256.
+ML-DSA-44 and ML-DSA-87 certificates are not supported. Deployments using those
+issuers must issue compatible chains before moving devices to this firmware.
+Inbound TLS Certificate messages must fit within the 16 KiB receive buffer.
+The build applies a [tracked mbedTLS fix](../patches/README.md) that fragments
+larger outgoing certificate chains into separate TLS records.
+Keep `CONFIG_MBEDTLS_DYNAMIC_BUFFER=n` and
+`CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384`. ESP-IDF's dynamic receive allocator
+does not match the bundled backend's handshake reassembly bounds.
 
-For an existing native app, enable **Wendy PKI / wolfSSL** in `idf.py menuconfig`
-or set `CONFIG_WENDY_PKI_WOLFSSL=y` in its active `sdkconfig`. A change to
-`sdkconfig.defaults` alone does not override a value already in `sdkconfig`.
-Keep the setting in the app's defaults as well if future clean builds need it.
-Set `CONFIG_WENDY_PKI_WOLFSSL=n` to use mbedTLS without compiling wolfSSL.
-This reduces firmware size and memory use but cannot verify ML-DSA certificates.
+For an existing native app, apply these options to its active `sdkconfig` and
+keep them in the app's defaults. A change to `sdkconfig.defaults` alone does not
+override a value already in `sdkconfig`. Use a fresh build directory when moving
+from ESP-IDF 5 to ESP-IDF 6.
 
 Install compatible device, TSA and HTTPS CA bundles through the authorized USB
 connection using `--device-roots`, `--tsa-roots` and `--https-roots`. Obtain them
-from the PKI administrator. Each complete chain must use algorithms supported by
-the selected backend; issuing a P-256 leaf beneath an ML-DSA issuer still requires
-the wolfSSL profile. Both profiles verify ECDSA timestamps, including Sigstore's
-P-384 signing certificates.
+from the PKI administrator. Each complete chain must use supported algorithms;
+a P-256 leaf beneath an ML-DSA issuer requires an ML-DSA-65 issuer. The firmware
+also verifies ECDSA timestamps, including Sigstore's P-384 signing certificates.
 The HTTPS bundle must also trust the configured broker hostname.
 
 Pass the deployment's actual RFC 3161 HTTPS endpoint with `--time-url`. Roughtime
@@ -88,8 +96,9 @@ the listener with `--broker-host` and `--broker-port`. Set
 
 The CLI validates discovered or supplied roots and checks USB trust support
 before reserving an asset. Firmware advertises `mldsa_verification_supported` only
-when PKI uses wolfSSL. The CLI requires this capability before accepting ML-DSA
-trust bundles. An absent capability uses the mbedTLS compatibility check.
+when PKI and ML-DSA-65 verification are enabled. This capability covers ML-DSA-65;
+it does not imply support for ML-DSA-44 or ML-DSA-87. The CLI requires it before
+accepting ML-DSA trust bundles, and the device validates every installed bundle.
 The firmware accepts at most eight CA certificates
 and 16 KiB per bundle; signed time plus all bundles must fit within 64 KiB.
 
@@ -202,7 +211,7 @@ separate tinycloud development transport and must not be used as that secure pat
 ## Verification
 
 ```sh
-cmake -S components/wendy_pki/tests -B build-pki -DWENDY_PKI_WOLFSSL=ON
+cmake -S components/wendy_pki/tests -B build-pki
 cmake --build build-pki
 ctest --test-dir build-pki --output-on-failure
 ```
@@ -210,15 +219,15 @@ ctest --test-dir build-pki --output-on-failure
 The committed fixtures were generated with pki-core's `ca.Engine.IssueTimestamp`
 and P-256 certificate builder. They contain public test credentials only.
 See [the test instructions](../components/wendy_pki/tests/README.md) to regenerate
-them. CI runs host verification, including Go-to-mbedTLS and Go-to-wolfSSL TLS 1.3
+them. CI runs host verification, including Go-to-mbedTLS TLS 1.3
 interoperability tests, and builds the PKI-enabled C6 image. Hardware enrollment,
 latency and memory behavior still require a connected board and compatible
 deployment trust bundles.
 
 ## Firmware size
 
-The default firmware uses wolfSSL for PKI TLS, certificate validation and signed
-time, including ML-DSA certificate verification. Device keys and session grants
+The firmware uses esp-pqc's mbedTLS for PKI TLS, certificate validation and signed
+time, including ML-DSA-65 certificate verification. Device keys and session grants
 remain P-256. WASM is opt-in through
 `boards/wasm.defaults`. See [relay size measurements](cloud-relay.md#default-image-size).
 

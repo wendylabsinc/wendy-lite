@@ -1,7 +1,6 @@
 name: PKI enrollment
 on:
   pull_request:
-    branches: [main, gab/relay]
   push:
     branches: [main]
 
@@ -9,16 +8,16 @@ jobs:
   verify:
     strategy:
       matrix:
-        wolfssl: ['OFF', 'ON']
+        idf_version: [v6.0.3, v6.1]
     runs-on: ubuntu-latest
     permissions:
       contents: read
     container:
-      image: espressif/idf:v5.5.4
+      image: espressif/idf:${{ matrix.idf_version }}
     steps:
       - uses: actions/checkout@v7
         with:
-          submodules: true
+          submodules: recursive
       - uses: actions/setup-go@v6
         with:
           go-version: '1.27.x'
@@ -40,24 +39,29 @@ jobs:
         shell: bash
         run: |
           . "$IDF_PATH/export.sh"
-          cmake -S components/wendy_pki/tests -B build-pki -DWENDY_PKI_WOLFSSL=${{ matrix.wolfssl }} -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          cmake -S components/wendy_pki/tests -B build-pki -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
           cmake --build build-pki -j2
           ctest --test-dir build-pki --output-on-failure
 
   firmware:
     strategy:
       matrix:
-        bluetooth: [enabled, disabled]
-        wolfssl: [disabled, enabled]
+        include:
+          - bluetooth: enabled
+            wasm: disabled
+          - bluetooth: disabled
+            wasm: disabled
+          - bluetooth: enabled
+            wasm: enabled
     runs-on: ubuntu-latest
     permissions:
       contents: read
     container:
-      image: espressif/idf:v5.5.4
+      image: espressif/idf:v6.0.3
     steps:
       - uses: actions/checkout@v7
         with:
-          submodules: true
+          submodules: recursive
       - name: Trust checkout paths in the build container
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -67,24 +71,24 @@ jobs:
           set -euo pipefail
           . "$IDF_PATH/export.sh"
           echo 'CONFIG_WENDY_CLOUD=y' > cloud.defaults
-          if [ "${{ matrix.wolfssl }}" = disabled ]; then
-            echo 'CONFIG_WENDY_PKI_WOLFSSL=n' >> cloud.defaults
-          fi
           defaults='sdkconfig.defaults;cloud.defaults'
+          if [ "${{ matrix.wasm }}" = enabled ]; then
+            defaults="$defaults;boards/wasm.defaults"
+          fi
           if [ "${{ matrix.bluetooth }}" = disabled ]; then
             defaults="$defaults;boards/no-ble.defaults"
           fi
           idf.py -D "SDKCONFIG_DEFAULTS=$defaults" set-target esp32c6
           idf.py build
           grep -q '^CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y$' sdkconfig
-          if [ "${{ matrix.wolfssl }}" = enabled ]; then
-            grep -q '^CONFIG_WENDY_PKI_WOLFSSL=y$' sdkconfig
-          else
-            grep -q '^# CONFIG_WENDY_PKI_WOLFSSL is not set$' sdkconfig
-            if grep -q 'libwendy_wolfssl.a' build/*.map; then
-              echo 'mbedTLS firmware unexpectedly links wolfSSL'
-              exit 1
-            fi
+          grep -q '^CONFIG_MBEDTLS_USE_BUNDLED_PQC=y$' sdkconfig
+          grep -q '^CONFIG_MBEDTLS_SSL_TLS1_3_SIG_MLDSA65=y$' sdkconfig
+          grep -q '^# CONFIG_MBEDTLS_DYNAMIC_BUFFER is not set$' sdkconfig
+          grep -q '^CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384$' sdkconfig
+          grep -q 'liboqs.a' build/*.map
+          if [ "${{ matrix.wasm }}" = enabled ]; then
+            grep -q '^CONFIG_WENDY_CORE_WASM_APP_SUPPORT=y$' sdkconfig
+            grep -q 'libespressif__wasm-micro-runtime.a' build/*.map
           fi
           if [ "${{ matrix.bluetooth }}" = disabled ]; then
             grep -q '^# CONFIG_BT_ENABLED is not set$' sdkconfig

@@ -1,6 +1,8 @@
 #include "wendy_operator_auth.h"
+#include "wendy_pki_crypto.h"
 #include "wendy_peer_identity.h"
 #include "mbedtls/oid.h"
+#include "mbedtls/platform.h"
 
 static int certificate_tenant(const mbedtls_x509_crt *crt, const char *kind,
                               unsigned char tenant[36])
@@ -24,17 +26,21 @@ int wendy_operator_auth_init(struct wendy_operator_auth *auth,
 {
     if (!auth) return -1;
     memset(auth, 0, sizeof *auth);
-    if (!device_der || !size || size > 65536) return -1;
-    mbedtls_x509_crt device;
-    mbedtls_x509_crt_init(&device);
+    if (!device_der || !size || size > 65536 || wendy_pki_crypto_init()) return -1;
+    /* esp-pqc stores the ML-DSA public key inline in this structure. Keep it
+     * off the smaller legacy BLE task stack while extracting the tenant. */
+    mbedtls_x509_crt *device = mbedtls_calloc(1, sizeof *device);
+    if (!device) return -1;
+    mbedtls_x509_crt_init(device);
     unsigned char tenant[36];
     int result = -1;
-    if (!mbedtls_x509_crt_parse_der(&device, device_der, size) &&
-        device.raw.len == size && !certificate_tenant(&device, "device", tenant)) {
+    if (!mbedtls_x509_crt_parse_der(device, device_der, size) &&
+        device->raw.len == size && !certificate_tenant(device, "device", tenant)) {
         memcpy(auth->tenant, tenant, sizeof tenant);
         result = 0;
     }
-    mbedtls_x509_crt_free(&device);
+    mbedtls_x509_crt_free(device);
+    mbedtls_free(device);
     return result;
 }
 

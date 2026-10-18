@@ -1023,7 +1023,7 @@ type WendyComEnrollmentChallenge struct {
 	BuiltinTsaRootsReady       bool                   `protobuf:"varint,6,opt,name=builtin_tsa_roots_ready,json=builtinTsaRootsReady,proto3" json:"builtin_tsa_roots_ready,omitempty"`
 	EnrollmentResetSupported   bool                   `protobuf:"varint,7,opt,name=enrollment_reset_supported,json=enrollmentResetSupported,proto3" json:"enrollment_reset_supported,omitempty"`             // physical USB reset with current nonce
 	CloudEnrollmentSupported   *bool                  `protobuf:"varint,8,opt,name=cloud_enrollment_supported,json=cloudEnrollmentSupported,proto3,oneof" json:"cloud_enrollment_supported,omitempty"`       // absent on older firmware
-	MldsaVerificationSupported *bool                  `protobuf:"varint,9,opt,name=mldsa_verification_supported,json=mldsaVerificationSupported,proto3,oneof" json:"mldsa_verification_supported,omitempty"` // wolfSSL ML-DSA CA and peer certificate verification
+	MldsaVerificationSupported *bool                  `protobuf:"varint,9,opt,name=mldsa_verification_supported,json=mldsaVerificationSupported,proto3,oneof" json:"mldsa_verification_supported,omitempty"` // ML-DSA-65 CA and peer certificate verification
 	unknownFields              protoimpl.UnknownFields
 	sizeCache                  protoimpl.SizeCache
 }

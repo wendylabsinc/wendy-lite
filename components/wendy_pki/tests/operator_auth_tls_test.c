@@ -1,7 +1,6 @@
 /* Host TLS adapter for provisioned operator auth and unprovisioned anonymous TLS. */
 #include "wendy_operator_auth.h"
-#include <mbedtls/ctr_drbg.h>
-#include <mbedtls/entropy.h>
+#include "wendy_pki_crypto.h"
 #include <mbedtls/net_sockets.h>
 #include <mbedtls/ssl.h>
 #include <assert.h>
@@ -43,29 +42,23 @@ int main(int argc, char **argv)
     if (!unprovisioned)
         assert(!wendy_operator_auth_init(&auth, device_der, device_size));
     if (!unprovisioned) auth.allow_device = lan;
-    mbedtls_entropy_context entropy;
-    mbedtls_ctr_drbg_context random;
     mbedtls_pk_context key;
     mbedtls_x509_crt certificate, roots;
     mbedtls_ssl_config config;
     mbedtls_ssl_context tls;
     mbedtls_net_context peer;
-    mbedtls_entropy_init(&entropy);
-    mbedtls_ctr_drbg_init(&random);
     mbedtls_pk_init(&key);
     mbedtls_x509_crt_init(&certificate);
     mbedtls_x509_crt_init(&roots);
     mbedtls_ssl_config_init(&config);
     mbedtls_ssl_init(&tls);
     mbedtls_net_init(&peer);
-    assert(!mbedtls_ctr_drbg_seed(&random, mbedtls_entropy_func, &entropy, NULL, 0));
-    assert(!mbedtls_pk_parse_key(&key, key_der, key_size, NULL, 0,
-                                mbedtls_ctr_drbg_random, &random));
+    assert(!wendy_pki_crypto_init());
+    assert(!mbedtls_pk_parse_key(&key, key_der, key_size, NULL, 0));
     assert(!mbedtls_x509_crt_parse_der(&certificate, device_der, device_size));
     assert(!mbedtls_x509_crt_parse(&roots, roots_pem, roots_size + 1));
     assert(!mbedtls_ssl_config_defaults(&config, MBEDTLS_SSL_IS_SERVER,
                                        MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT));
-    mbedtls_ssl_conf_rng(&config, mbedtls_ctr_drbg_random, &random);
     mbedtls_ssl_conf_authmode(&config, unprovisioned ? MBEDTLS_SSL_VERIFY_NONE : MBEDTLS_SSL_VERIFY_REQUIRED);
     if (!unprovisioned)
         mbedtls_ssl_conf_ca_chain(&config, &roots, NULL);
@@ -118,8 +111,6 @@ int main(int argc, char **argv)
     mbedtls_x509_crt_free(&roots);
     mbedtls_x509_crt_free(&certificate);
     mbedtls_pk_free(&key);
-    mbedtls_ctr_drbg_free(&random);
-    mbedtls_entropy_free(&entropy);
     if (accepted != expected) {
         fprintf(stderr, "expected %s, handshake returned %d\n", argv[4], result);
         return 1;

@@ -1,0 +1,177 @@
+diff --git a/library/ssl_misc.h b/library/ssl_misc.h
+--- a/library/ssl_misc.h
++++ b/library/ssl_misc.h
+@@ -961,6 +961,8 @@
+ #if defined(MBEDTLS_SSL_HANDSHAKE_WITH_CERT_ENABLED)
+     unsigned char certificate_request_context_len;
+     unsigned char *certificate_request_context;
++    /* Bytes already hashed and queued for a fragmented TLS 1.3 Certificate. */
++    size_t certificate_out_offset;
+ #endif
+ 
+     /** TLS 1.3 transform for encrypted handshake messages. */
+@@ -2444,7 +2446,7 @@
+ #if defined(MBEDTLS_SSL_TLS1_3_SIG_MLDSA65)
+         case MBEDTLS_TLS1_3_SIG_MLDSA65:
+             *md_alg = MBEDTLS_MD_NONE;
+-            *pk_type = MBEDTLS_PK_MLDSA65;
++            *pk_type = MBEDTLS_PK_SIGALG_MLDSA65;
+             return 0;
+ #endif
+         default:
+diff --git a/library/ssl_tls13_client.c b/library/ssl_tls13_client.c
+--- a/library/ssl_tls13_client.c
++++ b/library/ssl_tls13_client.c
+@@ -2718,9 +2718,13 @@
+ {
+     int non_empty_certificate_msg = 0;
+ 
+-    MBEDTLS_SSL_DEBUG_MSG(1,
+-                          ("Switch to handshake traffic keys for outbound traffic"));
+-    mbedtls_ssl_set_outbound_transform(ssl, ssl->handshake->transform_handshake);
++    /* A fragmented Certificate can resume this state after WANT_READ/WRITE.
++     * Reinstalling the same transform would reset its record sequence number. */
++    if (ssl->transform_out != ssl->handshake->transform_handshake) {
++        MBEDTLS_SSL_DEBUG_MSG(1,
++                              ("Switch to handshake traffic keys for outbound traffic"));
++        mbedtls_ssl_set_outbound_transform(ssl, ssl->handshake->transform_handshake);
++    }
+ 
+ #if defined(MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED)
+     if (ssl->handshake->client_auth) {
+diff --git a/library/ssl_tls13_generic.c b/library/ssl_tls13_generic.c
+--- a/library/ssl_tls13_generic.c
++++ b/library/ssl_tls13_generic.c
+@@ -875,13 +875,132 @@
+     return 0;
+ }
+ 
++/* Copy the intersection of one serialized field with the current fragment.
++ * This avoids allocating a second buffer for a potentially large chain. */
++static void ssl_tls13_copy_certificate_fragment(unsigned char **out,
++                                                size_t *remaining,
++                                                size_t *skip,
++                                                const unsigned char *field,
++                                                size_t field_len)
++{
++    size_t len;
++    if (*skip >= field_len) {
++        *skip -= field_len;
++        return;
++    }
++    field += *skip;
++    len = field_len - *skip;
++    *skip = 0;
++    if (len > *remaining) {
++        len = *remaining;
++    }
++    if (len != 0) {
++        memcpy(*out, field, len);
++        *out += len;
++        *remaining -= len;
++    }
++}
++
++/* Send a Certificate handshake message across multiple TLS records. The
++ * handshake step flushes pending ciphertext before re-entering this function;
++ * the offset records plaintext already hashed and queued, including when the
++ * final flush returns WANT_READ or WANT_WRITE. */
++static int ssl_tls13_write_certificate_fragments(mbedtls_ssl_context *ssl,
++                                                  size_t list_len,
++                                                  size_t body_len,
++                                                  size_t fragment_max)
++{
++    const size_t total_len = body_len + 4;
++    unsigned char header[4], list_header[3];
++    const unsigned char empty_extensions[2] = { 0, 0 };
++    const unsigned char context_len = ssl->handshake->certificate_request_context_len;
++
++    header[0] = MBEDTLS_SSL_HS_CERTIFICATE;
++    MBEDTLS_PUT_UINT24_BE(body_len, header, 1);
++    MBEDTLS_PUT_UINT24_BE(list_len, list_header, 0);
++
++    while (ssl->handshake->certificate_out_offset < total_len) {
++        const mbedtls_x509_crt *crt;
++        unsigned char *out = ssl->out_msg;
++        size_t skip = ssl->handshake->certificate_out_offset;
++        size_t fragment_len = total_len - skip;
++        size_t remaining;
++        int ret;
++        if (fragment_len > fragment_max) {
++            fragment_len = fragment_max;
++        }
++        remaining = fragment_len;
++        ssl_tls13_copy_certificate_fragment(&out, &remaining, &skip,
++                                            header, sizeof(header));
++        ssl_tls13_copy_certificate_fragment(&out, &remaining, &skip,
++                                            &context_len, 1);
++        ssl_tls13_copy_certificate_fragment(&out, &remaining, &skip,
++                                            ssl->handshake->certificate_request_context,
++                                            context_len);
++        ssl_tls13_copy_certificate_fragment(&out, &remaining, &skip,
++                                            list_header, sizeof(list_header));
++        for (crt = mbedtls_ssl_own_cert(ssl); crt != NULL; crt = crt->next) {
++            unsigned char cert_header[3];
++            MBEDTLS_PUT_UINT24_BE(crt->raw.len, cert_header, 0);
++            ssl_tls13_copy_certificate_fragment(&out, &remaining, &skip,
++                                                cert_header, sizeof(cert_header));
++            ssl_tls13_copy_certificate_fragment(&out, &remaining, &skip,
++                                                crt->raw.p, crt->raw.len);
++            ssl_tls13_copy_certificate_fragment(&out, &remaining, &skip,
++                                                empty_extensions, sizeof(empty_extensions));
++        }
++        if (remaining != 0 || skip != 0) {
++            return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
++        }
++        ret = ssl->handshake->update_checksum(ssl, ssl->out_msg, fragment_len);
++        if (ret != 0) {
++            return ret;
++        }
++        ssl->out_msgtype = MBEDTLS_SSL_MSG_HANDSHAKE;
++        ssl->out_msglen = fragment_len;
++        ssl->handshake->certificate_out_offset += fragment_len;
++        ret = mbedtls_ssl_write_record(ssl, 1);
++        if (ret != 0) {
++            return ret;
++        }
++    }
++    ssl->handshake->certificate_out_offset = 0;
++    return 0;
++}
++
+ int mbedtls_ssl_tls13_write_certificate(mbedtls_ssl_context *ssl)
+ {
+     int ret;
+     unsigned char *buf;
+     size_t buf_len, msg_len;
++    size_t list_len = 0;
++    size_t body_len;
++    const mbedtls_x509_crt *crt;
++    int fragment_max;
+ 
+     MBEDTLS_SSL_DEBUG_MSG(2, ("=> write certificate"));
++
++    /* The handshake and certificate-list lengths are each 24-bit values. */
++    for (crt = mbedtls_ssl_own_cert(ssl); crt != NULL; crt = crt->next) {
++        if (crt->raw.len > 0xffffff - 5 ||
++            list_len > 0xffffff - 5 - crt->raw.len) {
++            return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
++        }
++        list_len += crt->raw.len + 5;
++    }
++    body_len = 4 + ssl->handshake->certificate_request_context_len;
++    if (list_len > 0xffffff - body_len) {
++        return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
++    }
++    body_len += list_len;
++    fragment_max = mbedtls_ssl_get_max_out_record_payload(ssl);
++    if (fragment_max <= 0) {
++        return fragment_max < 0 ? fragment_max : MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
++    }
++    if (body_len + 4 > (size_t) fragment_max) {
++        return ssl_tls13_write_certificate_fragments(ssl, list_len, body_len,
++                                                     (size_t) fragment_max);
++    }
+ 
+     MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_start_handshake_msg(
+                              ssl, MBEDTLS_SSL_HS_CERTIFICATE, &buf, &buf_len));

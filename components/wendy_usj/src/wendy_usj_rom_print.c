@@ -8,7 +8,7 @@
 #include <stdint.h>
 
 #include "esp_log.h"
-#include "esp_rom_uart.h"
+#include "esp_rom_serial_output.h"
 #include "rom/ets_sys.h"
 
 /*

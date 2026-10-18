@@ -1,0 +1,41 @@
+--- a/core/shared/platform/esp-idf/espidf_memmap.c
++++ b/core/shared/platform/esp-idf/espidf_memmap.c
+@@ -21,6 +21,10 @@
+ os_mmap(void *hint, size_t size, int prot, int flags, os_file_handle file)
+ {
+     if (prot & MMAP_PROT_EXEC) {
++#if (WASM_MEM_DUAL_BUS_MIRROR == 0) && !defined(MALLOC_CAP_EXEC)
++        /* IDF memory protection disallows executable heap allocations. */
++        return NULL;
++#else
+ #if (WASM_MEM_DUAL_BUS_MIRROR != 0)
+         uint32_t mem_caps = MALLOC_CAP_SPIRAM;
+ #else
+@@ -49,6 +53,7 @@
+         memset(buf_fixed, 0, size);
+         return buf_fixed;
+ #endif
++#endif /* Executable heap allocation is available. */
+     }
+     else {
+ #if (WASM_MEM_DUAL_BUS_MIRROR != 0)
+--- a/core/shared/platform/esp-idf/platform_internal.h
++++ b/core/shared/platform/esp-idf/platform_internal.h
+@@ -19,6 +19,7 @@
+ #include <pthread.h>
+ #include <arpa/inet.h>
+ #include <sys/socket.h>
++#include <sys/stat.h>
+ #include <sys/uio.h>
+ #include <dirent.h>
+ 
+@@ -30,6 +31,9 @@
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
++
++/* WAMR supplies this stub; IDF 6 libc no longer declares it. */
++int renameat(int fromfd, const char *from, int tofd, const char *to);
+ 
+ #ifndef BH_PLATFORM_ESP_IDF
+ #define BH_PLATFORM_ESP_IDF

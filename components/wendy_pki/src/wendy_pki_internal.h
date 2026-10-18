@@ -1,18 +1,9 @@
 #pragma once
 #include "wendy_pki.h"
 #include "wendy_conf.h"
-#if CONFIG_WENDY_PKI_WOLFSSL
-/* Keep wolfSSL's OpenSSL aliases out of shared ESP-IDF/mbedTLS code. */
-typedef struct WOLFSSL WOLFSSL;
-typedef struct WOLFSSL_CTX WOLFSSL_CTX;
-typedef struct WOLFSSL_X509 WOLFSSL_X509;
-int wendy_pki_backend_init(void);
-int wendy_pki_certificate_policy(WOLFSSL_X509 *cert, bool trust_anchor);
-#else
 #include <mbedtls/ssl.h>
 #include <mbedtls/x509_crt.h>
 #include <mbedtls/pk.h>
-#endif
 #define PKI_MAX_RESPONSE 65536
 extern const uint8_t wendy_pki_device_roots_start[] asm("_binary_wendy_pki_device_roots_start");
 extern const uint8_t wendy_pki_device_roots_end[] asm("_binary_wendy_pki_device_roots_end");
@@ -23,17 +14,10 @@ extern const uint8_t wendy_pki_https_roots_end[] asm("_binary_wendy_pki_https_ro
 #define ROOT_SIZE(kind) (wendy_pki_##kind##_roots_end - wendy_pki_##kind##_roots_start - 1)
 struct wendy_pki_connection
 {
-#if CONFIG_WENDY_PKI_WOLFSSL
-    WOLFSSL_CTX *ctx;
-    WOLFSSL *ssl;
-    uint64_t socket_read_bytes, socket_written_bytes;
-    int stream_want;
-#else
     mbedtls_ssl_config config;
     mbedtls_ssl_context ssl;
     mbedtls_x509_crt roots, certificate;
     mbedtls_pk_context key;
-#endif
     int fd;
     struct wendy_pki_stream stream;
     enum wendy_peer_role peer_role;
@@ -67,5 +51,3 @@ int pki_tls_accept_lite(int fd, const uint8_t *key, size_t key_size, const char 
                        wendy_pki_connection **out, int64_t deadline);
 
 int pki_relay_grant(wendy_pki_connection *, const struct wendy_lite_trust *, int64_t deadline);
-
-int wendy_pki_rng(void *context, unsigned char *out, size_t size);

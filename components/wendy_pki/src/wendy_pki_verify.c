@@ -1,30 +1,54 @@
 #include "wendy_pki_verify.h"
+#include "wendy_pki_certificate_policy.h"
+#include "wendy_pki_crypto.h"
 #include "wendy_operator_auth.h"
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <mbedtls/x509_crt.h>
 #include <mbedtls/pk.h>
-#include <mbedtls/sha256.h>
 #include <mbedtls/oid.h>
+#include <mbedtls/platform.h>
+
+static pthread_once_t profile_once = PTHREAD_ONCE_INIT;
+static mbedtls_x509_crt_profile certificate_profile;
+static void init_profile(void)
+{
+    certificate_profile = mbedtls_x509_crt_profile_default;
+    /* esp-pqc uses SHA-512 as the ML-DSA-65 profile marker. The signature
+     * verifier still receives the complete certificate, without prehashing. */
+    certificate_profile.allowed_mds = MBEDTLS_X509_ID_FLAG(MBEDTLS_MD_SHA256) |
+        MBEDTLS_X509_ID_FLAG(MBEDTLS_MD_SHA384) | MBEDTLS_X509_ID_FLAG(MBEDTLS_MD_SHA512);
+    /* Mbed TLS also tests private key-container IDs against allowed_pks.
+     * Keep that mask intact; our callback applies the algorithm allowlist. */
+    certificate_profile.rsa_min_bitlen = 2048;
+}
+const mbedtls_x509_crt_profile *wendy_pki_certificate_profile(void)
+{
+    pthread_once(&profile_once, init_profile);
+    return &certificate_profile;
+}
 
 static mbedtls_x509_crt *parse_cert(const uint8_t *data, size_t size)
 {
-    mbedtls_x509_crt *cert = calloc(1, sizeof *cert);
+    if (wendy_pki_crypto_init()) return NULL;
+    mbedtls_x509_crt *cert = mbedtls_calloc(1, sizeof *cert);
     if (!cert) return NULL;
     mbedtls_x509_crt_init(cert);
-    if (mbedtls_x509_crt_parse_der(cert, data, size)) {
-        mbedtls_x509_crt_free(cert); free(cert); return NULL;
+    if (mbedtls_x509_crt_parse_der(cert, data, size) || cert->raw.len != size) {
+        mbedtls_x509_crt_free(cert); mbedtls_free(cert); return NULL;
     }
     return cert;
 }
 static void free_cert(mbedtls_x509_crt *cert)
 {
-    if (cert) { mbedtls_x509_crt_free(cert); free(cert); }
+    if (cert) { mbedtls_x509_crt_free(cert); mbedtls_free(cert); }
 }
 static int parse_pem(mbedtls_x509_crt *cert, const uint8_t *data, size_t size)
 {
-    if (!data || !size || size > 65536 || memchr(data, 0, size)) return -1;
+    if (!data || !size || size > 65536 || memchr(data, 0, size) ||
+        wendy_pki_crypto_init()) return -1;
     uint8_t *copy = calloc(1, size+1);
     if (!copy) return -1;
     memcpy(copy, data, size);
@@ -66,7 +90,8 @@ int wendy_pki_verify_roots(const uint8_t *pem, size_t size)
         mbedtls_x509_crt cert;
         mbedtls_x509_crt_init(&cert);
         int parsed = parse_pem(&cert, (const uint8_t *)p, end-p);
-        int ca = !parsed && cert.MBEDTLS_PRIVATE(ca_istrue) && !cert.next;
+        int ca = !parsed && cert.MBEDTLS_PRIVATE(ca_istrue) && !cert.next &&
+            !wendy_pki_certificate_policy(&cert, true);
         mbedtls_x509_crt_free(&cert);
         if (!ca)
             goto done;
@@ -191,23 +216,104 @@ static int certificate_parts(der cert, der *serial, der *issuer, der *spki)
         return -1;
     return 0;
 }
+static const uint8_t ec_oid[] = {0x2a, 0x86, 0x48, 0xce, 0x3d, 2, 1};
+static const uint8_t p256_oid[] = {0x2a, 0x86, 0x48, 0xce, 0x3d, 3, 1, 7};
+static const uint8_t p384_oid[] = {0x2b, 0x81, 4, 0, 0x22};
+static const uint8_t mldsa65_oid[] = {0x60, 0x86, 0x48, 1, 0x65, 3, 4, 3, 18};
+
+static int public_key_parts(der spki, der *id, der *params, der *key)
+{
+    if (take(&spki, 0x30, params) || take(params, 6, id) ||
+        take(&spki, 3, key) || spki.n || key->n < 2 || key->p[0])
+        return -1;
+    return 0;
+}
+
+static int ec_public_key(der spki, bool allow_p384)
+{
+    der id, params, key, curve;
+    return !public_key_parts(spki, &id, &params, &key) &&
+        bytes(id, ec_oid, sizeof ec_oid) && !take(&params, 6, &curve) && !params.n &&
+        (bytes(curve, p256_oid, sizeof p256_oid) ||
+         (allow_p384 && bytes(curve, p384_oid, sizeof p384_oid)));
+}
+
+int wendy_pki_certificate_policy(const mbedtls_x509_crt *cert, bool trust_anchor)
+{
+    if (!cert || !cert->pk_raw.p || !cert->pk_raw.len)
+        return -1;
+    der raw = {cert->pk_raw.p, cert->pk_raw.p, cert->pk_raw.len, cert->pk_raw.len, 0};
+    der spki, id, params, key;
+    if (take(&raw, 0x30, &spki) || raw.n || public_key_parts(spki, &id, &params, &key))
+        return -1;
+    const uint8_t rsa_oid[] = {0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 1, 1, 1};
+    const uint8_t rsa_pss_oid[] = {0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 1, 1, 10};
+    if (bytes(id, ec_oid, sizeof ec_oid)) {
+        if (mbedtls_pk_get_bitlen(&cert->pk) < 256) return -1;
+    } else if (bytes(id, rsa_oid, sizeof rsa_oid) || bytes(id, rsa_pss_oid, sizeof rsa_pss_oid)) {
+        if (mbedtls_pk_get_bitlen(&cert->pk) < 2048) return -1;
+    } else if (bytes(id, mldsa65_oid, sizeof mldsa65_oid)) {
+        if (params.n || key.n != 1953) return -1;
+    } else {
+        return -1;
+    }
+    if (trust_anchor) return 0;
+
+    der input = {cert->raw.p, cert->raw.p, cert->raw.len, cert->raw.len, 0};
+    der outer, tbs, signature_algorithm;
+    if (take(&input, 0x30, &outer) || input.n || take(&outer, 0x30, &tbs) ||
+        take(&outer, 0x30, &signature_algorithm) || take(&signature_algorithm, 6, &id))
+        return -1;
+    if (bytes(id, mldsa65_oid, sizeof mldsa65_oid))
+        return signature_algorithm.n ? -1 : 0;
+    const uint8_t rsa_prefix[] = {0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 1, 1};
+    const uint8_t ec_prefix[] = {0x2a, 0x86, 0x48, 0xce, 0x3d, 4, 3};
+    if ((id.n == 9 && !memcmp(id.p, rsa_prefix, sizeof rsa_prefix) &&
+         id.p[8] >= 11 && id.p[8] <= 13) ||
+        (id.n == 8 && !memcmp(id.p, ec_prefix, sizeof ec_prefix) &&
+         id.p[7] >= 2 && id.p[7] <= 4))
+        return 0;
+    if (bytes(id, rsa_pss_oid, sizeof rsa_pss_oid) &&
+        (cert->MBEDTLS_PRIVATE(sig_md) == MBEDTLS_MD_SHA256 ||
+         cert->MBEDTLS_PRIVATE(sig_md) == MBEDTLS_MD_SHA384 ||
+         cert->MBEDTLS_PRIVATE(sig_md) == MBEDTLS_MD_SHA512))
+        return 0;
+    return -1;
+}
+
+static int signature_algorithm(der *in, der *id)
+{
+    der seq, nil;
+    if (take(in, 0x30, &seq) || take(&seq, 6, id)) return -1;
+    // RFC 9881 requires absent parameters for pure ML-DSA AlgorithmIdentifier.
+    if (bytes(*id, mldsa65_oid, sizeof mldsa65_oid)) return seq.n ? -1 : 0;
+    if (seq.n && (take(&seq, 5, &nil) || nil.n)) return -1;
+    return seq.n ? -1 : 0;
+}
+
 static int verify_signature(der spki, der sig_alg, der attrs, der sig)
 {
     const uint8_t es256[] = {0x2a,0x86,0x48,0xce,0x3d,4,3,2};
-    if (!bytes(sig_alg, es256, sizeof es256)) return -1;
     mbedtls_pk_context key;
     mbedtls_pk_init(&key);
     uint8_t *message = malloc(attrs.raw_n), hash[32];
     int result = -1;
     if (!message) goto done;
     memcpy(message, attrs.raw, attrs.raw_n); message[0] = 0x31;
-    if (mbedtls_pk_parse_public_key(&key, spki.raw, spki.raw_n) ||
-        !mbedtls_pk_can_do(&key, MBEDTLS_PK_ECDSA) ||
-        (mbedtls_pk_ec(key)->MBEDTLS_PRIVATE(grp).id != MBEDTLS_ECP_DP_SECP256R1 &&
-         mbedtls_pk_ec(key)->MBEDTLS_PRIVATE(grp).id != MBEDTLS_ECP_DP_SECP384R1) ||
-        mbedtls_sha256(message, attrs.raw_n, hash, 0) ||
-        mbedtls_pk_verify(&key, MBEDTLS_MD_SHA256, hash, sizeof hash, sig.p, sig.n)) goto done;
-    result = 0;
+    if (mbedtls_pk_parse_public_key(&key, spki.raw, spki.raw_n)) goto done;
+    if (bytes(sig_alg, mldsa65_oid, sizeof mldsa65_oid)) {
+        der key_id, params, raw_key;
+        if (public_key_parts(spki, &key_id, &params, &raw_key) || params.n ||
+            !equal(key_id, sig_alg) || raw_key.n != 1953 || sig.n != 3309)
+            goto done;
+        // Pure ML-DSA signs the complete DER SET, with an empty context.
+        result = mbedtls_pk_verify_ext(MBEDTLS_PK_SIGALG_MLDSA65, &key,
+            MBEDTLS_MD_NONE, message, attrs.raw_n, sig.p, sig.n);
+    } else if (bytes(sig_alg, es256, sizeof es256) && ec_public_key(spki, true)) {
+        if (wendy_pki_sha256(message, attrs.raw_n, hash)) goto done;
+        result = mbedtls_pk_verify_ext(MBEDTLS_PK_SIGALG_ECDSA, &key,
+            MBEDTLS_MD_SHA256, hash, sizeof hash, sig.p, sig.n);
+    }
 done:
     free(message); mbedtls_pk_free(&key); return result;
 }
@@ -218,10 +324,26 @@ static int cert_time(const mbedtls_x509_time *t, time_t *out)
         t->year,t->mon,t->day,t->hour,t->min,t->sec) != 15) return -1;
     return utc_time((der){(uint8_t *)text, NULL, 15, 0, 24}, out);
 }
+struct verification_time {
+    time_t now;
+    const mbedtls_x509_crt *anchors;
+};
+static bool valid_at(const mbedtls_x509_crt *cert, time_t now)
+{
+    time_t start, end;
+    return !cert_time(&cert->valid_from, &start) && !cert_time(&cert->valid_to, &end) &&
+        start <= now && end > now;
+}
 static int verify_at(void *context, mbedtls_x509_crt *cert, int depth, uint32_t *flags)
 {
     (void)depth;
-    time_t now = *(time_t *)context, start, end;
+    const struct verification_time *verification = context;
+    time_t now = verification->now, start, end;
+    bool anchor = false;
+    for (const mbedtls_x509_crt *a = verification->anchors; a; a = a->next)
+        if (a->raw.len == cert->raw.len && !memcmp(a->raw.p, cert->raw.p, a->raw.len))
+            anchor = true;
+    if (wendy_pki_certificate_policy(cert, anchor)) *flags |= MBEDTLS_X509_BADCERT_OTHER;
     // Replace only wall-clock date flags with checks at the authenticated time.
     *flags &= ~(MBEDTLS_X509_BADCERT_EXPIRED | MBEDTLS_X509_BADCERT_FUTURE);
     if (cert_time(&cert->valid_from, &start) || start > now) *flags |= MBEDTLS_X509_BADCERT_FUTURE;
@@ -231,16 +353,34 @@ static int verify_at(void *context, mbedtls_x509_crt *cert, int depth, uint32_t 
 static int verify_chain(mbedtls_x509_crt *leaf, mbedtls_x509_crt **certs, int count,
     const uint8_t *roots, size_t size, time_t now)
 {
-    mbedtls_x509_crt chain, anchors;
-    mbedtls_x509_crt_init(&chain); mbedtls_x509_crt_init(&anchors);
+    mbedtls_x509_crt chain, *anchors = mbedtls_calloc(1, sizeof *anchors);
+    mbedtls_x509_crt_init(&chain);
+    if (anchors) mbedtls_x509_crt_init(anchors);
     int result = -1; uint32_t flags = 0;
-    if (wendy_pki_verify_roots(roots, size) || parse_pem(&anchors, roots, size) ||
+    if (!anchors || wendy_pki_verify_roots(roots, size) || parse_pem(anchors, roots, size) ||
         mbedtls_x509_crt_parse_der(&chain, leaf->raw.p, leaf->raw.len)) goto done;
-    for (int i=0; i<count; i++) if (certs[i] != leaf &&
+    /* Mbed TLS prefers parents valid at the system clock before calling the
+     * verification callback. Only offer candidates valid at the signed time. */
+    mbedtls_x509_crt **candidate = &anchors;
+    while (*candidate) {
+        mbedtls_x509_crt *cert = *candidate;
+        if (valid_at(cert, now)) {
+            candidate = &cert->next;
+        } else {
+            *candidate = cert->next;
+            cert->next = NULL;
+            free_cert(cert);
+        }
+    }
+    if (!anchors) goto done;
+    for (int i=0; i<count; i++) if (certs[i] != leaf && valid_at(certs[i], now) &&
         mbedtls_x509_crt_parse_der(&chain, certs[i]->raw.p, certs[i]->raw.len)) goto done;
-    if (!mbedtls_x509_crt_verify(&chain, &anchors, NULL, NULL, &flags, verify_at, &now) && !flags) result = 0;
+    struct verification_time verification = {now, anchors};
+    if (!mbedtls_x509_crt_verify_with_profile(&chain, anchors, NULL,
+            wendy_pki_certificate_profile(), NULL, &flags, verify_at, &verification) && !flags)
+        result = 0;
 done:
-    mbedtls_x509_crt_free(&chain); mbedtls_x509_crt_free(&anchors); return result;
+    mbedtls_x509_crt_free(&chain); free_cert(anchors); return result;
 }
 static int tsa_eku(der cert)
 {
@@ -317,7 +457,7 @@ int wendy_pki_verify_time(const uint8_t *input, size_t size, const uint8_t nonce
     REQUIRE(!take(&signers, 0x30, &si) && !signers.n && !number(&si, 1) && !take(&si, 0x30, &sid));
     REQUIRE(!take(&sid, 0x30, &sid_issuer) && !integer(&sid, &sid_serial) && !sid.n &&
             !sha256_algorithm(&si));
-    REQUIRE(!take(&si, 0xa0, &attrs) && !algorithm(&si, &sig_alg) && !take(&si, 4, &sig) && !si.n);
+    REQUIRE(!take(&si, 0xa0, &attrs) && !signature_algorithm(&si, &sig_alg) && !take(&si, 4, &sig) && !si.n);
     while (certset.n)
     {
         REQUIRE(count < 8 && !take(&certset, 0x30, &tmp));
@@ -335,7 +475,7 @@ int wendy_pki_verify_time(const uint8_t *input, size_t size, const uint8_t nonce
     REQUIRE(signer_index >= 0);
     REQUIRE(!certificate_parts(rawcerts[signer_index], &serial, &issuer, &spki));
     REQUIRE(!tsa_eku(rawcerts[signer_index]));
-    REQUIRE(!mbedtls_sha256(tst_bytes.p, tst_bytes.n, hash, 0));
+    REQUIRE(!wendy_pki_sha256(tst_bytes.p, tst_bytes.n, hash));
     der attrlist = attrs, attr, id, set, value;
     int have_ct = 0, have_md = 0, have_ess = 0;
     while (attrlist.n)
@@ -372,7 +512,7 @@ int wendy_pki_verify_time(const uint8_t *input, size_t size, const uint8_t nonce
                         equal(name, issuer) && !integer(&issuer_serial, &ess_serial) &&
                         !issuer_serial.n && equal(ess_serial, serial));
             }
-            REQUIRE(!mbedtls_sha256(rawcerts[signer_index].p, rawcerts[signer_index].n, cert_hash_bytes, 0) &&
+            REQUIRE(!wendy_pki_sha256(rawcerts[signer_index].p, rawcerts[signer_index].n, cert_hash_bytes) &&
                     bytes(cert_hash, cert_hash_bytes, 32));
         }
     }
@@ -382,7 +522,7 @@ int wendy_pki_verify_time(const uint8_t *input, size_t size, const uint8_t nonce
             !take(&tst, 6, &tmp));
     REQUIRE(!take(&tst, 0x30, &imprint) && !sha256_algorithm(&imprint) &&
             !take(&imprint, 4, &digest) && !imprint.n);
-    REQUIRE(!mbedtls_sha256(nonce, 32, hash, 0) && bytes(digest, hash, 32));
+    REQUIRE(!wendy_pki_sha256(nonce, 32, hash) && bytes(digest, hash, 32));
     REQUIRE(!integer(&tst, &integer_value) && !take(&tst, 24, &generation) &&
             !utc_time(generation, &when) && when >= floor);
     if (tst.n && tst.p[0] == 0x30)
@@ -438,7 +578,12 @@ int wendy_pki_verify_identity(const uint8_t *pem, size_t size, const uint8_t *ro
     mbedtls_x509_crt_init(&chain); mbedtls_pk_init(&private_key);
     int result = -1, count = 0;
     mbedtls_x509_crt *certs[8];
+    der leaf_der, leaf_spki, serial, issuer, key_der = {key, key, key_size, key_size, 0}, key_sequence;
+    if (take(&key_der, 0x30, &key_sequence) || key_der.n) goto done;
     if (parse_pem(&chain, pem, size)) goto done;
+    leaf_der = (der){chain.raw.p, chain.raw.p, chain.raw.len, chain.raw.len, 0};
+    if (certificate_parts(leaf_der, &serial, &issuer, &leaf_spki) ||
+        !ec_public_key(leaf_spki, false)) goto done;
     for (mbedtls_x509_crt *c=&chain; c; c=c->next) {
         if (count==8) goto done;
         certs[count++]=c;
@@ -447,8 +592,8 @@ int wendy_pki_verify_identity(const uint8_t *pem, size_t size, const uint8_t *ro
         !has_eku(&chain, MBEDTLS_OID_CLIENT_AUTH, MBEDTLS_OID_SIZE(MBEDTLS_OID_CLIENT_AUTH)) ||
         !has_eku(&chain, MBEDTLS_OID_SERVER_AUTH, MBEDTLS_OID_SIZE(MBEDTLS_OID_SERVER_AUTH)) ||
         single_uri(&chain, principal) ||
-        mbedtls_pk_parse_key(&private_key,key,key_size,NULL,0,wendy_pki_rng,NULL) ||
-        mbedtls_pk_check_pair(&chain.pk,&private_key,wendy_pki_rng,NULL) ||
+        mbedtls_pk_parse_key(&private_key,key,key_size,NULL,0) ||
+        mbedtls_pk_check_pair(&chain.pk,&private_key) ||
         cert_time(&chain.valid_to, expires) || *expires<=now) goto done;
     result = 0;
 done:
@@ -462,7 +607,7 @@ size_t wendy_pki_time_request(uint8_t out[128], const uint8_t nonce[32])
                                      0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65,
                                      0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20};
     memcpy(out, prefix, sizeof prefix);
-    if (mbedtls_sha256(nonce, 32, out + sizeof prefix, 0))
+    if (wendy_pki_sha256(nonce, 32, out + sizeof prefix))
         return 0;
     size_t n = sizeof prefix + 32;
     out[n++] = 2;

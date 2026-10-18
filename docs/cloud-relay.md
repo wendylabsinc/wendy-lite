@@ -59,18 +59,20 @@ sessions at expiry and after 60 seconds idle. Firmware also refuses reads and
 writes after the session deadline. Inner TLS establishment plus grant admission
 share a 10-second deadline; outer control reads have a 30-second deadline.
 
-Build with ESP-IDF 5.5.4 and enable `CONFIG_WENDY_CLOUD=y` as described in
-[enrollment](cloud-enrollment.md). All images include PKI support. The relay uses
-wolfSSL by default for ML-DSA device or infrastructure certificate chains.
-Set `CONFIG_WENDY_PKI_WOLFSSL=n` to use ESP-IDF mbedTLS. Both profiles require
-compatible device, HTTPS and TSA trust, and use the separate P-256 Lite authority
+Build with ESP-IDF 6.0.3, or ESP-IDF 6.1 for the
+[ESP32-S31 preview target](../README.md#esp32-s31-notes), and enable
+`CONFIG_WENDY_CLOUD=y` as described in [enrollment](cloud-enrollment.md).
+All images include PKI support. The relay uses
+esp-pqc's mbedTLS backend for ML-DSA-65 device or infrastructure certificate chains.
+ML-DSA-44 and ML-DSA-87 issuers are unsupported. The firmware requires compatible
+device, HTTPS and TSA trust, and uses the separate P-256 Lite authority
 for relay operators and P-256 keys for session grant verification.
 Old WR01/WR02 firmware and unsigned relay opens are incompatible.
 
 ## Verification
 
 ```sh
-cmake -S components/wendy_pki/tests -B build-pki -DWENDY_PKI_WOLFSSL=ON
+cmake -S components/wendy_pki/tests -B build-pki
 cmake --build build-pki
 ctest --test-dir build-pki --output-on-failure
 ```
@@ -85,35 +87,25 @@ See [fixture provenance and regeneration](../components/wendy_pki/tests/lite-fix
 A physical-board trial must still verify the complete cloud relay, including
 outer shutdown/inner handshake, key rotation, resource use and crypto latency.
 
-## Default image size
+## Image size
 
+These images were built with ESP-IDF 6.0.3, Cloud and TLS 1.3 enabled,
+ML-DSA-65 verification, and fixed 16 KiB TLS receive buffers:
+
+| Build | Firmware bytes | Free app partition bytes |
+| --- | ---: | ---: |
+| ESP32-C6, WASM disabled | 1,461,232 | 472,080 |
+| ESP32-C6, WASM and Bluetooth disabled | 1,058,736 | 874,576 |
+| ESP32-C6, WASM enabled | 1,660,176 | 273,136 |
+| ESP32-S3 generic native OTA | 1,161,088 | 739,456 |
+
+The C6 measurements use the base factory layout. The S3 measurement uses
+`boards/esp32s3_generic_native.defaults` and reports free space in each OTA slot.
 WASM and its host API exports are opt-in through `boards/wasm.defaults`.
-Historical measurements on ESP32-C6 with ESP-IDF 5.5.4 and Cloud enabled:
-
-| Build | Firmware bytes |
-| --- | ---: |
-| Previous wolfSSL + WASM | 1,838,784 |
-| Previous wolfSSL, WASM disabled | 1,638,064 |
-| mbedTLS only, WASM disabled | 1,386,000 |
-| mbedTLS only, WASM enabled | 1,586,688 |
-| mbedTLS only, WASM and Bluetooth disabled | 1,012,544 |
-
-In these builds, removing wolfSSL saved 252,064 bytes against the no-WASM baseline.
-These are controlled local builds before the wolfSSL profile was restored,
-not measurements of deployed hardware or the current default firmware, which
-includes wolfSSL and ML-DSA support.
-Existing sdkconfig files retain their settings, so use a fresh configuration
+Existing `sdkconfig` files retain their settings, so use a fresh configuration
 when adopting these defaults. Partition layouts are unchanged.
 
-These measurements explicitly enable TLS 1.3. Earlier numbers of 1,340,432 bytes
-without WASM and 1,541,552 bytes with WASM came from reused sdkconfig files with
-TLS 1.3 disabled and do not describe the intended Cloud firmware. Confirm
-`CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y` in the generated sdkconfig. Use a fresh
-configuration when adopting changed defaults.
-
 Append `boards/no-ble.defaults` last to omit Bluetooth while retaining USB,
-Wi-Fi and Cloud. In the historical mbedTLS-only C6 builds above, disabling
-Bluetooth saved 373,456 bytes and left 920,768 bytes in the factory partition.
-Linker archive and symbol inspection confirmed the BLE stack was absent.
-Both Bluetooth modes built; hardware behavior still needs validation.
+Wi-Fi and Cloud. The C6 build without Bluetooth contains no BLE stack archive.
 See [Bluetooth configuration](../README.md#optional-bluetooth-support).
+Physical-board heap use, latency and enrollment behavior still need validation.

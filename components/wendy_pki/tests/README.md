@@ -1,9 +1,18 @@
 # PKI interoperability tests
 
-The default host test build uses mbedTLS. Run the same tests with the optional
-wolfSSL backend by initializing `components/wendy_wolfssl/wolfssl` and configuring
-a separate build directory with `-DWENDY_PKI_WOLFSSL=ON`. Go 1.27 is required for
-the ML-DSA certificate fixtures.
+The host tests build the pinned esp-pqc mbedTLS 4 and liboqs libraries with
+ML-DSA-65 verification. Initialize nested dependencies with
+`git submodule update --init --recursive components/esp-pqc`, set `IDF_PATH` to
+ESP-IDF 6.0.3, and install Go 1.27 or newer before configuring:
+
+```sh
+cmake -S components/wendy_pki/tests -B build-pki
+cmake --build build-pki
+ctest --test-dir build-pki --output-on-failure
+```
+
+`crypto_test` verifies PSA initialization and P-256 private-key and CSR output
+compatibility. Production firmware and host tests use the same crypto helper.
 
 `verify_test` verifies the committed pki-core fixtures at their authenticated
 issuance time, so the tests remain useful after the certificates expire.
@@ -75,9 +84,8 @@ wrong tenants, device roles, missing or invalid certificates, TLS 1.2 and failed
 waits are rejected. The tests check buffered plaintext readiness, revocation
 during reset, refusal to detach a stream as a socket, and transport ownership
 after both accepted and rejected handshakes.
-The wolfSSL profile runs the same cases with ML-DSA-44, ML-DSA-65, and ML-DSA-87
-roots and P-256 device/operator keys. Set `IDF_PATH` to ESP-IDF 5.5.4 and install
-Go 1.27 or newer before configuring host tests.
+The same cases run with ML-DSA-65 roots and P-256 device/operator keys.
+ML-DSA-44 and ML-DSA-87 chains must be rejected.
 
 `operator_auth_test_driver.go` creates temporary signed certificates for the
 legacy LAN/BLE authentication helper. Unit checks cover device tenant extraction,
@@ -91,13 +99,12 @@ wrong organizations, roles, authorities, missing or duplicate URI identities,
 invalid subject segments, URI query/fragment/percent/NUL suffixes, missing or
 incorrect EKUs, and CA leaves. Safe operator names and nested subjects remain
 valid, matching the pki-core issuer grammar. The same signed fixtures also
-exercise the selected PKI backend's operator verifier.
+exercise the PKI operator verifier.
 The LAN policy additionally accepts same-tenant device certificates and records
 their restricted role. Tests exercise both policies against the same fixtures,
-reject role changes during later verification, and check both backends' peer
+reject role changes during later verification, and check the TLS adapters' peer
 classifiers.
-These tests run with mbedTLS under both host build profiles because legacy LAN
-and BLE use mbedTLS regardless of the PKI backend.
+These tests use the same mbedTLS backend as PKI, LAN, and BLE.
 The host adapter also checks anonymous TLS 1.2 and TLS 1.3 access in its
 unprovisioned configuration, with a self-signed server certificate containing no
 tenant identity. Provisioned configurations continue to reject missing client
@@ -121,20 +128,33 @@ does not extend the deadline. Successful writes do extend it, so a transfer
 lasting longer than the timeout and an idle connection remain connected.
 
 An outbound case exercises `pki_tls_connect` against Go's verifying TLS server.
-The device chain includes three intermediates and exceeds 16 KB for every ML-DSA
-profile. A host-only send adapter limits writes to 512 bytes and alternates them
+The device chain includes three intermediates and exceeds 16 KiB with ML-DSA-65
+issuers. A host-only send adapter limits writes to 512 bytes and alternates them
 with `EAGAIN`; the test requires both partial writes and retries during the
 handshake. It also verifies a P-384 server CA and exchanges application data in
 both directions after the server authenticates the complete device chain.
+The same chain is sent by the firmware's stream-server path, whose callbacks
+limit writes to 61 bytes and reads to 73 bytes and inject both retry directions.
+These cases exercise the tracked outgoing Certificate fragmentation patch in
+both TLS roles, including transcript integrity and record counters across retries.
+A negative case ends the connection after the first complete encrypted
+Certificate record; the Go peer must reject the incomplete handshake message.
 
-The outbound server uses Go's default session-ticket settings. Firmware disables
-PSK negotiation and always performs a fresh certificate handshake. Without
-`NO_PSK`, the pinned wolfSSL version advertises PSK modes despite its disabled
-session cache; large certificate-bound tickets from Go and Cloud BoringSSL then
-fail the first application read with `INCOMPLETE_DATA` (`-310`). The outbound
-regression covers that configuration failure as well as partial client-flight
-writes. Host socket tests do not establish ESP32 handshake latency or reproduce
-a sustained lwIP send-window stall.
+A second Mbed TLS client negotiates 512-byte TLS records and sends a valid
+ML-DSA-65-signed P-256 operator chain to the production stream server. This
+exercises incoming handshake reassembly across records, separately from the
+transport callbacks' short reads. Incoming Certificate handshakes remain bounded
+by the configured 16 KiB input buffer; a valid chain exceeding that limit is
+rejected. The outgoing patch does not enlarge this bound.
+Firmware disables IDF dynamic buffers because their allocation can follow the
+current record's size while the bundled library bounds reassembly against the
+configured input size. The fixed-buffer host tests cover the chosen allocation
+model; they do not validate the disabled dynamic-buffer wrappers on hardware.
+
+The outbound server uses Go's default session-ticket settings. Firmware performs
+a fresh certificate handshake. The outbound regression checks application data
+after the handshake and partial client-flight writes. Host socket tests do not
+establish ESP32 handshake latency or reproduce a sustained lwIP send-window stall.
 
 `mldsa_test` covers signed timestamps and mixed ML-DSA/P-256 identity chains at
 authenticated time under incorrect device clocks, including certificate date,
@@ -145,5 +165,5 @@ The enrollment capability tests compile the production WendyCom capability
 helper with Cloud, Wi-Fi, and PKI individually disabled. They ensure unsupported
 profiles report an explicit false enrollment capability while retaining local
 identity recovery wherever PKI is available. They also check that ML-DSA support
-is advertised only when both PKI and wolfSSL are enabled and that false values
+is advertised only when both PKI and ML-DSA-65 verification are enabled and that false values
 survive protobuf encoding.

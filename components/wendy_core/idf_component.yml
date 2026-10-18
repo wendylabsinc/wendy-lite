@@ -16,23 +16,23 @@ dependencies:
   wendy_wasm:
     override_path: "../wendy_wasm"
     rules:
-      - if: "$CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True"
+      - if: "target != esp32s31 && $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True"
   wendy_callback:
     override_path: "../wendy_callback"
     rules:
-      - if: "$CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True"
+      - if: "target != esp32s31 && $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True"
   wendy_hal:
     override_path: "../wendy_hal"
     rules:
-      - if: "$CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True"
+      - if: "target != esp32s31 && $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True"
   wendy_hal_export:
     override_path: "../wendy_hal_export"
     rules:
-      - if: "$CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True"
+      - if: "target != esp32s31 && $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True"
   wendy_net:
     override_path: "../wendy_net"
     rules:
-      - if: "$CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True"
+      - if: "target != esp32s31 && $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True"
   wendy_usj:
     override_path: "../wendy_usj"
   wendy_wifi:

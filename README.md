@@ -6,6 +6,21 @@ The Wendy host firmware exposes a comprehensive set of hardware APIs through WAS
 
 Wendy Lite also supports native applications, written in C and C++ and built using the ESP-IDF tools and API.
 
+Build with ESP-IDF 6.0.3, or ESP-IDF 6.1 for the ESP32-S31 preview target.
+Initialize nested dependencies with
+`git submodule update --init --recursive`. The pinned esp-pqc component supplies
+mbedTLS 4 and ML-DSA-65 certificate verification; P-256 device keys remain supported.
+CI uses `espressif/idf:v6.0.3` for existing targets and `espressif/idf:v6.1`
+for ESP32-S31. To build ESP32-C6 with the same container:
+
+```sh
+docker run --rm -v "$PWD:/project" -w /project espressif/idf:v6.0.3 \
+  idf.py -B build-idf6 -D SDKCONFIG=sdkconfig.idf6 \
+  -D SDKCONFIG_DEFAULTS=sdkconfig.defaults -D IDF_TARGET=esp32c6 build
+```
+
+Use a fresh build directory and configuration when upgrading from ESP-IDF 5.
+
 ## Optional WASM support
 
 Firmware builds omit the WASM runtime by default. To enable it on a supported
@@ -18,11 +33,13 @@ idf.py build
 ```
 
 Existing `sdkconfig` files retain their choices. Configure a fresh build to pick
-up the new defaults, including disabled WASM callbacks and host API exports. The ESP32-C61 still has no supported WASM runtime. Disabling
+up the new defaults, including disabled WASM callbacks and host API exports.
+ESP32-C61 and ESP32-S31 have no supported WASM runtime. Disabling
 WASM does not change partition layouts or reclaim existing WASM data partitions.
 
 The firmware catalog publishes only native OTA variants: generic ESP32-C5,
-ESP32-C6, ESP32-C61 and ESP32-S3, plus Seeed XIAO ESP32S3 and M5Stack StampS3.
+ESP32-C6, ESP32-C61, ESP32-S3 and preview ESP32-S31, plus Seeed XIAO ESP32S3
+and M5Stack StampS3.
 Legacy WASM-layout images, including the ESP32-P4 images, are available only as
 manual builds.
 
@@ -54,7 +71,8 @@ unavailable. The profile can be combined with `boards/wasm.defaults`; put
 
 ## Supported Hardware
 
-Wendy Lite firmware builds for five ESP-IDF targets:
+Wendy Lite has firmware configurations for six ESP-IDF targets. ESP32-S31 is
+a preview target and has not been tested on hardware.
 
 | Target | Reference board (Espressif dev kit) | Wi-Fi / BT |
 |---|---|---|
@@ -63,8 +81,14 @@ Wendy Lite firmware builds for five ESP-IDF targets:
 | `esp32c61` | Espressif ESP32-C61-DevKitC | Native Wi-Fi 6 + BLE — no WASM app support yet, see [ESP32-C61 notes](#esp32-c61-notes) |
 | `esp32p4` | None (see [ESP32-P4 notes](#esp32-p4-notes)) | Via on-board ESP32-C6 over SDIO (ESP-Hosted) |
 | `esp32s3` | None | Native Wi-Fi + BLE |
+| `esp32s31` | None, generic preview profile | Native Wi-Fi + BLE; native apps only, see [ESP32-S31 notes](#esp32-s31-notes) |
 
-Each target except `esp32p4` has a **generic board** configuration (`boards/<target>_generic*.cfg`) that runs on the reference board above unmodified, using 4 MB flash, no PSRAM, and the system allocator for the WAMR pool. `esp32p4` has no generic board at all — a board-specific overlay is mandatory (see [ESP32-P4 notes](#esp32-p4-notes)).
+Each target except `esp32p4` has a generic board configuration in
+`boards/<target>_generic*.cfg` that uses 4 MB flash and leaves PSRAM disabled.
+Where WASM is supported and enabled, its pool uses the system allocator.
+ESP32-S31's generic profile assumes at least 4 MB of flash and does not configure
+board-specific peripherals. ESP32-P4 requires a board-specific overlay; see
+[ESP32-P4 notes](#esp32-p4-notes).
 
 Beyond the generic boards, Wendy Lite has overlays for the following boards, each with its own flash size, PSRAM, and peripherals:
 
@@ -90,6 +114,15 @@ idf.py set-target esp32c5   # Espressif ESP32-C5-DevKitC
 idf.py set-target esp32c6   # Espressif ESP32-C6-DevKitC
 idf.py set-target esp32c61  # Espressif ESP32-C61-DevKitC
 idf.py set-target esp32s3   # generic ESP32-S3 board
+```
+
+ESP32-S31 uses ESP-IDF 6.1 and the preview option. Start with a separate build
+directory and sdkconfig:
+
+```sh
+idf.py --preview -B build/esp32s31 -D SDKCONFIG=build/esp32s31/sdkconfig \
+  @boards/esp32s31_generic_native.cfg set-target esp32s31
+idf.py --preview -B build/esp32s31 -D SDKCONFIG=build/esp32s31/sdkconfig build
 ```
 
 For a specific board, select its overlay from `boards/` before `set-target`:
@@ -141,6 +174,43 @@ Configure a fresh build to apply these defaults, as described above.
 ### ESP32-C61 notes
 
 No published `espressif/wasm-micro-runtime` release lists `esp32c61` as a supported target yet, so WASM app support -- and every component that exists solely to bridge native code to WASM guests (`wendy_wasm`, `wendy_hal`, `wendy_hal_export`, and everything `wendy_hal_export` pulls in) -- is dropped from the build on this target via `EXCLUDE_COMPONENTS` set conditionally on `IDF_TARGET` in the root `CMakeLists.txt`, rather than depending on an unofficial WAMR fork. This is target-conditioned in `CMakeLists.txt` itself (not the board argfile) so it applies however `esp32c61` gets selected as the target. The C61 also has no RMT peripheral, so the NeoPixel HAL falls back to the SPI-backed `led_strip` driver automatically on chips where it's built.
+
+### ESP32-S31 notes
+
+Use ESP-IDF 6.1 for ESP32-S31. The SDK still lists `esp32s31` as a
+[preview target](https://github.com/espressif/esp-idf/blob/v6.1/tools/idf_py_actions/constants.py),
+so pass `--preview` to `idf.py`. Other Wendy Lite targets remain on ESP-IDF 6.0.3.
+
+The `esp32s31_generic_native` profile uses 4 MB of flash, DIO flash access at
+40 MHz, and the existing `partitions.ota.csv` layout. Its two app slots are
+1,900,544 bytes each. PSRAM stays disabled, including on modules that contain it.
+These are conservative profile settings, not specifications for a particular
+development board. Check the board's flash configuration before flashing.
+
+S31 supports native applications only. The pinned
+[`espressif/wasm-micro-runtime` 2.4.0~1](https://components.espressif.com/components/espressif/wasm-micro-runtime/versions/2.4.0~1)
+does not list this target, so Wendy excludes the WASM runtime and its adapters.
+The `boards/wasm.defaults` overlay cannot enable WASM on S31.
+
+To build with the same SDK as CI:
+
+```sh
+docker run --rm -v "$PWD:/project" -w /project espressif/idf:v6.1 \
+  idf.py --preview -B build/esp32s31 -D SDKCONFIG=build/esp32s31/sdkconfig \
+  @boards/esp32s31_generic_native.cfg -D IDF_TARGET=esp32s31 build
+```
+
+With a local ESP-IDF 6.1 environment, flash and monitor the same build:
+
+```sh
+idf.py --preview -B build/esp32s31 -D SDKCONFIG=build/esp32s31/sdkconfig flash monitor
+```
+
+Use the generated `build/esp32s31/flash_args` if flashing individual images with
+esptool. S31's bootloader starts at `0x2000`; do not reuse another target's offsets.
+
+This profile has not been tested on an ESP32-S31 board. Boot, USB enrollment,
+Wi-Fi, BLE, and OTA behavior still need hardware validation.
 
 ### ESP32-P4 notes
 

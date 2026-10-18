@@ -58,6 +58,7 @@ menu "Wendy Core"
 
     config WENDY_CORE_WASM_APP_SUPPORT
         bool "Enable WASM app support"
+        depends on !IDF_TARGET_ESP32S31
         default n
         help
             Enable the ability to run WASM applications on the device.

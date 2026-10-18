@@ -2,6 +2,7 @@
 #include "wendy_ble_l2cap.h"
 #include "wendy_conf.h"
 #include "wendy_pki.h"
+#include "wendy_pki_crypto.h"
 
 #include <string.h>
 
@@ -9,8 +10,6 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 
-#include "mbedtls/ctr_drbg.h"
-#include "mbedtls/entropy.h"
 #include "mbedtls/error.h"
 // For MBEDTLS_ERR_NET_{RECV,SEND}_FAILED, the codes mbedTLS expects a BIO to
 // report a broken transport with. None of the socket helpers are used.
@@ -44,8 +43,6 @@ static mbedtls_ssl_context      _ssl;
 static mbedtls_ssl_config       _conf;
 static mbedtls_x509_crt         _own_cert;
 static mbedtls_pk_context       _own_key;
-static mbedtls_entropy_context  _entropy;
-static mbedtls_ctr_drbg_context _ctr_drbg;
 
 
 //--- internal functions ---//
@@ -143,8 +140,6 @@ static void _free_contexts(void)
     mbedtls_ssl_config_free(&_conf);
     mbedtls_x509_crt_free(&_own_cert);
     mbedtls_pk_free(&_own_key);
-    mbedtls_ctr_drbg_free(&_ctr_drbg);
-    mbedtls_entropy_free(&_entropy);
 }
 
 
@@ -152,7 +147,6 @@ static void _free_contexts(void)
 
 esp_err_t wble_tls_session_start(bool enrolled)
 {
-    static const char *pers = "wendy_ble_tls";
     esp_err_t result = ESP_FAIL;
 
     _active = false;
@@ -191,8 +185,6 @@ esp_err_t wble_tls_session_start(bool enrolled)
     mbedtls_ssl_config_init(&_conf);
     mbedtls_x509_crt_init(&_own_cert);
     mbedtls_pk_init(&_own_key);
-    mbedtls_entropy_init(&_entropy);
-    mbedtls_ctr_drbg_init(&_ctr_drbg);
 
 #if CONFIG_WENDY_BLE_REQUIRE_MTLS
     ESP_LOGW(TAG, "BLE requires enrollment; use USB for setup");
@@ -203,20 +195,17 @@ esp_err_t wble_tls_session_start(bool enrolled)
     struct wendy_conf_span cert = wendy_conf_get_default_certificate();
     struct wendy_conf_span key = wendy_conf_get_default_private_key();
 
-    int ret = mbedtls_ctr_drbg_seed(&_ctr_drbg, mbedtls_entropy_func, &_entropy,
-                                    (const unsigned char *)pers, strlen(pers));
-    if (ret != 0) {
-        _log_mbedtls_error("ctr_drbg_seed", ret);
+    if (wendy_pki_crypto_init()) {
+        ESP_LOGE(TAG, "PSA cryptography initialization failed");
         goto fail;
     }
 
-    ret = mbedtls_x509_crt_parse_der(&_own_cert, cert.data, cert.size);
+    int ret = mbedtls_x509_crt_parse_der(&_own_cert, cert.data, cert.size);
     if (ret != 0) {
         _log_mbedtls_error("parsing the device certificate", ret);
         goto fail;
     }
-    ret = mbedtls_pk_parse_key(&_own_key, key.data, key.size, NULL, 0,
-                               mbedtls_ctr_drbg_random, &_ctr_drbg);
+    ret = mbedtls_pk_parse_key(&_own_key, key.data, key.size, NULL, 0);
     if (ret != 0) {
         _log_mbedtls_error("parsing the device private key", ret);
         goto fail;
@@ -231,8 +220,6 @@ esp_err_t wble_tls_session_start(bool enrolled)
     }
 
     mbedtls_ssl_conf_authmode(&_conf, MBEDTLS_SSL_VERIFY_NONE);
-
-    mbedtls_ssl_conf_rng(&_conf, mbedtls_ctr_drbg_random, &_ctr_drbg);
 
     ret = mbedtls_ssl_conf_own_cert(&_conf, &_own_cert, &_own_key);
     if (ret != 0) {

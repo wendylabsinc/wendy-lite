@@ -25,6 +25,79 @@ static unsigned char *load(const char *dir, const char *name, size_t *n)
     fclose(f);
     return p;
 }
+
+/* Locate SignerInfo.signatureAlgorithm independently of certificate OIDs. */
+typedef struct { unsigned char *raw, *body; size_t size; } test_der;
+static test_der next_der(unsigned char **cursor, const unsigned char *end, unsigned tag)
+{
+    unsigned char *raw = *cursor;
+    assert(end - raw >= 2 && raw[0] == tag);
+    size_t size = raw[1], header = 2;
+    if (size & 128) {
+        unsigned count = size & 127;
+        assert(count && count <= 3 && end - raw >= 2 + count);
+        size = 0;
+        while (count--) size = size * 256 + raw[header++];
+    }
+    assert(size <= (size_t)(end - raw) - header);
+    *cursor = raw + header + size;
+    return (test_der){raw, raw + header, size};
+}
+static void reject_signature_algorithm_variants(unsigned char *response, size_t size,
+    const unsigned char nonce[32], const unsigned char *root, size_t root_size)
+{
+    test_der parents[7];
+    unsigned char *p = response;
+    const unsigned char *end = response + size;
+    parents[0] = next_der(&p, end, 0x30); p = parents[0].body;
+    next_der(&p, end, 0x30); /* status */
+    parents[1] = next_der(&p, end, 0x30); p = parents[1].body;
+    next_der(&p, end, 6); /* signedData OID */
+    parents[2] = next_der(&p, end, 0xa0); p = parents[2].body;
+    parents[3] = next_der(&p, end, 0x30); p = parents[3].body;
+    next_der(&p, end, 2); next_der(&p, end, 0x31);
+    next_der(&p, end, 0x30); next_der(&p, end, 0xa0);
+    parents[4] = next_der(&p, end, 0x31); p = parents[4].body;
+    parents[5] = next_der(&p, end, 0x30); p = parents[5].body;
+    next_der(&p, end, 2); next_der(&p, end, 0x30);
+    next_der(&p, end, 0x30); next_der(&p, end, 0xa0);
+    parents[6] = next_der(&p, end, 0x30);
+    unsigned char *id_cursor = parents[6].body;
+    test_der id = next_der(&id_cursor, end, 6);
+    assert(id.size == 9 && id.body[8] == 18 && id_cursor == p);
+    const unsigned unsupported[] = {17, 19, 33}; /* ML-DSA-44, ML-DSA-87, HashML-DSA-65. */
+    for (size_t i = 0; i < sizeof unsupported / sizeof *unsupported; i++) {
+        time_t verified = 123;
+        id.body[8] = unsupported[i];
+        assert(wendy_pki_verify_time(response, size, nonce, root, root_size, 0, &verified) != 0);
+        assert(verified == 123);
+    }
+    id.body[8] = 18;
+
+    /* NULL parameters are forbidden even though the signed attributes and
+     * signature are unchanged. Update enclosing lengths without re-signing. */
+    size_t insertion = p - response;
+    unsigned char *with_null = malloc(size + 2);
+    assert(with_null);
+    memcpy(with_null, response, insertion);
+    with_null[insertion] = 5; with_null[insertion + 1] = 0;
+    memcpy(with_null + insertion + 2, response + insertion, size - insertion);
+    for (size_t i = 0; i < sizeof parents / sizeof *parents; i++) {
+        size_t length = parents[i].size + 2;
+        unsigned char *raw = with_null + (parents[i].raw - response);
+        size_t header = parents[i].body - parents[i].raw;
+        if (header == 2) {
+            assert(length < 128); raw[1] = length;
+        } else {
+            for (size_t j = header - 1; j >= 2; j--) { raw[j] = length; length >>= 8; }
+            assert(!length);
+        }
+    }
+    time_t verified = 123;
+    assert(wendy_pki_verify_time(with_null, size + 2, nonce, root, root_size, 0, &verified) != 0);
+    assert(verified == 123);
+    free(with_null);
+}
 int main(int argc, char **argv)
 {
     assert(argc == 2 || argc == 3);
@@ -45,7 +118,8 @@ int main(int argc, char **argv)
         size_t root_n;
         snprintf(name, sizeof name, "%s-root.pem", levels[level]);
         unsigned char *root = load(argv[1], name, &root_n);
-        assert(wendy_pki_verify_roots(root, root_n) == 0);
+        const int supported = !strcmp(levels[level], "65");
+        assert((wendy_pki_verify_roots(root, root_n) == 0) == supported);
         snprintf(name, sizeof name, "%s-identity-valid.der", levels[level]);
         unsigned char *peer = load(argv[1], name, &n);
         uint8_t peer_hash[32];
@@ -67,8 +141,9 @@ int main(int argc, char **argv)
             int result = wendy_pki_verify_time(response, n, nonce, root, root_n, 0, &verified);
             printf("ML-DSA %s timestamp %s: %d\n", levels[level], times[i], result);
             fflush(stdout);
-            assert(i == 0 ? result == 0 && verified == signed_time : result != 0 && verified == 123);
-            if (i == 0) {
+            assert(i == 0 && supported ? result == 0 && verified == signed_time : result != 0 && verified == 123);
+            if (i == 0 && supported) {
+                reject_signature_algorithm_variants(response, n, nonce, root, root_n);
                 assert(wendy_pki_verify_time(response, n, nonce, root, root_n, signed_time + 1, &verified) != 0);
                 assert(verified == signed_time);
                 uint8_t wrong_nonce[32];
@@ -83,6 +158,15 @@ int main(int argc, char **argv)
                     snprintf(name, sizeof name, "%s-%s-root.pem", levels[level], expired ? "expired" : "future");
                     unsigned char *invalid = load(argv[1], name, &invalid_n);
                     assert(wendy_pki_verify_time(response, n, nonce, invalid, invalid_n, 0, &verified) != 0);
+                    /* CA renewals with the same key must be selected using
+                     * authenticated time, independently of the wall clock. */
+                    unsigned char *renewed = malloc(invalid_n + root_n);
+                    assert(renewed);
+                    memcpy(renewed, invalid, invalid_n);
+                    memcpy(renewed + invalid_n, root, root_n);
+                    assert(wendy_pki_verify_time(response, n, nonce, renewed,
+                        invalid_n + root_n, 0, &verified) == 0 && verified == signed_time);
+                    free(renewed);
                     free(invalid);
                 }
             }
@@ -96,8 +180,8 @@ int main(int argc, char **argv)
             int result = wendy_pki_verify_identity(identity, n, root, root_n, key, key_n, principal, signed_time, &expires);
             printf("ML-DSA %s P-256 identity %s: %d\n", levels[level], identities[i], result);
             fflush(stdout);
-            assert(i == 0 ? result == 0 && expires == signed_time + 3600 : result != 0 && expires == 123);
-            if (i == 0) {
+            assert(i == 0 && supported ? result == 0 && expires == signed_time + 3600 : result != 0 && expires == 123);
+            if (i == 0 && supported) {
                 assert(wendy_pki_verify_identity(identity, n, root, root_n, wrong_key, wrong_key_n, principal, signed_time, &expires) != 0);
                 assert(wendy_pki_verify_identity(identity, n, root, root_n, key, key_n, principal, signed_time + 3601, &expires) != 0);
             }
@@ -106,6 +190,6 @@ int main(int argc, char **argv)
         free(root);
     }
     free(nonce); free(key); free(wrong_key);
-    puts("ML-DSA mixed-chain verification tests passed");
+    puts("ML-DSA-65 verification and unsupported parameter-set tests passed");
     return 0;
 }

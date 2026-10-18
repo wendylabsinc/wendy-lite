@@ -1,5 +1,7 @@
 dependencies:
-  wendy_wolfssl:
-    override_path: "../wendy_wolfssl"
-    rules:
-      - if: "$CONFIG{WENDY_PKI_WOLFSSL} == True"
+  idf:
+    version: ">=6.0.3"
+  esp-pqc:
+    override_path: "../esp-pqc"
+  espressif/cjson:
+    version: "^1.7.19"

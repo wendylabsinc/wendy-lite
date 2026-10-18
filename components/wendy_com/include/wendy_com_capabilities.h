@@ -16,7 +16,7 @@ static inline void wcom_enrollment_capabilities(WendyComEnrollmentChallenge *cha
 #if CONFIG_WENDY_PKI && CONFIG_WENDY_CLOUD && CONFIG_WENDY_WIFI_ENABLED
     challenge->cloud_enrollment_supported = true;
 #endif
-#if CONFIG_WENDY_PKI && CONFIG_WENDY_PKI_WOLFSSL
+#if CONFIG_WENDY_PKI && CONFIG_MBEDTLS_SSL_TLS1_3_SIG_MLDSA65
     challenge->mldsa_verification_supported = true;
 #endif
 }
