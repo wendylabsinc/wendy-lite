@@ -418,6 +418,44 @@ ssize_t wm_l2cap_read(void* buf, size_t len)
     return gone ? 0 : WM_BLE_ERR_WANT_READ;
 }
 
+static ssize_t _host_backoff(void)
+{
+    _lock();
+    bool exhausted = (++_tx_backoff_count >= TX_BACKOFF_MAX);
+    bool arm = !exhausted && !_tx_backoff;
+    if (arm)
+        _tx_backoff = true;
+    _unlock();
+    if (exhausted) {
+        ESP_LOGE(TAG, "host buffer pressure persisted for %d ms",
+            TX_BACKOFF_MAX * TX_BACKOFF_MS);
+        return WM_BLE_ERR_UNKNOWN;
+    }
+    if (arm && esp_timer_start_once(_tx_backoff_timer, TX_BACKOFF_MS * 1000) != ESP_OK) {
+        _lock();
+        _tx_backoff = false;
+        _unlock();
+    }
+    return WM_BLE_ERR_WANT_WRITE;
+}
+
+// Bulk sends and credit messages allocate from the smallest msys pool. The
+// total across all pools can look healthy while that pool is exhausted.
+// Leave four blocks for credit/ATT traffic and incoming HCI work. Without a
+// reserve, NimBLE can record a credit grant whose packet allocation failed,
+// leaving both peers waiting indefinitely for credits that never arrived.
+static bool _host_has_tx_room(void)
+{
+    struct os_mbuf* probe = os_msys_get_pkthdr(0, 0);
+    if (!probe)
+        return false;
+    unsigned free_blocks = probe->om_omp->omp_pool->mp_num_free + 1;
+    unsigned block_bytes = probe->om_omp->omp_databuf_len;
+    unsigned needed = (TX_SDU_MAX + 32 + block_bytes - 1) / block_bytes;
+    os_mbuf_free_chain(probe);
+    return free_blocks >= needed + 4;
+}
+
 static ssize_t _host_write(const void* buf, size_t len)
 {
     if (len == 0)
@@ -435,6 +473,8 @@ static ssize_t _host_write(const void* buf, size_t len)
         return WM_BLE_ERR_UNKNOWN;
     if (hold)
         return WM_BLE_ERR_WANT_WRITE;
+    if (!_host_has_tx_room())
+        return _host_backoff();
 
     struct os_mbuf* sdu = os_mbuf_get_pkthdr(&_sdu_mbuf_pool, 0);
     if (!sdu)
@@ -495,28 +535,7 @@ static ssize_t _host_write(const void* buf, size_t len)
         // standing in for it: can_write() stays false until the timer fires,
         // which keeps the caller's select() asleep instead of spinning on a
         // write that cannot succeed.
-        _lock();
-        bool exhausted = (++_tx_backoff_count >= TX_BACKOFF_MAX);
-        bool arm = !exhausted && !_tx_backoff;
-        if (arm)
-            _tx_backoff = true;
-        _unlock();
-
-        if (!exhausted) {
-            if (arm && esp_timer_start_once(_tx_backoff_timer, TX_BACKOFF_MS * 1000) != ESP_OK) {
-                // Nothing else would ever lift the hold-off.
-                _lock();
-                _tx_backoff = false;
-                _unlock();
-            }
-            return WM_BLE_ERR_WANT_WRITE;
-        }
-
-        ESP_LOGE(TAG, "out of host mbufs for %d ms, giving up on the link "
-                      "(msys %d/%d mbufs free)",
-            TX_BACKOFF_MAX * TX_BACKOFF_MS,
-            os_msys_num_free(), os_msys_count());
-        return WM_BLE_ERR_UNKNOWN;
+        return _host_backoff();
     }
 
     // The mbuf counts are summed over every msys pool, so a partial reading is
