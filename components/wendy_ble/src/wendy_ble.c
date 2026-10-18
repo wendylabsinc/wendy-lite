@@ -15,7 +15,6 @@ static const char *TAG = "wendy_ble";
 #if CONFIG_WENDY_BLE
 
 #include "wendy_conf.h"
-#include "wendy_operator_auth.h"
 #include "wendy_pki.h"
 #include "wendy_ble_l2cap.h"
 #include "wendy_ble_tls.h"
@@ -94,7 +93,6 @@ static const ble_uuid128_t _uuid_mtls         = WENDY_BLE_UUID128(0x05);
 
 static bool  _host_initialized;
 static bool  _started;
-static bool  _provisioned;
 static bool  _enrolled;
 static uint8_t _own_addr_type;
 
@@ -166,7 +164,7 @@ static int _info_access(uint16_t conn_handle, uint16_t attr_handle,
     // Both are little-endian on the wire, which is also the native byte order
     // on every target this builds for.
     uint16_t psm  = CONFIG_WENDY_BLE_PSM;
-    uint8_t  mtls = (_enrolled || _provisioned) ? 1 : 0;
+    uint8_t  mtls = _enrolled ? 1 : 0;
 
     const void *data;
     uint16_t len;
@@ -212,7 +210,7 @@ static int _gap_event(struct ble_gap_event *event, void *arg);
 static void _start_advertising(void)
 {
     if (wendy_pki_reset_in_progress() || wendy_conf_has_enrollment() != _enrolled ||
-        wendy_conf_is_provisioned() != _provisioned)
+        (_enrolled && !wendy_conf_is_current()))
         return;
 
     struct ble_hs_adv_fields adv = {0};
@@ -472,7 +470,7 @@ static void _session_task(void *arg)
             continue;
 
         ESP_LOGI(TAG, "session started");
-        if (wble_tls_session_start(_enrolled, _provisioned) == ESP_OK) {
+        if (wble_tls_session_start(_enrolled) == ESP_OK) {
             // Drop a stale signal from a previous session before handing the
             // stream over, or the wait below would return immediately.
             xSemaphoreTake(_link_closed, 0);
@@ -535,31 +533,28 @@ esp_err_t wendy_ble_start(void)
     }
     if (_started) {
         if (wendy_conf_has_enrollment() == _enrolled &&
-            wendy_conf_is_provisioned() == _provisioned)
+            (!_enrolled || wendy_conf_is_current()))
             return ESP_OK;
         ESP_LOGW(TAG, "BLE identity changed since startup; reboot required");
         return ESP_ERR_INVALID_STATE;
     }
     _enrolled = wendy_conf_has_enrollment();
+    if (_enrolled && !wendy_conf_is_current()) {
+        ESP_LOGW(TAG, "BLE enrollment configuration unavailable; reboot required");
+        return ESP_ERR_INVALID_STATE;
+    }
 #if !CONFIG_WENDY_PKI
     if (_enrolled) {
         ESP_LOGW(TAG, "PKI enrollment requires CONFIG_WENDY_PKI for BLE");
         return ESP_ERR_INVALID_STATE;
     }
 #endif
-    _provisioned = wendy_conf_is_provisioned();
 #if CONFIG_WENDY_BLE_REQUIRE_MTLS
-    if (!_enrolled && !_provisioned) {
-        ESP_LOGW(TAG, "BLE requires provisioned credentials; use USB for setup");
+    if (!_enrolled) {
+        ESP_LOGW(TAG, "BLE requires enrollment; use USB for setup");
         return ESP_ERR_INVALID_STATE;
     }
 #endif
-    struct wendy_conf_span cert = wendy_conf_get_certificate();
-    struct wendy_operator_auth auth;
-    if (!_enrolled && _provisioned && wendy_operator_auth_init(&auth, cert.data, cert.size)) {
-        ESP_LOGE(TAG, "device certificate has no valid Wendy device identity; not advertising");
-        return ESP_ERR_INVALID_STATE;
-    }
 
     // Snapshot the identity for the life of the advertisement. wendy_conf
     // fixes these at init and never changes them, so the copies are belt and
@@ -611,10 +606,8 @@ esp_err_t wendy_ble_start(void)
 
     if (_enrolled)
         ESP_LOGI(TAG, "PKI mTLS enabled: same-tenant operator certificate required");
-    else if (_provisioned)
-        ESP_LOGI(TAG, "mTLS enabled: same-organization operator certificate required");
     else
-        ESP_LOGI(TAG, "unprovisioned: clients may connect without a certificate");
+        ESP_LOGI(TAG, "unenrolled: clients may connect without a certificate");
 
     // If the host synced before this ran, _on_sync skipped advertising because
     // _started was still false; start it here instead.

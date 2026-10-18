@@ -20,17 +20,6 @@ message WendyConfWifi {
     repeated WendyConfWifiNetwork networks = 1;
 }
 
-// Optional — absent means device boots unenrolled.
-message WendyConfCloudProvisioning {
-    bool   enrolled   = 1;
-    string cloud_host = 2;
-    int32  org_id     = 3;
-    int32  asset_id   = 4;
-    bytes  key        = 5;
-    bytes  cert       = 6;
-    bytes  chain      = 7;
-}
-
 // Operator-authorized Tier C bootstrap. Contains no device private key.
 message WendyConfEnrollment {
     string tenant_id = 1;
@@ -50,8 +39,10 @@ message WendyConfEnrollment {
 }
 
 message WendyConf {
+    // Retired imported credentials. Never reuse this wire field.
+    reserved 3;
+    reserved "provisioning";
     optional string            device_name  = 1;
     WendyConfWifi              wifi         = 2;
-    WendyConfCloudProvisioning provisioning = 3;
     WendyConfEnrollment enrollment = 4;
 }

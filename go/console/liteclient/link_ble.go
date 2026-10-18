@@ -29,7 +29,7 @@ const DefaultL2CAPPSM uint16 = 128
 // falling back to DefaultL2CAPPSM where GATT is unavailable.
 //
 // tlsCfg carries the client's side of the trust decision; nil selects the
-// insecure configuration an unprovisioned device needs.
+// insecure configuration for an unenrolled device.
 func (c *WendyLiteClient) ConnectViaBLE(address string, psm uint16, tlsCfg *tls.Config) error {
 	// The BLE client takes whole seconds, not a Duration; bleDialTimeout is a
 	// whole number of them.
@@ -60,7 +60,7 @@ func (c *WendyLiteClient) ConnectViaBLE(address string, psm uint16, tlsCfg *tls.
 
 	if tlsCfg == nil {
 		tlsCfg = &tls.Config{
-			InsecureSkipVerify: true, //nolint:gosec — unprovisioned devices serve a self-signed cert
+			InsecureSkipVerify: true, //nolint:gosec // Unenrolled devices serve a self-signed cert.
 			MinVersion:         tls.VersionTLS12,
 		}
 	}
@@ -92,18 +92,17 @@ func (c *WendyLiteClient) ConnectViaBLE(address string, psm uint16, tlsCfg *tls.
 }
 
 // ConnectViaBLEInsecure reaches a device over BLE without verifying its
-// certificate, mirroring ConnectInsecure on TCP. An unprovisioned device
+// certificate, mirroring ConnectInsecure on TCP. An unenrolled device
 // serves the self-signed certificate compiled into the firmware, which
-// authenticates nothing — and reaching an unprovisioned device is most of what
-// BLE is for.
+// authenticates nothing. Enrolled devices require a client certificate.
 //
 // SECURITY: development use only. Prefer
-// ConnectViaBLEWithMutualAuthentication against a provisioned device.
+// ConnectViaBLEWithMutualAuthentication against an enrolled device.
 func (c *WendyLiteClient) ConnectViaBLEInsecure(address string, psm uint16) error {
 	return c.ConnectViaBLE(address, psm, nil)
 }
 
-// ConnectViaBLEWithMutualAuthentication reaches a provisioned device over BLE,
+// ConnectViaBLEWithMutualAuthentication reaches an enrolled device over BLE,
 // presenting a client certificate and verifying the device's against rootCAs.
 //
 // Hostname verification is off because there is no hostname over L2CAP; the

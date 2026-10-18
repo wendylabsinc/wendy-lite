@@ -32,17 +32,6 @@ typedef struct _WendyConfWifi {
     WendyConfWifiNetwork networks[1];
 } WendyConfWifi;
 
-/* Optional — absent means device boots unenrolled. */
-typedef struct _WendyConfCloudProvisioning {
-    bool enrolled;
-    pb_callback_t cloud_host;
-    int32_t org_id;
-    int32_t asset_id;
-    pb_callback_t key;
-    pb_callback_t cert;
-    pb_callback_t chain;
-} WendyConfCloudProvisioning;
-
 /* Operator-authorized Tier C bootstrap. Contains no device private key. */
 typedef struct _WendyConfEnrollment {
     char tenant_id[37];
@@ -65,8 +54,6 @@ typedef struct _WendyConf {
     pb_callback_t device_name;
     bool has_wifi;
     WendyConfWifi wifi;
-    bool has_provisioning;
-    WendyConfCloudProvisioning provisioning;
     bool has_enrollment;
     WendyConfEnrollment enrollment;
 } WendyConf;
@@ -87,18 +74,15 @@ extern "C" {
 
 
 
-
 /* Initializer values for message structs */
 #define WendyConfWifiNetwork_init_default        {{{NULL}, NULL}, {{NULL}, NULL}, 0, 0, _WendyConfWifiSecurity_MIN}
 #define WendyConfWifi_init_default               {0, {WendyConfWifiNetwork_init_default}}
-#define WendyConfCloudProvisioning_init_default  {0, {{NULL}, NULL}, 0, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define WendyConfEnrollment_init_default         {"", "", "", "", "", "", 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, 0}
-#define WendyConf_init_default                   {{{NULL}, NULL}, false, WendyConfWifi_init_default, false, WendyConfCloudProvisioning_init_default, false, WendyConfEnrollment_init_default}
+#define WendyConf_init_default                   {{{NULL}, NULL}, false, WendyConfWifi_init_default, false, WendyConfEnrollment_init_default}
 #define WendyConfWifiNetwork_init_zero           {{{NULL}, NULL}, {{NULL}, NULL}, 0, 0, _WendyConfWifiSecurity_MIN}
 #define WendyConfWifi_init_zero                  {0, {WendyConfWifiNetwork_init_zero}}
-#define WendyConfCloudProvisioning_init_zero     {0, {{NULL}, NULL}, 0, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define WendyConfEnrollment_init_zero            {"", "", "", "", "", "", 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, 0}
-#define WendyConf_init_zero                      {{{NULL}, NULL}, false, WendyConfWifi_init_zero, false, WendyConfCloudProvisioning_init_zero, false, WendyConfEnrollment_init_zero}
+#define WendyConf_init_zero                      {{{NULL}, NULL}, false, WendyConfWifi_init_zero, false, WendyConfEnrollment_init_zero}
 
 /* Field tags (for use in manual encoding/decoding) */
 #define WendyConfWifiNetwork_ssid_tag            1
@@ -107,13 +91,6 @@ extern "C" {
 #define WendyConfWifiNetwork_hidden_tag          4
 #define WendyConfWifiNetwork_security_tag        5
 #define WendyConfWifi_networks_tag               1
-#define WendyConfCloudProvisioning_enrolled_tag  1
-#define WendyConfCloudProvisioning_cloud_host_tag 2
-#define WendyConfCloudProvisioning_org_id_tag    3
-#define WendyConfCloudProvisioning_asset_id_tag  4
-#define WendyConfCloudProvisioning_key_tag       5
-#define WendyConfCloudProvisioning_cert_tag      6
-#define WendyConfCloudProvisioning_chain_tag     7
 #define WendyConfEnrollment_tenant_id_tag        1
 #define WendyConfEnrollment_device_id_tag        2
 #define WendyConfEnrollment_token_tag            3
@@ -128,7 +105,6 @@ extern "C" {
 #define WendyConfEnrollment_provision_trust_tag  12
 #define WendyConf_device_name_tag                1
 #define WendyConf_wifi_tag                       2
-#define WendyConf_provisioning_tag               3
 #define WendyConf_enrollment_tag                 4
 
 /* Struct field encoding specification for nanopb */
@@ -146,17 +122,6 @@ X(a, STATIC,   REPEATED, MESSAGE,  networks,          1)
 #define WendyConfWifi_CALLBACK NULL
 #define WendyConfWifi_DEFAULT NULL
 #define WendyConfWifi_networks_MSGTYPE WendyConfWifiNetwork
-
-#define WendyConfCloudProvisioning_FIELDLIST(X, a) \
-X(a, STATIC,   SINGULAR, BOOL,     enrolled,          1) \
-X(a, CALLBACK, SINGULAR, STRING,   cloud_host,        2) \
-X(a, STATIC,   SINGULAR, INT32,    org_id,            3) \
-X(a, STATIC,   SINGULAR, INT32,    asset_id,          4) \
-X(a, CALLBACK, SINGULAR, BYTES,    key,               5) \
-X(a, CALLBACK, SINGULAR, BYTES,    cert,              6) \
-X(a, CALLBACK, SINGULAR, BYTES,    chain,             7)
-#define WendyConfCloudProvisioning_CALLBACK pb_default_field_callback
-#define WendyConfCloudProvisioning_DEFAULT NULL
 
 #define WendyConfEnrollment_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, STRING,   tenant_id,         1) \
@@ -177,31 +142,26 @@ X(a, STATIC,   SINGULAR, BOOL,     provision_trust,  12)
 #define WendyConf_FIELDLIST(X, a) \
 X(a, CALLBACK, OPTIONAL, STRING,   device_name,       1) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  wifi,              2) \
-X(a, STATIC,   OPTIONAL, MESSAGE,  provisioning,      3) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  enrollment,        4)
 #define WendyConf_CALLBACK pb_default_field_callback
 #define WendyConf_DEFAULT NULL
 #define WendyConf_wifi_MSGTYPE WendyConfWifi
-#define WendyConf_provisioning_MSGTYPE WendyConfCloudProvisioning
 #define WendyConf_enrollment_MSGTYPE WendyConfEnrollment
 
 extern const pb_msgdesc_t WendyConfWifiNetwork_msg;
 extern const pb_msgdesc_t WendyConfWifi_msg;
-extern const pb_msgdesc_t WendyConfCloudProvisioning_msg;
 extern const pb_msgdesc_t WendyConfEnrollment_msg;
 extern const pb_msgdesc_t WendyConf_msg;
 
 /* Defines for backwards compatibility with code written before nanopb-0.4.0 */
 #define WendyConfWifiNetwork_fields &WendyConfWifiNetwork_msg
 #define WendyConfWifi_fields &WendyConfWifi_msg
-#define WendyConfCloudProvisioning_fields &WendyConfCloudProvisioning_msg
 #define WendyConfEnrollment_fields &WendyConfEnrollment_msg
 #define WendyConf_fields &WendyConf_msg
 
 /* Maximum encoded size of messages (where known) */
 /* WendyConfWifiNetwork_size depends on runtime parameters */
 /* WendyConfWifi_size depends on runtime parameters */
-/* WendyConfCloudProvisioning_size depends on runtime parameters */
 /* WendyConfEnrollment_size depends on runtime parameters */
 /* WendyConf_size depends on runtime parameters */
 

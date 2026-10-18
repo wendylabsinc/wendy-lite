@@ -1,13 +1,11 @@
 #include "wendy_server.h"
+#include "wendy_server_tls.h"
 #include "wendy_conf.h"
 #include "wendy_pki.h"
-#include "wendy_operator_auth.h"
 #include "wendy_com_link.h"
 #include "esp_tls.h"
-#include "mbedtls/ssl.h"
 #include "mbedtls/x509_crt.h"
 #include "esp_log.h"
-#include "esp_timer.h"
 #include "mdns.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -16,7 +14,7 @@
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <errno.h>
-#include <inttypes.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -43,14 +41,11 @@ struct _add_link_op {
     struct wcom_operation base;
     esp_tls_t *tls;
     wendy_pki_connection *pki;
-    struct wendy_operator_auth auth;
-    bool provisioned;
 };
 
 struct wendy_server_link {
     esp_tls_t *tls;
     wendy_pki_connection *pki;
-    struct wendy_operator_auth auth;
     int link_id;
 };
 
@@ -64,6 +59,7 @@ static bool _running = false;
 
 //--- internal functions ---//
 
+#if CONFIG_WENDY_PKI
 static enum wcom_link_permission _peer_permission(enum wendy_peer_role role)
 {
     switch (role) {
@@ -76,7 +72,6 @@ static enum wcom_link_permission _peer_permission(enum wendy_peer_role role)
     }
 }
 
-#if CONFIG_WENDY_PKI
 static const struct wcom_stream_ops pki_ops = {
     .read = wendy_pki_read, .write = wendy_pki_write, .wakeup_fd = wendy_pki_fd,
 };
@@ -116,6 +111,11 @@ static void _add_link_exec(struct wcom_operation *op)
 
 #if CONFIG_WENDY_PKI
     if (aop->pki) {
+        if (!wendy_conf_has_enrollment() || wendy_pki_reset_in_progress()) {
+            wendy_pki_close(aop->pki);
+            free(aop);
+            return;
+        }
         for (int i = 0; i < WENDY_SERVER_MAX_LINKS; i++) {
             if (_links[i].tls || _links[i].pki) continue;
             int id = wcom_add_socket_link_with_permission(&pki_ops, aop->pki,
@@ -131,8 +131,7 @@ static void _add_link_exec(struct wcom_operation *op)
         return;
     }
 #endif
-    if (wendy_conf_has_enrollment() || aop->provisioned != wendy_conf_is_provisioned() ||
-        wendy_pki_reset_in_progress()) {
+    if (wendy_conf_has_enrollment() || wendy_pki_reset_in_progress()) {
         int fd = -1;
         esp_tls_get_conn_sockfd(aop->tls, &fd);
         if (fd >= 0) close(fd);
@@ -158,16 +157,9 @@ static void _add_link_exec(struct wcom_operation *op)
         return;
     }
 
-    // Keep the callback context alive for subsequent TLS renegotiations.
-    if (aop->provisioned) {
-        _links[slot].auth = aop->auth;
-        mbedtls_ssl_set_verify(esp_tls_get_ssl_context(aop->tls),
-                               wendy_operator_auth_verify, &_links[slot].auth);
-    }
-    int link_id = wcom_add_tls_link_with_permission(aop->tls, _on_interruption,
-        aop->provisioned ? _peer_permission(aop->auth.role) : WCOM_LINK_PERMISSION_FULL);
+    int link_id = wendy_server_add_anonymous_tls_link(aop->tls, _on_interruption);
     if (link_id < 0) {
-        ESP_LOGE(TAG, "max links reached, rejecting connection");
+        ESP_LOGE(TAG, "LAN TLS link setup failed, rejecting connection");
         int fd = -1;
         esp_tls_get_conn_sockfd(aop->tls, &fd);
         if (fd >= 0)
@@ -186,8 +178,7 @@ static void _add_link_exec(struct wcom_operation *op)
 
 static void _server_task(void *arg)
 {
-    bool pki_configured = wendy_conf_has_enrollment();
-    bool trusted = pki_configured || wendy_conf_is_provisioned();
+    bool enrolled = wendy_conf_has_enrollment();
 
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd < 0) {
@@ -220,33 +211,23 @@ static void _server_task(void *arg)
     }
 
     ESP_LOGI(TAG, "listening on port %d", WENDY_SERVER_PORT);
-    if (trusted)
+    if (enrolled)
         ESP_LOGI(TAG, "mTLS required: same-tenant operators or devices with SensorLink-only access");
     else
-        ESP_LOGI(TAG, "device is unprovisioned: anonymous TLS clients are allowed");
+        ESP_LOGI(TAG, "device is unenrolled: anonymous TLS clients are allowed");
 
     // The full identity, so a browser can tell which board answers without
     // opening a connection first: the ID pins it down, the names label it.
-    char org_id_str[12];   // int32_t range, sign + digits + NUL
-    char asset_id_str[12];
-
-    mdns_txt_item_t txt_items[7];
+    mdns_txt_item_t txt_items[5];
     size_t txt_count = 0;
 
     txt_items[txt_count++] = (mdns_txt_item_t){ .key = "id",          .value = wendy_conf_get_device_id() };
     txt_items[txt_count++] = (mdns_txt_item_t){ .key = "name",        .value = wendy_conf_get_resolved_device_name() };
     txt_items[txt_count++] = (mdns_txt_item_t){ .key = "displayname", .value = wendy_conf_get_resolved_device_display_name() };
-    txt_items[txt_count++] = (mdns_txt_item_t){ .key = "mtls",        .value = trusted ? "true" : "false" };
+    txt_items[txt_count++] = (mdns_txt_item_t){ .key = "mtls",        .value = enrolled ? "true" : "false" };
 
     if (_caps.sensor_link)
         txt_items[txt_count++] = (mdns_txt_item_t){ .key = "caps", .value = "sensors" };
-
-    if (trusted && !pki_configured) {
-        snprintf(org_id_str, sizeof(org_id_str), "%" PRId32, wendy_conf_get_org_id());
-        snprintf(asset_id_str, sizeof(asset_id_str), "%" PRId32, wendy_conf_get_asset_id());
-        txt_items[txt_count++] = (mdns_txt_item_t){ .key = "orgid",   .value = org_id_str };
-        txt_items[txt_count++] = (mdns_txt_item_t){ .key = "assetid", .value = asset_id_str };
-    }
 
     esp_err_t mdns_err = mdns_service_add(wendy_conf_get_resolved_device_display_name(),
                                           "_wendy-lite", "_tcp", WENDY_SERVER_PORT,
@@ -257,7 +238,7 @@ static void _server_task(void *arg)
         ESP_LOGI(TAG, "registered mDNS service _wendy-lite._tcp on port %d", WENDY_SERVER_PORT);
     }
 
-    if (pki_configured) {
+    if (enrolled) {
         WendyConfEnrollment enrollment = WendyConfEnrollment_init_zero;
         struct wendy_conf_enrollment_data enrollment_data = {0};
         if (wendy_conf_copy_enrollment(&enrollment, &enrollment_data) == ESP_OK) {
@@ -290,7 +271,7 @@ static void _server_task(void *arg)
             continue;
         }
 
-        // Once enrollment is configured, never fall back to legacy or anonymous TLS.
+        // Once enrollment is configured, never fall back to anonymous TLS.
         if (wendy_conf_has_enrollment()) {
 #if CONFIG_WENDY_PKI
             struct _add_link_op *op = calloc(1, sizeof *op);
@@ -307,23 +288,14 @@ static void _server_task(void *arg)
 #endif
             continue;
         }
-        // Anonymous TLS is only for unprovisioned devices. Invalid provisioned
-        // identities fail closed, rather than falling back to the default key.
-        bool provisioned = wendy_conf_is_provisioned();
-        struct wendy_conf_span key = provisioned ? wendy_conf_get_private_key()
-                                                : wendy_conf_get_default_private_key();
-        struct wendy_conf_span cert = provisioned ? wendy_conf_get_certificate()
-                                                 : wendy_conf_get_default_certificate();
-        struct wendy_conf_span chain = provisioned ? wendy_conf_get_chain_of_trust()
-                                                  : (struct wendy_conf_span){0};
-        struct wendy_operator_auth auth = {0};
-        if (wendy_pki_reset_in_progress() ||
-            (provisioned && wendy_operator_auth_init(&auth, cert.data, cert.size))) {
-            ESP_LOGW(TAG, "LAN authentication unavailable: provision a device identity over USB/UART");
+        // Anonymous TLS is only available before enrollment.
+        struct wendy_conf_span key = wendy_conf_get_default_private_key();
+        struct wendy_conf_span cert = wendy_conf_get_default_certificate();
+        if (wendy_pki_reset_in_progress()) {
+            ESP_LOGW(TAG, "LAN authentication unavailable during enrollment reset");
             close(client_fd);
             continue;
         }
-        auth.allow_device = true;
         esp_tls_t *tls = esp_tls_init();
         if (!tls) {
             ESP_LOGE(TAG, "esp_tls_init() failed");
@@ -336,8 +308,6 @@ static void _server_task(void *arg)
             .servercert_bytes = cert.size,
             .serverkey_buf    = key.data,
             .serverkey_bytes  = key.size,
-            .cacert_buf       = chain.data,
-            .cacert_bytes     = chain.size,
         };
 
 #if WENDY_SERVER_DUMP_CERT == 1
@@ -361,10 +331,6 @@ static void _server_task(void *arg)
             continue;
         }
 
-        if (provisioned)
-            mbedtls_ssl_set_verify(esp_tls_get_ssl_context(tls),
-                                   wendy_operator_auth_verify, &auth);
-
         int ret;
         while ((ret = esp_tls_server_session_continue_async(tls)) != 0) {
             if (ret != ESP_TLS_ERR_SSL_WANT_READ && ret != ESP_TLS_ERR_SSL_WANT_WRITE)
@@ -377,17 +343,9 @@ static void _server_task(void *arg)
             continue;
         }
 
-        // Provisioned devices authorize the authenticated leaf before creating
-        // any WendyCom link. A provisioning change invalidates this handshake.
-        mbedtls_ssl_context *ssl = esp_tls_get_ssl_context(tls);
-        enum wendy_peer_role role = provisioned
-            ? wendy_peer_auth_role(mbedtls_ssl_get_peer_cert(ssl), auth.tenant)
-            : WENDY_PEER_ROLE_NONE;
-        if ((provisioned && (mbedtls_ssl_get_verify_result(ssl) ||
-             role == WENDY_PEER_ROLE_NONE || role != auth.role)) ||
-            wendy_conf_has_enrollment() || provisioned != wendy_conf_is_provisioned() ||
-            wendy_pki_reset_in_progress()) {
-            ESP_LOGW(TAG, "LAN client rejected: a same-tenant operator or device certificate is required");
+        // Enrollment or reset during the handshake invalidates anonymous access.
+        if (wendy_conf_has_enrollment() || wendy_pki_reset_in_progress()) {
+            ESP_LOGW(TAG, "LAN client rejected: enrollment state changed during TLS handshake");
             close(client_fd);
             esp_tls_server_session_delete(tls);
             continue;
@@ -404,11 +362,6 @@ static void _server_task(void *arg)
         }
         op->base.func = _add_link_exec;
         op->tls = tls;
-        op->auth = auth;
-        op->provisioned = provisioned;
-        // The queued operation owns the context until the link takes over.
-        if (provisioned)
-            mbedtls_ssl_set_verify(ssl, wendy_operator_auth_verify, &op->auth);
         wcom_core_exec(&op->base);
     }
 }

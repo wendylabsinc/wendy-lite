@@ -12,11 +12,11 @@
 
 struct wendy_pki_connection { unsigned generation; };
 static wendy_pki_connection *live_connection;
-static bool enrolled, provisioned, resetting;
+static bool enrolled, resetting, current;
 static unsigned accepts, closes, reads, writes, pending_checks, transport_calls;
 static unsigned generation;
 static struct wendy_pki_stream accepted_stream;
-enum mutation { NO_CHANGE, RESET, CLEAR_ENROLLMENT, CHANGE_PROVISIONING };
+enum mutation { NO_CHANGE, RESET, CLEAR_ENROLLMENT, INVALIDATE_CACHE };
 enum accept_mode { ACCEPT, REFUSE, CHANGE_DURING_WAIT, CHANGE_BEFORE_RETURN };
 static enum mutation mutation, wait_mutation;
 static enum accept_mode mode;
@@ -27,12 +27,12 @@ static void change(enum mutation action)
         case NO_CHANGE: break;
         case RESET: resetting = true; break;
         case CLEAR_ENROLLMENT: enrolled = false; break;
-        case CHANGE_PROVISIONING: provisioned = true; break;
+        case INVALIDATE_CACHE: current = false; break;
     }
 }
 
 bool wendy_conf_has_enrollment(void) { return enrolled; }
-bool wendy_conf_is_provisioned(void) { return provisioned; }
+bool wendy_conf_is_current(void) { return current; }
 bool wendy_pki_reset_in_progress(void) { return resetting; }
 int64_t esp_timer_get_time(void) { return 1000000; }
 bool wble_l2cap_session_alive(void) { return true; }
@@ -59,16 +59,13 @@ static bool wait_transport(TickType_t ticks)
 bool wble_l2cap_wait_readable(TickType_t ticks) { return wait_transport(ticks); }
 bool wble_l2cap_wait_writable(TickType_t ticks) { return wait_transport(ticks); }
 
-/* Any attempt to fall back from enrolled PKI to legacy or anonymous TLS must
+/* Any attempt to fall back from enrolled PKI to anonymous TLS must
  * fail the test before a default certificate or private key is accessed. */
 static struct wendy_conf_span unexpected_credential(void)
 {
-    assert(0 && "enrolled BLE fell back to legacy or anonymous TLS");
+    assert(0 && "enrolled BLE fell back to anonymous TLS");
     return (struct wendy_conf_span){0};
 }
-struct wendy_conf_span wendy_conf_get_certificate(void) { return unexpected_credential(); }
-struct wendy_conf_span wendy_conf_get_private_key(void) { return unexpected_credential(); }
-struct wendy_conf_span wendy_conf_get_chain_of_trust(void) { return unexpected_credential(); }
 struct wendy_conf_span wendy_conf_get_default_certificate(void) { return unexpected_credential(); }
 struct wendy_conf_span wendy_conf_get_default_private_key(void) { return unexpected_credential(); }
 size_t heap_caps_get_free_size(unsigned capabilities) { (void)capabilities; return 100000; }
@@ -136,7 +133,7 @@ static esp_err_t start(void)
 {
     /* The boot advertising policy remains enrolled even if the configuration
      * cache is invalidated by a later USB write. */
-    return wble_tls_session_start(true, false);
+    return wble_tls_session_start(true);
 }
 static void assert_inactive(void)
 {
@@ -158,7 +155,8 @@ static void reset_fixture(void)
 {
     assert(!live_connection);
     enrolled = true;
-    provisioned = resetting = false;
+    current = true;
+    resetting = false;
     accepts = closes = reads = writes = pending_checks = transport_calls = 0;
     mode = ACCEPT;
     mutation = wait_mutation = NO_CHANGE;
@@ -224,7 +222,8 @@ static void test_changes(enum mutation action)
     assert(start() == ESP_ERR_INVALID_STATE && accepts == 1);
     end_twice(1);
     enrolled = true;
-    provisioned = resetting = false;
+    current = true;
+    resetting = false;
     assert(start() == ESP_OK && accepts == 2);
     end_twice(2);
 }
@@ -234,6 +233,6 @@ int main(void)
     test_refusal();
     test_changes(RESET);
     test_changes(CLEAR_ENROLLMENT);
-    test_changes(CHANGE_PROVISIONING);
+    test_changes(INVALIDATE_CACHE);
     return 0;
 }

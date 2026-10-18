@@ -4,8 +4,8 @@
 
 #include <stdio.h>
 
-bool test_enrolled, test_provisioned, test_reset, test_invalid_cert;
-unsigned test_auth_calls, test_adv_starts;
+bool test_enrolled, test_reset, test_current;
+unsigned test_adv_starts;
 bool test_fail_semaphore, test_fail_task;
 unsigned test_semaphore_calls, test_semaphores_allocated, test_semaphores_deleted;
 unsigned test_task_calls, test_tasks_created, test_task_stack;
@@ -19,7 +19,7 @@ void wble_l2cap_end_session(void) {}
 int wble_l2cap_wakeup_fd(void) { return -1; }
 bool wble_l2cap_can_read(void) { return false; }
 bool wble_l2cap_can_write(void) { return false; }
-esp_err_t wble_tls_session_start(bool enrolled, bool provisioned) { return ESP_FAIL; }
+esp_err_t wble_tls_session_start(bool enrolled) { return ESP_FAIL; }
 void wble_tls_session_end(void) {}
 ssize_t wble_tls_read(void *buf, size_t len) { return WBLE_ERR_WANT_READ; }
 ssize_t wble_tls_write(const void *buf, size_t len) { return WBLE_ERR_WANT_WRITE; }
@@ -31,14 +31,15 @@ static void reset_fixture(void)
     free(_device_name);
     free(_display_name);
     _device_id = _device_name = _display_name = NULL;
-    _host_initialized = _started = _enrolled = _provisioned = false;
+    _host_initialized = _started = _enrolled = false;
     if (_link_closed)
         vSemaphoreDelete(_link_closed);
     _link_closed = NULL;
     assert(test_semaphores_allocated == test_semaphores_deleted);
     _mfg_data_len = 0;
-    test_enrolled = test_provisioned = test_reset = test_invalid_cert = false;
-    test_auth_calls = test_adv_starts = 0;
+    test_enrolled = test_reset = false;
+    test_current = true;
+    test_adv_starts = 0;
     test_fail_semaphore = test_fail_task = false;
     test_semaphore_calls = test_semaphores_allocated = test_semaphores_deleted = 0;
     test_task_calls = test_tasks_created = test_task_stack = 0;
@@ -47,6 +48,7 @@ static void reset_fixture(void)
     test_services = NULL;
 }
 
+#if CONFIG_WENDY_PKI || !CONFIG_WENDY_BLE_REQUIRE_MTLS
 static struct os_mbuf read_info(enum info_field field)
 {
     assert(test_services);
@@ -90,39 +92,39 @@ static void assert_advertisement(uint8_t expected_mtls)
     struct os_mbuf psm = read_info(INFO_PSM);
     assert(psm.len == 2 && psm.data[0] == 128 && psm.data[1] == 0);
 }
+#endif
 
 static void test_pki_enrollment(void)
 {
-    // An enrollment is sufficient even when legacy credentials are absent or
-    // invalid. PKI-disabled builds must still reject enrolled identities.
-    for (int legacy = 0; legacy <= 1; ++legacy) {
-        reset_fixture();
-        test_enrolled = true;
-        test_provisioned = legacy;
-        test_invalid_cert = true;
+    // Enrollment advertises mTLS. Connection authentication checks the stored
+    // identity. PKI-disabled builds reject enrollment at startup.
+    reset_fixture();
+    test_enrolled = true;
 #if CONFIG_WENDY_PKI
-        assert(wendy_ble_start() == ESP_OK);
-        assert_advertisement(1);
-        assert(test_task_calls == 1 && test_tasks_created == 1);
-        assert(test_task_stack == 24576);
-        assert(wendy_ble_start() == ESP_OK);
-        assert(test_task_calls == 1 && test_tasks_created == 1);
-        assert(test_semaphore_calls == 1);
+    assert(wendy_ble_start() == ESP_OK);
+    assert_advertisement(1);
+    assert(test_task_calls == 1 && test_tasks_created == 1);
+    assert(test_task_stack == 24576);
+    assert(wendy_ble_start() == ESP_OK);
+    assert(test_task_calls == 1 && test_tasks_created == 1);
+    assert(test_semaphore_calls == 1);
 #else
-        assert(wendy_ble_start() == ESP_ERR_INVALID_STATE);
-        assert(test_adv_starts == 0 && !_host_initialized);
+    assert(wendy_ble_start() == ESP_ERR_INVALID_STATE);
+    assert(test_adv_starts == 0 && !_host_initialized);
 #endif
-        assert(test_auth_calls == 0);
-    }
 }
 
-static void test_legacy_and_unprovisioned(void)
+static void test_unenrolled(void)
 {
     reset_fixture();
-    test_provisioned = true;
+    // A blank board has no readable configuration and can still allow setup.
+    test_current = false;
+#if CONFIG_WENDY_BLE_REQUIRE_MTLS
+    assert(wendy_ble_start() == ESP_ERR_INVALID_STATE);
+    assert(test_adv_starts == 0 && !_host_initialized);
+#else
     assert(wendy_ble_start() == ESP_OK);
-    assert(test_auth_calls == 1);
-    assert_advertisement(1);
+    assert_advertisement(0);
     assert(test_task_calls == 1 && test_tasks_created == 1);
     assert(test_task_stack == 4096);
     assert(wendy_ble_start() == ESP_OK);
@@ -130,60 +132,43 @@ static void test_legacy_and_unprovisioned(void)
     assert(test_task_calls == 1 && test_tasks_created == 1);
     assert(test_semaphore_calls == 1);
 
-    reset_fixture();
-    test_provisioned = true;
-    test_invalid_cert = true;
-    assert(wendy_ble_start() == ESP_ERR_INVALID_STATE);
-    assert(test_auth_calls == 1);
-    assert(test_adv_starts == 0 && !_host_initialized);
-
-    reset_fixture();
-#if CONFIG_WENDY_BLE_REQUIRE_MTLS
-    assert(wendy_ble_start() == ESP_ERR_INVALID_STATE);
-    assert(test_adv_starts == 0 && !_host_initialized);
-#else
-    assert(wendy_ble_start() == ESP_OK);
-    assert_advertisement(0);
 #endif
 }
 
 static void test_reset_blocks_start_and_restart(void)
 {
     reset_fixture();
-    test_provisioned = true;
     test_reset = true;
     assert(wendy_ble_start() == ESP_ERR_INVALID_STATE);
     assert(test_adv_starts == 0 && !_host_initialized);
 
+#if CONFIG_WENDY_PKI || !CONFIG_WENDY_BLE_REQUIRE_MTLS
+    test_enrolled = CONFIG_WENDY_PKI;
     test_reset = false;
     assert(wendy_ble_start() == ESP_OK);
-    assert_advertisement(1);
+    assert_advertisement(CONFIG_WENDY_PKI);
     test_reset = true;
     struct ble_gap_event disconnect = { .type = BLE_GAP_EVENT_DISCONNECT };
     assert(_gap_event(&disconnect, NULL) == 0);
     assert(test_adv_starts == 1);
+#endif
 }
 
 static void test_identity_change_blocks_restart(void)
 {
+#if !CONFIG_WENDY_BLE_REQUIRE_MTLS
     reset_fixture();
-    test_provisioned = true;
     assert(wendy_ble_start() == ESP_OK);
-    assert_advertisement(1);
+    assert_advertisement(0);
     struct ble_gap_event disconnect = { .type = BLE_GAP_EVENT_DISCONNECT };
     assert(_gap_event(&disconnect, NULL) == 0);
     assert(test_adv_starts == 2);
     test_enrolled = true;
     assert(wendy_ble_start() == ESP_ERR_INVALID_STATE);
-    assert(!_enrolled && _provisioned);
+    assert(!_enrolled);
     assert(_gap_event(&disconnect, NULL) == 0);
     assert(test_adv_starts == 2);
-    test_enrolled = false;
-    test_provisioned = false;
-    assert(wendy_ble_start() == ESP_ERR_INVALID_STATE);
-    assert(!_enrolled && _provisioned);
-    assert(_gap_event(&disconnect, NULL) == 0);
-    assert(test_adv_starts == 2);
+#endif
 
 #if CONFIG_WENDY_PKI
     reset_fixture();
@@ -192,19 +177,22 @@ static void test_identity_change_blocks_restart(void)
     assert_advertisement(1);
     test_enrolled = false;
     assert(wendy_ble_start() == ESP_ERR_INVALID_STATE);
-    assert(_enrolled && !_provisioned);
-    assert(_gap_event(&disconnect, NULL) == 0);
+    assert(_enrolled);
+    struct ble_gap_event enrolled_disconnect = { .type = BLE_GAP_EVENT_DISCONNECT };
+    assert(_gap_event(&enrolled_disconnect, NULL) == 0);
     assert(test_adv_starts == 1);
 #endif
 }
 
 static void test_allocation_failure_retry(void)
 {
+#if CONFIG_WENDY_PKI || !CONFIG_WENDY_BLE_REQUIRE_MTLS
     for (int enrolled = 0; enrolled <= CONFIG_WENDY_PKI; ++enrolled) {
+        if (!enrolled && CONFIG_WENDY_BLE_REQUIRE_MTLS)
+            continue;
         for (int fail_task = 0; fail_task <= 1; ++fail_task) {
             reset_fixture();
             test_enrolled = enrolled;
-            test_provisioned = !enrolled;
             test_fail_semaphore = !fail_task;
             test_fail_task = fail_task;
             assert(wendy_ble_start() == ESP_ERR_NO_MEM);
@@ -224,7 +212,7 @@ static void test_allocation_failure_retry(void)
 
             test_fail_semaphore = test_fail_task = false;
             assert(wendy_ble_start() == ESP_OK);
-            assert_advertisement(1);
+            assert_advertisement(enrolled);
             assert(test_tasks_created == 1);
             assert(test_task_calls == (unsigned)fail_task + 1);
             assert(test_task_stack == (enrolled ? 24576u : 4096u));
@@ -240,15 +228,40 @@ static void test_allocation_failure_retry(void)
             assert(test_semaphore_calls == 2);
         }
     }
+#endif
+}
+
+static void test_invalidated_enrollment_cache(void)
+{
+    reset_fixture();
+    test_enrolled = true;
+    test_current = false;
+    assert(wendy_ble_start() == ESP_ERR_INVALID_STATE);
+    assert(test_adv_starts == 0 && !_host_initialized);
+
+#if CONFIG_WENDY_PKI
+    test_current = true;
+    assert(wendy_ble_start() == ESP_OK);
+    assert_advertisement(1);
+    // A configuration write keeps enrollment required but invalidates its
+    // cached data until reboot. It must revoke the captured advertising policy.
+    test_current = false;
+    assert(wendy_ble_start() == ESP_ERR_INVALID_STATE);
+    assert(_enrolled && test_enrolled);
+    struct ble_gap_event disconnect = { .type = BLE_GAP_EVENT_DISCONNECT };
+    assert(_gap_event(&disconnect, NULL) == 0);
+    assert(test_adv_starts == 1);
+#endif
 }
 
 int main(void)
 {
     test_pki_enrollment();
-    test_legacy_and_unprovisioned();
+    test_unenrolled();
     test_reset_blocks_start_and_restart();
     test_identity_change_blocks_restart();
     test_allocation_failure_retry();
+    test_invalidated_enrollment_cache();
     reset_fixture();
     puts("BLE advertisement and GATT tests passed");
     return 0;

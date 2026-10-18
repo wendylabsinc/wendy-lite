@@ -6,11 +6,11 @@ Cloud PR #753, CLI PR #2223 and PKI's Lite authority delivery support must roll 
 with this firmware.
 
 The device opens a hostname-verified outer TLS 1.3 connection using its enrolled
-identity and provisioned HTTPS trust roots. All outer records start with
-`57 52 03 <opcode>` (WR03). Ping (1) and pong (2) have no payload. Key set (4)
-provisions one or two P-256 public keys. Upgrade (3) carries a 16-byte session
+identity and HTTPS trust roots installed during enrollment. All outer records
+start with `57 52 03 <opcode>` (WR03). Ping (1) and pong (2) have no payload. Key set (4)
+installs one or two P-256 public keys. Upgrade (3) carries a 16-byte session
 ID and SHA-256 of the exact signed grant. Keys are accepted only from the
-authenticated outer connection; neither CLI nor inner TLS can provision them.
+authenticated outer connection; neither CLI nor inner TLS can install them.
 
 On upgrade, the TLS backend exchanges close notifications and releases the outer TLS
 session while preserving the descriptor. The same TCP socket then accepts a new

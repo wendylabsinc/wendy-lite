@@ -14,14 +14,13 @@
 /// room for the other transports' sessions.
 
 /// Run the handshake to completion on the calling task. Returns ESP_OK only
-/// once the encrypted stream is usable. Provisioned devices authenticate a
-/// trusted operator from their organization. Unprovisioned devices allow
-/// anonymous clients only when CONFIG_WENDY_BLE_REQUIRE_MTLS is disabled.
-/// PKI enrollment uses the enrolled identity and requires a same-tenant
-/// operator over TLS 1.3. Refuses any identity reset in progress.
-/// enrolled/provisioned are the policy captured by the transport at startup;
+/// once the encrypted stream is usable. Enrolled devices use their PKI
+/// identity and require a same-tenant operator over TLS 1.3. Unenrolled
+/// devices allow anonymous clients only when CONFIG_WENDY_BLE_REQUIRE_MTLS
+/// is disabled. Refuses any identity reset in progress.
+/// enrolled is the policy captured by the transport at startup;
 /// a live configuration change rejects the session until reboot.
-esp_err_t wble_tls_session_start(bool enrolled, bool provisioned);
+esp_err_t wble_tls_session_start(bool enrolled);
 
 /// Release everything. Safe whether or not the handshake succeeded.
 void wble_tls_session_end(void);
