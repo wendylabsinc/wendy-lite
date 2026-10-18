@@ -17,7 +17,14 @@
 
 #define TAG "mesh_ble"
 
-#define MTU 512
+// NimBLE grants ceil(MTU / MPS) credits whenever a receive buffer is armed.
+// Linux sends 240-byte SDUs. With a 512-byte MTU, one armed buffer grants
+// enough credits for multiple complete SDUs; withholding the next buffer
+// cannot stop those already-authorized packets. Keep one SDU within one PDU
+// so withholding the buffer also withholds the next packet's credit.
+#define MTU 240
+_Static_assert(MTU + 2 <= MYNEWT_VAL(BLE_L2CAP_COC_MPS),
+    "mesh BLE requires an SDU and its length to fit within one credit");
 
 // Two SDUs' worth: mbedTLS reads a record header and then its body, so a
 // single SDU is routinely consumed by more than one read, and a second SDU can
