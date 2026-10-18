@@ -897,11 +897,22 @@ esp_err_t wendy_core_init(void)
     capture_boot_params();
 
     esp_err_t stdio_err = wendy_stdio_init();
-    if (stdio_err != ESP_OK)
-        ESP_LOGW(TAG, "wendy_stdio_init: %s (continuing)", esp_err_to_name(stdio_err));
+    if (stdio_err != ESP_OK) {
+        ESP_LOGW(TAG, "wendy_stdio_init: %s", esp_err_to_name(stdio_err));
+#if CONFIG_WENDY_USJ_USE_UART
+        // UART protocol frames require successful takeover of SDK stdio.
+        return stdio_err;
+#endif
+    }
 
 #if CONFIG_WENDY_USJ
-    wendy_usj_init();
+    esp_err_t serial_err = wendy_usj_init();
+    if (serial_err != ESP_OK) {
+        ESP_LOGW(TAG, "wendy_usj_init: %s", esp_err_to_name(serial_err));
+#if CONFIG_WENDY_USJ_USE_UART
+        return serial_err;
+#endif
+    }
     vTaskDelay(pdMS_TO_TICKS(1000));
 #endif
 
@@ -910,7 +921,11 @@ esp_err_t wendy_core_init(void)
              CONFIG_WENDY_FIRMWARE_VERSION_MAJOR,
              CONFIG_WENDY_FIRMWARE_VERSION_MINOR,
              CONFIG_WENDY_FIRMWARE_VERSION_PATCH);
+#if CONFIG_WENDY_WASM
     ESP_LOGI(TAG, "  WASM Runtime: WAMR (C)");
+#else
+    ESP_LOGI(TAG, "  Runtime: native applications");
+#endif
     ESP_LOGI(TAG, "  Target: %s", CONFIG_IDF_TARGET);
     ESP_LOGI(TAG, "========================================");
 

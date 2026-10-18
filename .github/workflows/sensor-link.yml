@@ -10,8 +10,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Test Korvo benchmark log validation
+        run: python3 -m unittest discover -s tools/tests -p 'test_korvo_benchmark.py'
       - name: Test sensor availability and stream lifecycle
         run: |
           cmake -S components/wendy_sensor_link/tests -B build-sensor-tests -DCMAKE_BUILD_TYPE=Release
           cmake --build build-sensor-tests
           ctest --test-dir build-sensor-tests --output-on-failure
+      - name: Test concurrent SensorLink framing and buffer ownership
+        run: |
+          cmake -S components/wendy_com/tests -B build-sensor-stream-tests -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          cmake --build build-sensor-stream-tests
+          ctest --test-dir build-sensor-stream-tests --output-on-failure
+      - name: Test console takeover and UART protocol ownership
+        run: |
+          cmake -S components/wendy_stdio/tests -B build-stdio-tests -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          cmake --build build-stdio-tests
+          ctest --test-dir build-stdio-tests --output-on-failure

@@ -1,0 +1,4 @@
+# Append after the Korvo-1 board defaults in a separate build directory.
+CONFIG_WENDY_KORVO_BENCHMARK=y
+CONFIG_NN_OPTIMIZED=y
+CONFIG_NN_SKIP_NUDGE=n

@@ -34,6 +34,14 @@
             "preview": true
         },
         {
+            "name": "esp32s31_korvo_1_native",
+            "target": "esp32s31",
+            "board_cfg": "esp32s31_korvo_1_native",
+            "flash_size": "16MB",
+            "idf_version": "v6.1",
+            "preview": true
+        },
+        {
             "name": "esp32s3_seeed_xiao_native",
             "target": "esp32s3",
             "board_cfg": "seeed_xiao_esp32s3_native",
@@ -97,6 +105,12 @@
             "name": "esp32s31_generic_native",
             "display_name": "Generic ESP32-S31 board, 4MB flash, preview",
             "binary": "esp32s31_native",
+            "target": "esp32s31"
+        },
+        {
+            "name": "esp32s31_korvo_1_native",
+            "display_name": "ESP32-S31-Korvo-1 V1.1, 16MB flash, 16MB PSRAM, camera/microphone SensorLink, preview",
+            "binary": "esp32s31_korvo_1_native",
             "target": "esp32s31"
         },
         {

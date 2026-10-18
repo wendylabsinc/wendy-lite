@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -17,7 +18,9 @@
 
 #include "wendy_stdio.h"
 
-#define CONSOLE_PATH "/dev/console"
+#define CONSOLE_PATH "/dev/wstdio"
+_Static_assert(sizeof(CONSOLE_PATH) - 1 <= ESP_VFS_PATH_MAX,
+               "Wendy stdio mount path exceeds ESP-IDF VFS limit");
 
 #define STRINGIFY(s)  STRINGIFY2(s)
 #define STRINGIFY2(s) #s
@@ -38,6 +41,12 @@
 static wendy_stdio_out_data_handler_t s_out_data_handler;
 static int s_dev_fd = -1;
 static size_t s_open_count;
+static bool s_initialized;
+#if CONFIG_WENDY_USJ_USE_UART
+// UART's VFS flags are shared by all descriptors for a port. Keep console
+// flags separate so app stdin cannot turn binary management reads blocking.
+static atomic_int s_console_flags = O_RDWR | O_NONBLOCK;
+#endif
 
 // Injected stdin data, multi-producer/multi-consumer ring buffer with
 // free-running counters (fill level = in - out, index = counter masked).
@@ -55,6 +64,10 @@ static StaticSemaphore_t s_stdin_mutex_buf;
 static int _console_open(const char *path, int flags, int mode)
 {
     if (s_open_count == 0) {
+#if CONFIG_WENDY_USJ_USE_UART
+        // uart_open also updates the shared per-port nonblocking flag.
+        flags |= O_NONBLOCK;
+#endif
         s_dev_fd = open(CONSOLE_DEV_PATH, flags, mode);
         if (s_dev_fd < 0)
             return -1;
@@ -79,6 +92,7 @@ static int _console_close(int fd)
 
 static ssize_t _console_write(int fd, const void *data, size_t size)
 {
+#if !CONFIG_WENDY_USJ_USE_UART
     // The device may accept fewer bytes than requested (e.g. usbserjtag, or
     // a fd switched to non-blocking); keep writing until drained.
     const char *p = data;
@@ -90,6 +104,7 @@ static ssize_t _console_write(int fd, const void *data, size_t size)
         p += written;
         remaining -= written;
     }
+#endif
     wendy_stdio_out_data_handler_t handler = s_out_data_handler;
     if (handler)
         handler(data, size);
@@ -98,10 +113,14 @@ static ssize_t _console_write(int fd, const void *data, size_t size)
 
 static ssize_t _console_read(int fd, void *dst, size_t size)
 {
+    if (size == 0)
+        return 0;
+#if !CONFIG_WENDY_USJ_USE_UART
     // Only non-blocking mode is allowed.
     // The fall-through read(s_dev_fd) below would otherwise block and starve
     // injected ring-buffer data.
     assert(fcntl(s_dev_fd, F_GETFL, 0) & O_NONBLOCK);
+#endif
     // Lock-free empty check: producers claim `in` before they publish, so
     // in == out proves nothing is committed. Stale loads only err toward
     // taking the mutex, never toward missing data.
@@ -129,7 +148,14 @@ static ssize_t _console_read(int fd, void *dst, size_t size)
         if (n > 0)
             return n;
     }
+#if CONFIG_WENDY_USJ_USE_UART
+    // The wired transport is the sole UART reader and injects console input.
+    // Reading its descriptor here would steal protocol bytes in COM mode.
+    errno = EAGAIN;
+    return -1;
+#else
     return read(s_dev_fd, dst, size);
+#endif
 }
 
 static int _console_fstat(int fd, struct stat *st)
@@ -139,12 +165,30 @@ static int _console_fstat(int fd, struct stat *st)
 
 static int _console_fcntl(int fd, int cmd, int arg)
 {
+#if CONFIG_WENDY_USJ_USE_UART
+    if (cmd == F_GETFL)
+        return atomic_load(&s_console_flags);
+    if (cmd == F_SETFL) {
+        // Injected console input is always nonblocking, independently of the
+        // physical UART's flags. Preserve other requested status flags here.
+        atomic_store(&s_console_flags, (arg & ~O_ACCMODE) | O_RDWR | O_NONBLOCK);
+        return 0;
+    }
+    errno = ENOSYS;
+    return -1;
+#else
     return fcntl(s_dev_fd, cmd, arg);
+#endif
 }
 
 static int _console_fsync(int fd)
 {
+#if CONFIG_WENDY_USJ_USE_UART
+    // There is no separate console queue to flush. Do not wait on COM traffic.
+    return 0;
+#else
     return fsync(s_dev_fd);
+#endif
 }
 
 static const esp_vfs_fs_ops_t s_vfs = {
@@ -194,14 +238,18 @@ wendy_stdio_set_out_data_handler(wendy_stdio_out_data_handler_t handler)
 
 esp_err_t wendy_stdio_init(void)
 {
+    if (s_initialized)
+        return ESP_OK;
+
     _Static_assert(STDIN_BUF_SIZE > 0 && (STDIN_BUF_SIZE & (STDIN_BUF_SIZE - 1)) == 0,
                    "STDIN_BUF_SIZE must be a power of two");
 
     s_stdin_mutex = xSemaphoreCreateMutexStatic(&s_stdin_mutex_buf);
 
-    // Not registered when CONFIG_VFS_SUPPORT_IO is disabled; ignore failure.
-    esp_vfs_unregister(CONSOLE_PATH);
-
+    // Keep the SDK console registered until freopen closes each old stream.
+    // Unregistering it first releases fd0/1/2 while FILE still holds those
+    // numbers, allowing a later freopen to close/reuse our physical device fd
+    // and make _console_write recursively forward back into this VFS.
     esp_err_t err = esp_vfs_register_fs(CONSOLE_PATH, &s_vfs, ESP_VFS_FLAG_STATIC, NULL);
     if (err != ESP_OK)
         return err;
@@ -215,6 +263,7 @@ esp_err_t wendy_stdio_init(void)
 
     setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
     setvbuf(stderr, NULL, _IONBF, 0);
+    s_initialized = true;
 
     return ESP_OK;
 }

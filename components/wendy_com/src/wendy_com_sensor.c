@@ -36,40 +36,39 @@ _Static_assert(_IDEAL_MSG_SIZE - sizeof(struct wcom_agent_msg_header) <= UINT16_
 
 static const char *TAG = "wcom_sensor";
 
-static struct {
-    bool active;
-    int client_id;
-    uint32_t channel_id;
-    uint32_t frame_seq;
-} _stream;
-
-// Frames share the link tx queue with responses but need their own tx state:
-// a link's header/tx_chunks may be busy with an in-flight response. One
-// stream exists globally, so one static slot suffices. The slot outlives the
-// stream: a frame may still be going out when it ends.
-//
-// A frame goes out one chunk at a time, each queued from the done handler of
-// the one before. The slot thus holds a single message whatever the frame
-// size, and whatever else gets queued on the link meanwhile — a response, a
-// console event — goes out between two chunks rather than after the whole
-// frame. The frame's routing is copied in, not read from _stream, which may be
-// ended or reopened before the last chunk is out.
-static struct {
+struct sensor_frame {
     bool busy;
+    bool queued;
+    bool cancelled;
+    int link_id;
     struct wcom_agent_msg_header header;
     struct wcom_tx_chunk tx_chunks[3];
     uint8_t prefix[_PREFIX_SIZE];
     int client_id;
     uint32_t channel_id;
     uint32_t frame_seq;
-    uint32_t chunk_seq; // of the next chunk to queue
+    uint32_t chunk_seq;
     uint64_t ts_us;
     const uint8_t *data;
     size_t size;
-    size_t offset;      // payload bytes queued so far
+    size_t offset;
     void (*done)(uint32_t channel_id);
-} _frame_slot;
+};
 
+// A closed stream keeps its slot until the transport releases its frame.
+// The frame owns only metadata; payload bytes remain in the producer's buffer.
+static struct sensor_stream {
+    bool active;
+    int client_id;
+    uint32_t channel_id;
+    uint32_t frame_seq;
+    uint64_t last_scheduled;
+    struct sensor_frame frame;
+} _streams[WCOM_SENSOR_MAX_STREAMS];
+
+// At most one sensor chunk is queued per link. Completed chunks rotate among
+// ready streams and append behind control traffic already in the tx queue.
+static uint64_t _schedule_clock;
 
 static void _done_sending_chunk(int link_id, const struct wcom_tx_chunk *chunk, bool success);
 
@@ -83,19 +82,19 @@ static bool _encode_payload_hole(pb_ostream_t *stream, const pb_field_t *field, 
            pb_encode_varint(stream, size);
 }
 
-// Queues the next chunk of the frame held in _frame_slot. Anything but OK
+// Queues the next chunk of this frame. Anything but OK
 // means nothing was queued: BAD_STATE if the client is gone, UNKNOWN_ERROR if
 // the chunk failed to encode.
-static WendyComResult _send_chunk(void)
+static WendyComResult _send_chunk(struct sensor_frame *frame)
 {
     // Looked up afresh for every chunk: client IDs are never reused, so one
     // that went away since the previous chunk no longer resolves.
-    int channel = wcom_get_channel(_frame_slot.client_id);
-    int link_id = wcom_get_link_id(_frame_slot.client_id);
-    if (channel < 0 || link_id < 0)
+    int channel = wcom_get_channel(frame->client_id);
+    int link_id = wcom_get_link_id(frame->client_id);
+    if (channel < 0 || link_id < 0 || link_id != frame->link_id)
         return WendyComResult_WENDY_COM_RESULT_BAD_STATE;
 
-    size_t size = _frame_slot.size - _frame_slot.offset;
+    size_t size = frame->size - frame->offset;
     uint32_t flags = _FLAG_KEYFRAME;
     if (size > _CHUNK_PAYLOAD_SIZE)
         size = _CHUNK_PAYLOAD_SIZE;
@@ -110,10 +109,10 @@ static WendyComResult _send_chunk(void)
     // check, and the one length that has to cover the payload — the wrapper's
     // — is computed below.
     wendy_lite_sensorlink_SensorData sensor_data = wendy_lite_sensorlink_SensorData_init_zero;
-    sensor_data.channel_id = _frame_slot.channel_id;
-    sensor_data.frame_seq = _frame_slot.frame_seq;
-    sensor_data.chunk_seq = _frame_slot.chunk_seq;
-    sensor_data.ts_us = _frame_slot.ts_us;
+    sensor_data.channel_id = frame->channel_id;
+    sensor_data.frame_seq = frame->frame_seq;
+    sensor_data.chunk_seq = frame->chunk_seq;
+    sensor_data.ts_us = frame->ts_us;
     sensor_data.flags = flags;
     // size is a stack local, consumed synchronously by the encode below.
     sensor_data.payload.funcs.encode = _encode_payload_hole;
@@ -127,7 +126,7 @@ static WendyComResult _send_chunk(void)
     }
 
     size_t submsg_size = inner_stream.bytes_written + size;
-    pb_ostream_t out_stream = pb_ostream_from_buffer(_frame_slot.prefix, sizeof(_frame_slot.prefix));
+    pb_ostream_t out_stream = pb_ostream_from_buffer(frame->prefix, sizeof(frame->prefix));
     if (!pb_encode_tag(&out_stream, PB_WT_STRING, WendyComMessage_sensor_data_tag) ||
         !pb_encode_varint(&out_stream, submsg_size) ||
         !pb_write(&out_stream, inner, inner_stream.bytes_written)) {
@@ -135,79 +134,162 @@ static WendyComResult _send_chunk(void)
         return WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
     }
 
-    _frame_slot.header = (struct wcom_agent_msg_header){
+    frame->header = (struct wcom_agent_msg_header){
         .magic = WCOM_AGENT_MSG_MAGIC,
         .version = WCOM_AGENT_MSG_VERSION,
         .channel = channel,
         .body_size = htons(out_stream.bytes_written + size),
     };
-    _frame_slot.tx_chunks[0].data = &_frame_slot.header;
-    _frame_slot.tx_chunks[0].size = sizeof(_frame_slot.header);
-    _frame_slot.tx_chunks[0].done_handler = NULL;
-    _frame_slot.tx_chunks[0].next = &_frame_slot.tx_chunks[1];
-    _frame_slot.tx_chunks[1].data = _frame_slot.prefix;
-    _frame_slot.tx_chunks[1].size = out_stream.bytes_written;
-    _frame_slot.tx_chunks[1].done_handler = NULL;
-    _frame_slot.tx_chunks[1].next = &_frame_slot.tx_chunks[2];
-    _frame_slot.tx_chunks[2].data = _frame_slot.data + _frame_slot.offset;
-    _frame_slot.tx_chunks[2].size = size;
-    _frame_slot.tx_chunks[2].done_handler = _done_sending_chunk;
-    _frame_slot.tx_chunks[2].next = NULL;
+    frame->tx_chunks[0].data = &frame->header;
+    frame->tx_chunks[0].size = sizeof(frame->header);
+    frame->tx_chunks[0].done_handler = NULL;
+    frame->tx_chunks[0].next = &frame->tx_chunks[1];
+    frame->tx_chunks[1].data = frame->prefix;
+    frame->tx_chunks[1].size = out_stream.bytes_written;
+    frame->tx_chunks[1].done_handler = NULL;
+    frame->tx_chunks[1].next = &frame->tx_chunks[2];
+    frame->tx_chunks[2].data = frame->data + frame->offset;
+    frame->tx_chunks[2].size = size;
+    frame->tx_chunks[2].done_handler = _done_sending_chunk;
+    frame->tx_chunks[2].next = NULL;
 
-    _frame_slot.offset += size;
-    _frame_slot.chunk_seq++;
+    frame->offset += size;
+    frame->chunk_seq++;
 
-    wcom_send(link_id, &_frame_slot.tx_chunks[0]);
+    frame->queued = true;
+    wcom_send(link_id, &frame->tx_chunks[0]);
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 
-// Frees the slot and hands the producer's buffer back.
-static void _finish_frame(void)
+// Release the buffer before notifying its producer. The stream itself stays
+// active until end/disconnect, so a completed frame does not reset sequencing.
+static void _finish_frame(struct sensor_frame *frame)
 {
-    void (*done)(uint32_t channel_id) = _frame_slot.done;
-    uint32_t channel_id = _frame_slot.channel_id;
-
-    _frame_slot.busy = false;
-    _frame_slot.done = NULL;
-
+    void (*done)(uint32_t channel_id) = frame->done;
+    uint32_t channel_id = frame->channel_id;
+    frame->busy = false;
+    frame->queued = false;
+    frame->done = NULL;
+    frame->data = NULL;
     if (done)
         done(channel_id);
 }
 
-// Called on the com task once a chunk is fully sent (true) or the link's tx
-// queue was torn down (false). The frame is over once its last chunk is out,
-// or as soon as one cannot go: either way the producer's buffer is free again.
+static void _schedule_link(int link_id)
+{
+    for (size_t i = 0; i < WCOM_SENSOR_MAX_STREAMS; i++) {
+        struct sensor_frame *frame = &_streams[i].frame;
+        if (frame->busy && frame->queued && frame->link_id == link_id)
+            return;
+    }
+    for (size_t examined = 0; examined < WCOM_SENSOR_MAX_STREAMS; examined++) {
+        struct sensor_stream *next = NULL;
+        for (size_t i = 0; i < WCOM_SENSOR_MAX_STREAMS; i++) {
+            struct sensor_stream *stream = &_streams[i];
+            if (stream->frame.busy && stream->frame.link_id == link_id &&
+                (!next || stream->last_scheduled < next->last_scheduled))
+                next = stream;
+        }
+        if (!next)
+            return;
+        // Keep this age across frames, so a producer submitting many short
+        // frames cannot jump ahead of another stream's waiting long frame.
+        next->last_scheduled = ++_schedule_clock;
+        struct sensor_frame *frame = &next->frame;
+        if (!frame->cancelled && _send_chunk(frame) == WendyComResult_WENDY_COM_RESULT_OK)
+            return;
+        _finish_frame(frame);
+    }
+}
+
+static bool _schedule_pending;
+static struct wcom_operation _schedule_op;
+
+static void _schedule_exec(struct wcom_operation *op)
+{
+    _schedule_pending = false;
+    for (size_t i = 0; i < WCOM_SENSOR_MAX_STREAMS; i++) {
+        struct sensor_frame *frame = &_streams[i].frame;
+        if (frame->busy && !frame->queued)
+            _schedule_link(frame->link_id);
+    }
+}
+
+static void _request_schedule(void)
+{
+    if (_schedule_pending)
+        return;
+    for (size_t i = 0; i < WCOM_SENSOR_MAX_STREAMS; i++) {
+        if (_streams[i].frame.busy && !_streams[i].frame.queued) {
+            // Yield to the com loop between sensor chunks. Besides limiting
+            // queued wire data, this lets RX commands and operations run even
+            // when the transport accepts an entire frame without blocking.
+            _schedule_pending = true;
+            _schedule_op.func = _schedule_exec;
+            wcom_core_exec(&_schedule_op);
+            return;
+        }
+    }
+}
+
 static void _done_sending_chunk(int link_id, const struct wcom_tx_chunk *chunk, bool success)
 {
-    if (success && _frame_slot.offset < _frame_slot.size) {
-        // The link dequeued this chunk before calling us, so the next one can
-        // be queued right here. Never on failure: the link is tearing its
-        // queue down around us, and a chunk queued now would be orphaned.
-        if (_send_chunk() == WendyComResult_WENDY_COM_RESULT_OK)
-            return;
-        ESP_LOGW(TAG, "frame %" PRIu32 " on channel %" PRIu32 " cut short after %" PRIu32 " chunks",
-                 _frame_slot.frame_seq, _frame_slot.channel_id, _frame_slot.chunk_seq);
+    struct sensor_frame *frame = NULL;
+    for (size_t i = 0; i < WCOM_SENSOR_MAX_STREAMS; i++) {
+        if (&_streams[i].frame.tx_chunks[2] == chunk) {
+            frame = &_streams[i].frame;
+            break;
+        }
     }
-    _finish_frame();
+    if (!frame || !frame->busy || !frame->queued)
+        return;
+    frame->queued = false;
+    if (!success || frame->cancelled || frame->offset == frame->size)
+        _finish_frame(frame);
+
+    if (!success) {
+        // Link teardown only visits chunks already on its tx queue. Return
+        // the other streams' waiting buffers here too, without queuing any
+        // more traffic while the transport is clearing that queue.
+        for (size_t i = 0; i < WCOM_SENSOR_MAX_STREAMS; i++) {
+            struct sensor_frame *pending = &_streams[i].frame;
+            if (pending->busy && pending->link_id == link_id)
+                _finish_frame(pending);
+        }
+        return;
+    }
+    _request_schedule();
+}
+
+static struct sensor_stream *_find_stream(int client_id, uint32_t channel_id)
+{
+    for (size_t i = 0; i < WCOM_SENSOR_MAX_STREAMS; i++) {
+        struct sensor_stream *stream = &_streams[i];
+        if ((stream->active || stream->frame.busy) &&
+            stream->client_id == client_id && stream->channel_id == channel_id)
+            return stream;
+    }
+    return NULL;
 }
 
 WendyComResult wcom_sensor_stream_begin(int client_id, uint32_t channel_id)
 {
-    ESP_LOGI(TAG, "STREAM_BEGIN client=%d channel=%" PRIu32, client_id, channel_id);
-    if (_stream.active) {
-        ESP_LOGW(TAG, "stream already open for client=%d channel=%" PRIu32,
-                 _stream.client_id, _stream.channel_id);
-        return WendyComResult_WENDY_COM_RESULT_BUSY;
-    }
-    if (wcom_get_link_id(client_id) < 0) {
-        ESP_LOGW(TAG, "client %d has no link", client_id);
+    if (wcom_get_link_id(client_id) < 0)
         return WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+    if (_find_stream(client_id, channel_id))
+        return WendyComResult_WENDY_COM_RESULT_BUSY;
+    for (size_t i = 0; i < WCOM_SENSOR_MAX_STREAMS; i++) {
+        struct sensor_stream *stream = &_streams[i];
+        if (!stream->active && !stream->frame.busy) {
+            stream->active = true;
+            stream->client_id = client_id;
+            stream->channel_id = channel_id;
+            stream->frame_seq = 0;
+            stream->last_scheduled = _schedule_clock;
+            return WendyComResult_WENDY_COM_RESULT_OK;
+        }
     }
-    _stream.active = true;
-    _stream.client_id = client_id;
-    _stream.channel_id = channel_id;
-    _stream.frame_seq = 0;
-    return WendyComResult_WENDY_COM_RESULT_OK;
+    return WendyComResult_WENDY_COM_RESULT_BUSY;
 }
 
 WendyComResult wcom_sensor_stream_push(int client_id, uint32_t channel_id,
@@ -215,58 +297,57 @@ WendyComResult wcom_sensor_stream_push(int client_id, uint32_t channel_id,
                                        uint64_t ts_us,
                                        void (*done)(uint32_t channel_id))
 {
-    if (!_stream.active || client_id != _stream.client_id || channel_id != _stream.channel_id) {
-        ESP_LOGW(TAG, "no stream open for client=%d channel=%" PRIu32, client_id, channel_id);
+    struct sensor_stream *stream = _find_stream(client_id, channel_id);
+    if (!stream || !stream->active || !data || size == 0)
         return WendyComResult_WENDY_COM_RESULT_BAD_STATE;
-    }
-    if (!data || size == 0) {
-        ESP_LOGW(TAG, "empty frame on channel %" PRIu32, channel_id);
-        return WendyComResult_WENDY_COM_RESULT_BAD_STATE;
-    }
-    if (_frame_slot.busy)
+    if (stream->frame.busy)
         return WendyComResult_WENDY_COM_RESULT_BUSY;
+    int link_id = wcom_get_link_id(client_id);
+    if (link_id < 0 || wcom_get_channel(client_id) < 0)
+        return WendyComResult_WENDY_COM_RESULT_BAD_STATE;
 
-    _frame_slot.busy = true;
-    _frame_slot.client_id = client_id;
-    _frame_slot.channel_id = channel_id;
-    _frame_slot.frame_seq = _stream.frame_seq;
-    _frame_slot.chunk_seq = 0;
-    _frame_slot.ts_us = ts_us;
-    _frame_slot.data = data;
-    _frame_slot.size = size;
-    _frame_slot.offset = 0;
-    _frame_slot.done = done;
-
-    WendyComResult result = _send_chunk();
-    if (result != WendyComResult_WENDY_COM_RESULT_OK) {
-        if (result == WendyComResult_WENDY_COM_RESULT_BAD_STATE)
-            ESP_LOGE(TAG, "client %d has no link for a frame", client_id);
-        // Nothing was queued, so the frame was never taken: done stays the
-        // caller's business.
-        _frame_slot.busy = false;
-        _frame_slot.done = NULL;
-        return result;
-    }
-
-    _stream.frame_seq++;
+    stream->frame = (struct sensor_frame){
+        .busy = true,
+        .link_id = link_id,
+        .client_id = client_id,
+        .channel_id = channel_id,
+        .frame_seq = stream->frame_seq++,
+        .ts_us = ts_us,
+        .data = data,
+        .size = size,
+        .done = done,
+    };
+    _schedule_link(link_id);
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 
 WendyComResult wcom_sensor_stream_end(int client_id, uint32_t channel_id)
 {
-    ESP_LOGI(TAG, "STREAM_END client=%d channel=%" PRIu32, client_id, channel_id);
-    if (!_stream.active || client_id != _stream.client_id || channel_id != _stream.channel_id)
+    struct sensor_stream *stream = _find_stream(client_id, channel_id);
+    if (!stream || !stream->active)
         return WendyComResult_WENDY_COM_RESULT_BAD_STATE;
-    if (_frame_slot.busy)
-        ESP_LOGW(TAG, "stream on channel %" PRIu32 " ended before its last frame's done", channel_id);
-    _stream.active = false;
+    stream->active = false;
+    if (stream->frame.busy) {
+        // A queued chunk may already be partially on the wire; its storage
+        // cannot be reused until its completion callback. Stop at that chunk.
+        stream->frame.cancelled = true;
+        if (!stream->frame.queued)
+            _finish_frame(&stream->frame);
+    }
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 
 void wcom_sensor_client_disconnected(int client_id)
 {
-    if (_stream.active && _stream.client_id == client_id) {
-        ESP_LOGI(TAG, "client %d disconnected, dropping its stream", client_id);
-        _stream.active = false;
+    for (size_t i = 0; i < WCOM_SENSOR_MAX_STREAMS; i++) {
+        struct sensor_stream *stream = &_streams[i];
+        if (stream->client_id != client_id)
+            continue;
+        stream->active = false;
+        if (stream->frame.busy) {
+            stream->frame.cancelled = true;
+            if (!stream->frame.queued)
+                _finish_frame(&stream->frame);
+        }
     }
 }

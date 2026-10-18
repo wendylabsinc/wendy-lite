@@ -155,7 +155,7 @@ target_compile_definitions(tx_stall_test PRIVATE CONFIG_WENDY_COM_TASK_PRIORITY=
     CONFIG_WENDY_COM_TASK_CORE_AFFINITY=0)
 target_compile_options(tx_stall_test PRIVATE -UNDEBUG)
 target_link_libraries(tx_stall_test PRIVATE capability_proto mbedtls)
-foreach(scenario socket stream want_read no_bytes progress)
+foreach(scenario socket stream want_read no_bytes progress uart_initial uart_full uart_want_read)
     add_test(NAME wendycom_tx_stall_${scenario} COMMAND tx_stall_test ${scenario})
     set_tests_properties(wendycom_tx_stall_${scenario} PROPERTIES TIMEOUT 5)
 endforeach()

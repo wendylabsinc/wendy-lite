@@ -9,17 +9,21 @@
 extern "C" {
 #endif
 
+#define WCOM_SENSOR_MAX_STREAMS 4
+
 // Streams sensor data to a client as sensor_data messages. Each frame is cut
 // into chunks of about 10 KiB, queued one at a time as the previous one goes
 // out: frames have no size limit, and other traffic on the link never waits
-// for more than one chunk. One stream and one in-flight frame at a time. All
+// for more than one sensor chunk per link. Up to WCOM_SENSOR_MAX_STREAMS
+// client/channel streams each retain one frame; ready streams take turns. All
 // functions must be called from the com task; wendy_core offers the same
 // three, callable from any task.
 
 /// Open a stream on channel_id towards client_id, resetting the frame
 /// sequence counter. Nothing goes on the wire: the stream is device-side
-/// state, telling the frame calls below where to send. Fails if a stream is
-/// already open or client_id is not connected.
+/// state, telling the frame calls below where to send. Returns BUSY if this
+/// client/channel is already open or still draining, or all slots are in use.
+/// Returns BAD_STATE if client_id is not connected.
 WendyComResult wcom_sensor_stream_begin(int client_id, uint32_t channel_id);
 
 /// Send one frame on an open stream: a video frame, a buffer of audio samples
@@ -39,14 +43,15 @@ WendyComResult wcom_sensor_stream_push(int client_id, uint32_t channel_id,
                                        uint64_t ts_us,
                                        void (*done)(uint32_t channel_id));
 
-/// Close the stream. Call it only once the last frame's done has run: the
-/// stream is then fully released on return, and a new one can begin and push
-/// straight away. Called earlier, the frame still goes out and its done still
-/// runs, but the next stream's first push gets WENDY_COM_RESULT_BUSY until
-/// it has.
+/// Close the stream. A waiting frame is released immediately. A chunk already
+/// queued to the transport finishes before its buffer is released, and no
+/// further chunks of that frame are sent. The frame's done still runs exactly
+/// once. This client/channel cannot reopen until that callback has run; other
+/// streams continue independently. For complete frames, wait for done first.
 WendyComResult wcom_sensor_stream_end(int client_id, uint32_t channel_id);
 
-/// Drop the stream held by client_id, if any.
+/// Close every stream held by client_id. Buffers still referenced by the
+/// transport remain valid until their done callbacks, just as with end().
 void wcom_sensor_client_disconnected(int client_id);
 
 #ifdef __cplusplus
