@@ -63,10 +63,9 @@ static EventGroupHandle_t s_events;
 /* ── Reboot boot-params ─────────────────────────────────────────────────
  *
  * Written by the REBOOT command right before esp_restart() and consumed by
- * the next boot. They live in LP SRAM, which survives a software reset but
- * not a hardware one, and are one-shot: the magic is invalidated at every
- * boot so any other reboot path (guest sys_reboot(), panic, WDT, ...) comes
- * up with defaults.
+ * the next boot. Use RTC memory when available, or no-init SRAM on chips
+ * without it. Only software resets may consume these values. The magic is
+ * invalidated at every boot so other reboot paths use the defaults.
  */
 
 #define REBOOT_PARAMS_MAGIC 0xB007C0DEu
@@ -77,7 +76,11 @@ typedef struct {
     bool     app_auto_start;
 } reboot_params_t;
 
+#if CONFIG_SOC_RTC_FAST_MEM_SUPPORTED || CONFIG_SOC_RTC_SLOW_MEM_SUPPORTED
 static RTC_NOINIT_ATTR reboot_params_t s_reboot_params;
+#else
+static __NOINIT_ATTR reboot_params_t s_reboot_params;
+#endif
 
 /* Captured once at boot; consumed at the end of wendy_core_init(). */
 static bool     s_boot_app_auto_start = true;
