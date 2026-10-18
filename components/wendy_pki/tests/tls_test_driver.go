@@ -47,12 +47,8 @@ func main() {
 		switch profile {
 		case "p256":
 			return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		case "mldsa44":
-			return mldsa.GenerateKey(mldsa.MLDSA44())
 		case "mldsa65":
 			return mldsa.GenerateKey(mldsa.MLDSA65())
-		case "mldsa87":
-			return mldsa.GenerateKey(mldsa.MLDSA87())
 		default:
 			return nil, fmt.Errorf("unknown issuer profile %q", profile)
 		}
@@ -367,8 +363,8 @@ func main() {
 		fmt.Println("PASS", profile, name)
 	}
 
-	// Exercise the firmware's outbound role. Three issuer intermediates make
-	// every ML-DSA profile cross the TLS record boundary, with a P-256 device key.
+	// Exercise the firmware's outbound role. Three ML-DSA-65 intermediates
+	// cross the TLS record boundary, with a P-256 device key.
 	issuer, parent := rootKey, root
 	chain := [][]byte{rootDER}
 	for level := range 3 {
@@ -380,7 +376,7 @@ func main() {
 		chain = append([][]byte{der}, chain...)
 		parent, issuer = ca, caKey
 	}
-	device, deviceKey, devicePEM := leaf("outbound device", time.Now().Add(time.Hour), []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, tenant+"device/lite-test", issuer, parent, 0)
+	device, deviceKey, devicePEM := leaf("outbound device", time.Now().Add(time.Hour), []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}, tenant+"device/lite-test", issuer, parent, 0)
 	chain = append(device.Certificate, chain...)
 	chainBytes := 0
 	for index, der := range chain {
@@ -437,9 +433,134 @@ func main() {
 	must(err)
 	must(cmd.Wait())
 	fmt.Printf("PASS %s outbound-short-writes chain_bytes=%d certificates=%d cipher=%s\n", profile, chainBytes, len(chain), tls.CipherSuiteName(state.CipherSuite))
+	operator, operatorKey, operatorPEM := leaf("large-chain operator", time.Now().Add(time.Hour), []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, tenant+"operator/11111111-1111-4111-8111-111111111111", rootKey, root, 0)
+	exerciseLargeServerStream(directory, profile, pool, operator, chainBytes, len(chain))
+	if profile == "mldsa65" {
+		must(os.WriteFile(filepath.Join(directory, "operator-key.der"), operatorKey, 0600))
+		must(os.WriteFile(filepath.Join(directory, "operator-chain.pem"), append(operatorPEM, rootPEM...), 0600))
+		exerciseRecordFragmentedPeer(directory)
+		exerciseTruncatedOutboundCertificate(directory, broker, pool)
+		largeOperator, _, _ := leaf("oversized operator", time.Now().Add(time.Hour), []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, tenant+"operator/11111111-1111-4111-8111-111111111111", issuer, parent, 0)
+		largeOperator.Certificate = append(largeOperator.Certificate, chain[1:]...)
+		exerciseOversizedIncomingCertificate(directory, pool, largeOperator)
+	}
 	if profile == "p256" {
 		exerciseEnrollmentHTTP(directory, broker, pool)
 	}
+}
+
+func exerciseRecordFragmentedPeer(directory string) {
+	server := exec.Command(os.Args[1], filepath.Join(directory, "key.der"), filepath.Join(directory, "server.pem"), filepath.Join(directory, "root.pem"), "stream-valid")
+	server.Stderr = os.Stderr
+	stdout, err := server.StdoutPipe()
+	must(err)
+	must(server.Start())
+	defer server.Process.Kill()
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	must(err)
+	client := exec.Command(os.Args[1], filepath.Join(directory, "operator-key.der"), filepath.Join(directory, "operator-chain.pem"), filepath.Join(directory, "root.pem"), "fragment-client", strings.TrimSpace(line))
+	client.Stdout, client.Stderr = os.Stdout, os.Stderr
+	must(client.Run())
+	must(server.Wait())
+	fmt.Println("PASS mldsa65 incoming-512-byte-records")
+}
+
+// Outgoing Certificate fragmentation does not enlarge the incoming handshake
+// allocator. A valid but oversized peer chain must still fail closed.
+func exerciseOversizedIncomingCertificate(directory string, roots *x509.CertPool, operator tls.Certificate) {
+	chainBytes := 0
+	for _, cert := range operator.Certificate {
+		chainBytes += len(cert)
+	}
+	if chainBytes <= 16384 {
+		panic("oversized peer fixture must exceed the incoming handshake buffer")
+	}
+	command := exec.Command(os.Args[1], filepath.Join(directory, "key.der"), filepath.Join(directory, "server.pem"), filepath.Join(directory, "root.pem"), "stream-reject")
+	command.Stderr = os.Stderr
+	stdout, err := command.StdoutPipe()
+	must(err)
+	must(command.Start())
+	defer command.Process.Kill()
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	must(err)
+	raw, err := net.DialTimeout("tcp", "127.0.0.1:"+strings.TrimSpace(line), 3*time.Second)
+	must(err)
+	defer raw.Close()
+	must(raw.SetDeadline(time.Now().Add(4 * time.Second)))
+	client := tls.Client(raw, &tls.Config{
+		MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13,
+		RootCAs: roots, ServerName: "localhost", Certificates: []tls.Certificate{operator},
+	})
+	if client.Handshake() == nil {
+		var reply [1]byte
+		if _, err = client.Read(reply[:]); err == nil {
+			panic("oversized incoming Certificate was accepted")
+		}
+	}
+	must(command.Wait())
+	fmt.Printf("PASS mldsa65 incoming-oversized-certificate chain_bytes=%d\n", chainBytes)
+}
+
+func exerciseTruncatedOutboundCertificate(directory string, broker tls.Certificate, roots *x509.CertPool) {
+	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	must(err)
+	defer listener.Close()
+	must(listener.SetDeadline(time.Now().Add(10 * time.Second)))
+	command := exec.Command(os.Args[1], filepath.Join(directory, "outbound-key.der"), filepath.Join(directory, "outbound-device.pem"), filepath.Join(directory, "outbound-root.pem"), "connect-truncated", fmt.Sprint(listener.Addr().(*net.TCPAddr).Port))
+	command.Stdout, command.Stderr = os.Stdout, os.Stderr
+	must(command.Start())
+	defer command.Process.Kill()
+	raw, err := listener.Accept()
+	must(err)
+	defer raw.Close()
+	must(raw.SetDeadline(time.Now().Add(10 * time.Second)))
+	server := tls.Server(raw, &tls.Config{
+		MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13,
+		Certificates: []tls.Certificate{broker}, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: roots,
+	})
+	err = server.Handshake()
+	state := server.ConnectionState()
+	if err == nil || state.HandshakeComplete || len(state.VerifiedChains) != 0 {
+		panic("truncated fragmented Certificate was authenticated")
+	}
+	must(command.Wait())
+	fmt.Println("PASS mldsa65 outbound-truncated-certificate")
+}
+
+// Exercise the same multi-record Certificate writer in the server role over
+// callbacks that fragment reads/writes and return both WANT directions.
+func exerciseLargeServerStream(directory, profile string, roots *x509.CertPool, operator tls.Certificate, chainBytes, chainLength int) {
+	command := exec.Command(os.Args[1], filepath.Join(directory, "outbound-key.der"), filepath.Join(directory, "outbound-device.pem"), filepath.Join(directory, "root.pem"), "stream-valid")
+	command.Stderr = os.Stderr
+	stdout, err := command.StdoutPipe()
+	must(err)
+	must(command.Start())
+	defer command.Process.Kill()
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	must(err)
+	raw, err := net.DialTimeout("tcp", "127.0.0.1:"+strings.TrimSpace(line), 3*time.Second)
+	must(err)
+	defer raw.Close()
+	must(raw.SetDeadline(time.Now().Add(4 * time.Second)))
+	client := tls.Client(raw, &tls.Config{
+		MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13,
+		RootCAs: roots, ServerName: "localhost", Certificates: []tls.Certificate{operator},
+	})
+	must(client.Handshake())
+	state := client.ConnectionState()
+	if len(state.PeerCertificates) != chainLength || len(state.VerifiedChains) == 0 {
+		panic("stream server chain was not authenticated")
+	}
+	_, err = client.Write([]byte("hello"))
+	must(err)
+	var reply [5]byte
+	_, err = io.ReadFull(client, reply[:])
+	must(err)
+	if string(reply[:]) != "world" {
+		panic("invalid large-chain stream application data")
+	}
+	must(command.Wait())
+	fmt.Printf("PASS %s server-stream-short-writes chain_bytes=%d certificates=%d\n", profile, chainBytes, chainLength)
 }
 
 func exerciseEnrollmentHTTP(directory string, broker tls.Certificate, deviceRoots *x509.CertPool) {

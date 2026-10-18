@@ -29,6 +29,7 @@ EKUs and URIs, duplicate URIs, mismatched private keys, nonce mismatches,
 rollback, damaged signatures, and truncated responses. Peer hashes are checked
 against SHA-256 of the sole expected URI, including rejection of duplicate URIs.
 
-Build host tests with `-DWENDY_PKI_WOLFSSL=ON` to enable these cases. The separate
+The esp-pqc host tests accept ML-DSA-65 chains and reject the retained ML-DSA-44
+and ML-DSA-87 fixtures. The separate
 Go TLS interoperability driver generates its own temporary ML-DSA operator and
 device chains for all three parameter sets.

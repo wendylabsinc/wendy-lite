@@ -24,7 +24,22 @@ if(IDF_TARGET STREQUAL "esp32c61")
 endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+# Follow the enabled main-component dependencies. Optional WASM adapters must
+# not pull their runtime into native firmware builds.
+idf_build_set_property(MINIMAL_BUILD ON)
 project(wendy_mcu)
+
+include(cmake/dependency_patches.cmake)
+if(CONFIG_MBEDTLS_USE_BUNDLED_PQC)
+    if(CONFIG_MBEDTLS_DYNAMIC_BUFFER)
+        message(FATAL_ERROR
+            "The bundled esp-pqc Mbed TLS backend requires fixed receive buffers. "
+            "ESP-IDF dynamic buffers do not satisfy its handshake reassembly bounds. "
+            "Disable CONFIG_MBEDTLS_DYNAMIC_BUFFER or configure a fresh sdkconfig.")
+    endif()
+    wendy_patch_mbedtls("${CMAKE_CURRENT_LIST_DIR}/components/esp-pqc/components/mbedtls/mbedtls")
+endif()
+wendy_patch_wamr()
 
 # ESP32-P4 ships in several board layouts that differ in flash size and
 # partition table, so a board overlay must be selected explicitly:

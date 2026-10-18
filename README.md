@@ -6,6 +6,19 @@ The Wendy host firmware exposes a comprehensive set of hardware APIs through WAS
 
 Wendy Lite also supports native applications, written in C and C++ and built using the ESP-IDF tools and API.
 
+Build with ESP-IDF 6.0.3. Initialize nested dependencies with
+`git submodule update --init --recursive`. The pinned esp-pqc component supplies
+mbedTLS 4 and ML-DSA-65 certificate verification; P-256 device keys remain supported.
+CI uses `espressif/idf:v6.0.3`. To build ESP32-C6 with the same container:
+
+```sh
+docker run --rm -v "$PWD:/project" -w /project espressif/idf:v6.0.3 \
+  idf.py -B build-idf6 -D SDKCONFIG=sdkconfig.idf6 \
+  -D SDKCONFIG_DEFAULTS=sdkconfig.defaults -D IDF_TARGET=esp32c6 build
+```
+
+Use a fresh build directory and configuration when upgrading from ESP-IDF 5.
+
 ## Optional WASM support
 
 Firmware builds omit the WASM runtime by default. To enable it on a supported

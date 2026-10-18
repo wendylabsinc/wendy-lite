@@ -35,5 +35,3 @@ int wendy_pki_verify_operator(const uint8_t *der, size_t size, const char *tenan
  * The caller must also verify the TLS chain before authorizing the role. */
 enum wendy_peer_role wendy_pki_verify_peer(const uint8_t *der, size_t size,
                                            const char *tenant);
-
-int wendy_pki_rng(void *context, unsigned char *out, size_t size);

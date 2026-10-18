@@ -2,17 +2,11 @@ menu "Wendy PKI"
     config WENDY_PKI
         bool "Use pki-core Tier C enrollment"
         default y
+        select MBEDTLS_X509_CREATE_C
+        select MBEDTLS_X509_CSR_WRITE_C
         help
             Generate the identity key on-device, redeem a real pki-core credential,
             and verify signed time before making cloud mTLS connections.
-    config WENDY_PKI_WOLFSSL
-        bool "Use wolfSSL for PKI trust and TLS with ML-DSA verification"
-        depends on WENDY_PKI
-        default n
-        help
-            Accept RSA/ECDSA and ML-DSA-44/65/87 certificate chains using
-            the pinned wolfSSL backend. Device keys and relay grants remain
-            P-256. Disabled builds use mbedTLS without linking wolfSSL.
     config WENDY_PKI_DEVICE_ROOTS
         string "PEM device identity trust bundle, optional build-time fallback"
         depends on WENDY_PKI

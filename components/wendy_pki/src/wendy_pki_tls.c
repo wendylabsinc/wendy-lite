@@ -3,8 +3,9 @@
 #include "http_parser.h"
 #include "wendy_pki_internal.h"
 #include "wendy_pki_verify.h"
+#include "wendy_pki_crypto.h"
+#include "wendy_pki_certificate_policy.h"
 #include <errno.h>
-#include <psa/crypto.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <netdb.h>
@@ -53,13 +54,34 @@ void wendy_pki_close(wendy_pki_connection *c)
     if (c->fd >= 0) close(c->fd);
     free(c);
 }
+
+/* Add Wendy's algorithm restrictions without overriding certificate-chain,
+ * hostname, validity, or key-usage failures reported by mbedTLS. */
+static int certificate_policy(void *context, mbedtls_x509_crt *cert, int depth,
+                              uint32_t *flags)
+{
+    (void)depth;
+    wendy_pki_connection *c = context;
+    bool anchor = false;
+    for (const mbedtls_x509_crt *root = &c->roots; root; root = root->next) {
+        if (root->raw.len == cert->raw.len &&
+            !memcmp(root->raw.p, cert->raw.p, root->raw.len)) {
+            anchor = true;
+            break;
+        }
+    }
+    if (wendy_pki_certificate_policy(cert, anchor))
+        *flags |= MBEDTLS_X509_BADCERT_OTHER;
+    return 0;
+}
+
 static int configure(wendy_pki_connection *c, int server, const uint8_t *key,
     size_t key_size, const char *cert, struct wendy_conf_span roots)
 {
     mbedtls_ssl_init(&c->ssl); mbedtls_ssl_config_init(&c->config);
     mbedtls_x509_crt_init(&c->roots); mbedtls_x509_crt_init(&c->certificate);
     mbedtls_pk_init(&c->key);
-    if (psa_crypto_init() != PSA_SUCCESS || !roots.data || !roots.size || roots.size > 16384 ||
+    if (wendy_pki_crypto_init() || !roots.data || !roots.size || roots.size > 16384 ||
         mbedtls_ssl_config_defaults(&c->config, server ? MBEDTLS_SSL_IS_SERVER : MBEDTLS_SSL_IS_CLIENT,
             MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT)) return -1;
     unsigned char *copy = calloc(1, roots.size + 1);
@@ -69,15 +91,20 @@ static int configure(wendy_pki_connection *c, int server, const uint8_t *key,
     free(copy);
     if (r) return -1;
     mbedtls_ssl_conf_authmode(&c->config, MBEDTLS_SSL_VERIFY_REQUIRED);
-    mbedtls_ssl_conf_rng(&c->config, wendy_pki_rng, NULL);
+    mbedtls_ssl_conf_cert_profile(&c->config, wendy_pki_certificate_profile());
+    mbedtls_ssl_conf_verify(&c->config, certificate_policy, c);
     mbedtls_ssl_conf_ca_chain(&c->config, &c->roots, NULL);
     mbedtls_ssl_conf_min_tls_version(&c->config, MBEDTLS_SSL_VERSION_TLS1_3);
     mbedtls_ssl_conf_max_tls_version(&c->config, MBEDTLS_SSL_VERSION_TLS1_3);
+    /* Each connection authenticates certificates. Do not negotiate unused
+     * resumption PSKs or require callers to handle post-handshake tickets. */
+    mbedtls_ssl_conf_tls13_key_exchange_modes(&c->config,
+        MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL);
     if (key || cert) {
         if (!key || !cert ||
             mbedtls_x509_crt_parse(&c->certificate, (const unsigned char *)cert, strlen(cert)+1) ||
-            mbedtls_pk_parse_key(&c->key, key, key_size, NULL, 0, wendy_pki_rng, NULL) ||
-            mbedtls_pk_check_pair(&c->certificate.pk, &c->key, wendy_pki_rng, NULL) ||
+            mbedtls_pk_parse_key(&c->key, key, key_size, NULL, 0) ||
+            mbedtls_pk_check_pair(&c->certificate.pk, &c->key) ||
             mbedtls_ssl_conf_own_cert(&c->config, &c->certificate, &c->key)) return -1;
     }
     if (mbedtls_ssl_setup(&c->ssl, &c->config)) return -1;
@@ -138,9 +165,13 @@ int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t 
     if (!c)
         return -1;
     c->fd = -1;
-    const char *stage = "DNS";
+    const char *stage = "TLS setup";
     int tls_error = 0;
     struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM}, *addresses = NULL;
+    /* Parse local credentials before starting the broker's TCP deadline. */
+    if (configure(c, 0, key, key_size, cert, roots) ||
+        mbedtls_ssl_set_hostname(&c->ssl, host)) goto fail;
+    stage = "DNS";
     char service[6];
     snprintf(service, sizeof service, "%u", port);
     if ((tls_error = getaddrinfo(host, service, &hints, &addresses)) != 0)
@@ -176,9 +207,6 @@ int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t 
     addresses = NULL;
     if (c->fd < 0)
         goto fail;
-    stage = "TLS setup";
-    if (configure(c, 0, key, key_size, cert, roots) ||
-        mbedtls_ssl_set_hostname(&c->ssl, host)) goto fail;
     stage = "TLS handshake";
     int r;
     while ((r = mbedtls_ssl_handshake(&c->ssl)) != 0) {
@@ -199,7 +227,7 @@ fail:
     return -1;
 }
 int wendy_pki_fd(void *v) { return ((wendy_pki_connection *)v)->fd; }
-static ssize_t result(wendy_pki_connection *c, int n)
+static ssize_t result(int n)
 {
     if (n == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) return 0;
     if (n >= 0)
@@ -212,14 +240,14 @@ ssize_t wendy_pki_read(void *v, void *b, size_t n)
     wendy_pki_connection *c = v;
     if (wendy_pki_reset_in_progress() ||
         (c->relay_expires_us && esp_timer_get_time() >= c->relay_expires_us)) return -1;
-    return result(c, mbedtls_ssl_read(&c->ssl, b, n));
+    return result(mbedtls_ssl_read(&c->ssl, b, n));
 }
 ssize_t wendy_pki_write(void *v, const void *b, size_t n)
 {
     wendy_pki_connection *c = v;
     if (wendy_pki_reset_in_progress() ||
         (c->relay_expires_us && esp_timer_get_time() >= c->relay_expires_us)) return -1;
-    return result(c, mbedtls_ssl_write(&c->ssl, b, n));
+    return result(mbedtls_ssl_write(&c->ssl, b, n));
 }
 bool wendy_pki_pending(wendy_pki_connection *c)
 {

@@ -15,20 +15,10 @@
 #include <string.h>
 #include <sys/time.h>
 #include <mbedtls/pk.h>
-#include <psa/crypto.h>
-#include <mbedtls/sha256.h>
+#include "wendy_pki_crypto.h"
 #include <mbedtls/x509_csr.h>
 
 static const char *TAG = "wendy_pki";
-static pthread_once_t crypto_once = PTHREAD_ONCE_INIT;
-static int crypto_ok;
-static void init_crypto(void)
-{
-    crypto_ok = psa_crypto_init() == PSA_SUCCESS;
-#if CONFIG_WENDY_PKI_WOLFSSL
-    crypto_ok = crypto_ok && wendy_pki_backend_init() == 0;
-#endif
-}
 static pthread_once_t identity_once = PTHREAD_ONCE_INIT;
 static esp_err_t identity_ready = ESP_FAIL;
 /* Serialize issuance, status, and recovery so an in-flight enrollment cannot
@@ -281,13 +271,10 @@ static int identity_key(nvs_handle_t h, const WendyConfEnrollment *cfg, uint8_t 
     }
     if (t != ESP_ERR_NVS_NOT_FOUND || d != ESP_ERR_NVS_NOT_FOUND)
         return -1;
-    mbedtls_pk_context k;
-    mbedtls_pk_init(&k);
     int result = -1;
     *key = malloc(256);
-    if (!*key || mbedtls_pk_setup(&k, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY)) ||
-        mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP256R1, mbedtls_pk_ec(k), wendy_pki_rng, NULL)) goto done;
-    int n = mbedtls_pk_write_key_der(&k, *key, 256);
+    if (!*key) goto done;
+    int n = wendy_pki_generate_key_der(*key, 256);
     if (n <= 0) goto done;
     memmove(*key, *key+256-n, n);
     *size = n;
@@ -296,7 +283,6 @@ static int identity_key(nvs_handle_t h, const WendyConfEnrollment *cfg, uint8_t 
         nvs_set_str(h, "device", cfg->device_id) != ESP_OK || nvs_commit(h) != ESP_OK) goto done;
     result = 0;
 done:
-    mbedtls_pk_free(&k);
     if (result && *key) { erase(*key, 256); free(*key); *key = NULL; }
     return result;
 }
@@ -310,11 +296,11 @@ static char *make_csr(const uint8_t *key, size_t key_size, const char *device)
     if (!pem || !device || !*device || strlen(device)>64 ||
         strspn(device, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.") != strlen(device)) goto fail;
     snprintf(subject, sizeof subject, "CN=%s", device);
-    if (mbedtls_pk_parse_key(&k, key, key_size, NULL, 0, wendy_pki_rng, NULL) ||
+    if (mbedtls_pk_parse_key(&k, key, key_size, NULL, 0) ||
         mbedtls_x509write_csr_set_subject_name(&csr, subject)) goto fail;
     mbedtls_x509write_csr_set_key(&csr, &k);
     mbedtls_x509write_csr_set_md_alg(&csr, MBEDTLS_MD_SHA256);
-    if (mbedtls_x509write_csr_pem(&csr, (unsigned char *)pem, 4096, wendy_pki_rng, NULL)) goto fail;
+    if (mbedtls_x509write_csr_pem(&csr, (unsigned char *)pem, 4096)) goto fail;
     goto done;
 fail:
     free(pem); pem = NULL;
@@ -532,8 +518,7 @@ static int validate_config_and_trust(const WendyConfEnrollment *cfg,
 }
 static esp_err_t connect_identity(wendy_pki_connection **connection)
 {
-    pthread_once(&crypto_once, init_crypto);
-    if (!crypto_ok)
+    if (wendy_pki_crypto_init())
         return ESP_FAIL;
     WendyConfEnrollment cfg = WendyConfEnrollment_init_zero;
     struct wendy_conf_enrollment_data data;
@@ -656,7 +641,7 @@ static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
     const struct wendy_lite_trust *trust, bool allow_device,
     const struct wendy_pki_stream *stream)
 {
-    pthread_once(&crypto_once, init_crypto);
+    int crypto_status = wendy_pki_crypto_init();
     WendyConfEnrollment cfg = WendyConfEnrollment_init_zero;
     struct wendy_conf_enrollment_data data = {0};
     nvs_handle_t h = 0;
@@ -665,7 +650,7 @@ static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
     size_t key_size = 0, cert_size = 0, lite_ca_size = 0;
     time_t expires;
     esp_err_t result = ESP_FAIL;
-    if (!crypto_ok || wendy_conf_copy_enrollment(&cfg, &data) != ESP_OK ||
+    if (crypto_status || wendy_conf_copy_enrollment(&cfg, &data) != ESP_OK ||
         validate_config_and_trust(&cfg, &data) || open_identity(&h) != ESP_OK)
         goto done;
     opened = true;
@@ -702,7 +687,7 @@ static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
     fd = -1; /* pki_tls_accept owns the socket, including failures. */
     if (!accepted) {
         (*connection)->device_expires = expires;
-        if (!trust || (!mbedtls_sha256((uint8_t *)principal, strlen(principal), (*connection)->device_hash, 0) &&
+        if (!trust || (!wendy_pki_sha256((uint8_t *)principal, strlen(principal), (*connection)->device_hash) &&
                        !pki_relay_grant(*connection, trust, deadline))) {
             result = ESP_OK;
         } else {

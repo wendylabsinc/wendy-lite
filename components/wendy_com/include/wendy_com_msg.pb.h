@@ -150,7 +150,7 @@ typedef struct _WendyComEnrollmentChallenge {
     bool has_cloud_enrollment_supported;
     bool cloud_enrollment_supported; /* absent on older firmware */
     bool has_mldsa_verification_supported;
-    bool mldsa_verification_supported; /* wolfSSL ML-DSA CA and peer certificate verification */
+    bool mldsa_verification_supported; /* ML-DSA-65 CA and peer certificate verification */
 } WendyComEnrollmentChallenge;
 
 /* Clear local enrollment after Cloud cleanup. Physical USB only; the hardware

@@ -100,6 +100,13 @@ int main(int argc, char **argv)
         assert(i == 0 ? r == 0 : r != 0);
         if (i == 0)
         {
+            unsigned char *trailing_key = malloc(key_n + 1);
+            assert(trailing_key);
+            memcpy(trailing_key, key, key_n);
+            trailing_key[key_n] = 0;
+            assert(wendy_pki_verify_identity(p, n, root, root_n, trailing_key, key_n + 1,
+                                             principal, t, &expires) != 0);
+            free(trailing_key);
             size_t wrong_n;
             unsigned char *wrong = load(argv[1], "wrong-key.der", &wrong_n);
             assert(wendy_pki_verify_identity(p, n, root, root_n, wrong, wrong_n, principal, t,

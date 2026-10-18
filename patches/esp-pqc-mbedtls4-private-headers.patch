@@ -1,0 +1,24 @@
+--- a/tf-psa-crypto/drivers/builtin/src/bignum.c
++++ b/tf-psa-crypto/drivers/builtin/src/bignum.c
+@@ -26,7 +26,9 @@
+ #if defined(MBEDTLS_BIGNUM_C)
+ 
+ #include "mbedtls/private/bignum.h"
++#if defined(ESP_PLATFORM)
+ #include "mbedtls/bignum.h"
++#endif
+ #include "bignum_core.h"
+ #include "bignum_internal.h"
+ #include "bn_mul.h"
+--- a/tf-psa-crypto/drivers/builtin/src/ecp.c
++++ b/tf-psa-crypto/drivers/builtin/src/ecp.c
+@@ -34,7 +34,9 @@
+ #if defined(MBEDTLS_ECP_LIGHT)
+ 
+ #include "mbedtls/private/ecp.h"
++#if defined(ESP_PLATFORM)
+ #include "mbedtls/ecp.h"
++#endif
+ #include "mbedtls/threading.h"
+ #include "mbedtls/platform_util.h"
+ #include "mbedtls/private/error_common.h"

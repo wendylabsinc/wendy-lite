@@ -7,20 +7,20 @@
 #include <mbedtls/oid.h>
 #include <mbedtls/pem.h>
 #include <mbedtls/pk.h>
-#include <mbedtls/sha256.h>
+#include "wendy_pki_crypto.h"
 #include <mbedtls/x509_crt.h>
 
 static int p256(const mbedtls_x509_crt *cert)
 {
-    return mbedtls_pk_can_do(&cert->pk, MBEDTLS_PK_ECDSA) &&
-           mbedtls_pk_ec(cert->pk)->MBEDTLS_PRIVATE(grp).id == MBEDTLS_ECP_DP_SECP256R1;
+    return mbedtls_pk_get_key_type(&cert->pk) == PSA_KEY_TYPE_ECC_PUBLIC_KEY(PSA_ECC_FAMILY_SECP_R1) &&
+           mbedtls_pk_get_bitlen(&cert->pk) == 256;
 }
 
 int wendy_pki_lite_authority_from_header(const char *header, char **pem)
 {
     if (!pem) return -1;
     *pem = NULL;
-    if (!header) return -1;
+    if (!header || wendy_pki_crypto_init()) return -1;
     size_t size = strnlen(header, WENDY_LITE_AUTHORITY_HEADER_MAX + 1);
     if (!size || size > WENDY_LITE_AUTHORITY_HEADER_MAX) return -1;
     uint8_t *der = malloc(size);
@@ -44,8 +44,8 @@ int wendy_pki_lite_authority_from_header(const char *header, char **pem)
         cert.subject_raw.len != cert.issuer_raw.len ||
         memcmp(cert.subject_raw.p, cert.issuer_raw.p, cert.subject_raw.len) ||
         cert.MBEDTLS_PRIVATE(sig_md) != MBEDTLS_MD_SHA256 ||
-        cert.MBEDTLS_PRIVATE(sig_pk) != MBEDTLS_PK_ECDSA ||
-        mbedtls_sha256(cert.tbs.p, cert.tbs.len, hash, 0) ||
+        cert.MBEDTLS_PRIVATE(sig_pk) != MBEDTLS_PK_SIGALG_ECDSA ||
+        wendy_pki_sha256(cert.tbs.p, cert.tbs.len, hash) ||
         mbedtls_pk_verify(&cert.pk, MBEDTLS_MD_SHA256, hash, sizeof hash,
                          cert.MBEDTLS_PRIVATE(sig).p, cert.MBEDTLS_PRIVATE(sig).len))
         goto done;
@@ -103,7 +103,7 @@ int wendy_pki_verify_lite_operator(const uint8_t *der, size_t size, const char *
 {
     /* id-kp-wendyLiteOperator: 1.3.6.1.4.1.65441.1.9 */
     static const unsigned char lite_eku[] = {0x2b, 0x06, 0x01, 0x04, 0x01, 0x83, 0xff, 0x21, 0x01, 0x09};
-    if (!der || !size || size > 65536) return -1;
+    if (!der || !size || size > 65536 || wendy_pki_crypto_init()) return -1;
     mbedtls_x509_crt cert;
     mbedtls_x509_crt_init(&cert);
     int result = -1;

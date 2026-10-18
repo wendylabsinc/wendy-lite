@@ -1,8 +1,8 @@
 #include "wendy_lite_grant.h"
 #include <stdlib.h>
 #include <string.h>
-#include <mbedtls/ecdsa.h>
-#include <mbedtls/sha256.h>
+#include "wendy_pki_crypto.h"
+#include <psa/crypto.h>
 #include <mbedtls/x509_crt.h>
 
 int wendy_lite_key_id(const uint8_t *id, size_t n)
@@ -43,35 +43,34 @@ int wendy_lite_verify_grant(const uint8_t *r, size_t n,
     uint8_t hash[32];
     if (!issued || issued > INT64_MAX - 1800 || expiry <= issued ||
         expiry - issued > 60 || issued > (uint64_t)now ||
-        expiry <= (uint64_t)now || mbedtls_sha256(r, n, hash, 0) ||
+        expiry <= (uint64_t)now || wendy_pki_sha256(r, n, hash) ||
         memcmp(hash, trust->grant_hash, 32) || memcmp(fields + 16, trust->session, 16) ||
         memcmp(fields + 80, device, 32) || memcmp(fields + 112, operator_id, 32) ||
         memcmp(fields + 144, operator_spki, 32)) return -1;
-    mbedtls_ecp_group group;
-    mbedtls_ecp_point point;
-    mbedtls_mpi sr, ss;
-    mbedtls_ecp_group_init(&group); mbedtls_ecp_point_init(&point);
-    mbedtls_mpi_init(&sr); mbedtls_mpi_init(&ss);
+    psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+    mbedtls_svc_key_id_t key = MBEDTLS_SVC_KEY_ID_INIT;
+    psa_set_key_type(&attributes, PSA_KEY_TYPE_ECC_PUBLIC_KEY(PSA_ECC_FAMILY_SECP_R1));
+    psa_set_key_bits(&attributes, 256);
+    psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_VERIFY_HASH);
+    psa_set_key_algorithm(&attributes, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
     int result = -1;
-    if (!mbedtls_ecp_group_load(&group, MBEDTLS_ECP_DP_SECP256R1) &&
-        !mbedtls_ecp_point_read_binary(&group, &point, selected->public_key, WENDY_LITE_KEY_BYTES) &&
-        !mbedtls_ecp_check_pubkey(&group, &point) &&
-        !mbedtls_mpi_read_binary(&sr, r+n-64, 32) &&
-        !mbedtls_mpi_read_binary(&ss, r+n-32, 32) &&
-        !mbedtls_sha256(r, n-64, hash, 0) &&
-        !mbedtls_ecdsa_verify(&group, hash, 32, &point, &sr, &ss)) {
+    /* PSA validates the SEC1 point on import and takes the wire-format r||s
+     * signature directly, without exposing curve or big-integer internals. */
+    if (psa_import_key(&attributes, selected->public_key, WENDY_LITE_KEY_BYTES, &key) == PSA_SUCCESS &&
+        !wendy_pki_sha256(r, n-64, hash) &&
+        psa_verify_hash(key, PSA_ALG_ECDSA(PSA_ALG_SHA_256), hash, sizeof hash,
+                        r+n-64, 64) == PSA_SUCCESS) {
         *session_expires = issued + 1800;
         result = 0;
     }
-    mbedtls_mpi_free(&sr); mbedtls_mpi_free(&ss);
-    mbedtls_ecp_point_free(&point); mbedtls_ecp_group_free(&group);
+    psa_destroy_key(key);
+    psa_reset_key_attributes(&attributes);
     return result;
 }
 
-#if !CONFIG_WENDY_PKI_WOLFSSL
 int wendy_lite_peer_expiry(const uint8_t *der, size_t n, time_t *expires)
 {
-    if (!der || !n || n > 65536 || !expires) return -1;
+    if (!der || !n || n > 65536 || !expires || wendy_pki_crypto_init()) return -1;
     mbedtls_x509_crt cert;
     mbedtls_x509_crt_init(&cert);
     int result = -1;
@@ -97,20 +96,20 @@ int wendy_lite_peer_expiry(const uint8_t *der, size_t n, time_t *expires)
 
 int wendy_lite_peer_spki_hash(const uint8_t *der, size_t n, uint8_t hash[32])
 {
-    if (!der || !n || n > 65536 || !hash) return -1;
+    if (!der || !n || n > 65536 || !hash || wendy_pki_crypto_init()) return -1;
     mbedtls_x509_crt cert;
     mbedtls_x509_crt_init(&cert);
     int result = -1;
     if (!mbedtls_x509_crt_parse_der(&cert, der, n) && cert.raw.len == n &&
         cert.pk_raw.p && cert.pk_raw.len)
-        result = mbedtls_sha256(cert.pk_raw.p, cert.pk_raw.len, hash, 0);
+        result = wendy_pki_sha256(cert.pk_raw.p, cert.pk_raw.len, hash);
     mbedtls_x509_crt_free(&cert);
     return result;
 }
 
 int wendy_lite_peer_hash(const uint8_t *der, size_t n, uint8_t hash[32])
 {
-    if (!der || !n || n > 65536 || !hash) return -1;
+    if (!der || !n || n > 65536 || !hash || wendy_pki_crypto_init()) return -1;
     mbedtls_x509_crt cert;
     mbedtls_x509_crt_init(&cert);
     int result = -1, count = 0;
@@ -120,10 +119,9 @@ int wendy_lite_peer_hash(const uint8_t *der, size_t n, uint8_t hash[32])
             if (mbedtls_x509_parse_subject_alt_name(&a->buf, &san) ||
                 san.type != MBEDTLS_X509_SAN_UNIFORM_RESOURCE_IDENTIFIER) continue;
             count++;
-            result = mbedtls_sha256(san.san.unstructured_name.p, san.san.unstructured_name.len, hash, 0);
+            result = wendy_pki_sha256(san.san.unstructured_name.p, san.san.unstructured_name.len, hash);
         }
     }
     mbedtls_x509_crt_free(&cert);
     return count == 1 && result == 0 ? 0 : -1;
 }
-#endif

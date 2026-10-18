@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <mbedtls/sha256.h>
+#include "wendy_pki_crypto.h"
 static unsigned checks;
 #define CHECK(x) do { checks++; if (!(x)) { fprintf(stderr, "check failed at %d\n", __LINE__); abort(); } } while (0)
 static size_t load(const char *root, const char *name, uint8_t *out, size_t max)
@@ -33,16 +33,16 @@ int main(int argc, char **argv)
     size_t size = load(argv[1], "grant.bin", record, sizeof record);
     CHECK(size == WENDY_LITE_GRANT_FIXED + strlen(kid));
     trust.session[15] = 3;
-    CHECK(mbedtls_sha256(record, size, trust.grant_hash, 0) == 0);
+    CHECK(wendy_pki_sha256(record, size, trust.grant_hash) == 0);
     uint8_t device[32], operator_id[32], spki[32];
     const char *device_uri = "spiffe://wendy.sh/tenant/00000000-0000-4000-8000-000000000001/device/lite-test";
     const char *operator_uri = "spiffe://wendy.sh/tenant/00000000-0000-4000-8000-000000000001/operator/00000000-0000-4000-8000-000000000002";
-    CHECK(mbedtls_sha256((const uint8_t *)device_uri, strlen(device_uri), device, 0) == 0);
-    CHECK(mbedtls_sha256((const uint8_t *)operator_uri, strlen(operator_uri), operator_id, 0) == 0);
+    CHECK(wendy_pki_sha256((const uint8_t *)device_uri, strlen(device_uri), device) == 0);
+    CHECK(wendy_pki_sha256((const uint8_t *)operator_uri, strlen(operator_uri), operator_id) == 0);
     uint8_t certificate[2048], raw_spki[256], expected[32], peer_uri[32];
     size_t cert_n = load(argv[1], "operator.der", certificate, sizeof certificate);
     size_t spki_n = load(argv[1], "operator-spki.der", raw_spki, sizeof raw_spki);
-    CHECK(mbedtls_sha256(raw_spki, spki_n, expected, 0) == 0);
+    CHECK(wendy_pki_sha256(raw_spki, spki_n, expected) == 0);
     CHECK(wendy_lite_peer_spki_hash(certificate, cert_n, spki) == 0 && !memcmp(spki, expected, 32));
     CHECK(wendy_lite_peer_hash(certificate, cert_n, peer_uri) == 0 && !memcmp(peer_uri, operator_id, 32));
     time_t certificate_expiry = 123;
@@ -82,21 +82,21 @@ int main(int argc, char **argv)
     CHECK(verify(record, size, &trust, device, operator_id, spki, 1700000000) != 0);
     trust.count = 1;
     memcpy(changed, record, size); changed[size - 20] ^= 1;
-    CHECK(mbedtls_sha256(changed, size, trust.grant_hash, 0) == 0);
+    CHECK(wendy_pki_sha256(changed, size, trust.grant_hash) == 0);
     CHECK(verify(changed, size, &trust, device, operator_id, spki, 1700000000) != 0);
     memcpy(changed, record, size); changed[4] = 255;
     CHECK(verify(changed, size, &trust, device, operator_id, spki, 1700000000) != 0);
     const char *invalid[] = {"legacy-grant.bin", "long-window.bin", "zero-window.bin", "reversed-window.bin", "zero-issued.bin", "overflow.bin"};
     for (size_t i = 0; i < sizeof invalid / sizeof *invalid; i++) {
         size_t n = load(argv[1], invalid[i], changed, sizeof changed);
-        CHECK(mbedtls_sha256(changed, n, trust.grant_hash, 0) == 0);
+        CHECK(wendy_pki_sha256(changed, n, trust.grant_hash) == 0);
         time_t now = i == 4 ? 1 : i == 5 ? (time_t)(INT64_MAX - 100) : 1700000000;
         CHECK(verify(changed, n, &trust, device, operator_id, spki, now) != 0);
     }
     size_t n = load(argv[1], "maximum-kid.bin", changed, sizeof changed);
     CHECK(n == WENDY_LITE_GRANT_MAX);
     trust.keys[0].id_size = 128; memset(trust.keys[0].id, 'k', 128);
-    CHECK(mbedtls_sha256(changed, n, trust.grant_hash, 0) == 0);
+    CHECK(wendy_pki_sha256(changed, n, trust.grant_hash) == 0);
     CHECK(verify(changed, n, &trust, device, operator_id, spki, 1700000000) == 0);
     changed[n] = 0;
     CHECK(verify(changed, n + 1, &trust, device, operator_id, spki, 1700000000) != 0);

@@ -1,70 +1,32 @@
 dependencies:
-  espressif/eppp_link:
-    component_hash: 04f7f31868b8ae6014c96132740a192d09611a6e46aaa7038c865ffc7e26b38f
+  esp-pqc:
+    dependencies: []
+    source:
+      path: components/esp-pqc
+      type: local
+    version: 0.1.0
+  espressif/cjson:
+    component_hash: e788323270d90738662d66fffa910bfe1fba019bba087f01557e70c40485b469
     dependencies:
-    - name: espressif/esp_serial_slave_link
-      registry_url: https://components.espressif.com
+    - name: idf
       require: private
-      version: ^1.1.0
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.7.19~2
+  espressif/led_strip:
+    component_hash: 097f698887601de00bed7ff58f91b9e074fa1ae1bcf53582034b01191cc88e9f
+    dependencies:
     - name: idf
       require: private
       version: '>=5.2'
     source:
-      registry_url: https://components.espressif.com
-      type: service
-    version: 1.1.5
-  espressif/esp_hosted:
-    component_hash: a424e4cf8de13b657d09f14dbd615cc946cffdc3f032509915d3058f4637fa72
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=5.3'
-    source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 2.12.7
-  espressif/esp_serial_slave_link:
-    component_hash: ac1776806de0a6e371c84e87898bb983e19ce62aa7f1e2e5c4a3b0234a575d2c
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=5.0'
-    source:
-      registry_url: https://components.espressif.com
-      type: service
-    version: 1.1.2
-  espressif/esp_wifi_remote:
-    component_hash: 97b683db5244f4d224997a9d00d09a8f0e13ea0cf39566e1f3b3a11d73f68ee0
-    dependencies:
-    - name: espressif/esp_hosted
-      registry_url: https://components.espressif.com
-      require: private
-      rules:
-      - if: target in [esp32h2, esp32p4]
-      version: '>=2.11'
-    - name: espressif/wifi_remote_over_eppp
-      registry_url: https://components.espressif.com
-      require: private
-      version: '>=0.1'
-    - name: idf
-      require: private
-      version: '>=5.3'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 1.5.2
-  espressif/led_strip:
-    component_hash: 28621486f77229aaf81c71f5e15d6fbf36c2949cf11094e07090593e659e7639
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=5.0'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 3.0.3
+    version: 3.1.0~1
   espressif/mdns:
-    component_hash: 8bcf12e37c58c1d584aef32a02b92548124c7a3a9fcf548d3235c844a035e0f0
+    component_hash: b5b30022c46302eab89c1d2e3b6fb5918a627563a7462f0ee284b22b9a934967
     dependencies:
     - name: idf
       require: private
@@ -72,49 +34,309 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 1.11.1
-  espressif/wasm-micro-runtime:
-    component_hash: 04f25aad2896b5e906397a061d35cce560609bebd3913a4be7e365ecbf2dd9d6
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=5.1'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    targets:
-    - esp32
-    - esp32s3
-    - esp32c3
-    - esp32c6
-    - esp32p4
-    - esp32c5
-    version: 2.4.0~1
-  espressif/wifi_remote_over_eppp:
-    component_hash: 06d8bc15348bbd21f1390daace36ed5adcf6026c93c5b69decc55fa04df2711a
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=5.3'
-    - name: espressif/eppp_link
-      registry_url: https://components.espressif.com
-      require: private
-      version: '>=0.1'
-    source:
-      registry_url: https://components.espressif.com
-      type: service
-    version: 0.3.2
+    version: 1.14.0
   idf:
     source:
       type: idf
-    version: 5.5.3
+    version: 6.0.3
+  mbedtls:
+    dependencies: []
+    source:
+      path: components/esp-pqc/components/mbedtls
+      type: local
+    version: '*'
+  nanopb:
+    dependencies: []
+    source:
+      path: components/nanopb
+      type: local
+    version: '*'
+  wendy_app_usb:
+    dependencies:
+    - name: espressif/wasm-micro-runtime
+      rules:
+      - if: $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
+      version: ~2.4.0
+    source:
+      path: components/wendy_app_usb
+      type: local
+    version: '*'
+  wendy_ble:
+    dependencies:
+    - name: wendy_com
+      override_path: ../wendy_com
+    - name: wendy_conf
+      override_path: ../wendy_conf
+    source:
+      path: components/wendy_ble
+      type: local
+    version: '*'
+  wendy_ble_export:
+    dependencies:
+    - name: espressif/wasm-micro-runtime
+      rules:
+      - if: $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
+      version: ~2.4.0
+    - name: wendy_safety
+      override_path: ../wendy_safety
+    - name: wendy_callback
+      override_path: ../wendy_callback
+    - name: wendy_ble
+      override_path: ../wendy_ble
+    source:
+      path: components/wendy_ble_export
+      type: local
+    version: '*'
+  wendy_callback:
+    dependencies:
+    - name: espressif/wasm-micro-runtime
+      rules:
+      - if: $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
+      version: ~2.4.0
+    - name: wendy_wasm
+      override_path: ../wendy_wasm
+    source:
+      path: components/wendy_callback
+      type: local
+    version: '*'
+  wendy_cloud:
+    dependencies:
+    - name: wendy_conf
+      override_path: ../wendy_conf
+    source:
+      path: components/wendy_cloud
+      type: local
+    version: '*'
+  wendy_com:
+    dependencies:
+    - name: nanopb
+      override_path: ../nanopb
+    source:
+      path: components/wendy_com
+      type: local
+    version: '*'
+  wendy_conf:
+    dependencies:
+    - name: nanopb
+      override_path: ../nanopb
+    source:
+      path: components/wendy_conf
+      type: local
+    version: '*'
+  wendy_hal:
+    dependencies:
+    - name: idf
+      version: '>=5.1.0'
+    - name: espressif/led_strip
+      version: '*'
+    - name: wendy_callback
+      override_path: ../wendy_callback
+    source:
+      path: components/wendy_hal
+      type: local
+    version: '*'
+  wendy_net:
+    dependencies:
+    - name: espressif/wasm-micro-runtime
+      rules:
+      - if: $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
+      version: ~2.4.0
+    - name: wendy_safety
+      override_path: ../wendy_safety
+    - name: wendy_callback
+      override_path: ../wendy_callback
+    source:
+      path: components/wendy_net
+      type: local
+    version: '*'
+  wendy_otel:
+    dependencies:
+    - name: espressif/wasm-micro-runtime
+      rules:
+      - if: $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
+      version: ~2.4.0
+    source:
+      path: components/wendy_otel
+      type: local
+    version: '*'
+  wendy_pki:
+    dependencies:
+    - name: idf
+      version: '>=6.0.3'
+    - name: esp-pqc
+      override_path: ../esp-pqc
+    - name: espressif/cjson
+      version: ^1.7.19
+    source:
+      path: components/wendy_pki
+      type: local
+    version: '*'
+  wendy_safety:
+    dependencies:
+    - name: espressif/wasm-micro-runtime
+      rules:
+      - if: $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
+      version: ~2.4.0
+    source:
+      path: components/wendy_safety
+      type: local
+    version: '*'
+  wendy_server:
+    dependencies:
+    - name: espressif/mdns
+      version: '*'
+    - name: wendy_com
+      override_path: ../wendy_com
+    - name: wendy_conf
+      override_path: ../wendy_conf
+    - name: wendy_pki
+      override_path: ../wendy_pki
+    source:
+      path: components/wendy_server
+      type: local
+    version: '*'
+  wendy_spi:
+    dependencies:
+    - name: espressif/wasm-micro-runtime
+      rules:
+      - if: $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
+      version: ~2.4.0
+    - name: wendy_safety
+      override_path: ../wendy_safety
+    source:
+      path: components/wendy_spi
+      type: local
+    version: '*'
+  wendy_stdio:
+    dependencies: []
+    source:
+      path: components/wendy_stdio
+      type: local
+    version: '*'
+  wendy_storage:
+    dependencies:
+    - name: espressif/wasm-micro-runtime
+      rules:
+      - if: $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
+      version: ~2.4.0
+    - name: wendy_safety
+      override_path: ../wendy_safety
+    source:
+      path: components/wendy_storage
+      type: local
+    version: '*'
+  wendy_sys:
+    dependencies:
+    - name: espressif/wasm-micro-runtime
+      rules:
+      - if: $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
+      version: ~2.4.0
+    - name: wendy_callback
+      override_path: ../wendy_callback
+    - name: wendy_wasm
+      override_path: ../wendy_wasm
+    - name: wendy_conf
+      override_path: ../wendy_conf
+    source:
+      path: components/wendy_sys
+      type: local
+    version: '*'
+  wendy_uart:
+    dependencies:
+    - name: espressif/wasm-micro-runtime
+      rules:
+      - if: $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
+      version: ~2.4.0
+    - name: wendy_callback
+      override_path: ../wendy_callback
+    source:
+      path: components/wendy_uart
+      type: local
+    version: '*'
+  wendy_usj:
+    dependencies:
+    - name: wendy_com
+      override_path: ../wendy_com
+    - name: wendy_stdio
+      override_path: ../wendy_stdio
+    - name: nanopb
+      override_path: ../nanopb
+    source:
+      path: components/wendy_usj
+      type: local
+    version: '*'
+  wendy_wasi_shim:
+    dependencies:
+    - name: espressif/wasm-micro-runtime
+      rules:
+      - if: $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
+      version: ~2.4.0
+    - name: wendy_safety
+      override_path: ../wendy_safety
+    source:
+      path: components/wendy_wasi_shim
+      type: local
+    version: '*'
+  wendy_wasm:
+    dependencies:
+    - name: idf
+      version: '>=5.3.0'
+    - name: espressif/wasm-micro-runtime
+      rules:
+      - if: $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True
+      version: ~2.4.0
+    source:
+      path: components/wendy_wasm
+      type: local
+    version: '*'
+  wendy_wifi:
+    dependencies:
+    - name: idf
+      version: '>=5.1.0'
+    - name: espressif/mdns
+      version: '*'
+    - name: wendy_com
+      override_path: ../wendy_com
+    - name: wendy_server
+      override_path: ../wendy_server
+    - name: wendy_cloud
+      override_path: ../wendy_cloud
+    - name: wendy_conf
+      override_path: ../wendy_conf
+    source:
+      path: components/wendy_wifi
+      type: local
+    version: '*'
 direct_dependencies:
-- espressif/esp_hosted
-- espressif/esp_wifi_remote
+- esp-pqc
+- espressif/cjson
 - espressif/led_strip
 - espressif/mdns
-- espressif/wasm-micro-runtime
 - idf
-manifest_hash: 43324f76f8d9a8a30c1a8692fd06c6e677ea344c3684b79fd411f7d7df5094f3
-target: esp32p4
-version: 2.0.0
+- mbedtls
+- nanopb
+- wendy_app_usb
+- wendy_ble
+- wendy_ble_export
+- wendy_callback
+- wendy_cloud
+- wendy_com
+- wendy_conf
+- wendy_hal
+- wendy_net
+- wendy_otel
+- wendy_pki
+- wendy_safety
+- wendy_server
+- wendy_spi
+- wendy_stdio
+- wendy_storage
+- wendy_sys
+- wendy_uart
+- wendy_usj
+- wendy_wasi_shim
+- wendy_wasm
+- wendy_wifi
+manifest_hash: d2d87bd01a64ce197c42b9aa4de04647abf23e8ed231ed80cd59cd5e90cb14d1
+target: esp32c6
+version: 3.0.0

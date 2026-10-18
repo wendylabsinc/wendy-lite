@@ -27,7 +27,8 @@ if(NOT srcs)
     list(APPEND srcs "${CMAKE_CURRENT_BINARY_DIR}/wendy_hal_stub.c")
 endif()
 
-set(requires driver esp_timer led_strip esp_adc wendy_callback)
+set(requires esp_driver_gpio esp_driver_ledc esp_driver_i2c esp_driver_rmt
+    esp_timer led_strip esp_adc wendy_callback)
 
 idf_component_register(
     SRCS ${srcs}
