@@ -238,8 +238,66 @@ static int seed_clock(nvs_handle_t h, struct wendy_conf_span seed, struct wendy_
      * No enrollment credential or broker session is used until refresh_time succeeds. */
     return set_floor(h, floor);
 }
-static int refresh_time(nvs_handle_t h, const char *url,
-                        const struct wendy_conf_enrollment_data *data)
+/* Bounded radio bootstrap. The carrier is untrusted; only the existing TSA
+ * signature, nonce and persistent floor authorize a clock update. */
+static int mesh_raw(const struct wendy_pki_stream* stream, void* buffer, size_t size,
+    bool writing, int64_t deadline)
+{
+    uint8_t* p = buffer;
+    while (size) {
+        if (wendy_pki_reset_in_progress() || esp_timer_get_time() >= deadline) return -1;
+        ssize_t n = writing ? stream->write(stream->context, p, size)
+                            : stream->read(stream->context, p, size);
+        if (n > 0 && (size_t)n <= size) { p += n; size -= n; }
+        else if ((n != -2 && n != -3) || stream->wait(stream->context, n == -3, deadline) < 0)
+            return -1;
+    }
+    return 0;
+}
+static int mesh_time_exchange(const struct wendy_pki_stream* stream,
+    const uint8_t* request, size_t size, uint8_t** response, size_t* response_size)
+{
+    if (!size || size > 128) return -1;
+    uint8_t header[8] = { 'W', 'M', 'T', '3', 0, 0, 0, (uint8_t)size };
+    int64_t deadline = esp_timer_get_time() + INT64_C(30000000);
+    if (mesh_raw(stream, header, 8, true, deadline)
+        || mesh_raw(stream, (void*)request, size, true, deadline)
+        || mesh_raw(stream, header, 4, false, deadline)) return -1;
+    size_t n = ((uint32_t)header[0] << 24) | ((uint32_t)header[1] << 16)
+        | ((uint32_t)header[2] << 8) | header[3];
+    if (!n || n > 65536) return -1;
+    uint8_t* bytes = malloc(n);
+    if (!bytes) return -1;
+    if (mesh_raw(stream, bytes, n, false, deadline)) { free(bytes); return -1; }
+    *response = bytes;
+    *response_size = n;
+    return 0;
+}
+#if CONFIG_WENDY_MESH_LEAF
+static int mesh_time_serve(const struct wendy_pki_stream* stream, const char* url,
+    struct wendy_conf_span roots)
+{
+    uint8_t header[8], request[128], *response = NULL;
+    size_t size = 0;
+    int result = -1;
+    int64_t deadline = esp_timer_get_time() + INT64_C(30000000);
+    if (mesh_raw(stream, header, 8, false, deadline) || memcmp(header, "WMT3", 4)
+        || header[4] || header[5] || header[6] || !header[7] || header[7] > 128) return -1;
+    if (mesh_raw(stream, request, header[7], false, deadline)
+        || pki_http_post(url, "application/timestamp-query", NULL, request, header[7],
+            NULL, 0, NULL, roots, &response, &size)) goto done;
+    if (!size || size > 65536) goto done;
+    for (unsigned i = 0; i < 4; ++i) header[i] = size >> (24 - i * 8);
+    result = mesh_raw(stream, header, 4, true, deadline)
+        || mesh_raw(stream, response, size, true, deadline) ? -1 : 0;
+done:
+    free(response);
+    return result;
+}
+#endif
+static int refresh_time_via(nvs_handle_t h, const char *url,
+                        const struct wendy_conf_enrollment_data *data,
+                        const struct wendy_pki_stream* stream)
 {
     uint8_t nonce[32], request[128], *response = NULL;
     size_t response_size = 0;
@@ -249,7 +307,8 @@ static int refresh_time(nvs_handle_t h, const char *url,
     if (!n)
         return -1;
     int64_t started = esp_timer_get_time();
-    if (pki_http_post(url, "application/timestamp-query", NULL, request, n, NULL, 0, NULL,
+    if (stream ? mesh_time_exchange(stream, request, n, &response, &response_size)
+               : pki_http_post(url, "application/timestamp-query", NULL, request, n, NULL, 0, NULL,
                       data->https_roots, &response, &response_size))
         return -1;
     int64_t floor = 0;
@@ -265,6 +324,11 @@ static int refresh_time(nvs_handle_t h, const char *url,
     }
     free(response);
     return result;
+}
+static int refresh_time(nvs_handle_t h, const char* url,
+    const struct wendy_conf_enrollment_data* data)
+{
+    return refresh_time_via(h, url, data, NULL);
 }
 static int identity_key(nvs_handle_t h, const WendyConfEnrollment *cfg, uint8_t **key, size_t *size)
 {
@@ -716,8 +780,9 @@ done:
 }
 
 #if CONFIG_WENDY_MESH_LEAF
-esp_err_t wendy_pki_mesh_connect(const char* host, unsigned port, const char* router,
-    wendy_pki_connection** connection, struct wendy_pki_mesh_identity* identity)
+static esp_err_t mesh_connect(const char* host, unsigned port, const char* router,
+    wendy_pki_connection** connection, struct wendy_pki_mesh_identity* identity,
+    const struct wendy_pki_stream* stream, bool server)
 {
     if (!connection || !identity || !router
         || !wendy_identity_uuid((const unsigned char*)router, strlen(router)))
@@ -740,7 +805,9 @@ esp_err_t wendy_pki_mesh_connect(const char* host, unsigned port, const char* ro
         || !strcmp(cfg.device_id, router) || open_identity(&h) != ESP_OK)
         goto done;
     opened = true;
-    if (seed_clock(h, data.signed_time, data.tsa_roots) || refresh_time(h, cfg.time_url, &data))
+    if (seed_clock(h, data.signed_time, data.tsa_roots)
+        || (stream && server && mesh_time_serve(stream, cfg.time_url, data.https_roots))
+        || refresh_time_via(h, cfg.time_url, &data, server ? NULL : stream))
         goto done;
     char principal[106];
     snprintf(principal, sizeof principal, "spiffe://wendy.sh/tenant/%.36s/device/%.36s",
@@ -749,8 +816,10 @@ esp_err_t wendy_pki_mesh_connect(const char* host, unsigned port, const char* ro
         || wendy_pki_verify_identity(cert, cert_size, data.device_roots.data,
             data.device_roots.size, key, key_size, principal, mesh_verified_seconds, &expires))
         goto done;
-    if (pki_tls_mesh_connect(host, port, cfg.tenant_id, cfg.device_id, router, key, key_size,
-            (const char*)cert, data.device_roots, connection))
+    if (stream ? pki_tls_mesh_stream(stream, server, cfg.tenant_id, cfg.device_id, router,
+                     key, key_size, (const char*)cert, data.device_roots, connection)
+               : pki_tls_mesh_connect(host, port, cfg.tenant_id, cfg.device_id, router, key, key_size,
+                     (const char*)cert, data.device_roots, connection))
         goto done;
     if ((*connection)->operator_expires < expires)
         expires = (*connection)->operator_expires;
@@ -804,6 +873,18 @@ done:
     pthread_mutex_unlock(&identity_lock);
     return result;
 }
+esp_err_t wendy_pki_mesh_connect(const char* host, unsigned port, const char* peer,
+    wendy_pki_connection** connection, struct wendy_pki_mesh_identity* identity)
+{
+    return mesh_connect(host, port, peer, connection, identity, NULL, false);
+}
+esp_err_t wendy_pki_mesh_stream(const struct wendy_pki_stream* stream, bool server,
+    const char* peer, wendy_pki_connection** connection, struct wendy_pki_mesh_identity* identity)
+{
+    if (!stream || !stream->read || !stream->write || !stream->wait) return ESP_ERR_INVALID_ARG;
+    return mesh_connect(NULL, 0, peer, connection, identity, stream, server);
+}
+
 #endif
 
 static esp_err_t accept_peer(int fd, wendy_pki_connection **connection,

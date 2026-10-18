@@ -21,7 +21,7 @@
 #include "wendy_server.h"
 #include "wendy_conf.h"
 #if CONFIG_WENDY_MESH_LEAF
-#include "wendy_mesh.h"
+
 #endif
 
 #if CONFIG_WENDY_CLOUD
@@ -58,6 +58,7 @@ static void services_task(void *unused);
 
 #define WIFI_MAX_RETRIES    5
 static int s_retry_count = 0;
+static bool s_connect_requested;
 
 /* ── WiFi event handler ────────────────────────────────────────────── */
 
@@ -65,12 +66,12 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                 int32_t event_id, void *event_data)
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+        if (s_connect_requested) esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         s_connected = false;
         xEventGroupClearBits(s_wifi_events, WIFI_CONNECTED_BIT);
         xTaskNotifyGive(s_services_task);
-        if (s_retry_count < WIFI_MAX_RETRIES) {
+        if (s_connect_requested && s_retry_count < WIFI_MAX_RETRIES) {
             esp_wifi_connect();
             s_retry_count++;
             ESP_LOGI(TAG, "retrying WiFi connection (%d/%d)", s_retry_count, WIFI_MAX_RETRIES);
@@ -130,6 +131,7 @@ static esp_err_t wifi_infra_init(void)
 
 static esp_err_t wifi_connect(const char *ssid, const char *password)
 {
+    s_connect_requested = true;
     s_retry_count = 0;
     xEventGroupClearBits(s_wifi_events, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
 
@@ -267,10 +269,6 @@ static bool start_services(void)
     if (!s_mdns_started)
         s_mdns_started = start_mdns_service() == ESP_OK;
     bool ready = s_mdns_started;
-#if CONFIG_WENDY_MESH_LEAF
-    if (wendy_conf_has_enrollment() && wendy_mesh_start() != ESP_OK)
-        ready = false;
-#endif
 
     // Initialize the mTLS server accessible via the local network
     if (!s_server_started) {
@@ -403,3 +401,19 @@ void wendy_wifi_deinit(void)
     esp_wifi_stop();
     esp_wifi_deinit();
 }
+
+#if CONFIG_WENDY_MESH_ESPNOW
+esp_err_t wendy_wifi_mesh_radio_start(uint8_t channel)
+{
+    if (!channel || channel > 14 || !s_infra_initialized) return ESP_ERR_INVALID_STATE;
+    if (s_connect_requested) {
+        wifi_ap_record_t ap;
+        if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK || ap.primary != channel)
+            return ESP_ERR_INVALID_STATE;
+        return ESP_OK;
+    }
+    esp_err_t err = esp_wifi_start();
+    if (err != ESP_OK) return err;
+    return esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+}
+#endif

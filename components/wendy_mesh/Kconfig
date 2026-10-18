@@ -7,24 +7,69 @@ menu "Wendy signed mesh leaf"
         depends on LWIP_HOOK_IP6_ROUTE_CUSTOM
         help
             Source-only experimental profile for ESP32-S3 with PSRAM. Connect
-            to one explicitly pinned same-tenant Linux router over TLS 1.3.
+            to one explicitly pinned same-tenant peer over TLS 1.3.
             No transit forwarding, donor role, discovery, or legacy fallback.
             Requires fresh signed time and a canonical UUID enrollment.
             Select the lwIP custom IPv6 route hook before enabling this option.
 
+    choice WENDY_MESH_TRANSPORT
+        prompt "Mesh carrier"
+        depends on WENDY_MESH_LEAF
+        default WENDY_MESH_TCP
+        help
+            All carriers use the same TLS identity, signed routes and replay
+            checks. This endpoint maintains one active peer, without transit.
+        config WENDY_MESH_TCP
+            bool "Wi-Fi TCP"
+        config WENDY_MESH_BLE
+            bool "BLE L2CAP (Linux router dials this device)"
+            depends on WENDY_BLE && BT_NIMBLE_L2CAP_COC_MAX_NUM >= 2
+        config WENDY_MESH_ESPNOW
+            bool "ESP-NOW (ESP32 peer)"
+    endchoice
+
+    config WENDY_MESH_BLE_PSM
+        int "Mesh BLE PSM (must differ from WendyCom PSM)"
+        depends on WENDY_MESH_BLE
+        range 128 255
+        default 129
+
+    config WENDY_MESH_ESPNOW_PEER
+        string "Peer station MAC address (xx:xx:xx:xx:xx:xx)"
+        depends on WENDY_MESH_ESPNOW
+        default ""
+
+    config WENDY_MESH_ESPNOW_CHANNEL
+        int "ESP-NOW Wi-Fi channel"
+        depends on WENDY_MESH_ESPNOW
+        range 1 14
+        default 1
+        help
+            Both peers must use this channel. If connected to an access point,
+            its channel must match. The radio can run without joining an AP.
+
+    config WENDY_MESH_ESPNOW_SERVER
+        bool "Respond to ESP-NOW peer (requires Internet for signed time)"
+        depends on WENDY_MESH_ESPNOW
+        default n
+        help
+            Enable on exactly one endpoint. Both endpoints pin each other's
+            device UUID. The responder relays nonce-bound timestamp requests
+            to its own enrolled timestamp authority before mutual TLS.
+
     config WENDY_MESH_ROUTER_HOST
         string "Explicit router IP address or hostname"
-        depends on WENDY_MESH_LEAF
+        depends on WENDY_MESH_TCP
         default ""
 
     config WENDY_MESH_ROUTER_DEVICE
-        string "Pinned router device UUID"
+        string "Pinned peer device UUID"
         depends on WENDY_MESH_LEAF
         default ""
 
     config WENDY_MESH_ROUTER_PORT
         int "Router leaf listener TCP port"
-        depends on WENDY_MESH_LEAF
+        depends on WENDY_MESH_TCP
         range 1 65535
         default 43024
 endmenu

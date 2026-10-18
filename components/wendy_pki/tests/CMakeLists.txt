@@ -186,3 +186,9 @@ foreach(scenario socket stream want_read no_bytes progress uart_initial uart_ful
     add_test(NAME wendycom_tx_stall_${scenario} COMMAND tx_stall_test ${scenario})
     set_tests_properties(wendycom_tx_stall_${scenario} PROPERTIES TIMEOUT 5)
 endforeach()
+
+add_executable(mesh_datagram_test ../../wendy_mesh/tests/datagram_test.c
+    ../../wendy_mesh/src/wendy_mesh_datagram.c)
+target_include_directories(mesh_datagram_test PRIVATE ../../wendy_mesh/include)
+target_compile_options(mesh_datagram_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME mesh_datagram_reliability COMMAND mesh_datagram_test)

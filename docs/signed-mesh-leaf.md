@@ -1,7 +1,7 @@
 # Experimental signed mesh leaf
 
 Wendy Lite can join a Wendy local mesh as an IPv6 endpoint through one explicitly
-configured Linux router. The build is opt-in and limited to native ESP32-S3
+configured peer over Wi-Fi TCP, BLE L2CAP, or ESP-NOW. The build is opt-in and limited to native ESP32-S3
 profiles with PSRAM. The Seeed XIAO ESP32S3 profile compiles with ESP-IDF 6.0.3.
 This feature has not been flashed or tested on hardware. Other targets, boards
 without PSRAM, WASM profiles and IPv6 forwarding are excluded by Kconfig.
@@ -32,8 +32,9 @@ snapshot from Lite remains unsupported.
 
 ## Authentication and route leases
 
-The leaf always initiates the connection and pins the router's full same-tenant
-SPIFFE device principal. Its IP address or hostname is only a dial address.
+Each endpoint pins its peer's full same-tenant SPIFFE device principal.
+IP, Bluetooth and station MAC addresses are dial addresses, not identities.
+TCP and BLE leaves are TLS clients. One ESP-NOW endpoint is a TLS server.
 TLS 1.3 verifies both certificate chains with ALPN `wendy-local-mesh-leaf/3`.
 Session tickets, resumption, PSK and 0-RTT are disabled. The separate carrier
 does not alter or fall back to the existing `WMT1` TCP/QUIC carrier.
@@ -97,6 +98,7 @@ Create a local `mesh.defaults` with the actual router address and enrolled UUID:
 CONFIG_LWIP_HOOK_IP6_ROUTE_CUSTOM=y
 CONFIG_LWIP_IPV6_FORWARD=n
 CONFIG_WENDY_MESH_LEAF=y
+CONFIG_WENDY_MESH_TCP=y
 CONFIG_WENDY_MESH_ROUTER_HOST="192.0.2.1"
 CONFIG_WENDY_MESH_ROUTER_DEVICE="12345678-9abc-4def-8123-000000000001"
 CONFIG_WENDY_MESH_ROUTER_PORT=43024
@@ -119,11 +121,13 @@ The default build leaves the feature disabled.
 
 ## Memory and outstanding hardware validation
 
-The ESP32-S3 compiler reports 114,376 bytes for the allocated protocol state.
+The shared protocol state remains below 128 KiB.
 That includes a 64 KiB control buffer, 32 KiB certificate decode workspace,
 32 origin receipts, one packet assembler and a four-packet output queue. A
 compile-time assertion caps the state below 128 KiB. The worker has a separate
-32 KiB task stack. Startup requires enough free PSRAM for the state plus
+32 KiB task stack. ESP-NOW adds a 64 KiB PSRAM receive window and a
+bounded 16-datagram callback queue. The window lets both endpoints send their
+certificate bundles before reading without deadlocking. Startup requires enough free PSRAM for the state plus
 512 KiB of remaining headroom for TLS, X.509 and other work. That admission
 check is not a measurement of peak TLS memory use.
 
@@ -135,9 +139,9 @@ hardware tests. No throughput or support claim is made for other boards.
 Mesh connection setup currently holds the existing PKI identity mutex while
 obtaining signed time and opening the router connection. An unreachable router
 or time authority can therefore delay other identity operations. TCP/TLS setup
-has a 15-second deadline after DNS; HTTP and DNS have their own limits, so there
-is no single end-to-end 15-second bound. Established carrier reads and writes
-have five-second deadlines and check reset state. This latency needs hardware
+has a 15-second deadline after DNS. Radio TLS has a 30-second deadline.
+HTTP and DNS have their own limits, so there is no single end-to-end bound. Established carrier reads and writes
+have 30-second deadlines and check reset state. This latency needs hardware
 validation before unattended deployment.
 
 ## Wire framing and tests
@@ -153,7 +157,7 @@ certificates and 32 KiB of DER. One fragmented packet may be pending for at
 most two seconds.
 
 The native host suite uses the production parser, certificate verifier, TLS
-client, signature helpers and identity persistence code. It requires Go 1.27
+client and server over fragmented stream callbacks, signature helpers and identity persistence code. It requires Go 1.27
 or newer and the dependencies described in
 [the PKI test instructions](../components/wendy_pki/tests/README.md):
 
@@ -176,3 +180,106 @@ adapter's `TestLeafCManifestInteroperability` accepts the C fixture tool through
 Go verifier, including tampering and restart replay. Its separate Linux
 namespace test covers TLS, Babel and TUN routing with a synthetic leaf. Neither
 test substitutes for running the C lwIP interface on a physical board.
+
+## BLE without access-point association
+
+Choose `CONFIG_WENDY_MESH_BLE=y` instead of TCP, enable
+`CONFIG_BT_NIMBLE_L2CAP_COC_MAX_NUM=2`, and set
+`CONFIG_WENDY_MESH_BLE_PSM=129`. Keep `CONFIG_WENDY_BLE=y` and
+`CONFIG_WENDY_WIFI_ENABLED=y`. The latter initializes lwIP; BLE mesh starts
+even when there are no Wi-Fi credentials and no access-point connection.
+The mesh PSM must differ from the management PSM, which defaults to 128.
+The mesh owns a separate channel, receive ring and buffer pool.
+
+Set `CONFIG_WENDY_MESH_ROUTER_DEVICE` to the Linux router's enrolled UUID.
+The host and TCP port settings are unused for BLE. Add this to the router's
+existing `local-mesh.json`, using the actual ESP32 identity and Bluetooth address:
+
+```json
+{
+  "leafBLEPeers": [{
+    "device": "12345678-9abc-4def-8123-000000000002",
+    "address": "80:45:6b:00:00:01",
+    "addressType": "public",
+    "psm": 129
+  }],
+  "leafTimeURL": "https://your-enrolled-timestamp-authority.example/timestamp"
+}
+```
+
+Replace the example URL with the timestamp URL in the leaf's enrollment.
+The router must trust its HTTPS certificate through the system trust store.
+The Linux agent needs this branch's BLE leaf provider, Bluetooth hardware and
+permission to open LE L2CAP sockets. It dials up to eight explicitly configured
+leaves, with one retry worker per leaf. Rotating Bluetooth addresses and
+automatic discovery are not implemented. A running carrier worker does not
+mean its peer has authenticated; inspect the live mesh links.
+
+BLE here is an encrypted point-to-point carrier into Wendy's signed mesh.
+It does not implement the Bluetooth SIG Mesh provisioning or flooding protocol.
+
+## ESP-NOW between ESP32s
+
+On both enrolled ESP32-S3 boards, select `CONFIG_WENDY_MESH_ESPNOW=y`, set
+`CONFIG_WENDY_MESH_ESPNOW_PEER` to the other board's station MAC, and pin
+its UUID with `CONFIG_WENDY_MESH_ROUTER_DEVICE`. Set the same
+`CONFIG_WENDY_MESH_ESPNOW_CHANNEL` on both. Enable
+`CONFIG_WENDY_MESH_ESPNOW_SERVER=y` on exactly one board.
+
+The responder needs Internet access for signed time. Its AP must use the
+configured ESP-NOW channel. The other board can run without AP credentials.
+The implementation refuses to retune an associated Wi-Fi link. Stored Wi-Fi
+credentials are preserved; an ongoing or failed AP connection attempt is not
+overridden by the radio carrier. Clear unwanted credentials through the normal
+configuration workflow before testing a radio-only endpoint.
+
+The transport uses unicast datagrams of at most 250 bytes for ESP-NOW v1
+compatibility. A 25-byte header leaves 225 bytes for stream data. Each direction
+has one unacknowledged datagram, a random 64-bit connection epoch and a 32-bit
+sequence number. Retries occur after 150 ms; a missing ACK closes the stream
+after five seconds. Duplicate data is acknowledged without being delivered
+twice. A full receive window withholds ACKs. Frames from a different connection
+epoch cannot acknowledge or append to the current stream. TLS protects the
+contents and identity; ESP-NOW link-layer encryption is not required.
+
+This is a direct two-endpoint link. Lite does not forward packets for a third
+ESP32. Each build selects one mesh carrier and one pinned peer; simultaneous
+links, automatic carrier failover and ESP-NOW route discovery are not implemented.
+Wi-Fi TCP remains the default mesh carrier.
+
+## Signed time over radio
+
+Before TLS, the radio client sends `WMT3`, a four-byte big-endian request length,
+and a nonce-bound RFC 3161 timestamp request of at most 128 bytes. The peer
+forwards it only to its configured timestamp authority, without forwarding
+credentials or accepting a URL from the client. It returns a four-byte length
+and at most 64 KiB of response. The client accepts a reply only within 30
+seconds. Stream reads and writes have deadlines; DNS and HTTP on an ESP32
+responder retain their existing timeout limits.
+The client verifies the authority's signature, its nonce and its persistent
+clock floor before using the response. A router-provided wall clock is never
+trusted. The normal `WML3` preface and mutually authenticated TLS follow.
+
+An ESP32 responder also obtains its own fresh signed time before TLS. Therefore
+two entirely offline boards cannot start this profile. Existing enrollment and
+certificates are required; radio mesh does not provide enrollment or renewal.
+
+The host tests exercise stream TLS client/server authentication, relayed time
+bounds and rejection, and ESP-NOW loss, reordering, duplicates, backpressure,
+stale epochs and stalled ACKs. Wi-Fi, BLE and ESP-NOW firmware variants compile
+for the 8 MB PSRAM ESP32-S3 DevKit with ESP-IDF 6.0.3. Actual radio throughput,
+coexistence, heap peaks and reconnection still need a two-device hardware test.
+
+For the tested DevKit memory configuration, copy and edit one carrier example
+under [mesh-examples](mesh-examples/). Use the actual peer UUID, dial address
+and, for ESP-NOW, radio channel. Start with a fresh sdkconfig for each carrier:
+
+```sh
+idf.py -B build-mesh-ble -D SDKCONFIG=sdkconfig.mesh-ble \
+  -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;docs/mesh-examples/devkit-8mb.defaults;mesh-ble.defaults' \
+  -D IDF_TARGET=esp32s3 build
+```
+
+Here `mesh-ble.defaults` is your edited copy of `mesh-examples/ble.defaults`.
+The example memory profile is unsuitable for boards with a different PSRAM
+interface or flash capacity.

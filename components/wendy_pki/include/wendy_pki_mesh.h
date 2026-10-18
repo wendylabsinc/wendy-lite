@@ -41,3 +41,11 @@ int wendy_pki_mesh_chain(const uint8_t* const* der, const size_t* sizes, size_t 
 int wendy_pki_mesh_verify(const struct wendy_pki_mesh_peer* peer, const char* principal,
     const void* body, size_t size, const uint8_t* signature, size_t signature_size);
 int wendy_pki_mesh_digest(const char* principal, const void* body, size_t size, uint8_t hash[32]);
+
+/* Caller owns the carrier until after wendy_pki_close. The initiator obtains
+ * nonce-bound signed time through the peer before TLS; a responder relays only
+ * to its enrolled timestamp authority and needs Internet access. */
+esp_err_t wendy_pki_mesh_stream(const struct wendy_pki_stream* stream, bool server,
+    const char* peer, wendy_pki_connection** connection, struct wendy_pki_mesh_identity* identity);
+/* 1: wake/readiness hint, 0: timeout, -1: closed/error. */
+int wendy_pki_wait(wendy_pki_connection* connection, bool writing, int64_t deadline_us);

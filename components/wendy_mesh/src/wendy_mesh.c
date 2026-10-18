@@ -1,4 +1,5 @@
 #include "wendy_mesh.h"
+#include "wendy_mesh_radio.h"
 #include "wendy_mesh_directory.h"
 #include "wendy_conf.h"
 #include "esp_heap_caps.h"
@@ -35,6 +36,7 @@ struct mesh_state
     struct netif netif;
     struct wendy_pki_mesh_identity identity;
     wendy_pki_connection* connection;
+    struct wm_carrier carrier;
     QueueHandle_t queue;
     StaticQueue_t queue_control;
     uint8_t queue_storage[MESH_QUEUE_PACKETS * sizeof(struct queued_packet)];
@@ -149,27 +151,13 @@ static int wait_io(struct mesh_state* s, bool writing, int64_t deadline)
     int64_t now = esp_timer_get_time();
     if (!identity_live(s, now) || now >= deadline)
         return -1;
-    int fd = wendy_pki_fd(s->connection);
-    if (fd < 0 || fd >= FD_SETSIZE)
-        return -1;
-    fd_set rd, wr;
-    FD_ZERO(&rd);
-    FD_ZERO(&wr);
-    if (writing)
-        FD_SET(fd, &wr);
-    else
-        FD_SET(fd, &rd);
-    int64_t left = deadline - now;
-    if (left > 200000)
-        left = 200000;
-    struct timeval timeout = { .tv_sec = 0, .tv_usec = left };
-    int result = select(fd + 1, &rd, &wr, NULL, &timeout);
-    return result < 0 ? -1 : 0;
+    int64_t slice = now + 200000;
+    return wendy_pki_wait(s->connection, writing, deadline < slice ? deadline : slice) < 0 ? -1 : 0;
 }
 static int transfer(struct mesh_state* s, void* buffer, size_t size, bool writing)
 {
     uint8_t* p = buffer;
-    int64_t deadline = esp_timer_get_time() + INT64_C(5000000);
+    int64_t deadline = esp_timer_get_time() + INT64_C(30000000);
     while (size)
     {
         int64_t now = esp_timer_get_time();
@@ -342,10 +330,10 @@ static int receive_control(struct mesh_state* s, size_t size)
     }
     return -1;
 }
-static int receive_frame(struct mesh_state* s)
+static int receive_frame(struct mesh_state* s, uint8_t first)
 {
-    uint8_t header[5];
-    if (transfer(s, header, sizeof header, false))
+    uint8_t header[5] = { first };
+    if (transfer(s, header + 1, sizeof header - 1, false))
         return -1;
     size_t size = wm_get32(header + 1);
     if (header[0] == 1)
@@ -402,10 +390,20 @@ static int receive_frame(struct mesh_state* s)
 }
 static int session(struct mesh_state* s)
 {
+#if CONFIG_WENDY_MESH_TCP
     if (wendy_pki_mesh_connect(CONFIG_WENDY_MESH_ROUTER_HOST, CONFIG_WENDY_MESH_ROUTER_PORT,
-            CONFIG_WENDY_MESH_ROUTER_DEVICE, &s->connection, &s->identity)
-        != ESP_OK)
-        return -1;
+            CONFIG_WENDY_MESH_ROUTER_DEVICE, &s->connection, &s->identity) != ESP_OK) return -1;
+    s->carrier.name = "Wi-Fi TCP";
+#else
+#if CONFIG_WENDY_MESH_BLE
+    if (wm_ble_open(&s->carrier)) return -1;
+#else
+    if (wm_espnow_open(&s->carrier)) return -1;
+#endif
+    if (wendy_pki_mesh_stream(&s->carrier.stream, s->carrier.server,
+            CONFIG_WENDY_MESH_ROUTER_DEVICE, &s->connection, &s->identity) != ESP_OK) return -1;
+#endif
+    ESP_LOGI(TAG, "mesh peer authenticated over %s", s->carrier.name);
     if (wm_uuid_parse(s->identity.device, s->device))
         return -1;
     pthread_mutex_lock(&state_lock);
@@ -480,15 +478,16 @@ static int session(struct mesh_state* s)
                 }
             s->packet_id++;
         }
-        int fd = wendy_pki_fd(s->connection);
-        fd_set rd;
-        FD_ZERO(&rd);
-        FD_SET(fd, &rd);
-        struct timeval timeout = { .tv_usec = 20000 };
-        int ready
-            = wendy_pki_pending(s->connection) ? 1 : select(fd + 1, &rd, NULL, NULL, &timeout);
-        if (ready < 0 || (ready > 0 && receive_frame(s)))
-            return -1;
+        /* Nonblocking first-byte read works for sockets and radio streams.
+         * A wakeup can be spurious; it must not start a frame timeout. */
+        uint8_t first;
+        ssize_t got = wendy_pki_read(s->connection, &first, 1);
+        if (got == 1) {
+            if (receive_frame(s, first)) return -1;
+        } else if (got == -2 || got == -3) {
+            if (wendy_pki_wait(s->connection, got == -3, esp_timer_get_time() + 20000) < 0)
+                return -1;
+        } else return -1;
     }
     return -1;
 }
@@ -509,12 +508,19 @@ static void mesh_task(void* unused)
             wendy_pki_close(s->connection);
             s->connection = NULL;
         }
+        if (s->carrier.close) s->carrier.close();
+        memset(&s->carrier, 0, sizeof s->carrier);
         pthread_mutex_lock(&state_lock);
         s->own_deadline_us = 0;
         pthread_mutex_unlock(&state_lock);
         memset(&s->assembler, 0, sizeof s->assembler);
         xQueueReset(s->queue);
+#if CONFIG_WENDY_MESH_ESPNOW
+        /* Avoid two rebooting peers repeating disjoint rendezvous windows. */
+        vTaskDelay(pdMS_TO_TICKS(500 + esp_random() % 1500));
+#else
         vTaskDelay(pdMS_TO_TICKS(5000));
+#endif
     }
 }
 esp_err_t wendy_mesh_start(void)
@@ -522,7 +528,7 @@ esp_err_t wendy_mesh_start(void)
     if (mesh_task_handle)
         return ESP_OK;
     uint8_t router[16];
-    if (!CONFIG_WENDY_MESH_ROUTER_HOST[0] || wm_uuid_parse(CONFIG_WENDY_MESH_ROUTER_DEVICE, router))
+    if (wm_uuid_parse(CONFIG_WENDY_MESH_ROUTER_DEVICE, router))
         return ESP_ERR_INVALID_ARG;
     /* PSRAM is required for this experimental profile. Refuse allocation if
      * concurrent TLS/chain verification cannot retain at least 512 KiB free. */
