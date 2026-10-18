@@ -10,12 +10,27 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <sys/socket.h>
 
 static const char *TAG = "wendy_cloud";
 static _Atomic wendy_cloud_state_t s_state = WENDY_CLOUD_STATE_IDLE;
 static atomic_bool s_stop;
+static atomic_uint s_failures;
+static pthread_mutex_t s_start_lock = PTHREAD_MUTEX_INITIALIZER;
+unsigned wendy_cloud_connect_failures(void) { return atomic_load(&s_failures); }
+void wendy_cloud_reset_failures(void) { atomic_store(&s_failures, 0); }
 static TaskHandle_t s_task;
 static SemaphoreHandle_t s_stopped, s_wake;
+static pthread_mutex_t s_connection_lock = PTHREAD_MUTEX_INITIALIZER;
+static int s_outer_fd = -1;
+void wendy_cloud_network_changed(void)
+{
+    pthread_mutex_lock(&s_connection_lock);
+    if (s_outer_fd >= 0) shutdown(s_outer_fd, SHUT_RDWR);
+    pthread_mutex_unlock(&s_connection_lock);
+    if (s_wake) xSemaphoreGive(s_wake);
+}
 
 static void cloud_task(void *unused)
 {
@@ -27,8 +42,17 @@ static void cloud_task(void *unused)
         int fd = -1;
         if (trust && wendy_pki_connect(&outer) == ESP_OK) {
             s_state = WENDY_CLOUD_STATE_CONNECTED;
+            atomic_store(&s_failures, 0);
+            pthread_mutex_lock(&s_connection_lock);
+            s_outer_fd = wendy_pki_fd(outer);
+            pthread_mutex_unlock(&s_connection_lock);
             fd = wendy_pki_relay_upgrade(outer, trust);
+            pthread_mutex_lock(&s_connection_lock);
+            s_outer_fd = -1;
+            pthread_mutex_unlock(&s_connection_lock);
         }
+        if (!outer && !s_stop && atomic_load(&s_failures) < 3)
+            atomic_fetch_add(&s_failures, 1);
         wendy_pki_close(outer);
         if (fd >= 0) {
             if (s_stop) close(fd);
@@ -46,7 +70,7 @@ static void cloud_task(void *unused)
     vTaskDelete(NULL);
 }
 
-esp_err_t wendy_cloud_start(void)
+static esp_err_t cloud_start_locked(void)
 {
     if (s_task) return ESP_OK;
     if (!wendy_conf_has_enrollment()) return ESP_ERR_INVALID_STATE;
@@ -62,6 +86,13 @@ esp_err_t wendy_cloud_start(void)
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
+}
+esp_err_t wendy_cloud_start(void)
+{
+    pthread_mutex_lock(&s_start_lock);
+    esp_err_t result = cloud_start_locked();
+    pthread_mutex_unlock(&s_start_lock);
+    return result;
 }
 void wendy_cloud_stop(void)
 {

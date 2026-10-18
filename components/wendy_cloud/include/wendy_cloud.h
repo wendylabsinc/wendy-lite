@@ -17,7 +17,8 @@ typedef enum {
 
 /**
  * Start the cloud connection task.
- * Must be called after nvs_flash_init() and WiFi up.
+ * Call after nvs_flash_init() and network stack initialization.
+ * Wi-Fi or mesh may supply connectivity.
  * Returns ESP_ERR_INVALID_STATE if the device has no enrollment configuration.
  */
 esp_err_t wendy_cloud_start(void);
@@ -36,6 +37,12 @@ wendy_cloud_state_t wendy_cloud_get_state(void);
  * Convenience: true when state == WENDY_CLOUD_STATE_CONNECTED.
  */
 bool wendy_cloud_is_connected(void);
+
+unsigned wendy_cloud_connect_failures(void);
+void wendy_cloud_reset_failures(void);
+
+/* Wake the connector after a route change. Call outside the lwIP core thread. */
+void wendy_cloud_network_changed(void);
 
 #ifdef __cplusplus
 }

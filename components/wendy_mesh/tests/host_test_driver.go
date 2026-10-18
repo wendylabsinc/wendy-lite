@@ -104,7 +104,7 @@ func main() {
 	wrong := certificate("wrong", tenant, device, false)
 	foreign := certificate("foreign", device, router, false)
 	expired := certificate("expired", tenant, router, true)
-	for _, mode := range []string{"tcp", "client", "server"} {
+	for _, mode := range []string{"tcp", "client", "server", "gateway"} {
 		for _, test := range []struct {
 			name, alpn string
 			cert       tls.Certificate
@@ -120,6 +120,13 @@ func main() {
 			{"expired", "wendy-local-mesh-leaf/3", expired, tls.VersionTLS13, false},
 			{"tls12", "wendy-local-mesh-leaf/3", good, tls.VersionTLS12, false},
 		} {
+			protocol := "wendy-local-mesh-leaf/3"
+			if mode == "gateway" {
+				protocol = "wendy-mesh-internet/1"
+				if test.alpn == "wendy-local-mesh-leaf/3" {
+					test.alpn = protocol
+				}
+			}
 			listener, err := net.Listen("tcp", "127.0.0.1:0")
 			must(err)
 			done := make(chan error, 1)
@@ -164,6 +171,8 @@ func main() {
 						return nil
 					}
 					server = tls.Client(conn, cfg)
+				} else if mode == "gateway" {
+					server = tls.Server(conn, cfg)
 				} else {
 					preface := make([]byte, 36)
 					_, err = io.ReadFull(conn, preface)
@@ -182,7 +191,7 @@ func main() {
 				err = server.Handshake()
 				if test.accept && err == nil {
 					st := server.ConnectionState()
-					if st.Version != tls.VersionTLS13 || st.NegotiatedProtocol != "wendy-local-mesh-leaf/3" || st.DidResume || len(st.PeerCertificates) == 0 {
+					if st.Version != tls.VersionTLS13 || st.NegotiatedProtocol != protocol || st.DidResume || len(st.PeerCertificates) == 0 {
 						err = fmt.Errorf("bad TLS state")
 					}
 				}

@@ -2,6 +2,9 @@
 #include "esp_log.h"
 #include "http_parser.h"
 #include "wendy_pki_internal.h"
+#include "wendy_pki_dns.h"
+#include <arpa/inet.h>
+#include <psa/crypto.h>
 #include "wendy_pki_verify.h"
 #include "wendy_pki_crypto.h"
 #include "wendy_pki_certificate_policy.h"
@@ -16,6 +19,10 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#if ESP_PLATFORM
+#include "lwip/sockets.h"
+#include <net/if.h>
+#endif
 
 static int io_recv(void *context, unsigned char *buf, size_t size)
 {
@@ -186,9 +193,52 @@ int wendy_pki_detach(wendy_pki_connection *c)
         wendy_pki_close(c);
     return fd;
 }
+static int bind_interface(int fd, const char* interface)
+{
+    if (!interface) return 0;
+#if ESP_PLATFORM
+    struct ifreq request = { 0 };
+    if (strlen(interface) >= sizeof request.ifr_name) return -1;
+    snprintf(request.ifr_name, sizeof request.ifr_name, "%s", interface);
+    return setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, &request, sizeof request);
+#else
+    (void)fd;
+    return -1;
+#endif
+}
+static int direct_resolve(const char* host, const char* resolver, const char* interface,
+    char address[INET_ADDRSTRLEN])
+{
+    if (!resolver || !resolver[0] || !interface || !interface[0]) return -1;
+    struct addrinfo hints = { .ai_family = AF_UNSPEC, .ai_socktype = SOCK_DGRAM,
+        .ai_flags = AI_NUMERICHOST }, *server = NULL;
+    if (getaddrinfo(resolver, "53", &hints, &server)) return -1;
+    int fd = socket(server->ai_family, server->ai_socktype, server->ai_protocol);
+    uint8_t query[272], reply[1024], ip[4];
+    /* The connected UDP socket also binds the response to the selected DNS
+     * server and the socket's ephemeral source port. */
+    uint16_t id;
+    size_t size = psa_generate_random((uint8_t*)&id, sizeof id) == PSA_SUCCESS
+        ? pki_dns_query(query, host, id) : 0;
+    int result = -1;
+    if (fd < 0 || fd >= FD_SETSIZE || !size || bind_interface(fd, interface)) goto done;
+    struct timeval timeout = { .tv_sec = 5 };
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout)
+        || setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout)
+        || connect(fd, server->ai_addr, server->ai_addrlen)
+        || send(fd, query, size, 0) != (ssize_t)size) goto done;
+    ssize_t n = recv(fd, reply, sizeof reply, 0);
+    if (n > 0 && !pki_dns_answer(query, size, reply, n, ip)
+        && inet_ntop(AF_INET, ip, address, INET_ADDRSTRLEN)) result = 0;
+done:
+    if (fd >= 0) close(fd);
+    freeaddrinfo(server);
+    return result;
+}
 static int open_tls(const char* host, unsigned port, const uint8_t* key, size_t key_size,
     const char* cert, struct wendy_conf_span roots, wendy_pki_connection** out, const char* tenant,
-    const char* device, const char* router, const struct wendy_pki_stream* stream, bool server)
+    const char* device, const char* router, const struct wendy_pki_stream* stream, bool server,
+    bool gateway, const char* interface, const char* resolver)
 {
     if (out)
         *out = NULL;
@@ -216,8 +266,9 @@ static int open_tls(const char* host, unsigned port, const uint8_t* key, size_t 
         goto fail;
     if (mesh)
     {
-        static const char* const protocols[] = { WENDY_PKI_MESH_ALPN, NULL };
-        if (mbedtls_ssl_conf_alpn_protocols(&c->config, protocols))
+        static const char* const leaf_protocols[] = { WENDY_PKI_MESH_ALPN, NULL };
+        static const char* const gateway_protocols[] = { "wendy-mesh-internet/1", NULL };
+        if (mbedtls_ssl_conf_alpn_protocols(&c->config, gateway ? gateway_protocols : leaf_protocols))
             goto fail;
         /* Mesh identity is the exact SPIFFE principal, checked below after
          * mandatory CA verification. It is independent of the dial address. */
@@ -241,7 +292,14 @@ static int open_tls(const char* host, unsigned port, const uint8_t* key, size_t 
         stage = "DNS";
         char service[6];
         snprintf(service, sizeof service, "%u", port);
-        if ((tls_error = getaddrinfo(host, service, &hints, &addresses)) != 0)
+        char direct_address[INET_ADDRSTRLEN];
+        const char* dial_host = host;
+        if (interface) {
+            if (direct_resolve(host, resolver, interface, direct_address)) goto fail;
+            dial_host = direct_address;
+            hints.ai_flags = AI_NUMERICHOST;
+        }
+        if ((tls_error = getaddrinfo(dial_host, service, &hints, &addresses)) != 0)
             goto fail;
         deadline = esp_timer_get_time() + 15000000;
         stage = "TCP connect";
@@ -255,6 +313,9 @@ static int open_tls(const char* host, unsigned port, const uint8_t* key, size_t 
                 close(c->fd);
                 c->fd = -1;
                 continue;
+            }
+            if (bind_interface(c->fd, interface)) {
+                close(c->fd); c->fd = -1; continue;
             }
             fcntl(c->fd, F_SETFL, O_NONBLOCK);
             int r = connect(c->fd, a->ai_addr, a->ai_addrlen);
@@ -275,7 +336,7 @@ static int open_tls(const char* host, unsigned port, const uint8_t* key, size_t 
         if (c->fd < 0)
             goto fail;
     }
-    if (mesh)
+    if (mesh && !gateway)
     {
         uint8_t preface[36] = { 'W', 'M', 'L', '3' };
         const char* uuids[] = { tenant, server ? router : device };
@@ -331,7 +392,7 @@ static int open_tls(const char* host, unsigned port, const uint8_t* key, size_t 
         char expected[106];
         snprintf(
             expected, sizeof expected, "spiffe://wendy.sh/tenant/%s/device/%s", tenant, router);
-        if (!alpn || strcmp(alpn, WENDY_PKI_MESH_ALPN) || !peer
+        if (!alpn || strcmp(alpn, gateway ? "wendy-mesh-internet/1" : WENDY_PKI_MESH_ALPN) || !peer
             || wendy_pki_verify_peer(peer->raw.p, peer->raw.len, tenant) != WENDY_PEER_ROLE_DEVICE)
             goto fail;
         unsigned count = 0;
@@ -385,20 +446,35 @@ fail:
 int pki_tls_connect(const char* host, unsigned port, const uint8_t* key, size_t key_size,
     const char* cert, struct wendy_conf_span roots, wendy_pki_connection** out)
 {
-    return open_tls(host, port, key, key_size, cert, roots, out, NULL, NULL, NULL, NULL, false);
+    return open_tls(host, port, key, key_size, cert, roots, out, NULL, NULL, NULL, NULL, false, false, NULL, NULL);
 }
 int pki_tls_mesh_connect(const char* host, unsigned port, const char* tenant, const char* device,
     const char* router, const uint8_t* key, size_t key_size, const char* cert,
     struct wendy_conf_span roots, wendy_pki_connection** out)
 {
-    return open_tls(host, port, key, key_size, cert, roots, out, tenant, device, router, NULL, false);
+    return open_tls(host, port, key, key_size, cert, roots, out, tenant, device, router, NULL, false, false, NULL, NULL);
 }
 int pki_tls_mesh_stream(const struct wendy_pki_stream* stream, bool server,
     const char* tenant, const char* device, const char* peer, const uint8_t* key,
     size_t key_size, const char* cert, struct wendy_conf_span roots, wendy_pki_connection** out)
 {
     return open_tls("radio", 0, key, key_size, cert, roots, out,
-        tenant, device, peer, stream, server);
+        tenant, device, peer, stream, server, false, NULL, NULL);
+}
+int pki_tls_gateway_connect(const char* host, unsigned port, const char* tenant, const char* device,
+    const char* router, const uint8_t* key, size_t key_size, const char* cert,
+    struct wendy_conf_span roots, wendy_pki_connection** out)
+{
+    return open_tls(host, port, key, key_size, cert, roots, out,
+        tenant, device, router, NULL, false, true, NULL, NULL);
+}
+int pki_tls_bound_connect(const char* host, unsigned port, const char* interface, const char* resolver,
+    const uint8_t* key, size_t key_size, const char* cert,
+    struct wendy_conf_span roots, wendy_pki_connection** out)
+{
+    if (!interface || !interface[0]) return -1;
+    return open_tls(host, port, key, key_size, cert, roots, out,
+        NULL, NULL, NULL, NULL, false, false, interface, resolver);
 }
 /* Readiness is only a hint. Stream callbacks may wake spuriously. */
 int wendy_pki_wait(wendy_pki_connection* c, bool writing, int64_t deadline)

@@ -73,4 +73,18 @@ menu "Wendy signed mesh leaf"
         depends on WENDY_MESH_TCP
         range 1 65535
         default 43024
+    config WENDY_MESH_CLOUD_UPLINK
+        bool "Fall back to a mesh Internet gateway for Cloud"
+        depends on WENDY_MESH_LEAF && WENDY_CLOUD && LWIP_IPV4 && LWIP_IPV6 && !LWIP_IP_FORWARD
+        default n
+        help
+            After repeated Cloud connection failures, borrow IPv4 Internet
+            through an explicitly pinned Linux mesh gateway. The gateway must
+            enable shareUplink and run mesh protocol v3. Cloud TLS stays end to
+            end. Existing connections may reconnect on failover and recovery.
+
+    config WENDY_MESH_GATEWAY_DEVICE
+        string "Pinned Internet gateway UUID"
+        depends on WENDY_MESH_CLOUD_UPLINK
+        default WENDY_MESH_ROUTER_DEVICE
 endmenu

@@ -12,5 +12,5 @@ endif()
 idf_component_register(
     SRCS ${srcs}
     INCLUDE_DIRS "include"
-    REQUIRES freertos wendy_conf wendy_server wendy_pki esp_timer
+    REQUIRES pthread freertos wendy_conf wendy_server wendy_pki esp_timer
 )
