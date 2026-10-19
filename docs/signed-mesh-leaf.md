@@ -341,6 +341,12 @@ not receive its private key or terminate its Cloud TLS session. The leaf needs
 an existing valid enrollment and fresh signed time obtained during mesh setup.
 This cannot bootstrap an unenrolled device or recover an expired identity.
 
+Gateway mTLS and operator setup over the Cloud relay each allow up to 60
+seconds for BLE transmission. The CLI must support the longer relay setup
+window too. Certificate and signed-grant expiration checks still apply, and
+the CLI caller can cancel earlier. Ordinary direct Cloud connection budgets
+are unchanged.
+
 A separate worker checks the direct path every minute. It queries the saved
 physical resolver and establishes Cloud TLS, with both sockets bound to the
 physical interface. Two successful checks restore the direct default and DNS.
