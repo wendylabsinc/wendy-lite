@@ -38,6 +38,7 @@ struct mesh_state
 {
     struct wm_directory directory;
     struct wm_epoch epoch;
+    struct wm_identity_requests identity_requests;
     struct wm_assembler assembler;
     struct netif netif;
     struct wendy_pki_mesh_identity identity;
@@ -94,11 +95,15 @@ static bool ip_profile(const uint8_t* p, size_t n)
 #endif
     );
 }
+/* ESP-IDF reserves netif->state for esp_netif_t. These raw lwIP interfaces
+ * leave it NULL so global link/address callbacks do not interpret mesh state
+ * as an ESP-NETIF object. Output callbacks use the published singleton. */
 static err_t output_ip6(struct netif* netif, struct pbuf* p, const ip6_addr_t* destination)
 {
     (void)destination;
-    struct mesh_state* s = netif->state;
+    struct mesh_state* s = state;
     struct queued_packet packet;
+    if (!s || netif != &s->netif) return ERR_IF;
     if (!atomic_load(&s->active) || p->tot_len > sizeof packet.data || p->tot_len < 40)
         return ERR_RTE;
     packet.size = p->tot_len;
@@ -116,8 +121,9 @@ static err_t output_ip6(struct netif* netif, struct pbuf* p, const ip6_addr_t* d
 static err_t uplink_output(struct netif* netif, struct pbuf* p, const ip4_addr_t* destination)
 {
     (void)destination;
-    struct mesh_state* s = netif->state;
+    struct mesh_state* s = state;
     struct queued_packet packet;
+    if (!s || netif != &s->uplink_netif) return ERR_IF;
     if (!atomic_load(&s->active) || !atomic_load(&s->uplink_active)
         || p->tot_len > 1280 || pbuf_copy_partial(p, packet.data + 40, p->tot_len, 0) != p->tot_len)
         return ERR_RTE;
@@ -174,7 +180,7 @@ static err_t change_netif(struct tcpip_api_call_data* data)
     {
         if (!s->interface_added)
         {
-            if (!netif_add_noaddr(&s->netif, s, mesh_netif_init, tcpip_input))
+            if (!netif_add_noaddr(&s->netif, NULL, mesh_netif_init, tcpip_input))
                 return ERR_IF;
             s->interface_added = true;
         }
@@ -378,6 +384,25 @@ static int receive_control(struct mesh_state* s, size_t size)
         int result = wm_directory_apply(
             &s->directory, s->identity.tenant, &doc, manifest, signed_now(s, now_us), now_us);
         pthread_mutex_unlock(&state_lock);
+        if (result == WM_DIRECTORY_IDENTITY_NEEDED)
+        {
+            /* Routers remember completed bundle writes across reconnects, but
+             * this leaf's identity cache is lost on reboot. Ask for the missing
+             * chain; a later reconciled proof still needs full verification. */
+            char principal[106], request[160];
+            uint8_t device[16];
+            if (wm_json_string(&doc, wm_json_member(&doc, manifest, "principal"),
+                    principal, sizeof principal) < 0
+                || wm_principal_device(principal, s->identity.tenant, device))
+                return -1;
+            if (!memcmp(device, s->device, 16) || s->directory.count == WENDY_MESH_ORIGINS_MAX
+                || !wm_identity_request_due(&s->identity_requests, device, now_us))
+                return 0;
+            int n = snprintf(request, sizeof request,
+                "{\"kind\":\"identity-request\",\"principal\":\"%s\"}", principal);
+            return n > 0 && (size_t)n < sizeof request
+                ? write_control(s, request, n, false) : -1;
+        }
         return result < 0 ? -1 : 0;
     }
     if (wm_json_equal(&doc, kind, "identity-request"))
@@ -438,8 +463,10 @@ static int receive_frame(struct mesh_state* s, uint8_t first)
     pthread_mutex_unlock(&state_lock);
     if (!atomic_load(&s->active) || !wm_epoch_ready(&s->epoch, now))
         return 0;
+    /* Proofs can expire or arrive after IP during cache repair. Drop the
+     * unauthorized packet without destroying the authenticated carrier. */
     if (!allowed)
-        return -1;
+        return 0;
     struct netif* input_netif = &s->netif;
 #if CONFIG_WENDY_MESH_CLOUD_UPLINK
     if (ip[6] == 4) {
@@ -616,7 +643,7 @@ static err_t change_uplink(struct tcpip_api_call_data* data)
     if (!atomic_load(&s->active) || atomic_load(&s->generation) != c->generation
         || c->deadline <= esp_timer_get_time()) return ERR_RTE;
     if (!s->uplink_added) {
-        if (!netif_add_noaddr(&s->uplink_netif, s, uplink_netif_init, tcpip_input)) return ERR_IF;
+        if (!netif_add_noaddr(&s->uplink_netif, NULL, uplink_netif_init, tcpip_input)) return ERR_IF;
         s->uplink_added = true;
     }
     pthread_mutex_lock(&state_lock);

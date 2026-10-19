@@ -4,6 +4,31 @@
 #include <limits.h>
 #include <string.h>
 
+bool wm_identity_request_due(struct wm_identity_requests* requests,
+    const uint8_t device[16], int64_t now_us)
+{
+    if (!requests || !device || now_us < 0 || now_us > INT64_MAX - INT64_C(5000000))
+        return false;
+    unsigned available = WENDY_MESH_ORIGINS_MAX;
+    for (unsigned i = 0; i < WENDY_MESH_ORIGINS_MAX; i++)
+    {
+        if (!memcmp(requests->slots[i].device, device, 16))
+        {
+            if (requests->slots[i].retry_after_us > now_us)
+                return false;
+            available = i;
+            break;
+        }
+        if (available == WENDY_MESH_ORIGINS_MAX && requests->slots[i].retry_after_us <= now_us)
+            available = i;
+    }
+    if (available == WENDY_MESH_ORIGINS_MAX)
+        return false;
+    memcpy(requests->slots[available].device, device, 16);
+    requests->slots[available].retry_after_us = now_us + INT64_C(5000000);
+    return true;
+}
+
 int wm_directory_bind(
     struct wm_directory* d, struct wm_epoch* epoch, const struct wendy_pki_mesh_identity* identity)
 {
@@ -122,7 +147,7 @@ int wm_directory_apply(struct wm_directory* d, const char* tenant, const struct 
             break;
         }
     if (!o)
-        return 1;
+        return WM_DIRECTORY_IDENTITY_NEEDED;
     if (m.expires / 1000 > o->peer.expires
         || (m.expires / 1000 == o->peer.expires && m.expires % 1000))
         return -1;

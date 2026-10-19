@@ -140,7 +140,30 @@ int main(int argc, char** argv)
     assert(wm_directory_apply(&directory, argv[4], &doc, 0, (int64_t)now * 1000, 100) == 1);
     assert(wm_directory_apply(&directory, argv[4], &doc, 0, manifest.expires, 100) == 1);
     struct wm_directory unknown = { 0 };
-    assert(wm_directory_apply(&unknown, argv[4], &doc, 0, (int64_t)now * 1000, 100) == 1);
+    assert(wm_directory_apply(&unknown, argv[4], &doc, 0, (int64_t)now * 1000, 100)
+        == WM_DIRECTORY_IDENTITY_NEEDED);
+    assert(!wm_directory_address(&unknown, address, 100));
+    /* A router can omit a previously sent bundle after a leaf reboot. The
+     * repaired cache must still verify a replayed proof, retaining its expiry. */
+    assert(!wm_directory_add(&unknown, &peer));
+    assert(!wm_directory_apply(&unknown, argv[4], &doc, 0, (int64_t)now * 1000 + 1000, 1000100));
+    assert(wm_directory_address(&unknown, address, 1000100));
+    assert(unknown.origins[0].expires_us == deadline);
+    struct wm_identity_requests requests = { 0 };
+    uint8_t requested[16];
+    memcpy(requested, manifest.device, 16);
+    assert(wm_identity_request_due(&requests, requested, 100));
+    assert(!wm_identity_request_due(&requests, requested, 101));
+    for (unsigned i = 1; i < WENDY_MESH_ORIGINS_MAX; i++)
+    {
+        requested[0] = manifest.device[0] ^ i;
+        assert(wm_identity_request_due(&requests, requested, 100));
+    }
+    requested[0] = manifest.device[0] ^ WENDY_MESH_ORIGINS_MAX;
+    assert(!wm_identity_request_due(&requests, requested, 100));
+    assert(wm_identity_request_due(&requests, requested, 5000100));
+    assert(!wm_identity_request_due(&requests, requested, INT64_MAX));
+    puts("missing identity repair preserves proof verification, expiry and bounded retries");
     manifest.revision += 2;
     manifest.withdraw = true;
     proof(&key, argv[4], &manifest, text, &doc);

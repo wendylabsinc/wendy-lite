@@ -301,7 +301,9 @@ static int open_tls(const char* host, unsigned port, const uint8_t* key, size_t 
         }
         if ((tls_error = getaddrinfo(dial_host, service, &hints, &addresses)) != 0)
             goto fail;
-        deadline = esp_timer_get_time() + 15000000;
+        /* A gateway handshake carries certificate chains over the mesh radio.
+         * Keep a finite budget that includes BLE transmission and TCP retries. */
+        deadline = esp_timer_get_time() + (gateway ? INT64_C(60000000) : INT64_C(15000000));
         stage = "TCP connect";
         for (struct addrinfo* a = addresses; a; a = a->ai_next)
         {
