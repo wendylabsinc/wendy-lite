@@ -1,4 +1,7 @@
 #include "wendy_mesh.h"
+#include "wendy_mesh_discovery.h"
+#include "wendy_wifi.h"
+#include "wendy_mesh_status.h"
 #include "wendy_mesh_uplink.h"
 #if CONFIG_WENDY_MESH_CLOUD_UPLINK
 #include "wendy_cloud.h"
@@ -36,6 +39,7 @@ struct queued_packet
 };
 struct mesh_state
 {
+    char peer[37]; // authenticated peer, protected by state_lock for UI snapshots
     struct wm_directory directory;
     struct wm_epoch epoch;
     struct wm_identity_requests identity_requests;
@@ -54,6 +58,7 @@ struct mesh_state
     uint16_t seqno, hello_seq;
     uint32_t packet_id;
     int64_t own_deadline_us;
+    int64_t certificate_expires; /* Snapshot copy protected by state_lock. */
     bool interface_added;
     atomic_bool active;
 #if CONFIG_WENDY_MESH_CLOUD_UPLINK
@@ -74,6 +79,68 @@ static _Atomic(struct mesh_state*) state;
 static pthread_mutex_t state_lock = PTHREAD_MUTEX_INITIALIZER;
 static TaskHandle_t mesh_task_handle;
 static const char* TAG = "wendy_mesh";
+static enum wendy_mesh_phase phase = WENDY_MESH_UNAVAILABLE;
+
+static void publish_phase(enum wendy_mesh_phase next)
+{
+    pthread_mutex_lock(&state_lock);
+    phase = next;
+    pthread_mutex_unlock(&state_lock);
+}
+
+void wendy_mesh_get_snapshot(struct wendy_mesh_snapshot* out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof *out);
+#if CONFIG_WENDY_MESH_TCP
+    snprintf(out->carrier, sizeof out->carrier, "Wi-Fi TCP");
+#elif CONFIG_WENDY_MESH_BLE
+    snprintf(out->carrier, sizeof out->carrier, "BLE");
+#else
+    snprintf(out->carrier, sizeof out->carrier, "ESP-NOW");
+#endif
+
+#if !CONFIG_WENDY_MESH_AUTO_DISCOVER
+    uint8_t peer_uuid[16];
+    if (wm_uuid_parse(CONFIG_WENDY_MESH_ROUTER_DEVICE, peer_uuid)
+#if CONFIG_WENDY_MESH_TCP
+        || !CONFIG_WENDY_MESH_ROUTER_HOST[0]
+#endif
+    ) {
+        out->phase = WENDY_MESH_PEER_REQUIRED;
+        return;
+    }
+    wm_uuid_format(peer_uuid, out->peer);
+#endif
+    pthread_mutex_lock(&state_lock);
+    struct mesh_state* s = state;
+    out->phase = phase;
+    if (s) {
+        memcpy(out->peer, s->peer, sizeof out->peer);
+        int64_t now = esp_timer_get_time();
+        if (wendy_conf_is_current() && !wendy_pki_reset_in_progress()) {
+            memcpy(out->device, s->epoch.device, sizeof out->device);
+            out->peer_connected = (phase == WENDY_MESH_QUARANTINE || phase == WENDY_MESH_ONLINE)
+                && now >= s->epoch.clock_monotonic_us
+                && now - s->epoch.clock_monotonic_us < WENDY_MESH_TIME_MAX_AGE_US
+                && s->own_deadline_us > now
+                && wm_epoch_time(&s->epoch, now) > 0
+                && wm_epoch_time(&s->epoch, now) / 1000 < s->certificate_expires;
+            if (out->peer_connected) {
+                out->ip_active = atomic_load(&s->active) && wm_epoch_ready(&s->epoch, now);
+                if (!wm_epoch_ready(&s->epoch, now))
+                    out->quarantine_seconds = (uint32_t)((s->epoch.ready_after_us - now - 1) / 1000000 + 1);
+                out->member_count = wm_directory_members(&s->directory, now,
+                    out->members, WENDY_MESH_ORIGINS_MAX);
+            } else if (phase == WENDY_MESH_ONLINE || phase == WENDY_MESH_QUARANTINE) {
+                out->phase = WENDY_MESH_RETRYING;
+            }
+        } else {
+            out->phase = WENDY_MESH_WAITING_ENROLLMENT;
+        }
+    }
+    pthread_mutex_unlock(&state_lock);
+}
 
 static bool identity_live(struct mesh_state* s, int64_t now)
 {
@@ -491,9 +558,33 @@ static int receive_frame(struct mesh_state* s, uint8_t first)
 }
 static int session(struct mesh_state* s)
 {
-#if CONFIG_WENDY_MESH_TCP
+    char peer[37];
+#if CONFIG_WENDY_MESH_AUTO_DISCOVER
+    if (!wendy_wifi_is_connected()) {
+        publish_phase(WENDY_MESH_WAITING_WIFI);
+        return -1;
+    }
+    publish_phase(WENDY_MESH_DISCOVERING);
+    char tenant[37], self[65];
+    wendy_conf_enrollment_identity(tenant, self);
+    struct wm_discovered_peer candidates[WM_DISCOVERY_MAX];
+    size_t count = wm_discover_peers(tenant, self, candidates);
+    for (size_t i = 0; i < count; ++i) {
+        if (!wendy_wifi_is_connected() || !wendy_conf_is_current() ||
+            wendy_pki_reset_in_progress()) return -1;
+        publish_phase(WENDY_MESH_CONNECTING);
+        if (wendy_pki_mesh_connect(candidates[i].host, CONFIG_WENDY_MESH_ROUTER_PORT,
+                candidates[i].device, &s->connection, &s->identity) == ESP_OK) {
+            memcpy(peer, candidates[i].device, sizeof peer);
+            break;
+        }
+    }
+    if (!s->connection) { publish_phase(WENDY_MESH_DISCOVERING); return -1; }
+    s->carrier.name = "Wi-Fi TCP";
+#elif CONFIG_WENDY_MESH_TCP
     if (wendy_pki_mesh_connect(CONFIG_WENDY_MESH_ROUTER_HOST, CONFIG_WENDY_MESH_ROUTER_PORT,
             CONFIG_WENDY_MESH_ROUTER_DEVICE, &s->connection, &s->identity) != ESP_OK) return -1;
+    snprintf(peer, sizeof peer, "%s", CONFIG_WENDY_MESH_ROUTER_DEVICE);
     s->carrier.name = "Wi-Fi TCP";
 #else
 #if CONFIG_WENDY_MESH_BLE
@@ -503,12 +594,17 @@ static int session(struct mesh_state* s)
 #endif
     if (wendy_pki_mesh_stream(&s->carrier.stream, s->carrier.server,
             CONFIG_WENDY_MESH_ROUTER_DEVICE, &s->connection, &s->identity) != ESP_OK) return -1;
+    snprintf(peer, sizeof peer, "%s", CONFIG_WENDY_MESH_ROUTER_DEVICE);
 #endif
-    ESP_LOGI(TAG, "mesh peer authenticated over %s", s->carrier.name);
+    pthread_mutex_lock(&state_lock);
+    memcpy(s->peer, peer, sizeof s->peer);
+    pthread_mutex_unlock(&state_lock);
+    ESP_LOGI(TAG, "mesh peer %s authenticated over %s", peer, s->carrier.name);
     if (wm_uuid_parse(s->identity.device, s->device))
         return -1;
     pthread_mutex_lock(&state_lock);
     int bound = wm_directory_bind(&s->directory, &s->epoch, &s->identity);
+    s->certificate_expires = s->identity.certificate_expires;
     pthread_mutex_unlock(&state_lock);
     if (bound)
         return -1;
@@ -521,7 +617,7 @@ static int session(struct mesh_state* s)
         esp_fill_random(&s->router_id, sizeof s->router_id);
     } while (!s->router_id || s->router_id == UINT64_MAX);
     int size = wm_hello_write(
-        s->identity.device, CONFIG_WENDY_MESH_ROUTER_DEVICE, s->control, sizeof s->control);
+        s->identity.device, peer, s->control, sizeof s->control);
     if (size < 0 || write_control(s, s->control, size, true))
         return -1;
     uint8_t header[4];
@@ -529,10 +625,11 @@ static int session(struct mesh_state* s)
         return -1;
     size = wm_get32(header);
     if (size < 1 || size > 512 || transfer(s, s->control, size, false)
-        || wm_hello_check(s->control, size, s->identity.device, CONFIG_WENDY_MESH_ROUTER_DEVICE))
+        || wm_hello_check(s->control, size, s->identity.device, peer))
         return -1;
     if (send_bundle(s) || announce(s, true))
         return -1;
+    publish_phase(WENDY_MESH_QUARANTINE);
     int64_t renewed = esp_timer_get_time(), announced = renewed;
     ESP_LOGI(TAG,
         "authenticated mesh leaf; waiting for cold-boot replay barrier; storage=%u stack=%u free "
@@ -550,6 +647,7 @@ static int session(struct mesh_state* s)
             atomic_fetch_add(&s->generation, 1);
 #endif
             atomic_store(&s->active, true);
+            publish_phase(WENDY_MESH_ONLINE);
             ESP_LOGI(TAG, "mesh leaf IP active after replay barrier");
         }
         if (now - renewed >= WENDY_MESH_RENEW_SECONDS * INT64_C(1000000))
@@ -798,7 +896,15 @@ static void mesh_task(void* unused)
 #endif
         if (wendy_conf_is_current() && wendy_conf_has_enrollment()
             && !wendy_pki_reset_in_progress())
+        {
+            publish_phase(WENDY_MESH_CONNECTING);
             session(s);
+            pthread_mutex_lock(&state_lock);
+            if (phase != WENDY_MESH_DISCOVERING && phase != WENDY_MESH_WAITING_WIFI)
+                phase = WENDY_MESH_RETRYING;
+            pthread_mutex_unlock(&state_lock);
+        }
+        else publish_phase(WENDY_MESH_WAITING_ENROLLMENT);
         atomic_store(&s->active, false);
         struct netif_change change = { .s = s, .up = false };
         tcpip_api_call(change_netif, &change.call);
@@ -811,6 +917,7 @@ static void mesh_task(void* unused)
         memset(&s->carrier, 0, sizeof s->carrier);
         pthread_mutex_lock(&state_lock);
         s->own_deadline_us = 0;
+        memset(s->peer, 0, sizeof s->peer);
         pthread_mutex_unlock(&state_lock);
         memset(&s->assembler, 0, sizeof s->assembler);
         xQueueReset(s->queue);
@@ -826,9 +933,13 @@ esp_err_t wendy_mesh_start(void)
 {
     if (mesh_task_handle)
         return ESP_OK;
+#if !CONFIG_WENDY_MESH_AUTO_DISCOVER || CONFIG_WENDY_MESH_CLOUD_UPLINK
     uint8_t router[16];
+#endif
+#if !CONFIG_WENDY_MESH_AUTO_DISCOVER
     if (wm_uuid_parse(CONFIG_WENDY_MESH_ROUTER_DEVICE, router))
         return ESP_ERR_INVALID_ARG;
+#endif
     /* PSRAM is required for this experimental profile. Refuse allocation if
      * concurrent TLS/chain verification cannot retain at least 512 KiB free. */
     if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < sizeof(struct mesh_state) + 512 * 1024)
@@ -843,17 +954,23 @@ esp_err_t wendy_mesh_start(void)
         free(s);
         return ESP_ERR_NO_MEM;
     }
-    state = s;
 #if CONFIG_WENDY_MESH_CLOUD_UPLINK
     if (wm_uuid_parse(CONFIG_WENDY_MESH_GATEWAY_DEVICE, router)) {
-        state = NULL; vQueueDelete(s->queue); free(s); return ESP_ERR_INVALID_ARG;
+        vQueueDelete(s->queue); free(s); return ESP_ERR_INVALID_ARG;
     }
     wm_address(router, s->gateway);
 #endif
+    pthread_mutex_lock(&state_lock);
+    state = s;
+    phase = WENDY_MESH_WAITING_ENROLLMENT;
+    pthread_mutex_unlock(&state_lock);
     if (xTaskCreate(mesh_task, "wendy_mesh", MESH_STACK_BYTES, NULL, 4, &mesh_task_handle)
         != pdPASS)
     {
+        pthread_mutex_lock(&state_lock);
         state = NULL;
+        phase = WENDY_MESH_UNAVAILABLE;
+        pthread_mutex_unlock(&state_lock);
         vQueueDelete(s->queue);
         free(s);
         return ESP_ERR_NO_MEM;

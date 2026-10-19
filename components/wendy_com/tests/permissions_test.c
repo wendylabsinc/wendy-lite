@@ -16,6 +16,7 @@
 #include "../src/wendy_com_cmd.c"
 #undef TAG
 
+static bool last_wifi_only;
 static unsigned management_calls, stdin_calls, sensor_calls, disconnected_calls;
 static int sensor_client;
 static enum wcom_sensor_link_result subscription_result = WCOM_SENSOR_LINK_OK;
@@ -51,7 +52,7 @@ esp_err_t wendy_pki_sync_time(const char *server, const uint8_t *reply, size_t s
 static WendyComResult managed(void) { management_calls++; return WendyComResult_WENDY_COM_RESULT_OK; }
 static WendyComResult request_reboot(bool start, uint32_t delay) { return managed(); }
 static WendyComResult app_begin(size_t size, WendyComAppType type) { return managed(); }
-static WendyComResult conf_begin(size_t size, WendyComConfPushMode mode) { return managed(); }
+static WendyComResult conf_begin(size_t size, WendyComConfPushMode mode, bool wifi_only) { last_wifi_only = wifi_only; return managed(); }
 static WendyComResult push_data(size_t offset, const uint8_t *data, size_t size) { return managed(); }
 static void identity(const char **id, const char **name, const char **display) { management_calls++; }
 static void info(const char **os, const char **version, const char **arch, const char **target,
@@ -262,6 +263,16 @@ int main(void)
     assert(command(&wire, full, 0, WendyComCommand_app_start_tag) == WendyComResult_WENDY_COM_RESULT_BAD_STATE);
     assert(management_calls == initial_management + 1);
     resetting = false;
+    assert(command(&wire, full, 0, WendyComCommand_conf_push_begin_tag) == WendyComResult_WENDY_COM_RESULT_BAD_STATE);
+    assert(command(&wire, full, 0, WendyComCommand_enrollment_challenge_tag) == WendyComResult_WENDY_COM_RESULT_BAD_STATE);
+    WendyComMessage wifi = WendyComMessage_init_zero;
+    wifi.which_msg = WendyComMessage_command_tag;
+    wifi.msg.command.which_params = WendyComCommand_conf_push_begin_tag;
+    wifi.msg.command.params.conf_push_begin.mode = WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE;
+    wifi.msg.command.params.conf_push_begin.size = 2;
+    assert(exchange(&wire, full, 0, &wifi).msg.response.result == WendyComResult_WENDY_COM_RESULT_OK);
+    assert(last_wifi_only);
+    assert(command(&wire, full, 0, WendyComCommand_conf_push_end_tag) == WendyComResult_WENDY_COM_RESULT_OK);
     wcom_remove_link(full);
     expected_permission = WCOM_LINK_PERMISSION_SENSOR_ONLY;
     device = wcom_add_socket_link_with_permission(&ops, &wire, NULL, expected_permission);

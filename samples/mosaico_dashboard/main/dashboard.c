@@ -11,9 +11,12 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lvgl.h"
+#include "diagnostics.h"
+#include "usb_management.h"
 #include "wendy_cloud.h"
 #include "wendy_conf.h"
 #include "wendy_core.h"
+#include "wendy_mesh_status.h"
 #include "wendy_pki.h"
 #include "wendy_wifi.h"
 
@@ -41,6 +44,15 @@ typedef struct {
 
 /* The BSP's LVGL lock protects this state, including touch callbacks. */
 static struct {
+    lv_obj_t *pages[2];
+    lv_obj_t *tabs[2];
+    lv_obj_t *mesh_state;
+    lv_obj_t *mesh_local;
+    lv_obj_t *mesh_peer;
+    lv_obj_t *mesh_link;
+    lv_obj_t *mesh_carrier;
+    lv_obj_t *mesh_count;
+    lv_obj_t *mesh_members;
     lv_obj_t *live;
     lv_obj_t *motion_state;
     lv_obj_t *bubble;
@@ -158,6 +170,93 @@ static lv_obj_t *button(lv_obj_t *parent, const char *text, int x,
     return obj;
 }
 
+static void select_page(unsigned index)
+{
+    for (unsigned i = 0; i < 2; ++i) {
+        if (i == index) lv_obj_remove_flag(ui.pages[i], LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(ui.pages[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_bg_color(ui.tabs[i],
+            lv_color_hex(i == index ? COLOR_ACCENT : COLOR_LINE), 0);
+        lv_obj_set_style_text_color(lv_obj_get_child(ui.tabs[i], 0),
+            lv_color_hex(i == index ? COLOR_BACKGROUND : COLOR_TEXT), 0);
+    }
+}
+
+static void page_clicked(lv_event_t *event)
+{
+    select_page((unsigned)(uintptr_t)lv_event_get_user_data(event));
+}
+
+static void create_mesh_view(lv_obj_t *parent)
+{
+    lv_obj_t *panel = box(parent, 16, 0, 448, 276, COLOR_PANEL, 18);
+    ui.mesh_state = label(panel, "Reading mesh state", 16, 12, 416,
+                          &lv_font_montserrat_16, COLOR_ACCENT);
+    lv_obj_t *local = box(panel, 16, 48, 148, 68, COLOR_BACKGROUND, 12);
+    label(local, "This Mosaico", 12, 10, 124, &lv_font_montserrat_16, COLOR_TEXT);
+    ui.mesh_local = label(local, "--", 12, 38, 124, &lv_font_montserrat_16, COLOR_MUTED);
+    lv_obj_t *peer = box(panel, 284, 48, 148, 68, COLOR_BACKGROUND, 12);
+    label(peer, "Direct peer", 12, 10, 124, &lv_font_montserrat_16, COLOR_TEXT);
+    ui.mesh_peer = label(peer, "Not set", 12, 38, 124, &lv_font_montserrat_16, COLOR_MUTED);
+    ui.mesh_link = box(panel, 164, 86, 120, 3, COLOR_ACCENT, 0);
+    lv_obj_add_flag(ui.mesh_link, LV_OBJ_FLAG_HIDDEN);
+    ui.mesh_carrier = label(panel, "", 164, 60, 120, &lv_font_montserrat_16, COLOR_MUTED);
+    lv_obj_set_style_text_align(ui.mesh_carrier, LV_TEXT_ALIGN_CENTER, 0);
+    ui.mesh_count = label(panel, "Live signed members", 16, 130, 416,
+                          &lv_font_montserrat_16, COLOR_TEXT);
+    lv_obj_t *roster = box(panel, 16, 158, 416, 78, COLOR_PANEL, 0);
+    lv_obj_add_flag(roster, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(roster, LV_DIR_VER);
+    ui.mesh_members = label(roster, "No verified announcements yet.", 0, 0, 402,
+                            &lv_font_montserrat_16, COLOR_MUTED);
+    lv_label_set_long_mode(ui.mesh_members, LV_LABEL_LONG_WRAP);
+    label(panel, "Only the observed direct link is drawn.", 16, 248, 416,
+          &lv_font_montserrat_16, COLOR_MUTED);
+}
+
+static void render_mesh(const struct wendy_mesh_snapshot *snapshot)
+{
+    const char *status = "Mesh unavailable";
+    switch (snapshot->phase) {
+    case WENDY_MESH_DISABLED: status = "Mesh disabled in this firmware"; break;
+    case WENDY_MESH_PEER_REQUIRED: status = "Configure a mesh peer"; break;
+    case WENDY_MESH_WAITING_ENROLLMENT: status = "Waiting for enrollment"; break;
+    case WENDY_MESH_WAITING_WIFI: status = "Waiting for Wi-Fi"; break;
+    case WENDY_MESH_DISCOVERING: status = "Discovering mesh routers"; break;
+    case WENDY_MESH_CONNECTING: status = "Connecting / authenticating"; break;
+    case WENDY_MESH_QUARANTINE: status = "Connected / waiting for IP"; break;
+    case WENDY_MESH_ONLINE: status = "Mesh online"; break;
+    case WENDY_MESH_RETRYING: status = "Peer offline / retrying"; break;
+    default: break;
+    }
+    if (snapshot->peer_connected && snapshot->quarantine_seconds) {
+        lv_label_set_text_fmt(ui.mesh_state, "Connected / IP ready in %lu s",
+            (unsigned long)snapshot->quarantine_seconds);
+    } else lv_label_set_text(ui.mesh_state, status);
+    lv_obj_set_style_text_color(ui.mesh_state,
+        lv_color_hex(snapshot->ip_active ? COLOR_ACCENT : COLOR_WARNING), 0);
+    lv_label_set_text_fmt(ui.mesh_local, "%.8s", snapshot->device[0] ?
+        snapshot->device : wendy_conf_get_device_id());
+    lv_label_set_text_fmt(ui.mesh_peer, "%.8s", snapshot->peer[0] ? snapshot->peer : "Not set");
+    lv_label_set_text(ui.mesh_carrier, snapshot->carrier);
+    if (snapshot->peer_connected) lv_obj_remove_flag(ui.mesh_link, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(ui.mesh_link, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_bg_color(ui.mesh_link,
+        lv_color_hex(snapshot->ip_active ? COLOR_ACCENT : COLOR_WARNING), 0);
+    lv_label_set_text_fmt(ui.mesh_count, "%u live signed members / scroll",
+                          snapshot->member_count);
+    /* Static storage keeps the bounded roster off the FreeRTOS task stack. */
+    static char members[WENDY_MESH_ORIGINS_MAX * 80];
+    size_t used = 0;
+    for (unsigned i = 0; i < snapshot->member_count && i < WENDY_MESH_ORIGINS_MAX; ++i) {
+        int n = snprintf(members + used, sizeof members - used, "%s\nLease %lu s\n",
+            snapshot->members[i].device, (unsigned long)snapshot->members[i].lease_seconds);
+        if (n < 0 || (size_t)n >= sizeof members - used) break;
+        used += (size_t)n;
+    }
+    lv_label_set_text(ui.mesh_members, used ? members : "No live signed members.");
+}
+
 static void create_dashboard(lv_display_t *display)
 {
     lv_obj_t *screen = lv_display_get_screen_active(display);
@@ -166,14 +265,27 @@ static void create_dashboard(lv_display_t *display)
     lv_obj_set_style_bg_color(screen, lv_color_hex(COLOR_BACKGROUND), 0);
     lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
 
-    label(screen, "Mosaico", 20, 12, 300, &lv_font_montserrat_28, COLOR_TEXT);
-    ui.live = label(screen, "LIVE", 364, 22, 96, &lv_font_montserrat_16, COLOR_ACCENT);
+    label(screen, "Mosaico", 20, 12, 160, &lv_font_montserrat_28, COLOR_TEXT);
+    ui.live = label(screen, "LIVE", 170, 22, 74, &lv_font_montserrat_16, COLOR_ACCENT);
     lv_obj_set_style_text_align(ui.live, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_t *name = label(screen, wendy_conf_get_resolved_device_display_name(),
                            20, 49, 440, &lv_font_montserrat_16, COLOR_MUTED);
     lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
 
-    lv_obj_t *motion = box(screen, 16, 78, 448, 222, COLOR_PANEL, 18);
+    static const char *pages[] = {"Mesh", "Motion"};
+    for (unsigned i = 0; i < 2; ++i) {
+        ui.pages[i] = box(screen, 0, 78, 480, 276, COLOR_BACKGROUND, 0);
+        ui.tabs[i] = button(screen, pages[i], 252 + i * 108, false, page_clicked, NULL);
+        lv_obj_set_pos(ui.tabs[i], 252 + i * 108, 12);
+        lv_obj_set_size(ui.tabs[i], 100, 38);
+        lv_obj_t *caption = lv_obj_get_child(ui.tabs[i], 0);
+        lv_obj_set_width(caption, 100);
+        lv_obj_center(caption);
+        lv_obj_remove_event_cb(ui.tabs[i], page_clicked);
+        lv_obj_add_event_cb(ui.tabs[i], page_clicked, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
+    }
+    create_mesh_view(ui.pages[0]);
+    lv_obj_t *motion = box(ui.pages[1], 16, 0, 448, 222, COLOR_PANEL, 18);
     label(motion, "Motion", 16, 12, 180, &lv_font_montserrat_20, COLOR_TEXT);
     ui.motion_state = label(motion, "Waiting for IMU", 224, 16, 208,
                              &lv_font_montserrat_16, COLOR_MUTED);
@@ -204,8 +316,10 @@ static void create_dashboard(lv_display_t *display)
     ui.hint = label(motion, "Hold still, tap Zero tilt", 176, 179, 256,
                      &lv_font_montserrat_16, COLOR_MUTED);
 
-    button(screen, "Pause motion", 16, true, pause_clicked, &ui.pause_text);
-    ui.zero_button = button(screen, "Zero tilt", 248, false, zero_clicked, NULL);
+    lv_obj_t *pause = button(ui.pages[1], "Pause motion", 16, true, pause_clicked, &ui.pause_text);
+    lv_obj_set_y(pause, 232);
+    ui.zero_button = button(ui.pages[1], "Zero tilt", 248, false, zero_clicked, NULL);
+    lv_obj_set_y(ui.zero_button, 232);
     lv_obj_add_state(ui.zero_button, LV_STATE_DISABLED);
 
     lv_obj_t *status = box(screen, 16, 366, 448, 78, COLOR_PANEL, 18);
@@ -216,6 +330,7 @@ static void create_dashboard(lv_display_t *display)
     ui.wifi = label(status, "Checking", 170, 40, 116, &lv_font_montserrat_16, COLOR_TEXT);
     ui.cloud = label(status, "Checking", 304, 40, 130, &lv_font_montserrat_16, COLOR_TEXT);
     ui.footer = label(screen, "Wendy Lite", 20, 454, 440, &lv_font_montserrat_16, COLOR_MUTED);
+    select_page(0);
 }
 
 static void render_motion(const motion_sample_t *sample, bool valid)
@@ -311,6 +426,7 @@ static void dashboard_task(void *argument)
     bsp_board_variant_t variant;
     esp_err_t result = bsp_board_variant_get(&variant);
     if (result != ESP_OK) {
+        mosaico_diagnostics_stage("board revision unavailable", result);
         ESP_LOGE(TAG, "Board revision unavailable (%s); Wendy management remains active",
                  esp_err_to_name(result));
         vTaskDelete(NULL);
@@ -322,11 +438,14 @@ static void dashboard_task(void *argument)
     const bsp_display_config_t display_config = BSP_DISPLAY_DEFAULT_CONFIG();
     lv_display_t *display = bsp_display_start_with_config(&display_config);
     if (!display || !bsp_display_lock(1000)) {
+        mosaico_diagnostics_stage("display unavailable", ESP_FAIL);
         ESP_LOGE(TAG, "Display unavailable; Wendy management remains active");
         vTaskDelete(NULL);
         return;
     }
+    lv_obj_clean(lv_display_get_screen_active(display));
     create_dashboard(display);
+    mosaico_diagnostics_stage("dashboard running", ESP_OK);
     bsp_display_unlock();
 
     result = bsp_imu_init();
@@ -339,6 +458,7 @@ static void dashboard_task(void *argument)
         ESP_LOGW(TAG, "IMU unavailable (%s); device status remains active", esp_err_to_name(result));
     }
 
+    static struct wendy_mesh_snapshot mesh;
     int64_t next_status = 0;
     int64_t next_motion = 0;
     bool motion_valid = false;
@@ -363,6 +483,7 @@ static void dashboard_task(void *argument)
             resetting = wendy_pki_reset_in_progress();
             wifi = wendy_wifi_is_connected();
             cloud = wendy_cloud_get_state();
+            wendy_mesh_get_snapshot(&mesh);
             next_status = now + STATUS_PERIOD_US;
         }
         if (bsp_display_lock(100)) {
@@ -371,6 +492,7 @@ static void dashboard_task(void *argument)
             }
             if (status_due) {
                 render_status(enrollment_result, enrolled, resetting, wifi, cloud, now);
+                render_mesh(&mesh);
             }
             bsp_display_unlock();
         }
@@ -380,8 +502,28 @@ static void dashboard_task(void *argument)
 
 void app_main(void)
 {
-    ESP_ERROR_CHECK(wendy_core_init());
+    mosaico_diagnostics_start();
+    ESP_ERROR_CHECK(mosaico_usb_management_start());
+    /* Reserve the panel DMA resources before Wi-Fi and BLE fragment the heap. */
+    mosaico_diagnostics_stage("starting display", ESP_OK);
+    lv_display_t *display = bsp_display_start();
+    if (display && bsp_display_lock(1000)) {
+        lv_obj_t *screen = lv_display_get_screen_active(display);
+        lv_obj_set_style_bg_color(screen, lv_color_hex(COLOR_BACKGROUND), 0);
+        label(screen, "Starting Wendy...", 32, 210, 416,
+              &lv_font_montserrat_28, COLOR_TEXT);
+        bsp_display_unlock();
+    }
+    mosaico_diagnostics_stage("starting Wendy services", ESP_OK);
+    esp_err_t result = wendy_core_init();
+    if (result != ESP_OK) {
+        mosaico_diagnostics_stage("Wendy startup failed", result);
+        ESP_LOGE(TAG, "Wendy startup failed: %s", esp_err_to_name(result));
+        return;
+    }
+    mosaico_diagnostics_stage("starting dashboard", ESP_OK);
     if (xTaskCreate(dashboard_task, "mosaico_dashboard", 6144, NULL, 3, NULL) != pdPASS) {
+        mosaico_diagnostics_stage("dashboard task allocation failed", ESP_ERR_NO_MEM);
         ESP_LOGE(TAG, "Cannot start dashboard task; Wendy management remains active");
     }
 }

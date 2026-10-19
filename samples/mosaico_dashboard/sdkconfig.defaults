@@ -1,11 +1,11 @@
 CONFIG_IDF_TARGET="esp32s31"
 CONFIG_IDF_EXPERIMENTAL_FEATURES=y
 
-# Mosaico has 16 MB of program flash. Use Wendy's existing 8 MB OTA layout;
-# its two app slots leave room for the display and board support libraries.
+# Preserve Wendy's 8 MB OTA offsets and add crash storage in Mosaico's 16 MB
+# program flash. Both app slots fit the display and board support libraries.
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../partitions.ota.8mb.csv"
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
 # The BSP display needs external RAM. Match its S31 PSRAM configuration.
 CONFIG_SPIRAM=y
@@ -22,7 +22,34 @@ CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_FONT_MONTSERRAT_28=y
 
-# Wendy owns Wi-Fi, BLE and USB Serial/JTAG. Keep ROM logs on UART.
+# Wendy owns Wi-Fi, BLE and USB-C CDC. Keep ROM logs on UART.
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 CONFIG_WENDY_DEVICE_NAME_DEFAULT_PREFIX="mosaico"
+
+# Signed Wendy mesh over Wi-Fi with automatic same-tenant router discovery.
+CONFIG_LWIP_IPV6=y
+CONFIG_LWIP_IPV6_FORWARD=n
+CONFIG_LWIP_HOOK_IP6_ROUTE_CUSTOM=y
+CONFIG_WENDY_MESH_LEAF=y
+CONFIG_WENDY_MESH_TCP=y
+CONFIG_WENDY_MESH_AUTO_DISCOVER=y
+
+# Match the BSP LVGL integration: use FreeRTOS locks and the PSRAM-capable heap.
+CONFIG_LV_CONF_SKIP=y
+CONFIG_LV_OS_FREERTOS=y
+CONFIG_LV_USE_CLIB_MALLOC=y
+CONFIG_LV_USE_CLIB_STRING=y
+CONFIG_LV_USE_CLIB_SPRINTF=y
+
+# Runtime startup diagnostics on Mosaico's USB-C OTG port.
+CONFIG_TINYUSB_CDC_ENABLED=y
+CONFIG_TINYUSB_CDC_COUNT=2
+CONFIG_TINYUSB_DESC_PRODUCT_STRING="Mosaico"
+
+# Retain the panic location across reboot for USB diagnostics.
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_STACK_SIZE=2048
+
+# USB-C CDC 0 is Wendy management; CDC 1 is independent diagnostics.
+CONFIG_WENDY_USJ=n

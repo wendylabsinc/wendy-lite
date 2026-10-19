@@ -29,7 +29,7 @@ static unsigned frame_completions, response_completions, disconnections, interru
 static unsigned select_calls;
 static int64_t expected_wait_us;
 static jmp_buf main_idle;
-static enum { UART_UNUSED, UART_INITIAL, UART_FULL, UART_WANT_READ } uart_scenario;
+static enum { UART_UNUSED, UART_INITIAL, UART_FULL, UART_CDC, UART_WANT_READ } uart_scenario;
 static uint8_t uart_received[32];
 static size_t uart_received_size;
 
@@ -128,8 +128,9 @@ static int test_select(int nfds, fd_set *readfds, fd_set *writefds,
         assert(timeout);
         int64_t delay = timeout->tv_sec * 1000000LL + timeout->tv_usec;
         bool want_read = uart_scenario == UART_WANT_READ;
-        assert(!!FD_ISSET(4, writefds) == !want_read);
-        assert(!!FD_ISSET(4, readfds) == want_read);
+        bool cdc = uart_scenario == UART_CDC;
+        assert(!!FD_ISSET(4, writefds) == (!want_read && !cdc));
+        assert(!!FD_ISSET(4, readfds) == (want_read || cdc));
         if (want_read) {
             // Positive TX capacity must not bypass a transport's WANT_READ.
             assert(select_calls == 0 && delay == WCOM_TX_STALL_TIMEOUT_US);
@@ -165,6 +166,7 @@ static int test_select(int nfds, fd_set *readfds, fd_set *writefds,
     longjmp(main_idle, 1);
 }
 
+static bool cdc_rx_idle(void) { return false; }
 static bool uart_ready(void) { return write_budget > 0; }
 
 static ssize_t uart_write(const void *data, size_t size)
@@ -190,6 +192,7 @@ static void test_uart(void)
 {
     static const uint8_t payload[] = "UART partial payload";
     wendy_com_uart_t uart = { .fd = 4, .write_bytes = uart_write, .write_ready = uart_ready };
+    if (uart_scenario == UART_CDC) uart.read_ready = cdc_rx_idle;
     current_link = wcom_add_uart_link(&uart, interrupted);
     assert(current_link > 0);
     struct wcom_link *link = _get_link(current_link);
@@ -312,6 +315,7 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[1], "no_bytes")) test_stall(false, false, false);
     else if (!strcmp(argv[1], "progress")) test_progress();
     else if (!strcmp(argv[1], "uart_initial")) { uart_scenario = UART_INITIAL; test_uart(); }
+    else if (!strcmp(argv[1], "uart_cdc")) { uart_scenario = UART_CDC; test_uart(); }
     else if (!strcmp(argv[1], "uart_full")) { uart_scenario = UART_FULL; test_uart(); }
     else if (!strcmp(argv[1], "uart_want_read")) { uart_scenario = UART_WANT_READ; test_uart(); }
     else assert(!"unknown scenario");

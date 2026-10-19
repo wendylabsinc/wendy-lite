@@ -4,7 +4,7 @@
 
 #include <stdio.h>
 
-bool test_enrolled, test_reset, test_current;
+bool test_enrolled, test_reset, test_current, test_nimble_initialized;
 char test_enrollment_device_id[65];
 unsigned test_adv_starts;
 bool test_fail_semaphore, test_fail_task;
@@ -33,6 +33,7 @@ static void reset_fixture(void)
     free(_display_name);
     _device_id = _device_name = _display_name = NULL;
     _host_initialized = _started = _enrolled = false;
+    test_nimble_initialized = false;
     if (_link_closed)
         vSemaphoreDelete(_link_closed);
     _link_closed = NULL;

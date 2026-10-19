@@ -505,8 +505,26 @@ esp_err_t wendy_conf_write(const void *data, size_t size, enum wendy_conf_write_
 {
     if (!data || size == 0)
         return ESP_ERR_INVALID_ARG;
+    bool wifi_only = mode == WENDY_CONF_WRITE_MODE_WIFI_ONLY;
+    if (wifi_only) {
+        pb_istream_t input = pb_istream_from_buffer(data, size);
+        bool seen = false;
+        while (input.bytes_left) {
+            pb_wire_type_t wire;
+            uint32_t tag;
+            bool eof;
+            if (!pb_decode_tag(&input, &wire, &tag, &eof) ||
+                tag != WendyConf_wifi_tag || wire != PB_WT_STRING || seen ||
+                !pb_skip_field(&input, wire))
+                return ESP_ERR_INVALID_ARG;
+            seen = true;
+        }
+        if (!seen) return ESP_ERR_INVALID_ARG;
+        mode = WENDY_CONF_WRITE_MODE_UPDATE;
+    }
     pthread_mutex_lock(&s_cache_lock);
-    esp_err_t result = _write_conf(data, size, mode);
+    esp_err_t result = wifi_only && s_enrollment_required && !s_cache.valid
+        ? ESP_ERR_INVALID_STATE : _write_conf(data, size, mode);
     pthread_mutex_unlock(&s_cache_lock);
     return result;
 }

@@ -77,7 +77,7 @@ WendyComResult wcom_cmd_app_push_end(int client_id)
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 
-WendyComResult wcom_cmd_conf_push_begin(int client_id, size_t size, WendyComConfPushMode mode)
+WendyComResult wcom_cmd_conf_push_begin(int client_id, size_t size, WendyComConfPushMode mode, bool wifi_only)
 {
     ESP_LOGI(TAG, "CONF_PUSH_BEGIN client=%d size=%zu mode=%s", client_id, size,
              mode == WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE ? "update" : "replace");
@@ -88,7 +88,7 @@ WendyComResult wcom_cmd_conf_push_begin(int client_id, size_t size, WendyComConf
     _push_kind = PUSH_CONF;
     _pushing_client_id = client_id;
     if (_app_delegate && _app_delegate->on_conf_push_begin)
-        return _app_delegate->on_conf_push_begin(size, mode);
+        return _app_delegate->on_conf_push_begin(size, mode, wifi_only);
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 

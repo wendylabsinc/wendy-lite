@@ -144,7 +144,11 @@ static inline int ble_gap_adv_start(uint8_t type, const void *addr, int duration
 static inline int ble_hs_util_ensure_addr(int privacy) { return 0; }
 static inline int ble_hs_id_infer_auto(int privacy, uint8_t *type) { *type = 0; return 0; }
 static inline int ble_hs_synced(void) { return 1; }
-static inline esp_err_t nimble_port_init(void) { return ESP_OK; }
+extern bool test_nimble_initialized;
+static inline esp_err_t nimble_port_init(void) {
+    test_nimble_initialized = true;
+    return ESP_OK;
+}
 static inline void nimble_port_run(void) {}
 static inline void nimble_port_freertos_deinit(void) {}
 static inline void nimble_port_freertos_init(void (*fn)(void *)) {}
@@ -154,7 +158,11 @@ static inline int ble_gatts_count_cfg(const struct ble_gatt_svc_def *svcs) { ret
 static inline int ble_gatts_add_svcs(const struct ble_gatt_svc_def *svcs) {
     test_services = svcs; return 0;
 }
-static inline int ble_svc_gap_device_name_set(const char *name) { return 0; }
+static inline int ble_svc_gap_device_name_set(const char *name) {
+    // NimBLE takes its host mutex here, which only exists after port init.
+    assert(test_nimble_initialized);
+    return 0;
+}
 
 enum wcom_interruption_reason { WCOM_INTERRUPTION_CONNECTION_CLOSED };
 struct wcom_operation { void (*func)(struct wcom_operation *); };

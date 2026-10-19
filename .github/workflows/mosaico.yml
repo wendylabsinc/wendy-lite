@@ -44,8 +44,17 @@ jobs:
           grep -q '^CONFIG_MBEDTLS_USE_BUNDLED_PQC=y$' sdkconfig
           grep -q '^# CONFIG_MBEDTLS_DYNAMIC_BUFFER is not set$' sdkconfig
           grep -q '^CONFIG_SPIRAM=y$' sdkconfig
-          grep -q '^CONFIG_WENDY_USJ=y$' sdkconfig
+          grep -q '^CONFIG_LV_OS_FREERTOS=y$' sdkconfig
+          grep -q '^CONFIG_LV_USE_CLIB_MALLOC=y$' sdkconfig
+          grep -q '^CONFIG_TINYUSB_CDC_ENABLED=y$' sdkconfig
+          grep -q '^CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y$' sdkconfig
+          grep -q '^# CONFIG_WENDY_USJ is not set$' sdkconfig
+          grep -q '^CONFIG_TINYUSB_CDC_COUNT=2$' sdkconfig
           grep -q '^CONFIG_WENDY_CLOUD=y$' sdkconfig
+          grep -q '^CONFIG_WENDY_MESH_LEAF=y$' sdkconfig
+          grep -q '^CONFIG_WENDY_MESH_TCP=y$' sdkconfig
+          grep -q '^CONFIG_WENDY_MESH_AUTO_DISCOVER=y$' sdkconfig
+          grep -q '^CONFIG_LWIP_HOOK_IP6_ROUTE_CUSTOM=y$' sdkconfig
       - name: Upload the sample firmware
         uses: actions/upload-artifact@v4
         with:

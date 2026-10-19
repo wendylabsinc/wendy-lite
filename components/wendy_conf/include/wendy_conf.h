@@ -9,6 +9,7 @@
 enum wendy_conf_write_mode {
     WENDY_CONF_WRITE_MODE_REPLACE = 0,
     WENDY_CONF_WRITE_MODE_UPDATE = 1,
+    WENDY_CONF_WRITE_MODE_WIFI_ONLY = 2, // UPDATE accepting only the wifi root field
 };
 
 /**
@@ -47,7 +48,8 @@ void wendy_conf_enrollment_identity(char tenant[37], char device[65]);
  * In REPLACE mode the given message becomes the whole configuration. In
  * UPDATE mode, any root property of WendyConf (device_name, wifi,
  * enrollment) absent from the given message is kept from the current
- * configuration.
+ * configuration. WIFI_ONLY applies UPDATE semantics but rejects every root
+ * field except wifi, including unknown fields and duplicate wifi fields.
  *
  * Writing invalidates the in-RAM configuration: from that point on the
  * getters return empty spans / zero values. The new configuration takes

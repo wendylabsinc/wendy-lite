@@ -715,7 +715,7 @@ static uint8_t *s_conf_push_buf = NULL;
 static size_t s_conf_push_size = 0;
 static enum wendy_conf_write_mode s_conf_push_mode;
 
-static WendyComResult com_conf_push_begin(size_t size, WendyComConfPushMode mode)
+static WendyComResult com_conf_push_begin(size_t size, WendyComConfPushMode mode, bool wifi_only)
 {
     if (size == 0 || size > wendy_conf_get_max_size()) {
         ESP_LOGW(TAG, "conf size %zu exceeds max %zu", size, wendy_conf_get_max_size());
@@ -728,7 +728,7 @@ static WendyComResult com_conf_push_begin(size_t size, WendyComConfPushMode mode
         return WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
     }
     s_conf_push_size = size;
-    s_conf_push_mode = mode == WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE
+    s_conf_push_mode = wifi_only ? WENDY_CONF_WRITE_MODE_WIFI_ONLY : mode == WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE
                      ? WENDY_CONF_WRITE_MODE_UPDATE : WENDY_CONF_WRITE_MODE_REPLACE;
     return WendyComResult_WENDY_COM_RESULT_OK;
 }

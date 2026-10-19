@@ -579,16 +579,16 @@ esp_err_t wendy_ble_start(void)
 
     _build_mfg_data();
 
-    // The GAP service name is what a central reads from the standard 0x2A00
-    // characteristic; keep it in step with the advertised name. NimBLE copies
-    // the string into its own buffer, so the failure path may still free ours.
-    ble_svc_gap_device_name_set(_device_name);
-
     _log_heap("before");
     err = wendy_ble_host_init();
     if (err != ESP_OK)
         goto fail;
     _log_heap("after");
+
+    // Setting the GAP name takes NimBLE's host mutex, so the host must exist
+    // first. Advertising remains gated on _started until setup is complete.
+    // NimBLE copies the name, so failure cleanup may still free our string.
+    ble_svc_gap_device_name_set(_device_name);
 
     err = wble_l2cap_init();
     if (err != ESP_OK)

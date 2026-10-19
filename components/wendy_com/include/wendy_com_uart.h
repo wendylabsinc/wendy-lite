@@ -29,6 +29,9 @@ typedef enum wendy_com_uart_esc_cmd {
 
 typedef struct wendy_com_uart {
     int fd;
+    // Optional USB CDC I/O. When read_ready is set, fd is a readiness eventfd.
+    ssize_t (*read_bytes)(void *data, size_t size);
+    bool (*read_ready)(void);
     // Optional nonblocking writer: byte count or WENDY_COM_UART_ERR_*.
     ssize_t (*write_bytes)(const void *data, size_t size);
     // Optional level readiness for drivers whose select() only signals TX edges.

@@ -446,7 +446,21 @@ int main(void)
     uint8_t update[32];
     pb_ostream_t update_stream = pb_ostream_from_buffer(update, sizeof update);
     assert(pb_encode(&update_stream, WendyConf_fields, &wifi_update));
-    assert(wendy_conf_write(update, update_stream.bytes_written, WENDY_CONF_WRITE_MODE_UPDATE) == ESP_OK);
+    /* A network Wi-Fi upload cannot introduce any other root field, including
+     * unknown high tags, duplicate Wi-Fi fields, or malformed messages. */
+    const uint8_t forbidden[][6] = {
+        {0x0a, 0x00}, {0x22, 0x00}, {0x1a, 0x00}, {0x82, 0x02, 0x00},
+        {0x12, 0x00, 0x22, 0x00}, {0x12, 0x00, 0x12, 0x00}, {0x12, 0x03, 0x00},
+    };
+    const size_t lengths[] = {2, 2, 2, 3, 4, 4, 3};
+    unsigned before_erase = erase_calls, before_write = write_calls;
+    for (size_t i = 0; i < sizeof lengths / sizeof lengths[0]; i++)
+        assert(wendy_conf_write(forbidden[i], lengths[i], WENDY_CONF_WRITE_MODE_WIFI_ONLY) == ESP_ERR_INVALID_ARG);
+    assert(erase_calls == before_erase && write_calls == before_write);
+    assert(wendy_conf_is_current() && wendy_conf_has_enrollment());
+    assert(wendy_conf_write(update, update_stream.bytes_written, WENDY_CONF_WRITE_MODE_WIFI_ONLY) == ESP_OK);
+    /* A second upload before reboot must not erase the now-unmapped identity. */
+    assert(wendy_conf_write(update, update_stream.bytes_written, WENDY_CONF_WRITE_MODE_WIFI_ONLY) == ESP_ERR_INVALID_STATE);
     _load_conf();
     assert(wendy_conf_copy_enrollment(&cfg, &next) == ESP_OK);
     assert(cfg.provision_trust && next.device_roots.size == 11);

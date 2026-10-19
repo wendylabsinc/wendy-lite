@@ -379,9 +379,11 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
         return;
     }
 
-    // Configuration writes and bootstrap challenges require physical setup.
-    // An unenrolled network peer cannot redirect a device's enrollment.
-    if ((cmd->which_params == WendyComCommand_conf_push_begin_tag ||
+    // Network configuration is limited to Wi-Fi-only UPDATE payloads. The
+    // application validates the completed protobuf before any flash write.
+    // Enrollment, trust replacement, and time bootstrap remain physical-only.
+    if (((cmd->which_params == WendyComCommand_conf_push_begin_tag &&
+          cmd->params.conf_push_begin.mode != WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE) ||
          cmd->which_params == WendyComCommand_enrollment_challenge_tag ||
          cmd->which_params == WendyComCommand_enrollment_reset_tag ||
          cmd->which_params == WendyComCommand_sync_time_tag) &&
@@ -445,7 +447,7 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
         break;
     case WendyComCommand_conf_push_begin_tag:
         resp->result = wcom_cmd_conf_push_begin(client_id, cmd->params.conf_push_begin.size,
-                                                cmd->params.conf_push_begin.mode);
+                                                cmd->params.conf_push_begin.mode, !wcom_link_is_local(link->link_id));
         break;
     case WendyComCommand_conf_push_data_tag:
         if (data_span->data)
