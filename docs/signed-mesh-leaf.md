@@ -93,6 +93,19 @@ are ignored without disconnecting existing peers; they remain unreachable from
 this leaf. A reboot or a changed enrollment/trust epoch clears the directory
 and starts the full quarantine again. This is an experimental fleet-size limit.
 
+Routers may remember certificate bundles sent before a leaf reboot. If a
+manifest names an uncached identity, the leaf requests its certificate bundle
+and waits for a subsequent signed proof. Neither the request nor the bundle
+alone authorizes IP traffic. Retry bookkeeping has 32 slots and suppresses
+repeat requests for the same identity for five seconds; a full trusted directory
+does not request additional identities or evict replay receipts. IP arriving
+before its source proof, or after expiry, is dropped without closing the
+authenticated carrier.
+
+The raw lwIP mesh and uplink interfaces leave `netif->state` empty. ESP-IDF
+uses that field for its own interface object in global status callbacks; putting
+mesh state there corrupts the peer directory when the interface comes up.
+
 ## Configuration and build
 
 On the Linux router, add `"leafListen": "0.0.0.0:43024"` to its existing
@@ -147,7 +160,9 @@ hardware tests. No throughput or support claim is made for other boards.
 Mesh connection setup currently holds the existing PKI identity mutex while
 obtaining signed time and opening the router connection. An unreachable router
 or time authority can therefore delay other identity operations. TCP/TLS setup
-has a 15-second deadline after DNS. Radio TLS has a 30-second deadline.
+has a 15-second deadline after DNS, except the mesh gateway lease handshake,
+which allows 60 seconds for BLE transmission and TCP retries. Radio TLS has
+a 30-second deadline.
 HTTP and DNS have their own limits, so there is no single end-to-end bound. Established carrier reads and writes
 have 30-second deadlines and check reset state. This latency needs hardware
 validation before unattended deployment.

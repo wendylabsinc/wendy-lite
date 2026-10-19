@@ -16,6 +16,17 @@ struct wm_directory
     struct wm_origin origins[WENDY_MESH_ORIGINS_MAX];
     unsigned count;
 };
+/* Retry bookkeeping is separate from trusted identities and replay receipts. */
+struct wm_identity_requests
+{
+    struct
+    {
+        uint8_t device[16];
+        int64_t retry_after_us;
+    } slots[WENDY_MESH_ORIGINS_MAX];
+};
+bool wm_identity_request_due(struct wm_identity_requests* requests,
+    const uint8_t device[16], int64_t now_us);
 /* Remote receipts stay in RAM. On each boot or trust change, fail closed for
  * the maximum accepted lease plus future skew. All previously issued proofs
  * have expired before IP can be admitted, including superseded withdrawals. */
@@ -35,8 +46,10 @@ int64_t wm_epoch_time(const struct wm_epoch* epoch, int64_t now_us);
  * directory never evicts entries, including expired entries, within a trust
  * epoch. Returns 1 when full without evicting any existing receipt. */
 int wm_directory_add(struct wm_directory* directory, const struct wendy_pki_mesh_peer* peer);
-/* Returns 1 for an expired/older/uncached proof, 0 for accepted/idempotent, and -1 for
- * invalid identity, signature, structure or same-revision equivocation. */
+enum { WM_DIRECTORY_IDENTITY_NEEDED = 2 };
+/* Returns WM_DIRECTORY_IDENTITY_NEEDED for a missing identity, 1 for an
+ * expired/older proof, 0 for accepted/idempotent, and -1 for invalid identity,
+ * signature, structure or same-revision equivocation. */
 int wm_directory_apply(struct wm_directory* directory, const char* tenant,
     const struct wm_json* doc, unsigned envelope, int64_t now, int64_t now_us);
 bool wm_directory_address(
