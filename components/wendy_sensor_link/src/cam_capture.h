@@ -10,7 +10,10 @@
 #include "sdkconfig.h"
 #endif
 
-#if CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1
+#if CONFIG_WENDY_SENSOR_LINK_MOSAICO
+#define CAM_FRAME_WIDTH 1280
+#define CAM_FRAME_HEIGHT 720
+#elif CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1
 #define CAM_FRAME_WIDTH 640
 #define CAM_FRAME_HEIGHT 480
 #else
@@ -29,8 +32,8 @@ esp_err_t cam_capture_init(void);
 /* Releases the driver after startup fails. Only call before streaming. */
 void cam_capture_deinit(void);
 
-/* Korvo reserves buffers at startup and only captures while subscribed. */
-#if CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1
+/* S31 boards reserve buffers at startup and only capture while subscribed. */
+#if CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1 || CONFIG_WENDY_SENSOR_LINK_MOSAICO
 esp_err_t cam_capture_start(void);
 void cam_capture_stop(void);
 #endif

@@ -21,4 +21,13 @@ menu "Wendy SensorLink"
             PSRAM camera buffers, hardware JPEG for raw sensors, and 16 kHz
             stereo PCM audio. Requires the Korvo camera module and PSRAM;
             configuration fails if PSRAM is disabled.
+    config WENDY_SENSOR_LINK_MOSAICO
+        bool "Bundle ESP-Mosaico camera and microphone"
+        default n
+        depends on IDF_TARGET_ESP32S31 && !WENDY_CORE_WASM_APP_SUPPORT && !WENDY_SENSOR_LINK_ESP32S31_KORVO_1
+        help
+            Expose the left-slot Mosaico camera module as 1280x720 MJPEG
+            and the onboard ES8311 microphone as 16 kHz mono PCM. Both
+            streams can run concurrently. Requires PSRAM and the Mosaico
+            BSP. A missing camera does not prevent microphone streaming.
 endmenu

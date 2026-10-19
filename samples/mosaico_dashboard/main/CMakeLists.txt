@@ -8,6 +8,7 @@ idf_component_register(
         wendy_stdio
         wendy_mesh
         wendy_core
+        wendy_sensor_link
         wendy_conf
         wendy_wifi
         wendy_cloud

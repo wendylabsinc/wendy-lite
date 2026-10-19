@@ -139,6 +139,32 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 1.1.0
+  espressif/esp_cam_sensor:
+    component_hash: 0dd6634a71cc8756f0e46c961476304a23a82db4f4c4deb8aecfa30161d2185c
+    dependencies:
+    - name: espressif/cmake_utilities
+      registry_url: https://components.espressif.com
+      require: private
+      version: 0.*
+    - name: espressif/esp_sccb_intf
+      registry_url: https://components.espressif.com
+      require: private
+      version: '>=0.0.5'
+    - name: idf
+      require: private
+      version: '>=5.3'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    targets:
+    - esp32p4
+    - esp32s3
+    - esp32c3
+    - esp32c5
+    - esp32c6
+    - esp32c61
+    - esp32s31
+    version: 2.6.0
   espressif/esp_codec_dev:
     component_hash: 4779f31a3ba3f9b38aee1afe6ccb9ba8f6108dc3a6e77d39d7d714e9a215371b
     dependencies:
@@ -318,6 +344,16 @@ dependencies:
     - esp32c61
     - esp32h4
     version: 1.0.2
+  espressif/esp_sccb_intf:
+    component_hash: eb6a7d5c992f09583c163b2e3f5e95a0fdc87a2d9f8e026f3e59153935553889
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.3'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 0.0.9
   espressif/esp_tinyusb:
     component_hash: 0fab24246e07bdf919c6489d17a590cffbffbbf6a9c44d6235641645c8b946b7
     dependencies:
@@ -338,6 +374,52 @@ dependencies:
     - esp32h4
     - esp32s31
     version: 2.3.0
+  espressif/esp_video:
+    component_hash: 5694b16c12b8bb26b56ad3f999ad10119f1314d64b2d1c518bc7dfed902df9e1
+    dependencies:
+    - name: espressif/cmake_utilities
+      registry_url: https://components.espressif.com
+      require: private
+      version: 0.*
+    - name: espressif/esp_cam_sensor
+      registry_url: https://components.espressif.com
+      require: private
+      version: 2.6.*
+    - matches:
+      - if: $CONFIG{ESP_VIDEO_USE_CUSTOMIZED_ESP_H264_VERSION} == False
+      name: espressif/esp_h264
+      registry_url: https://components.espressif.com
+      require: private
+      rules:
+      - if: target in [esp32p4]
+      version: 1.4.*
+    - name: espressif/esp_ipa
+      registry_url: https://components.espressif.com
+      require: private
+      rules:
+      - if: target in [esp32p4]
+      version: 2.4.*
+    - name: idf
+      require: private
+      version: '>=5.4'
+    - name: espressif/usb_host_uvc
+      registry_url: https://components.espressif.com
+      require: private
+      rules:
+      - if: target in [esp32p4, esp32s3, esp32s31]
+      version: 2.5.*
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32p4
+    - esp32s3
+    - esp32c3
+    - esp32c5
+    - esp32c6
+    - esp32c61
+    - esp32s31
+    version: 2.5.0
   espressif/freetype:
     component_hash: aa9f7657a69b2b1c1f49044017fc424081d4e0fe6e97834cb43883548d44e3ca
     dependencies:
@@ -430,6 +512,47 @@ dependencies:
     - esp32h4
     - esp32s31
     version: 0.21.0~2
+  espressif/usb:
+    component_hash: 99eee72ea224d9117d4c342442717a1f20bf8112e2ab5d7d7038b827874f4c92
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.5.3'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    targets:
+    - esp32s2
+    - esp32s3
+    - esp32s31
+    - esp32p4
+    - esp32h4
+    - linux
+    version: 1.6.0
+  espressif/usb_host_uvc:
+    component_hash: ecb2604b71cb5a65d64e5f441be54793b1838096043ad8cf1fa0d3012de18a9a
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    - name: espressif/usb
+      registry_url: https://components.espressif.com
+      require: public
+      rules:
+      - if: idf_version >=6.0
+      - if: target not in ["linux"]
+      version: ^1.0.0
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    targets:
+    - esp32s2
+    - esp32s3
+    - esp32p4
+    - esp32h4
+    - esp32s31
+    - linux
+    version: 2.5.2
   espressif/zlib:
     component_hash: 9083cada65f1c9d298ef92266232d071c6f2f335164e2799554b3eae73aedc55
     dependencies:
@@ -457,6 +580,45 @@ dependencies:
       path: ../../components/esp-pqc/components/mbedtls
       type: local
     version: '*'
+  mosaico_module_camera:
+    component_hash: f5b04562b9100f21456c4a575b75467effa73f7bece4d6e915bc5e5e09e06624
+    dependencies:
+    - name: idf
+      version: '>=6.2'
+    - git: https://github.com/esp-mosaico/esp-mosaico-bsp.git
+      name: esp-mosaico-bsp
+      path: components/esp-mosaico-bsp
+      version: 5f88b91e1be055d1d3674364123b2779a1758377
+    - git: https://github.com/esp-mosaico/esp-mosaico-bsp.git
+      name: mosaico_module_mgr
+      path: components/mosaico_module_mgr
+      public: true
+      version: 5f88b91e1be055d1d3674364123b2779a1758377
+    - name: espressif/esp_video
+      public: true
+      version: ^2.4.1
+    source:
+      git: https://github.com/esp-mosaico/esp-mosaico-bsp.git
+      path: components/mosaico_module_camera
+      type: git
+    targets:
+    - esp32s31
+    version: 5f88b91e1be055d1d3674364123b2779a1758377
+  mosaico_module_mgr:
+    component_hash: 44c4a6185b0ff3a6bdff5672337f7e5c73836e7340643e1896709c04322ceeea
+    dependencies:
+    - git: https://github.com/esp-mosaico/esp-mosaico-bsp.git
+      name: esp-mosaico-bsp
+      path: components/esp-mosaico-bsp
+      public: true
+      version: 5f88b91e1be055d1d3674364123b2779a1758377
+    source:
+      git: https://github.com/esp-mosaico/esp-mosaico-bsp.git
+      path: components/mosaico_module_mgr
+      type: git
+    targets:
+    - esp32s31
+    version: 5f88b91e1be055d1d3674364123b2779a1758377
   nanopb:
     dependencies: []
     source:
@@ -564,9 +726,11 @@ direct_dependencies:
 - esp-pqc
 - espressif/cjson
 - espressif/esp_tinyusb
+- espressif/esp_video
 - espressif/mdns
 - idf
 - mbedtls
+- mosaico_module_camera
 - nanopb
 - wendy_ble
 - wendy_cloud
@@ -577,6 +741,6 @@ direct_dependencies:
 - wendy_stdio
 - wendy_usj
 - wendy_wifi
-manifest_hash: 21d11857c99c84b69bdbecb1f389c9730e1f65a4823d8701f2f4551b56e55b60
+manifest_hash: 7ef2ec644689826d3199f3e6b4f9c06a364b411d1fdbd8bc9d3d07f60a21c8cf
 target: esp32s31
 version: 3.0.0

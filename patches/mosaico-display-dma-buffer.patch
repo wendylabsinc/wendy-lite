@@ -1,0 +1,14 @@
+--- a/onboard/display.c
++++ b/onboard/display.c
+@@ -413,6 +413,11 @@
+     if (active.buffer_height) {
+         display_config.profile.buffer_height = active.buffer_height;
+     }
++    /* Reserve a DMA-capable draw buffer before networking and audio start.
++     * PSRAM draw buffers require a fresh internal bounce allocation on every
++     * SPI flush, which can fail after SensorLink fragments the DMA heap. */
++    display_config.profile.use_psram = false;
++    display_config.profile.require_double_buffer = false;
+     display_config.profile.enable_ppa_accel = active.enable_ppa_accel;
+     s_display = esp_lv_adapter_register_display(&display_config);
+     if (!s_display) {

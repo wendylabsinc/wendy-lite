@@ -24,7 +24,7 @@ static const char *TAG = "cam_loop";
 #define START_BIT (1 << 2)
 #define CONTROL_DONE_BIT (1 << 3)
 
-#if CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1
+#if CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1 || CONFIG_WENDY_SENSOR_LINK_MOSAICO
 #define SENDER_COUNT 2
 #else
 #define SENDER_COUNT 1
@@ -203,7 +203,7 @@ static void cam_loop_task(void *arg)
             taskEXIT_CRITICAL(&s_lock);
             continue;
         }
-#if CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1
+#if CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1 || CONFIG_WENDY_SENSOR_LINK_MOSAICO
         if (channel_id == 0 && cam_capture_start() != ESP_OK) {
             ESP_LOGE(TAG, "camera capture could not start");
             taskENTER_CRITICAL(&s_lock);
@@ -216,7 +216,7 @@ static void cam_loop_task(void *arg)
             if (channel_id == 1) {
                 mic_stop();
             }
-#if CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1
+#if CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1 || CONFIG_WENDY_SENSOR_LINK_MOSAICO
             else {
                 cam_capture_stop();
             }
@@ -321,7 +321,7 @@ static void cam_loop_task(void *arg)
         if (channel_id == 1) {
             mic_stop();
         }
-#if CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1
+#if CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1 || CONFIG_WENDY_SENSOR_LINK_MOSAICO
         else {
             cam_capture_stop();
         }

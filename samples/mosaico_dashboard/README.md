@@ -20,10 +20,13 @@ Wendy owns Wi-Fi, BLE, USB-C management, and enrollment. The sample starts
 `wendy_core_init()` once and uses the board package for the display, touch, and
 IMU. It initializes the display before networking to reserve its DMA resources
 and shows a startup message while Wendy initializes. LVGL uses FreeRTOS locks
-and the system allocator so UI allocations can use PSRAM. Small display flushes
-and reserved internal memory keep DMA working alongside Wi-Fi and BLE. It does
-not require a camera or expansion board. An unavailable display or IMU leaves
-Wendy device management running.
+and the system allocator so UI allocations can use PSRAM. A four-line internal
+draw buffer is reserved at startup, avoiding per-flush DMA bounce allocations
+after the camera, audio and network drivers fragment the heap. Audio reserves
+mono DMA buffers at startup, and Wi-Fi reserves eight transmit buffers to leave
+room for camera capture and TLS. SensorLink
+initializes next, before networking. A missing camera, microphone, display, or
+IMU leaves Wendy device management running.
 
 ## Hardware and dependencies
 
@@ -149,7 +152,8 @@ another target's flash offsets.
 Mosaico's Type-C connector exposes two USB CDC serial interfaces. Interface 0
 is the Wendy console and physical management connection, including Wi-Fi setup
 and enrollment. Interface 1 reports startup stage, uptime, reset reason, and
-available memory once per second, plus the saved crash location after a panic.
+available memory and the largest free DMA block once per second, plus the saved
+crash location after a panic.
 Diagnostics include the running OTA slot and ELF fingerprint so an upload can
 be checked after reboot. Diagnostic messages never share the binary management stream. The separate
 USB Serial/JTAG transport is disabled in this sample.
@@ -174,6 +178,32 @@ the CLI reboots the board. Before enrollment, BLE setup uses the existing
 anonymous TLS policy; afterward it requires a same-tenant operator identity.
 The dashboard displays enrollment status and does not collect credentials.
 
+## SensorLink camera and microphone
+
+The dashboard includes the onboard ES8311 microphone and an optional Mosaico
+camera module in the left slot. SensorLink advertises only sensors that
+initialize successfully. The camera module is discovered through its EEPROM;
+unidentified expansion boards are not driven as cameras.
+
+The camera provides 1280x720 MJPEG using the S31 hardware JPEG encoder. The
+microphone provides 16 kHz, 16-bit mono PCM. Both can stream concurrently. Capture
+starts on subscription and stops when the client unsubscribes or disconnects.
+The board package owns the camera pin mapping, power, and shared audio bus.
+USB Serial/JTAG is disabled because GPIO33 is camera D2; USB-C management uses
+the separate OTG controller.
+
+```sh
+wendy device camera list --device wendy-lite:PORT
+wendy device camera view --device wendy-lite:PORT --id 0
+wendy device audio list --device wendy-lite:PORT
+wendy device audio listen --device wendy-lite:PORT --id 1
+```
+
+Use separate network connections for concurrent viewers; two CLI processes
+cannot open the same USB serial port. Existing builds must enable
+`CONFIG_WENDY_SENSOR_LINK_MOSAICO=y` and disable
+`CONFIG_USJ_ENABLE_USB_SERIAL_JTAG` in their saved sdkconfig.
+
 ## Validation
 
 The CI build checks that mesh, the TCP carrier, and the custom IPv6 route hook
@@ -197,6 +227,13 @@ ordering bug; the BLE regression tests now require host initialization before
 setting the GAP name. All four BLE configurations and 17 mesh, configuration,
 permissions, and USB transport host tests pass.
 
-Live mesh connectivity, replay timing, member updates, motion calibration, and
-radio coexistence still require an enrolled board with Wi-Fi and a discoverable
-router.
+Live USB enrollment, authenticated cloud logs, and automatic mesh joining were
+verified on this board. The user confirmed the peer and topology on the display.
+Motion calibration and router failover still need hardware validation.
+
+SensorLink validation on the same board captured and decoded 53 complete
+1280x720 JPEG frames and 8.7 seconds of nonzero mono PCM. A simultaneous
+subscription delivered both channels in two sessions, including reconnecting
+after closing an active connection and then explicitly unsubscribing both
+channels. USB diagnostics remained at `dashboard running`. All 19 SensorLink
+host scenarios passed, including the Mosaico concurrency and cleanup cases.

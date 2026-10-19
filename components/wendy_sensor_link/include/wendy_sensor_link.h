@@ -10,8 +10,9 @@ extern "C" {
 /* Initializes the selected board's sensors and registers the SensorLink
  * delegate. Call once before wendy_core_init() to reserve DMA memory before
  * networking starts. Available for CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3 or
- * CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1. Korvo streams camera and stereo
- * microphones concurrently; XIAO retains one active stream at a time.
+ * CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1 or CONFIG_WENDY_SENSOR_LINK_MOSAICO.
+ * S31 boards stream camera and microphone concurrently; XIAO retains one
+ * active stream at a time. Korvo audio is stereo, Mosaico audio is mono.
  *
  * A missing camera or microphone does not prevent the other from working.
  * Returns ESP_OK when at least one sensor can stream, ESP_ERR_NOT_FOUND if

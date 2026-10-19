@@ -19,6 +19,7 @@
 #include "wendy_cloud.h"
 #include "wendy_conf.h"
 #include "wendy_core.h"
+#include "wendy_sensor_link.h"
 #include "wendy_mesh_status.h"
 #include "wendy_pki.h"
 #include "wendy_wifi.h"
@@ -528,10 +529,10 @@ void app_main(void)
     /* Reserve the panel DMA resources before Wi-Fi and BLE fragment the heap. */
     mosaico_diagnostics_stage("starting display", ESP_OK);
     bsp_display_config_t display_config = BSP_DISPLAY_DEFAULT_CONFIG();
-    /* PSRAM pixels need an internal DMA bounce buffer. Keep each flush small
-     * enough to coexist with Wi-Fi, BLE and mesh task stacks. */
+    /* The patched BSP reserves one internal DMA draw buffer up front.
+     * Four lines fit alongside camera DMA, I2S, Wi-Fi, BLE and mesh stacks. */
     display_config.tear_avoid_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_NONE;
-    display_config.buffer_height = 8;
+    display_config.buffer_height = 4;
     lv_display_t *display = bsp_display_start_with_config(&display_config);
     if (display && bsp_display_lock(1000)) {
         lv_obj_t *screen = lv_display_get_screen_active(display);
@@ -539,6 +540,11 @@ void app_main(void)
         label(screen, "Starting Wendy...", 32, 210, 416,
               &lv_font_montserrat_28, COLOR_TEXT);
         bsp_display_unlock();
+    }
+    mosaico_diagnostics_stage("starting SensorLink", ESP_OK);
+    esp_err_t sensor_result = wendy_sensor_link_init();
+    if (sensor_result != ESP_OK) {
+        ESP_LOGW(TAG, "SensorLink unavailable: %s", esp_err_to_name(sensor_result));
     }
     mosaico_diagnostics_stage("starting Wendy services", ESP_OK);
     esp_err_t result = wendy_core_init();

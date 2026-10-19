@@ -6,8 +6,20 @@ dependencies:
   espressif/esp_video:
     version: "2.5.0"
     rules:
-      - if: "target == esp32s31 && $CONFIG{WENDY_SENSOR_LINK_ESP32S31_KORVO_1} == True"
+      - if: "target == esp32s31 && ($CONFIG{WENDY_SENSOR_LINK_ESP32S31_KORVO_1} == True || $CONFIG{WENDY_SENSOR_LINK_MOSAICO} == True)"
   espressif/esp_codec_dev:
     version: "2.0.0-beta4"
     rules:
       - if: "target == esp32s31 && $CONFIG{WENDY_SENSOR_LINK_ESP32S31_KORVO_1} == True"
+  esp-mosaico-bsp:
+    git: https://github.com/esp-mosaico/esp-mosaico-bsp.git
+    version: 5f88b91e1be055d1d3674364123b2779a1758377
+    path: components/esp-mosaico-bsp
+    rules:
+      - if: "$CONFIG{WENDY_SENSOR_LINK_MOSAICO} == True"
+  mosaico_module_camera:
+    git: https://github.com/esp-mosaico/esp-mosaico-bsp.git
+    version: 5f88b91e1be055d1d3674364123b2779a1758377
+    path: components/mosaico_module_camera
+    rules:
+      - if: "$CONFIG{WENDY_SENSOR_LINK_MOSAICO} == True"

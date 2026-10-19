@@ -36,7 +36,7 @@ static enum wcom_sensor_link_result sensor_link_get_manifest(
     if (s_microphone_ready && *sensor_count < max_sensors) {
         sensors[(*sensor_count)++] = (struct wcom_sensor_descriptor){
             .channel_id = 1,
-#if CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1
+#if CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1 || CONFIG_WENDY_SENSOR_LINK_MOSAICO
             .input_id = 1,
 #else
             .input_id = 0,
@@ -76,7 +76,7 @@ static enum wcom_sensor_link_result sensor_link_unsubscribe(
     if (count == 0) {
         return WCOM_SENSOR_LINK_OK;
     }
-#if CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1
+#if CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1 || CONFIG_WENDY_SENSOR_LINK_MOSAICO
     const size_t max_channels = 2;
 #else
     const size_t max_channels = 1;

@@ -170,7 +170,7 @@ void cam_capture_release_frame(const uint8_t *frame)
 }
 esp_err_t mic_read(int16_t *pcm, size_t samples, size_t *bytes_read)
 {
-    assert(samples == 640);
+    assert(samples == 320 * MIC_CHANNELS);
     pthread_mutex_lock(&state_lock);
     assert(!streams[1].done);
     pthread_mutex_unlock(&state_lock);
@@ -208,7 +208,7 @@ WendyComResult wendy_core_sensor_stream_try_push(int client, uint32_t channel, c
     pthread_mutex_lock(&state_lock);
     assert(streams[channel].open && !streams[channel].done && streams[channel].client == client);
     if (!channel) assert(data == jpeg && size == sizeof(jpeg) && camera_held);
-    else assert(size == 1280 && timestamp == (uint64_t)esp_timer_get_time() - 20000);
+    else assert(size == 640 * MIC_CHANNELS && timestamp == (uint64_t)esp_timer_get_time() - 20000);
     streams[channel].done = done;
     ++streams[channel].frames;
     pthread_cond_broadcast(&state_changed);
@@ -258,8 +258,8 @@ static void concurrent(void)
     struct wcom_sensor_descriptor sensors[2];
     size_t count;
     assert(delegate->on_sensor_link_get_manifest(sensors, 2, &count) == WCOM_SENSOR_LINK_OK && count == 2);
-    assert(sensors[0].format.video.width == 640 && sensors[0].format.video.height == 480);
-    assert(sensors[1].input_id == 1 && sensors[1].format.audio.channels == 2);
+    assert(sensors[0].format.video.width == CAM_FRAME_WIDTH && sensors[0].format.video.height == CAM_FRAME_HEIGHT);
+    assert(sensors[1].input_id == 1 && sensors[1].format.audio.channels == MIC_CHANNELS);
     uint32_t pair[] = {0, 1};
     assert(delegate->on_sensor_link_subscribe(7, pair, 2) == WCOM_SENSOR_LINK_OK);
     wait_state(0, true);
@@ -292,7 +292,7 @@ static void concurrent(void)
     assert(wendy_sensor_link_get_stats(0, &stats) == ESP_OK);
     assert(stats.frames_submitted == 2 && stats.frames_completed == 2 && stats.bytes_submitted == 2 * sizeof(jpeg));
     assert(wendy_sensor_link_get_stats(1, &stats) == ESP_OK);
-    assert(stats.frames_submitted == 1 && stats.frames_completed == 1 && stats.bytes_submitted == 1280);
+    assert(stats.frames_submitted == 1 && stats.frames_completed == 1 && stats.bytes_submitted == 640 * MIC_CHANNELS);
 }
 static void second_task_failure(void)
 {

@@ -15,7 +15,7 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 set(EXTRA_COMPONENT_DIRS "${WENDY_LITE_ROOT}/components")
 # S31 is native-only until the pinned WAMR release supports it.
 set(EXCLUDE_COMPONENTS
-    wendy_benchmark wendy_sensor_link wendy_display wendy_mosaico
+    wendy_benchmark wendy_display wendy_mosaico
     wendy_wasm wendy_hal wendy_hal_export wendy_app_usb wendy_ble_export
     wendy_callback wendy_safety wendy_storage wendy_net wendy_sys
     wendy_spi wendy_otel wendy_wasi_shim wendy_uart)
@@ -29,3 +29,7 @@ if(NOT CONFIG_MBEDTLS_USE_BUNDLED_PQC OR CONFIG_MBEDTLS_DYNAMIC_BUFFER)
     message(FATAL_ERROR "The dashboard requires esp-pqc with fixed TLS receive buffers. Configure a fresh sdkconfig.")
 endif()
 wendy_patch_mbedtls("${WENDY_LITE_ROOT}/components/esp-pqc/components/mbedtls/mbedtls")
+
+if(CONFIG_WENDY_SENSOR_LINK_MOSAICO)
+    include("${CMAKE_CURRENT_LIST_DIR}/camera_patches.cmake")
+endif()

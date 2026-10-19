@@ -45,10 +45,11 @@ static void diagnostics_task(void *arg)
             }
             char text[256];
             int n = snprintf(text, sizeof text,
-                "Mosaico uptime=%llds reset=%d stage=%s error=%s internal=%u PSRAM=%u image=%.16s slot=%s\r\n",
+                "Mosaico uptime=%llds reset=%d stage=%s error=%s internal=%u dma_largest=%u PSRAM=%u image=%.16s slot=%s\r\n",
                 (long long)(esp_timer_get_time() / 1000000), esp_reset_reason(),
                 atomic_load(&boot_stage), esp_err_to_name(atomic_load(&stage_error)),
                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA),
                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
                 image_sha, running ? running->label : "unknown");
             if (n > 0 && (size_t)n < sizeof text) {

@@ -55,6 +55,12 @@ jobs:
           grep -q '^CONFIG_WENDY_MESH_TCP=y$' sdkconfig
           grep -q '^CONFIG_WENDY_MESH_AUTO_DISCOVER=y$' sdkconfig
           grep -q '^CONFIG_LWIP_HOOK_IP6_ROUTE_CUSTOM=y$' sdkconfig
+          grep -q '^CONFIG_WENDY_SENSOR_LINK_MOSAICO=y$' sdkconfig
+          grep -q '^CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=8$' sdkconfig
+          grep -q '^CONFIG_ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE=y$' sdkconfig
+          grep -q '^# CONFIG_USJ_ENABLE_USB_SERIAL_JTAG is not set$' sdkconfig
+          grep -q 'SC101IOT_PCLK_DELAY_STEP' build/wendy_patched/mosaico_cam_sensor/sensors/sc101iot/sc101iot.c
+          grep -q 'display_config.profile.use_psram = false;' build/wendy_patched/mosaico_bsp/onboard/display.c
       - name: Upload the sample firmware
         uses: actions/upload-artifact@v4
         with:

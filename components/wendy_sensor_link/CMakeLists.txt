@@ -3,8 +3,8 @@ set(priv_requires wendy_core wendy_com freertos esp_timer)
 
 # Keep the feature's Kconfig symbol visible without PSRAM so conditional
 # manifest dependencies can evaluate it for the generic S31 profile.
-if(CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1 AND NOT CONFIG_SPIRAM)
-    message(FATAL_ERROR "Korvo-1 SensorLink requires CONFIG_SPIRAM=y.")
+if((CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1 OR CONFIG_WENDY_SENSOR_LINK_MOSAICO) AND NOT CONFIG_SPIRAM)
+    message(FATAL_ERROR "S31 SensorLink requires CONFIG_SPIRAM=y.")
 endif()
 
 # IDF scans REQUIRES before Kconfig values are available. Declare the local
@@ -17,7 +17,7 @@ if(IDF_TARGET STREQUAL "esp32s31")
     list(APPEND priv_requires esp_driver_i2c esp_driver_jpeg esp_driver_ledc)
 endif()
 
-if(CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3 OR CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1)
+if(CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3 OR CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1 OR CONFIG_WENDY_SENSOR_LINK_MOSAICO)
     list(APPEND srcs
         "src/wendy_sensor_link.c"
         "src/cam_loop.c"
@@ -35,6 +35,10 @@ if(CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1)
         "src/korvo_camera.c"
         "src/korvo_microphone.c"
     )
+endif()
+
+if(CONFIG_WENDY_SENSOR_LINK_MOSAICO)
+    list(APPEND srcs "src/mosaico_camera.c" "src/mosaico_microphone.c")
 endif()
 
 idf_component_register(

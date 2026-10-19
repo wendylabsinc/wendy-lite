@@ -60,3 +60,13 @@ CONFIG_ESP_COREDUMP_STACK_SIZE=2048
 
 # USB-C CDC 0 is Wendy management; CDC 1 is independent diagnostics.
 CONFIG_WENDY_USJ=n
+
+# SensorLink uses the left-slot camera and onboard ES8311 microphone.
+CONFIG_WENDY_SENSOR_LINK_MOSAICO=y
+CONFIG_MOSAICO_MODULE_CAMERA=y
+CONFIG_CAMERA_OV3640_DVP_DEFAULT_FMT_YUV422_UYVY_1280X720_15FPS=y
+# GPIO33 is camera D2; USB-C management uses the separate OTG controller.
+CONFIG_USJ_ENABLE_USB_SERIAL_JTAG=n
+
+# Leave DMA memory for DVP and I2S instead of reserving 16 Wi-Fi TX buffers.
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=8
