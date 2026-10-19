@@ -344,8 +344,11 @@ This cannot bootstrap an unenrolled device or recover an expired identity.
 Gateway mTLS and operator setup over the Cloud relay each allow up to 60
 seconds for BLE transmission. The CLI must support the longer relay setup
 window too. Certificate and signed-grant expiration checks still apply, and
-the CLI caller can cancel earlier. Ordinary direct Cloud connection budgets
-are unchanged.
+the CLI caller can cancel earlier. In this opt-in profile, ordinary Cloud TLS
+and HTTP exchange deadlines also allow 60 seconds because timestamp and broker
+traffic use the borrowed route. Failed connections can therefore take longer to
+report. Recovery probes bound to a physical interface retain their 15-second
+TLS budget; builds without the borrower retain their existing Cloud deadlines.
 
 A separate worker checks the direct path every minute. It queries the saved
 physical resolver and establishes Cloud TLS, with both sockets bound to the

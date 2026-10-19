@@ -113,6 +113,10 @@ add_executable(tls_test tls_test.c ${PKI_TLS} "${IDF_COMPONENTS}/http_parser/htt
 set_source_files_properties(${PKI_TLS} PROPERTIES COMPILE_DEFINITIONS "send=wendy_test_send")
 target_include_directories(tls_test PRIVATE stubs ../src ../../wendy_conf/include ../../nanopb "${IDF_COMPONENTS}/http_parser")
 target_link_libraries(tls_test PRIVATE pki)
+add_executable(tls_uplink_test tls_test.c ${PKI_TLS} "${IDF_COMPONENTS}/http_parser/http_parser.c")
+target_include_directories(tls_uplink_test PRIVATE stubs ../src ../../wendy_conf/include ../../nanopb "${IDF_COMPONENTS}/http_parser")
+target_link_libraries(tls_uplink_test PRIVATE pki)
+target_compile_definitions(tls_uplink_test PRIVATE CONFIG_WENDY_MESH_CLOUD_UPLINK=1)
 find_program(GO_EXECUTABLE go REQUIRED)
 add_executable(mesh_crypto_test ../../wendy_mesh/tests/mesh_crypto_test.c)
 target_link_libraries(mesh_crypto_test PRIVATE mesh_protocol)
@@ -208,3 +212,6 @@ target_compile_definitions(mesh_uplink_identity_test PRIVATE CONFIG_WENDY_MESH_L
 target_link_libraries(mesh_uplink_identity_test PRIVATE mbedtls mbedx509 tfpsacrypto Threads::Threads)
 add_test(NAME mesh_uplink_identity_lifecycle COMMAND mesh_uplink_identity_test
     "${CMAKE_CURRENT_LIST_DIR}/fixtures/device-key.der")
+
+add_test(NAME pki_tls_slow_cloud_uplink COMMAND "${GO_EXECUTABLE}" run "${CMAKE_CURRENT_LIST_DIR}/tls_test_driver.go" "$<TARGET_FILE:tls_uplink_test>" "p256" "slow-uplink")
+set_tests_properties(pki_tls_slow_cloud_uplink PROPERTIES TIMEOUT 90)
