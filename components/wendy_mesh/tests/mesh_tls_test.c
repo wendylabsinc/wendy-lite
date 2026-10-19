@@ -5,6 +5,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -69,6 +70,8 @@ static int stream_wait(void* ctx, bool writing, int64_t deadline)
 int main(int argc, char** argv)
 {
     assert(argc == 9);
+    /* Rejected peers may close while TLS writes its alert. */
+    assert(signal(SIGPIPE, SIG_IGN) != SIG_ERR);
     size_t kn, cn, rn;
     uint8_t *key = load(argv[1], &kn), *cert = load(argv[2], &cn), *roots = load(argv[3], &rn);
     wendy_pki_connection* connection = NULL;
