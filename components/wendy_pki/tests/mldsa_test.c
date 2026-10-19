@@ -127,7 +127,7 @@ int main(int argc, char **argv)
     assert(argc == 2 || argc == 3);
     wall_clock = argc == 3 ? (time_t)strtoll(argv[2], NULL, 10) : 0;
     const time_t signed_time = 1791792000; /* 2026-10-12 08:00:00 UTC. */
-    const char *principal = "spiffe://wendy.sh/tenant/2558fd76-afc7-466e-9613-6b715296a526/device/lite-test";
+    const char *principal = "spiffe://wendy.sh/tenant/2558fd76-afc7-466e-9613-6b715296a526/device/00000000-0000-4000-8000-000000000004";
     size_t nonce_n, key_n, wrong_key_n, n;
     unsigned char *nonce = load(argv[1], "nonce.bin", &nonce_n);
     unsigned char *key = load(argv[1], "device-key.der", &key_n);

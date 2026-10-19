@@ -28,7 +28,7 @@ import (
 const organization = "2558fd76-afc7-466e-9613-6b715296a526"
 const tenant = "spiffe://wendy.sh/tenant/" + organization + "/"
 const operatorURI = tenant + "operator/11111111-1111-4111-8111-111111111111"
-const deviceURI = tenant + "device/lite-test"
+const deviceURI = tenant + "device/00000000-0000-4000-8000-000000000004"
 
 func must(err error) {
 	if err != nil {

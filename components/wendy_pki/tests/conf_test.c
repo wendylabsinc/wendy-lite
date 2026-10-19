@@ -142,7 +142,7 @@ static esp_err_t write_config(const char *root, size_t root_size, const void *se
     WendyConf conf = WendyConf_init_zero;
     conf.has_enrollment = true;
     strcpy(conf.enrollment.tenant_id, "2558fd76-afc7-466e-9613-6b715296a526");
-    strcpy(conf.enrollment.device_id, "lite-test");
+    strcpy(conf.enrollment.device_id, "00000000-0000-4000-8000-000000000004");
     conf.enrollment.provision_trust = true;
     struct wendy_conf_span roots = {root, root_size}, time_seed = {seed, seed_size};
     conf.enrollment.device_roots = (pb_callback_t){.funcs.encode = encode_span, .arg = &roots};

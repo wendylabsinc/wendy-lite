@@ -105,7 +105,7 @@ func main() {
 		return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, raw, certPEM
 	}
 	tenant := "spiffe://wendy.sh/tenant/2558fd76-afc7-466e-9613-6b715296a526/"
-	_, keyDER, serverPEM := leaf("device", time.Now().Add(time.Hour), []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, tenant+"device/lite-test", rootKey, root, 0)
+	_, keyDER, serverPEM := leaf("device", time.Now().Add(time.Hour), []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, tenant+"device/00000000-0000-4000-8000-000000000004", rootKey, root, 0)
 	must(os.WriteFile(filepath.Join(directory, "key.der"), keyDER, 0600))
 	must(os.WriteFile(filepath.Join(directory, "server.pem"), serverPEM, 0600))
 	cases := []string{"valid", "wrong-tenant", "wrong-role", "wrong-eku", "expired", "untrusted", "no-client", "tls12", "truncate", "extra", "intermediate", "intermediate-key-usage", "intermediate-not-ca", "intermediate-path-length", "intermediate-expired", "intermediate-sha1", "relay-valid", "relay-operator-expiry", "relay-device-expiry", "relay-wrong-key", "relay-old", "relay-wlg2", "relay-truncated", "relay-expired", "relay-long-presentation", "relay-device-client",
@@ -160,7 +160,7 @@ func main() {
 		case "wrong-tenant", "lan-device-wrong-tenant", "lite-wrong-tenant", "stream-wrong-tenant":
 			uri = strings.Replace(uri, "2558fd76", "3558fd76", 1)
 		case "wrong-role", "lite-wrong-role", "lite-lan-device", "stream-device":
-			uri = tenant + "device/lite-test"
+			uri = tenant + "device/00000000-0000-4000-8000-000000000004"
 		case "wrong-eku", "lan-device-wrong-eku":
 			usages = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
 		case "lan-device-missing-eku":
@@ -252,7 +252,7 @@ func main() {
 				must(e)
 				grant = append(grant, id...)
 			}
-			deviceHash := sha256.Sum256([]byte(tenant + "device/lite-test"))
+			deviceHash := sha256.Sum256([]byte(tenant + "device/00000000-0000-4000-8000-000000000004"))
 			operatorHash := sha256.Sum256([]byte(uri))
 			publicKey := cert.PrivateKey.(crypto.Signer).Public()
 			if name == "relay-wrong-key" {
@@ -389,7 +389,7 @@ func main() {
 		chain = append([][]byte{der}, chain...)
 		parent, issuer = ca, caKey
 	}
-	device, deviceKey, devicePEM := leaf("outbound device", time.Now().Add(time.Hour), []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}, tenant+"device/lite-test", issuer, parent, 0)
+	device, deviceKey, devicePEM := leaf("outbound device", time.Now().Add(time.Hour), []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}, tenant+"device/00000000-0000-4000-8000-000000000004", issuer, parent, 0)
 	chain = append(device.Certificate, chain...)
 	chainBytes := 0
 	for index, der := range chain {

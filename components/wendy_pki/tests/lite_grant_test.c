@@ -91,6 +91,11 @@ int main(int argc, char **argv)
     CHECK(verify(changed, size, &trust, device, operator_id, spki, 1700000000) != 0);
     memcpy(changed, record, size); changed[4] = 255;
     CHECK(verify(changed, size, &trust, device, operator_id, spki, 1700000000) != 0);
+    /* A same-length copy relabelled with the retired WLG2 magic is refused. */
+    memcpy(changed, record, size); changed[3] = '2';
+    CHECK(wendy_pki_sha256(changed, size, trust.grant_hash) == 0);
+    CHECK(verify(changed, size, &trust, device, operator_id, spki, 1700000000) != 0);
+    CHECK(wendy_pki_sha256(record, size, trust.grant_hash) == 0);
     const char *invalid[] = {"legacy-grant.bin", "long-window.bin", "zero-window.bin", "reversed-window.bin", "zero-issued.bin", "overflow.bin", "wlg2-grant.bin"};
     for (size_t i = 0; i < sizeof invalid / sizeof *invalid; i++) {
         size_t n = load(argv[1], invalid[i], changed, sizeof changed);

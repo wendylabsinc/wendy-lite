@@ -61,7 +61,7 @@ func ecKey() *ecdsa.PrivateKey {
 
 var now = time.Date(2026, 10, 12, 8, 0, 0, 0, time.UTC)
 
-const principal = "spiffe://wendy.sh/tenant/2558fd76-afc7-466e-9613-6b715296a526/device/lite-test"
+const principal = "spiffe://wendy.sh/tenant/2558fd76-afc7-466e-9613-6b715296a526/device/00000000-0000-4000-8000-000000000004"
 
 func template(serial int64, name string, ca bool) *x509.Certificate {
 	t := &x509.Certificate{SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: name}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), IsCA: ca, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageDigitalSignature}
