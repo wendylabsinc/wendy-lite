@@ -20,6 +20,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #if ESP_PLATFORM
+#include "sdkconfig.h"
 #include "lwip/sockets.h"
 #include <net/if.h>
 #endif
@@ -235,6 +236,18 @@ done:
     freeaddrinfo(server);
     return result;
 }
+/* Only the opt-in borrower lengthens ordinary Cloud traffic. A probe bound to
+ * a physical interface retains the direct-path budget. Neither budget slides. */
+static int64_t network_budget_us(bool gateway, const char *interface)
+{
+#if CONFIG_WENDY_MESH_CLOUD_UPLINK
+    if (!interface) return INT64_C(60000000);
+#else
+    (void)interface;
+#endif
+    return gateway ? INT64_C(60000000) : INT64_C(15000000);
+}
+
 static int open_tls(const char* host, unsigned port, const uint8_t* key, size_t key_size,
     const char* cert, struct wendy_conf_span roots, wendy_pki_connection** out, const char* tenant,
     const char* device, const char* router, const struct wendy_pki_stream* stream, bool server,
@@ -303,7 +316,7 @@ static int open_tls(const char* host, unsigned port, const uint8_t* key, size_t 
             goto fail;
         /* A gateway handshake carries certificate chains over the mesh radio.
          * Keep a finite budget that includes BLE transmission and TCP retries. */
-        deadline = esp_timer_get_time() + (gateway ? INT64_C(60000000) : INT64_C(15000000));
+        deadline = esp_timer_get_time() + network_budget_us(gateway, interface);
         stage = "TCP connect";
         for (struct addrinfo* a = addresses; a; a = a->ai_next)
         {
@@ -637,7 +650,7 @@ int pki_http_post_enrollment(const char *url, const char *type, const char *toke
                          .capture_lite_authority = lite_authority_header != NULL};
     if (!r.bytes || n < 0 || n >= sizeof headers)
         goto done;
-    int64_t deadline = esp_timer_get_time() + 15000000;
+    int64_t deadline = esp_timer_get_time() + network_budget_us(false, NULL);
     if (write_all(c, headers, n, deadline) || write_all(c, body, body_size, deadline))
         goto done;
     http_parser parser;
