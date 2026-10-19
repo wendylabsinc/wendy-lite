@@ -63,6 +63,13 @@ function(wendy_patch_mbedtls source)
         "${project_dir}/patches/esp-pqc-mbedtls-mldsa87-ca.patch")
     foreach(target __idf_mbedtls mbedtls mbedx509 tfpsacrypto builtin extras platform utilities everest p256-m)
         wendy_redirect_dependency_target(${target} "${source}" "${destination}")
+        if(ESP_PLATFORM)
+            # Newer IDF releases export their own vendor headers in addition to
+            # the override's library targets. Those headers have no PQC key
+            # fields and must not precede the patched library's headers.
+            wendy_redirect_dependency_target(${target}
+                "$ENV{IDF_PATH}/components/mbedtls/mbedtls" "${destination}")
+        endif()
         if(TARGET ${target} AND (NOT ESP_PLATFORM OR CONFIG_MBEDTLS_SSL_TLS1_3_SIG_MLDSA65))
             # The inline key buffer layout must match in every consumer.
             target_compile_definitions(${target} PUBLIC MBEDTLS_X509_MLDSA87=)

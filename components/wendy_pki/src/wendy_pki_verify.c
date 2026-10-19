@@ -92,8 +92,12 @@ int wendy_pki_verify_roots(const uint8_t *pem, size_t size)
         mbedtls_x509_crt cert;
         mbedtls_x509_crt_init(&cert);
         int parsed = parse_pem(&cert, (const uint8_t *)p, end-p);
-        int ca = !parsed && cert.MBEDTLS_PRIVATE(ca_istrue) && !cert.next &&
-            !wendy_pki_certificate_policy(&cert, true);
+        int policy = parsed ? -1 : wendy_pki_certificate_policy(&cert, true);
+        int ca = !parsed && cert.MBEDTLS_PRIVATE(ca_istrue) && !cert.next && !policy;
+        if (!ca) {
+            fprintf(stderr, "PKI CA rejected: parse=%d ca=%d policy=%d\n",
+                    parsed, (int)cert.MBEDTLS_PRIVATE(ca_istrue), policy);
+        }
         mbedtls_x509_crt_free(&cert);
         if (!ca)
             goto done;

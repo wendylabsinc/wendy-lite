@@ -14,6 +14,7 @@ idf_component_register(
         wendy_pki
         esp_timer
         esp_system
+        esp_rom
         espcoredump
         esp_app_format
         app_update

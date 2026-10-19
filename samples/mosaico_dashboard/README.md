@@ -20,8 +20,10 @@ Wendy owns Wi-Fi, BLE, USB-C management, and enrollment. The sample starts
 `wendy_core_init()` once and uses the board package for the display, touch, and
 IMU. It initializes the display before networking to reserve its DMA resources
 and shows a startup message while Wendy initializes. LVGL uses FreeRTOS locks
-and the system allocator so UI allocations can use PSRAM. It does not require a camera or expansion board. An unavailable display or
-IMU leaves Wendy device management running.
+and the system allocator so UI allocations can use PSRAM. Small display flushes
+and reserved internal memory keep DMA working alongside Wi-Fi and BLE. It does
+not require a camera or expansion board. An unavailable display or IMU leaves
+Wendy device management running.
 
 ## Hardware and dependencies
 
@@ -80,6 +82,9 @@ The project pins the same ESP-IDF container used in CI. Docker must be running.
 Wendy builds the app, transfers it through USB management into the inactive OTA
 slot, and reboots. The board must already have the Mosaico partition layout.
 The default EIM toolchain remains available for projects without this file.
+The sample confirms an OTA image after Wendy and the dashboard initialize.
+Its shutdown handler performs a full system reset to avoid the pinned preview
+SDK's CPU-only restart stalling on this board.
 
 ## Join the mesh
 
@@ -105,10 +110,10 @@ ESP-NOW remain selectable in the component; this sample's build check uses TCP.
 ## Install and connect
 
 Once the Mosaico firmware is published, use a matching CLI and choose
-**ESP-Mosaico** in `wendy install`, or select it explicitly:
+**ESP-Mosaico** in the install picker:
 
 ```sh
-wendy install --device-type wlite_esp32s31_mosaico_native
+wendy install
 ```
 
 From the powered-off state, keep USB connected, hold BOOT, briefly press POWER,

@@ -198,6 +198,18 @@ jobs:
               assert config["TINYUSB_CDC_COUNT"] == 2
               assert config["ESPTOOLPY_FLASHSIZE"] == "16MB"
               assert flash["otadata"]["offset"] == "0x7c0000"
+              assert config.get("BOOTLOADER_APP_ROLLBACK_CONFIRM_BY_APP")
+              assert config["SPIRAM_MALLOC_ALWAYSINTERNAL"] == 64
+              assert config["SPIRAM_MALLOC_RESERVE_INTERNAL"] == 131072
+              # Unpatched SDK headers have a different PQC key layout from
+              # the bundled libraries and silently break certificate parsing.
+              import shlex
+              sdk_vendor = Path(os.environ["IDF_PATH"]) / "components" / "mbedtls" / "mbedtls"
+              commands = json.loads((build / "compile_commands.json").read_text())
+              for command in commands:
+                  for arg in shlex.split(command["command"]):
+                      if arg.startswith("-I"):
+                          assert not Path(arg[2:]).is_relative_to(sdk_vendor), command["file"]
           else:
               raise AssertionError(f"Unverified ESP32-S31 board: {os.environ['BOARD_CFG']}")
           PY

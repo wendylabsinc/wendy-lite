@@ -7,6 +7,9 @@
 #include "bsp/esp_mosaico.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
+#include "esp_rom_sys.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -21,6 +24,14 @@
 #include "wendy_wifi.h"
 
 static const char *TAG = "mosaico_dashboard";
+
+static void restart_board(void)
+{
+    /* The preview S31 CPU-only restart leaves this board stalled until its
+     * watchdog resets the system. Reset the peripherals as well, as the ROM
+     * downloader does, so USB and PSRAM start from a clean hardware state. */
+    esp_rom_software_reset_system();
+}
 
 #define COLOR_BACKGROUND 0x0B1420
 #define COLOR_PANEL      0x152333
@@ -435,8 +446,7 @@ static void dashboard_task(void *argument)
     ESP_LOGI(TAG, "Starting dashboard on Mosaico v%s",
              variant == BSP_BOARD_VARIANT_V1_0 ? "1.0" : "1.1/1.2");
 
-    const bsp_display_config_t display_config = BSP_DISPLAY_DEFAULT_CONFIG();
-    lv_display_t *display = bsp_display_start_with_config(&display_config);
+    lv_display_t *display = bsp_display_get();
     if (!display || !bsp_display_lock(1000)) {
         mosaico_diagnostics_stage("display unavailable", ESP_FAIL);
         ESP_LOGE(TAG, "Display unavailable; Wendy management remains active");
@@ -447,6 +457,16 @@ static void dashboard_task(void *argument)
     create_dashboard(display);
     mosaico_diagnostics_stage("dashboard running", ESP_OK);
     bsp_display_unlock();
+
+    esp_ota_img_states_t ota_state;
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (running && esp_ota_get_state_partition(running, &ota_state) == ESP_OK &&
+        ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
+        mosaico_diagnostics_stage("confirming firmware", ESP_OK);
+        result = esp_ota_mark_app_valid_cancel_rollback();
+        mosaico_diagnostics_stage(result == ESP_OK ? "dashboard running" :
+                                  "firmware confirmation failed", result);
+    }
 
     result = bsp_imu_init();
     if (result == ESP_OK) {
@@ -504,9 +524,15 @@ void app_main(void)
 {
     mosaico_diagnostics_start();
     ESP_ERROR_CHECK(mosaico_usb_management_start());
+    ESP_ERROR_CHECK(esp_register_shutdown_handler(restart_board));
     /* Reserve the panel DMA resources before Wi-Fi and BLE fragment the heap. */
     mosaico_diagnostics_stage("starting display", ESP_OK);
-    lv_display_t *display = bsp_display_start();
+    bsp_display_config_t display_config = BSP_DISPLAY_DEFAULT_CONFIG();
+    /* PSRAM pixels need an internal DMA bounce buffer. Keep each flush small
+     * enough to coexist with Wi-Fi, BLE and mesh task stacks. */
+    display_config.tear_avoid_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_NONE;
+    display_config.buffer_height = 8;
+    lv_display_t *display = bsp_display_start_with_config(&display_config);
     if (display && bsp_display_lock(1000)) {
         lv_obj_t *screen = lv_display_get_screen_active(display);
         lv_obj_set_style_bg_color(screen, lv_color_hex(COLOR_BACKGROUND), 0);
