@@ -425,7 +425,7 @@ int wm_assemble(struct wm_assembler* s, const uint8_t* p, size_t n, int64_t now)
     uint16_t total = wm_get16(p + 5), offset = wm_get16(p + 7);
     size_t count = n - 9;
     if (total < 40 || total > WENDY_MESH_MTU || (offset != 0 && offset != 1091) || offset >= total
-        || count != (total - offset < 1091 ? total - offset : 1091))
+        || count != (size_t)(total - offset < 1091 ? total - offset : 1091))
         return -1;
     if (!s->parts || now >= s->deadline_us || s->id != id)
     {
