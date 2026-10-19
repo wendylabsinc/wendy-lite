@@ -25,3 +25,9 @@ Cancellation tests require stream-end before releasing a pending frame, and
 require the frame callback before freeing its buffer or stopping capture.
 The tests do not validate hardware pin configuration, capture drivers, or task
 scheduling on the device.
+
+The Mosaico camera tests also compile the production capture worker. A controlled
+camera and encoder verify that capture continues while a JPEG is borrowed,
+waiting images are replaced, restart discards stale images, shutdown waits for
+an active encode, and capture/encoding errors return raw buffers. Allocation,
+event-group, and task-creation failures must clean up and allow a later retry.

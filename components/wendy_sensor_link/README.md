@@ -1,5 +1,24 @@
 # Bundled SensorLink sources
 
+`CONFIG_WENDY_SENSOR_LINK_MOSAICO` exposes 1280x720 MJPEG at quality 75 on
+channel 0 and mono microphone audio on channel 1. A dedicated capture task
+drains the camera while a subscriber sends its previous JPEG. Two JPEG output
+buffers hold at most one borrowed image and one waiting image. Capture replaces
+the waiting image, so a slow subscriber resumes with the latest completed
+capture. It never overwrites a borrowed image. Resolution and JPEG quality stay
+unchanged.
+
+The second JPEG buffer reserves another 1,843,200 bytes plus allocator alignment,
+and the capture task has a 4 KiB stack. Capture and encoding run only while
+subscribed. Stop waits for the bounded camera read or encode to finish and for
+its raw buffer to return before stopping the driver. Restart discards any waiting
+JPEG from the previous subscription.
+
+For Mosaico, the sender's capture-duration counters measure waiting for a JPEG
+from that task, not the background capture and encoding time. Dropped waiting
+images are not transport submissions. Delivered FPS, end-to-end latency, and
+memory headroom still need measurement on the board.
+
 `CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3` keeps the XIAO ESP32S3 Sense path:
 800x600 MJPEG or 16 kHz mono PCM, with one active source at a time.
 

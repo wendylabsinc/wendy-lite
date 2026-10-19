@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(wendy_sensor_link_test C)
 set(CMAKE_C_STANDARD 11)
 enable_testing()
+find_package(Threads REQUIRED)
 
 add_executable(sensor_link_test sensor_link_test.c
     ../src/wendy_sensor_link.c ../src/cam_loop.c)
@@ -19,7 +20,20 @@ foreach(scenario manifest_both manifest_camera_only manifest_microphone_only
     set_tests_properties(sensor_link_${scenario} PROPERTIES TIMEOUT 5)
 endforeach()
 
-find_package(Threads REQUIRED)
+# Exercise the actual Mosaico capture worker with a controlled camera and
+# encoder, including a transport that holds its JPEG across many captures.
+add_executable(mosaico_camera_test mosaico_camera_test.c ../src/mosaico_camera.c)
+target_include_directories(mosaico_camera_test PRIVATE stubs ../src)
+target_compile_definitions(mosaico_camera_test PRIVATE
+    CONFIG_WENDY_SENSOR_LINK_MOSAICO=1 SENSOR_LINK_TEST_THREADS=1)
+target_compile_options(mosaico_camera_test PRIVATE -UNDEBUG -Wall -Wextra -Werror
+    -Wno-unused-parameter)
+target_link_libraries(mosaico_camera_test PRIVATE Threads::Threads)
+foreach(scenario latest errors stop_encoding init_failure)
+    add_test(NAME mosaico_camera_${scenario} COMMAND mosaico_camera_test ${scenario})
+    set_tests_properties(mosaico_camera_${scenario} PROPERTIES TIMEOUT 5)
+endforeach()
+
 add_executable(korvo_sender_test korvo_sender_test.c
     ../src/wendy_sensor_link.c ../src/cam_loop.c)
 target_include_directories(korvo_sender_test PRIVATE stubs ../include ../src
