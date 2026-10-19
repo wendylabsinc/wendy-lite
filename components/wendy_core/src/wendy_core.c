@@ -814,11 +814,17 @@ static WendyComResult com_reboot(bool app_auto_start, uint32_t app_auto_start_de
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 
-static void com_get_device_identity(const char **id, const char **name, const char **display_name)
+static void com_get_device_identity(const char **id, const char **name, const char **display_name,
+                                    const char **enrolled_device_id)
 {
-    *id           = wendy_conf_get_device_id();
-    *name         = wendy_conf_get_resolved_device_name();
-    *display_name = wendy_conf_get_resolved_device_display_name();
+    // Only the wcom task asks, and it encodes the reply before the next
+    // command, so one static buffer is enough.
+    static char tenant[37], device[65];
+    wendy_conf_get_enrolled_ids(tenant, device);
+    *id                 = wendy_conf_get_device_id();
+    *name               = wendy_conf_get_resolved_device_name();
+    *display_name       = wendy_conf_get_resolved_device_display_name();
+    *enrolled_device_id = device;
 }
 
 #define _STRINGIFY(x) #x

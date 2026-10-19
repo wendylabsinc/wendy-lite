@@ -1,5 +1,6 @@
 #include "wendy_ble.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "esp_heap_caps.h"
@@ -79,6 +80,7 @@ enum info_field {
     INFO_DEVICE_NAME,
     INFO_DISPLAY_NAME,
     INFO_MTLS,
+    INFO_PRINCIPAL,
 };
 
 
@@ -90,6 +92,7 @@ static const ble_uuid128_t _uuid_device_id    = WENDY_BLE_UUID128(0x02);
 static const ble_uuid128_t _uuid_device_name  = WENDY_BLE_UUID128(0x03);
 static const ble_uuid128_t _uuid_display_name = WENDY_BLE_UUID128(0x04);
 static const ble_uuid128_t _uuid_mtls         = WENDY_BLE_UUID128(0x05);
+static const ble_uuid128_t _uuid_principal    = WENDY_BLE_UUID128(0x06);
 
 static bool  _host_initialized;
 static bool  _started;
@@ -99,6 +102,11 @@ static uint8_t _own_addr_type;
 static char *_device_id;
 static char *_device_name;
 static char *_display_name;
+/* The enrolled device principal, spiffe://wendy.sh/tenant/<tenant>/device/<uuid>,
+ * the same string LAN discovery publishes as TXT principal=; empty when
+ * unenrolled. Its UUID is the device's one id, the pin target for mTLS. It is
+ * too long for the advertisement, whose manufacturer data keeps the hardware id. */
+static char _principal[160];
 
 static uint8_t _mfg_data[2 + DEVICE_ID_ADV_MAX];
 static uint8_t _mfg_data_len;
@@ -138,6 +146,12 @@ static const struct ble_gatt_chr_def _info_chrs[] = {
         .uuid      = &_uuid_mtls.u,
         .access_cb = _info_access,
         .arg       = (void *)(uintptr_t)INFO_MTLS,
+        .flags     = BLE_GATT_CHR_F_READ,
+    },
+    {
+        .uuid      = &_uuid_principal.u,
+        .access_cb = _info_access,
+        .arg       = (void *)(uintptr_t)INFO_PRINCIPAL,
         .flags     = BLE_GATT_CHR_F_READ,
     },
     { 0 },
@@ -189,6 +203,10 @@ static int _info_access(uint16_t conn_handle, uint16_t attr_handle,
         case INFO_MTLS:
             data = &mtls;
             len = sizeof(mtls);
+            break;
+        case INFO_PRINCIPAL:
+            data = _principal;
+            len = (uint16_t)strlen(_principal);
             break;
         default:
             return BLE_ATT_ERR_UNLIKELY;
@@ -571,6 +589,14 @@ esp_err_t wendy_ble_start(void)
     }
     _device_name  = strdup(wendy_conf_get_resolved_device_name());
     _display_name = strdup(wendy_conf_get_resolved_device_display_name());
+    _principal[0] = 0;
+    if (_enrolled) {
+        char tenant[37], device[65];
+        wendy_conf_get_enrolled_ids(tenant, device);
+        if (device[0])
+            snprintf(_principal, sizeof _principal, "spiffe://wendy.sh/tenant/%s/device/%s",
+                     tenant, device);
+    }
     if (!_device_id || !_device_name || !_display_name) {
         ESP_LOGE(TAG, "out of memory");
         err = ESP_ERR_NO_MEM;
@@ -634,6 +660,7 @@ fail:
     _device_id = NULL;
     _device_name = NULL;
     _display_name = NULL;
+    _principal[0] = 0;
     if (_link_closed) {
         vSemaphoreDelete(_link_closed);
         _link_closed = NULL;

@@ -27,7 +27,7 @@ int wendy_lite_verify_grant(const uint8_t *r, size_t n,
     time_t now, uint64_t *session_expires)
 {
     if (!r || !trust || !device || !operator_id || !operator_spki || !session_expires ||
-        now < 0 || n < 5 || memcmp(r, "WLG2", 4) || n != WENDY_LITE_GRANT_FIXED + r[4] ||
+        now < 0 || n < 5 || memcmp(r, "WLG3", 4) || n != WENDY_LITE_GRANT_FIXED + r[4] ||
         wendy_lite_key_id(r + 5, r[4]) || trust->count < 1 || trust->count > 2) return -1;
     const struct wendy_lite_key *selected = NULL;
     for (unsigned i = 0; i < trust->count; i++) {
@@ -45,8 +45,8 @@ int wendy_lite_verify_grant(const uint8_t *r, size_t n,
         expiry - issued > 60 || issued > (uint64_t)now ||
         expiry <= (uint64_t)now || wendy_pki_sha256(r, n, hash) ||
         memcmp(hash, trust->grant_hash, 32) || memcmp(fields + 16, trust->session, 16) ||
-        memcmp(fields + 80, device, 32) || memcmp(fields + 112, operator_id, 32) ||
-        memcmp(fields + 144, operator_spki, 32)) return -1;
+        memcmp(fields + 64, device, 32) || memcmp(fields + 96, operator_id, 32) ||
+        memcmp(fields + 128, operator_spki, 32)) return -1;
     psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
     mbedtls_svc_key_id_t key = MBEDTLS_SVC_KEY_ID_INIT;
     psa_set_key_type(&attributes, PSA_KEY_TYPE_ECC_PUBLIC_KEY(PSA_ECC_FAMILY_SECP_R1));

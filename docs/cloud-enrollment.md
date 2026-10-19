@@ -199,7 +199,12 @@ use anonymous access as a fallback. The configuration utility only edits the
 device name and Wi-Fi; it cannot import or export device credentials.
 
 LAN discovery advertises the tenant and device principal to select an appropriate
-identity and locate paired sensors.
+identity and locate paired sensors. BLE publishes the same principal string in the
+info service's read-only characteristic `4E57454E-4459-0002-0006-000000000000`
+(UTF-8, empty when unenrolled), and USB `GetDeviceIdentity` returns its UUID as
+`enrolled_device_id`. That UUID, minted by the CLI at enrollment, is the device's
+one id and its cloud asset id. The hardware id (TXT `id=`, BLE manufacturer data and
+device-ID characteristic, `GetDeviceIdentity.id`) is only the asset serial number.
 This is only a selection hint: TLS still verifies the certificate chain and the
 CLI checks the device principal. LAN clients supply a certificate chain compatible
 with the device's configured roots and TLS backend, including intermediates.

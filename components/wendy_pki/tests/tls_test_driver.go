@@ -108,7 +108,7 @@ func main() {
 	_, keyDER, serverPEM := leaf("device", time.Now().Add(time.Hour), []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, tenant+"device/lite-test", rootKey, root, 0)
 	must(os.WriteFile(filepath.Join(directory, "key.der"), keyDER, 0600))
 	must(os.WriteFile(filepath.Join(directory, "server.pem"), serverPEM, 0600))
-	cases := []string{"valid", "wrong-tenant", "wrong-role", "wrong-eku", "expired", "untrusted", "no-client", "tls12", "truncate", "extra", "intermediate", "intermediate-key-usage", "intermediate-not-ca", "intermediate-path-length", "intermediate-expired", "intermediate-sha1", "relay-valid", "relay-operator-expiry", "relay-device-expiry", "relay-wrong-key", "relay-old", "relay-truncated", "relay-expired", "relay-long-presentation", "relay-device-client",
+	cases := []string{"valid", "wrong-tenant", "wrong-role", "wrong-eku", "expired", "untrusted", "no-client", "tls12", "truncate", "extra", "intermediate", "intermediate-key-usage", "intermediate-not-ca", "intermediate-path-length", "intermediate-expired", "intermediate-sha1", "relay-valid", "relay-operator-expiry", "relay-device-expiry", "relay-wrong-key", "relay-old", "relay-wlg2", "relay-truncated", "relay-expired", "relay-long-presentation", "relay-device-client",
 		"lan-operator", "lan-device", "lan-device-wrong-tenant", "lan-device-wrong-eku", "lan-device-missing-eku",
 		"lan-device-ca", "lan-device-duplicate-uri", "lan-device-extra-uri", "lan-device-missing-uri",
 		"lan-device-expired", "lan-device-future", "lan-device-untrusted", "lan-device-tampered", "lan-no-client",
@@ -231,7 +231,13 @@ func main() {
 			if name == "relay-long-presentation" {
 				presentBy = issued + 61
 			}
-			grant = append([]byte("WLG2"), 4)
+			// WLG3 is the only accepted layout; relay-wlg2 is a correctly
+			// signed record of the retired layout with its asset UUID.
+			magic, ids := "WLG3", 2
+			if name == "relay-wlg2" {
+				magic, ids = "WLG2", 3
+			}
+			grant = append([]byte(magic), 4)
 			grant = append(grant, []byte("test")...)
 			grant = binary.BigEndian.AppendUint64(grant, uint64(issued))
 			grant = binary.BigEndian.AppendUint64(grant, uint64(presentBy))
@@ -239,8 +245,8 @@ func main() {
 			_, e = rand.Read(session[:])
 			must(e)
 			grant = append(grant, session[:]...)
-			// jti, correlation ID, asset ID: four UUID fields including session.
-			for range 3 {
+			// jti and correlation ID (plus the asset ID for WLG2).
+			for range ids {
 				id := make([]byte, 16)
 				_, e = rand.Read(id)
 				must(e)

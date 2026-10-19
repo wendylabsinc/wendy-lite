@@ -34,8 +34,13 @@ int main(int argc, char **argv)
     CHECK(size == WENDY_LITE_GRANT_FIXED + strlen(kid));
     trust.session[15] = 3;
     CHECK(wendy_pki_sha256(record, size, trust.grant_hash) == 0);
+    /* grant.bin is byte-for-byte the service-protos WLG3 conformance vector. */
+    static const uint8_t conformance_hash[32] = {
+        0xeb, 0x29, 0xad, 0x81, 0xbd, 0x70, 0x50, 0x9c, 0xff, 0xc0, 0xea, 0x1d, 0x39, 0x6c, 0x9f, 0x35,
+        0x27, 0x69, 0x95, 0xb2, 0x94, 0xc6, 0x02, 0x28, 0x4a, 0x8d, 0x07, 0xf0, 0xd4, 0x76, 0x1e, 0x2a};
+    CHECK(!memcmp(trust.grant_hash, conformance_hash, 32));
     uint8_t device[32], operator_id[32], spki[32];
-    const char *device_uri = "spiffe://wendy.sh/tenant/00000000-0000-4000-8000-000000000001/device/lite-test";
+    const char *device_uri = "spiffe://wendy.sh/tenant/00000000-0000-4000-8000-000000000001/device/00000000-0000-4000-8000-000000000004";
     const char *operator_uri = "spiffe://wendy.sh/tenant/00000000-0000-4000-8000-000000000001/operator/00000000-0000-4000-8000-000000000002";
     CHECK(wendy_pki_sha256((const uint8_t *)device_uri, strlen(device_uri), device) == 0);
     CHECK(wendy_pki_sha256((const uint8_t *)operator_uri, strlen(operator_uri), operator_id) == 0);
@@ -86,7 +91,7 @@ int main(int argc, char **argv)
     CHECK(verify(changed, size, &trust, device, operator_id, spki, 1700000000) != 0);
     memcpy(changed, record, size); changed[4] = 255;
     CHECK(verify(changed, size, &trust, device, operator_id, spki, 1700000000) != 0);
-    const char *invalid[] = {"legacy-grant.bin", "long-window.bin", "zero-window.bin", "reversed-window.bin", "zero-issued.bin", "overflow.bin"};
+    const char *invalid[] = {"legacy-grant.bin", "long-window.bin", "zero-window.bin", "reversed-window.bin", "zero-issued.bin", "overflow.bin", "wlg2-grant.bin"};
     for (size_t i = 0; i < sizeof invalid / sizeof *invalid; i++) {
         size_t n = load(argv[1], invalid[i], changed, sizeof changed);
         CHECK(wendy_pki_sha256(changed, n, trust.grant_hash) == 0);
