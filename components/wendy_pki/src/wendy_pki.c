@@ -735,7 +735,10 @@ static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
         wendy_pki_verify_identity(cert, cert_size, data.device_roots.data,
             data.device_roots.size, key, key_size, principal, time(NULL), &expires))
         goto done;
-    int64_t deadline = esp_timer_get_time() + (trust ? 10000000 : 15000000);
+    /* An authorized relay stream can traverse a BLE mesh. Keep a bounded
+     * setup window for the device chain, operator TLS and signed grant. Grant
+     * and certificate expiry are still verified independently below. */
+    int64_t deadline = esp_timer_get_time() + (trust ? INT64_C(60000000) : INT64_C(15000000));
     int accepted;
     if (stream)
         accepted = pki_tls_accept_stream(stream, key, key_size, (char *)cert,
