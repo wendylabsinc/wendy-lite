@@ -851,7 +851,7 @@ int pki_relay_grant(wendy_pki_connection *c, const struct wendy_lite_trust *trus
     uint8_t *record = malloc(WENDY_LITE_GRANT_MAX);
     if (!record) return -1;
     int result = -1;
-    if (read_all(c, record, 5, deadline) || memcmp(record, "WLG2", 4) ||
+    if (read_all(c, record, 5, deadline) || memcmp(record, "WLG3", 4) ||
         record[4] < 1 || record[4] > 128) goto done;
     size_t size = WENDY_LITE_GRANT_FIXED + record[4];
     uint64_t expires = 0;

@@ -54,7 +54,8 @@ static WendyComResult request_reboot(bool start, uint32_t delay) { return manage
 static WendyComResult app_begin(size_t size, WendyComAppType type) { return managed(); }
 static WendyComResult conf_begin(size_t size, WendyComConfPushMode mode, bool wifi_only) { last_wifi_only = wifi_only; return managed(); }
 static WendyComResult push_data(size_t offset, const uint8_t *data, size_t size) { return managed(); }
-static void identity(const char **id, const char **name, const char **display) { management_calls++; }
+static void identity(const char **id, const char **name, const char **display, const char **enrolled)
+{ management_calls++; }
 static void info(const char **os, const char **version, const char **arch, const char **target,
                  bool *wasm, bool *native) { management_calls++; }
 static enum wcom_sensor_link_result manifest(struct wcom_sensor_descriptor *sensors, size_t max, size_t *count)

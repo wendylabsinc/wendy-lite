@@ -1,16 +1,19 @@
 # Disposable Lite relay grant fixtures
 
-`grant.bin` and `vector.json` contain the current shared service-protos Lite
-relay conformance vector, also used by the Swift Cloud `LiteSessionGrantTests`.
-The record follows `LiteSessionGrant.sign`: `309 + key_id_length` bytes, including
-operator SPKI, principal payload, and attestation hashes. Its presentation window
-is Unix seconds 1700000000 through 1700000060 (exclusive); its session ceiling
-is 1700001800. `cloud-key.bin` is the uncompressed P-256 verification key.
+`grant.bin`, `cloud-key.bin` and `vector.json` are byte-for-byte the shared
+service-protos WLG3 Lite relay conformance vector (`conformance/lite-relay` at
+f74e61ec, PR #138,
+WDY-3919); `lite_grant_test` checks the grant's SHA-256 against it. The record
+is `293 + key_id_length` bytes: no asset UUID, and the device is bound only by
+the SHA-256 of its SPIFFE URI `.../device/00000000-0000-4000-8000-000000000004`,
+whose UUID is the device's one id. Its presentation window is Unix seconds
+1700000000 through 1700000060 (exclusive); its session ceiling is 1700001800.
+`cloud-key.bin` is the uncompressed P-256 verification key.
 
-The vector comes from service-protos commit
-`d9bc039f16f0368237b4dba0d964b44a16deca19`, `conformance/lite-relay`.
-`legacy-grant.bin` is
-this firmware repository's former `213 + key_id_length` vector and must fail.
+`wlg2-grant.bin` is the retired WLG2 layout (`309 + key_id_length`, with an
+asset UUID), validly signed for the same device, and must fail: firmware accepts
+WLG3 only. `legacy-grant.bin` is this firmware repository's former
+`213 + key_id_length` vector and must fail.
 
 All keys are public, disposable test material, never deployment credentials.
 `operator.der` and `operator-wrong-key.der` contain the same URI with distinct

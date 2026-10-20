@@ -680,15 +680,23 @@ done:
     return result;
 }
 
-void wendy_conf_enrollment_identity(char tenant[37], char device[65])
+void wendy_conf_get_enrolled_ids(char tenant[37], char device[65])
 {
+    _Static_assert(sizeof s_cache.conf.enrollment.tenant_id == 37 &&
+                   sizeof s_cache.conf.enrollment.device_id == 65, "enrollment id sizes");
     tenant[0] = device[0] = 0;
     pthread_mutex_lock(&s_cache_lock);
     if (s_cache.valid && s_cache.conf.has_enrollment) {
-        snprintf(tenant, 37, "%s", s_cache.conf.enrollment.tenant_id);
-        snprintf(device, 65, "%s", s_cache.conf.enrollment.device_id);
+        memcpy(tenant, s_cache.conf.enrollment.tenant_id, 37);
+        memcpy(device, s_cache.conf.enrollment.device_id, 65);
+        tenant[36] = device[64] = 0;
     }
     pthread_mutex_unlock(&s_cache_lock);
+}
+
+void wendy_conf_enrollment_identity(char tenant[37], char device[65])
+{
+    wendy_conf_get_enrolled_ids(tenant, device);
 }
 
 bool wendy_conf_has_enrollment(void)

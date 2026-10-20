@@ -1,6 +1,7 @@
 //go:build ignore
 
-// Disposable fixtures for the current Swift LiteSessionGrant layout.
+// Disposable fixtures for the WLG3 Lite relay grant (service-protos
+// conformance/lite-relay, WDY-3919: one device id, no asset UUID).
 // Run: go run lite_grant_fixture.go lite-fixtures
 
 package main
@@ -31,7 +32,7 @@ func main() {
 	x, y := elliptic.P256().ScalarBaseMult(seed)
 	sk := &ecdsa.PrivateKey{PublicKey: ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}, D: d}
 	pub := elliptic.Marshal(elliptic.P256(), x, y)
-	device := "spiffe://wendy.sh/tenant/00000000-0000-4000-8000-000000000001/device/lite-test"
+	device := "spiffe://wendy.sh/tenant/00000000-0000-4000-8000-000000000001/device/00000000-0000-4000-8000-000000000004"
 	operator := "spiffe://wendy.sh/tenant/00000000-0000-4000-8000-000000000001/operator/00000000-0000-4000-8000-000000000002"
 	kid := "conformance-cloud-key"
 	// The operator caller key: a second fixed scalar, public test material.
@@ -44,7 +45,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	r := append([]byte("WLG2"), byte(len(kid)))
+	r := append([]byte("WLG3"), byte(len(kid)))
 	r = append(r, []byte(kid)...)
 	r = binary.BigEndian.AppendUint64(r, 1700000000)
 	r = binary.BigEndian.AppendUint64(r, 1700000060)
@@ -54,12 +55,9 @@ func main() {
 	jti[15] = 5
 	correlation := make([]byte, 16)
 	correlation[15] = 6
-	asset := make([]byte, 16)
-	asset[15] = 4
 	r = append(r, session...)
 	r = append(r, jti...)
 	r = append(r, correlation...)
-	r = append(r, asset...)
 	for _, b := range [][]byte{[]byte(device), []byte(operator), opSPKI, []byte("conformance principal descriptor"), []byte("conformance.pki.attestation")} {
 		h := sha256.Sum256(b)
 		r = append(r, h[:]...)
@@ -109,16 +107,23 @@ func main() {
 		write(name+".bin", sign(body))
 	}
 	maxKid := bytes.Repeat([]byte("k"), 128)
-	maxBody := append([]byte("WLG2"), byte(len(maxKid)))
+	maxBody := append([]byte("WLG3"), byte(len(maxKid)))
 	maxBody = append(maxBody, maxKid...)
 	maxBody = append(maxBody, unsigned[5+len(kid):]...)
 	write("maximum-kid.bin", sign(maxBody))
+	// The retired WLG2 layout (16-byte asset UUID after the correlation ID),
+	// validly signed for the same device: firmware accepts WLG3 only.
+	at := 5 + len(kid) + 64
+	wlg2 := append([]byte("WLG2"), unsigned[4:at]...)
+	wlg2 = append(wlg2, make([]byte, 16)...)
+	wlg2 = append(wlg2, unsigned[at:]...)
+	write("wlg2-grant.bin", sign(wlg2))
 	if _, err := os.Stat(root + "legacy-grant.bin"); os.IsNotExist(err) {
 		legacy := append([]byte{}, unsigned[:5+len(kid)]...)
 		legacy = binary.BigEndian.AppendUint64(legacy, 1700000000)
 		legacy = binary.BigEndian.AppendUint64(legacy, 1700001800)
 		legacy = append(legacy, session...)
-		legacy = append(legacy, asset...)
+		legacy = append(legacy, make([]byte, 16)...)
 		for _, input := range [][]byte{[]byte(device), []byte(operator), []byte("conformance principal descriptor")} {
 			digest := sha256.Sum256(input)
 			legacy = append(legacy, digest[:]...)
@@ -135,7 +140,7 @@ func main() {
 	hash := sha256.Sum256(r)
 	write("grant.bin", r)
 	write("cloud-key.bin", pub)
-	v := map[string]any{"key_id": kid, "public_key_hex": hex.EncodeToString(pub), "record_hex": hex.EncodeToString(r), "grant_hash_hex": hex.EncodeToString(hash[:]), "device_uri": device, "operator_uri": operator, "operator_spki_hex": hex.EncodeToString(opSPKI), "issued_at": 1700000000, "expires_at": 1700000060, "jti_hex": hex.EncodeToString(jti), "correlation_id_hex": hex.EncodeToString(correlation), "attestation": "conformance.pki.attestation", "session_id_hex": hex.EncodeToString(session), "asset_id_hex": hex.EncodeToString(asset), "private_seed_hex": hex.EncodeToString(seed)}
+	v := map[string]any{"key_id": kid, "public_key_hex": hex.EncodeToString(pub), "record_hex": hex.EncodeToString(r), "grant_hash_hex": hex.EncodeToString(hash[:]), "device_uri": device, "operator_uri": operator, "operator_spki_hex": hex.EncodeToString(opSPKI), "issued_at": 1700000000, "expires_at": 1700000060, "jti_hex": hex.EncodeToString(jti), "correlation_id_hex": hex.EncodeToString(correlation), "attestation": "conformance.pki.attestation", "session_id_hex": hex.EncodeToString(session), "private_seed_hex": hex.EncodeToString(seed)}
 	b, err := json.MarshalIndent(v, "", "  ")
 	must(err)
 	write("vector.json", append(b, '\n'))

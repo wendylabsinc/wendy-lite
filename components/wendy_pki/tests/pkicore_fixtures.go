@@ -13,6 +13,7 @@ import (
 	"encoding/asn1"
 	"encoding/pem"
 	"github.com/wendylabsinc/pki-core/internal/ca"
+	"github.com/wendylabsinc/pki-core/internal/cryptoalg"
 	"fmt"
 	"github.com/wendylabsinc/pki-core/internal/keymgr"
 	"math/big"
@@ -119,10 +120,10 @@ func main() {
 	wrongDER, err := x509.MarshalECPrivateKey(wrongKey)
 	must(err)
 	write("wrong-key.der", wrongDER)
-	principal, _ := url.Parse("spiffe://wendy.sh/tenant/2558fd76-afc7-466e-9613-6b715296a526/device/lite-test")
+	principal, _ := url.Parse("spiffe://wendy.sh/tenant/2558fd76-afc7-466e-9613-6b715296a526/device/00000000-0000-4000-8000-000000000004")
 	// The same mixed-family certificate builder is used by pki-core issuance.
 	for _, name := range []string{"identity", "identity-expired", "identity-wrong-eku", "identity-wrong-uri", "identity-duplicate-uri"} {
-		template := &x509.Certificate{BasicConstraintsValid: true, SerialNumber: big.NewInt(5), Subject: pkix.Name{CommonName: "lite-test"}, RawIssuer: root.RawSubject, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), MaxPathLen: -1, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}, URIs: []*url.URL{principal}}
+		template := &x509.Certificate{BasicConstraintsValid: true, SerialNumber: big.NewInt(5), Subject: pkix.Name{CommonName: "00000000-0000-4000-8000-000000000004"}, RawIssuer: root.RawSubject, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), MaxPathLen: -1, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}, URIs: []*url.URL{principal}}
 		switch name {
 		case "identity-expired":
 			template.NotAfter = now.Add(-time.Minute)

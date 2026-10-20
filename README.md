@@ -518,7 +518,7 @@ The `WendyLite` module provides Swift-idiomatic APIs for every subsystem:
 | `RMT` | `configure`, `transmit`, `release` |
 | `NeoPixel` | `initialize`, `set`, `clear` |
 | `Timer` | `delayMs`, `millis`, `setTimeout`, `setInterval`, `cancel` |
-| `System` | `uptimeMs`, `reboot`, `firmwareVersion`, `deviceId`, `sleepMs`, `yield` |
+| `System` | `uptimeMs`, `reboot`, `firmwareVersion`, `deviceId`, `serialNumber`, `sleepMs`, `yield` |
 | `Console` | `print` |
 | `Storage` | `get`, `set`, `delete`, `exists` |
 | `BLE` | `initialize`, `startAdvertising`, `stopAdvertising`, `startScan`, `stopScan`, `connect`, `disconnect` |
@@ -532,6 +532,13 @@ The `WendyLite` module provides Swift-idiomatic APIs for every subsystem:
 | `USB` | `cdcWrite`, `cdcRead`, `hidSendReport` |
 
 Type-safe enums: `GPIOMode`, `GPIOPull`, `GPIOInterruptEdge`, `SocketDomain`, `SocketType`, `OTelLogLevel`.
+
+`System.deviceId` (`sys_device_id`) returns the device's one id: the UUID it was
+enrolled with, which is also its cloud asset id. It needs a 37-byte buffer and
+writes an empty string while the board is unenrolled, so apps must handle an
+empty id. `System.serialNumber` (`sys_serial_number`, 13-byte buffer) returns
+the hardware id (factory MAC) for apps that need a stable hardware identity.
+Firmware before WDY-3919 returned the hardware id from `sys_device_id`.
 
 The raw C functions are also available through the re-exported `CWendyLite` module.
 

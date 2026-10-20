@@ -70,13 +70,17 @@ static inline void wendy_conf_enrollment_identity(char tenant[37], char device[6
 }
 static inline bool wendy_pki_reset_in_progress(void) { return test_reset; }
 static inline const char *wendy_conf_get_device_id(void) { return "lite-123"; }
+static inline void wendy_conf_get_enrolled_ids(char tenant[37], char device[65]) {
+    strcpy(tenant, test_enrolled ? "00000000-0000-4000-8000-000000000001" : "");
+    strcpy(device, test_enrolled ? "00000000-0000-4000-8000-000000000004" : "");
+}
 static inline const char *wendy_conf_get_resolved_device_name(void) { return "wendy-lite-123"; }
 static inline const char *wendy_conf_get_resolved_device_display_name(void) { return "Test Lite"; }
 
 typedef struct { uint8_t type; } ble_uuid_t;
 typedef struct { ble_uuid_t u; uint8_t value[16]; } ble_uuid128_t;
 #define BLE_UUID128_INIT(...) { .u = { 128 }, .value = { __VA_ARGS__ } }
-struct os_mbuf { uint8_t data[128]; size_t len; };
+struct os_mbuf { uint8_t data[192]; size_t len; };
 static inline int os_mbuf_append(struct os_mbuf *buf, const void *data, uint16_t len) {
     assert(buf->len + len <= sizeof(buf->data));
     memcpy(buf->data + buf->len, data, len); buf->len += len; return 0;
