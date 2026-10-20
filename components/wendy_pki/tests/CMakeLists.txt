@@ -55,6 +55,8 @@ target_link_libraries(conf_test PRIVATE Threads::Threads)
 target_link_libraries(renewal_test PRIVATE Threads::Threads)
 
 enable_testing()
+add_test(NAME dependency_patches_in_checkout COMMAND "${CMAKE_COMMAND}" -P
+    "${CMAKE_CURRENT_LIST_DIR}/../../../cmake/tests/dependency_patches_test.cmake")
 add_test(NAME pki_crypto_key_csr COMMAND crypto_test "${CMAKE_CURRENT_LIST_DIR}/fixtures/device-key.der")
 add_test(NAME pki_verification COMMAND verify_test "${CMAKE_CURRENT_LIST_DIR}/fixtures")
 add_test(NAME pki_verification_future_clock COMMAND verify_test "${CMAKE_CURRENT_LIST_DIR}/fixtures" 4102444800)

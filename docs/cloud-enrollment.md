@@ -115,6 +115,14 @@ change enrollment through the CLI. Those root bundles do not rotate remotely.
 The separate Lite operator anchor described below can rotate through authenticated
 renewal; changes to device, TSA and HTTPS roots require USB enrollment recovery.
 
+If an enrolled board reports `Invalid or missing device CA bundle` after a
+firmware update and both LAN TLS and Cloud stop working, first check the firmware
+build's [dependency patches](../patches/README.md). Builds that silently skipped
+the ML-DSA CA patch reject otherwise valid stored roots before contacting Cloud.
+Rebuild with the patch-application fix and preserve the enrollment configuration
+and identity partitions. Replacing the trust bundle or erasing enrollment is not
+required to correct that build defect.
+
 The command obtains a device-generated nonce and a matching RFC 3161 timestamp
 before minting the credential. The board verifies its signature, TSA chain,
 critical timestamp EKU, nonce, message imprint and persisted rollback floor.
