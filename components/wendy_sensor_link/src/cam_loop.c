@@ -2,6 +2,7 @@
 
 #include <inttypes.h>
 #include <stddef.h>
+#include <stdlib.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -24,11 +25,8 @@ static const char *TAG = "cam_loop";
 #define START_BIT (1 << 2)
 #define CONTROL_DONE_BIT (1 << 3)
 
-#if CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1 || CONFIG_WENDY_SENSOR_LINK_MOSAICO
+// One sender per channel, so the camera and microphone stream independently.
 #define SENDER_COUNT 2
-#else
-#define SENDER_COUNT 1
-#endif
 
 struct sender {
     TaskHandle_t task;
@@ -51,6 +49,9 @@ struct sender {
 
 static struct sender s_senders[SENDER_COUNT];
 static bool s_initialized;
+// Allocated, not static: on the XIAO an allocation this size goes to PSRAM,
+// leaving internal RAM to DMA and networking.
+static int16_t *s_pcm;
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static struct wendy_sensor_link_stats s_stats[2];
 static struct {
@@ -97,7 +98,7 @@ static void record_completion(uint32_t channel_id, uint64_t elapsed)
 
 static struct sender *sender_for_channel(uint32_t channel_id)
 {
-    return &s_senders[SENDER_COUNT == 1 ? 0 : channel_id];
+    return &s_senders[channel_id];
 }
 
 static void stream_control_exec(struct wcom_operation *op)
@@ -228,7 +229,6 @@ static void cam_loop_task(void *arg)
         }
 
         const uint8_t *pending_jpeg = NULL;
-        static int16_t pcm[MIC_READ_SAMPLES];
         bool audio_pending = false;
 
         for (;;) {
@@ -248,7 +248,7 @@ static void cam_loop_task(void *arg)
             if (channel_id == 1) {
                 size_t bytes_read = 0;
                 uint64_t capture_started = esp_timer_get_time();
-                esp_err_t err = mic_read(pcm, MIC_READ_SAMPLES, &bytes_read);
+                esp_err_t err = mic_read(s_pcm, MIC_READ_SAMPLES, &bytes_read);
                 record_capture(channel_id, capture_started, err != ESP_OK || bytes_read == 0);
                 if (err != ESP_OK || bytes_read == 0) {
                     if (err != ESP_ERR_TIMEOUT) {
@@ -257,6 +257,17 @@ static void cam_loop_task(void *arg)
                     }
                     continue;
                 }
+                // Sending a frame can take longer than recording a block,
+                // above all while camera chunks share the link. Send what
+                // queued up meanwhile with this block, so audio keeps pace
+                // instead of overrunning the capture buffer.
+                size_t read_samples = bytes_read / sizeof(*s_pcm);
+                size_t queued = 0;
+                if (read_samples < MIC_MAX_READ_SAMPLES &&
+                    mic_read_queued(s_pcm + read_samples, MIC_MAX_READ_SAMPLES - read_samples,
+                                    &queued) == ESP_OK) {
+                    bytes_read += queued;
+                }
                 if (xEventGroupGetBits(sender->events) & STOP_BIT) {
                     break;
                 }
@@ -264,7 +275,7 @@ static void cam_loop_task(void *arg)
                 audio_pending = true;
                 uint64_t timestamp = esp_timer_get_time() -
                     (bytes_read / (sizeof(int16_t) * MIC_CHANNELS)) * 1000000ULL / MIC_SAMPLE_RATE_HZ;
-                submit_frame(client_id, channel_id, pcm, bytes_read, timestamp);
+                submit_frame(client_id, channel_id, s_pcm, bytes_read, timestamp);
                 continue;
             }
 
@@ -339,6 +350,10 @@ esp_err_t cam_loop_init(void)
     if (s_initialized) {
         return ESP_OK;
     }
+    s_pcm = malloc(MIC_MAX_READ_SAMPLES * sizeof(*s_pcm));
+    if (!s_pcm) {
+        goto fail;
+    }
     for (unsigned i = 0; i < SENDER_COUNT; ++i) {
         struct sender *sender = &s_senders[i];
         sender->events = xEventGroupCreate();
@@ -364,6 +379,8 @@ fail:
             sender->events = NULL;
         }
     }
+    free(s_pcm);
+    s_pcm = NULL;
     return ESP_ERR_NO_MEM;
 }
 

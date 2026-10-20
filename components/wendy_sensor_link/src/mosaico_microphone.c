@@ -78,6 +78,13 @@ esp_err_t mic_read(int16_t *buffer, size_t samples, size_t *bytes_read)
     return ESP_OK;
 }
 
+esp_err_t mic_read_queued(int16_t *buffer, size_t samples, size_t *bytes_read)
+{
+    // esp_codec_dev reads block until done and cannot report what has queued.
+    *bytes_read = 0;
+    return ESP_OK;
+}
+
 void mic_stop(void)
 {
     if (s_started) {

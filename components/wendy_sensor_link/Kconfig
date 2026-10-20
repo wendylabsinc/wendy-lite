@@ -6,8 +6,9 @@ menu "Wendy SensorLink"
         help
             Expose the Seeed Studio XIAO ESP32S3 Sense expansion board's
             camera and PDM microphone through SensorLink in native firmware.
-            Supports 800x600 MJPEG video or 16 kHz mono PCM audio, one stream
-            at a time. Requires PSRAM and the Sense camera/microphone board.
+            Supports 800x600 MJPEG video and 16 kHz mono PCM audio, which can
+            stream concurrently. Requires PSRAM and the Sense camera/microphone
+            board.
             Other ESP32-S3 boards may use different pins and must leave this
             disabled.
 

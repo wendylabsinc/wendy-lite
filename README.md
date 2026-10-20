@@ -155,9 +155,9 @@ idf.py monitor
 The `seeed_xiao_esp32s3_native` board overlay and released
 `esp32s3_seeed_xiao_native` firmware bundle SensorLink support for the XIAO
 ESP32S3 Sense expansion board. Channel 0 streams 800×600 MJPEG video. Channel 1
-streams signed 16-bit little-endian PCM audio at 16 kHz, mono, in 20 ms chunks.
-One stream can be active at a time, so stop camera viewing before listening to
-the microphone.
+streams signed 16-bit little-endian PCM audio at 16 kHz, mono, in chunks of
+20 ms or more. The two are separate inputs and can stream at the same time,
+to one client or to two.
 
 After enrolling the device, use a Wendy CLI with SensorLink camera/audio support:
 
