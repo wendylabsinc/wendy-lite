@@ -46,3 +46,7 @@ void wendy_wifi_deinit(void);
 #ifdef __cplusplus
 }
 #endif
+
+/* Start a station radio without AP association, or verify the current AP is
+ * on the requested channel. Never retunes a connected infrastructure link. */
+esp_err_t wendy_wifi_mesh_radio_start(uint8_t channel);

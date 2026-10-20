@@ -2,9 +2,14 @@
 #include "esp_log.h"
 #include "http_parser.h"
 #include "wendy_pki_internal.h"
+#include "wendy_pki_dns.h"
+#include <arpa/inet.h>
+#include <psa/crypto.h>
 #include "wendy_pki_verify.h"
 #include "wendy_pki_crypto.h"
 #include "wendy_pki_certificate_policy.h"
+#include "wendy_peer_identity.h"
+#include <mbedtls/base64.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -14,6 +19,11 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#if ESP_PLATFORM
+#include "sdkconfig.h"
+#include "lwip/sockets.h"
+#include <net/if.h>
+#endif
 
 static int io_recv(void *context, unsigned char *buf, size_t size)
 {
@@ -51,6 +61,7 @@ void wendy_pki_close(wendy_pki_connection *c)
     mbedtls_x509_crt_free(&c->roots);
     mbedtls_x509_crt_free(&c->certificate);
     mbedtls_pk_free(&c->key);
+    free(c->mesh_roots);
     if (c->fd >= 0) close(c->fd);
     free(c);
 }
@@ -72,6 +83,13 @@ static int certificate_policy(void *context, mbedtls_x509_crt *cert, int depth,
     }
     if (wendy_pki_certificate_policy(cert, anchor))
         *flags |= MBEDTLS_X509_BADCERT_OTHER;
+    if (c->mesh_tenant[0]) {
+        time_t expiry;
+        if (wendy_lite_peer_expiry(cert->raw.p, cert->raw.len, &expiry))
+            *flags |= MBEDTLS_X509_BADCERT_OTHER;
+        else if (!c->operator_expires || expiry < c->operator_expires)
+            c->operator_expires = expiry;
+    }
     return 0;
 }
 
@@ -132,6 +150,7 @@ static int configure(wendy_pki_connection *c, int server, const uint8_t *key,
 }
 static int wait_socket(wendy_pki_connection *c, int error, int64_t deadline)
 {
+    if (wendy_pki_reset_in_progress()) return -1;
     if (error != MBEDTLS_ERR_SSL_WANT_READ && error != MBEDTLS_ERR_SSL_WANT_WRITE)
         return -1;
     int64_t left = deadline - esp_timer_get_time();
@@ -175,90 +194,388 @@ int wendy_pki_detach(wendy_pki_connection *c)
         wendy_pki_close(c);
     return fd;
 }
-int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t key_size,
-                    const char *cert, struct wendy_conf_span roots, wendy_pki_connection **out)
+static int bind_interface(int fd, const char* interface)
 {
-    if (!roots.data || !roots.size || !host || !host[0] || strlen(host) > 253 || !port || port > 65535)
+    if (!interface) return 0;
+#if ESP_PLATFORM
+    struct ifreq request = { 0 };
+    if (strlen(interface) >= sizeof request.ifr_name) return -1;
+    snprintf(request.ifr_name, sizeof request.ifr_name, "%s", interface);
+    return setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, &request, sizeof request);
+#else
+    (void)fd;
+    return -1;
+#endif
+}
+static int direct_resolve(const char* host, const char* resolver, const char* interface,
+    char address[INET_ADDRSTRLEN])
+{
+    if (!resolver || !resolver[0] || !interface || !interface[0]) return -1;
+    struct addrinfo hints = { .ai_family = AF_UNSPEC, .ai_socktype = SOCK_DGRAM,
+        .ai_flags = AI_NUMERICHOST }, *server = NULL;
+    if (getaddrinfo(resolver, "53", &hints, &server)) return -1;
+    int fd = socket(server->ai_family, server->ai_socktype, server->ai_protocol);
+    uint8_t query[272], reply[1024], ip[4];
+    /* The connected UDP socket also binds the response to the selected DNS
+     * server and the socket's ephemeral source port. */
+    uint16_t id;
+    size_t size = psa_generate_random((uint8_t*)&id, sizeof id) == PSA_SUCCESS
+        ? pki_dns_query(query, host, id) : 0;
+    int result = -1;
+    if (fd < 0 || fd >= FD_SETSIZE || !size || bind_interface(fd, interface)) goto done;
+    struct timeval timeout = { .tv_sec = 5 };
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout)
+        || setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout)
+        || connect(fd, server->ai_addr, server->ai_addrlen)
+        || send(fd, query, size, 0) != (ssize_t)size) goto done;
+    ssize_t n = recv(fd, reply, sizeof reply, 0);
+    if (n > 0 && !pki_dns_answer(query, size, reply, n, ip)
+        && inet_ntop(AF_INET, ip, address, INET_ADDRSTRLEN)) result = 0;
+done:
+    if (fd >= 0) close(fd);
+    freeaddrinfo(server);
+    return result;
+}
+/* Only the opt-in borrower lengthens ordinary Cloud traffic. A probe bound to
+ * a physical interface retains the direct-path budget. Neither budget slides. */
+static int64_t network_budget_us(bool gateway, const char *interface)
+{
+#if CONFIG_WENDY_MESH_CLOUD_UPLINK
+    if (!interface) return INT64_C(60000000);
+#else
+    (void)interface;
+#endif
+    return gateway ? INT64_C(60000000) : INT64_C(15000000);
+}
+
+static int open_tls(const char* host, unsigned port, const uint8_t* key, size_t key_size,
+    const char* cert, struct wendy_conf_span roots, wendy_pki_connection** out, const char* tenant,
+    const char* device, const char* router, const struct wendy_pki_stream* stream, bool server,
+    bool gateway, const char* interface, const char* resolver)
+{
+    if (out)
+        *out = NULL;
+    bool mesh = tenant != NULL;
+    if (!out || !roots.data || !roots.size
+        || (stream ? (!mesh || !stream->read || !stream->write || !stream->wait)
+                   : (!host || !host[0] || strlen(host) > 253 || !port || port > 65535)))
         return -1;
-    wendy_pki_connection *c = calloc(1, sizeof *c);
+    if (mesh
+        && (!device || !router || !wendy_identity_uuid((const unsigned char*)tenant, strlen(tenant))
+            || !wendy_identity_uuid((const unsigned char*)device, strlen(device))
+            || !wendy_identity_uuid((const unsigned char*)router, strlen(router))
+            || !strcmp(device, router)))
+        return -1;
+    wendy_pki_connection* c = calloc(1, sizeof *c);
     if (!c)
         return -1;
     c->fd = -1;
-    const char *stage = "TLS setup";
+    const char* stage = "TLS setup";
     int tls_error = 0;
-    struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM}, *addresses = NULL;
+    struct addrinfo hints = { .ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM },
+                    *addresses = NULL;
     /* Parse local credentials before starting the broker's TCP deadline. */
-    if (configure(c, 0, key, key_size, cert, roots) ||
-        mbedtls_ssl_set_hostname(&c->ssl, host)) goto fail;
-    stage = "DNS";
-    char service[6];
-    snprintf(service, sizeof service, "%u", port);
-    if ((tls_error = getaddrinfo(host, service, &hints, &addresses)) != 0)
+    if (configure(c, server, key, key_size, cert, roots))
         goto fail;
-    int64_t deadline = esp_timer_get_time() + 15000000;
-    stage = "TCP connect";
-    for (struct addrinfo *a = addresses; a; a = a->ai_next)
+    if (mesh)
     {
-        c->fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
-        if (c->fd < 0)
-            continue;
-        if (c->fd >= FD_SETSIZE)
+        static const char* const leaf_protocols[] = { WENDY_PKI_MESH_ALPN, NULL };
+        static const char* const gateway_protocols[] = { "wendy-mesh-internet/1", NULL };
+        if (mbedtls_ssl_conf_alpn_protocols(&c->config, gateway ? gateway_protocols : leaf_protocols))
+            goto fail;
+        /* Mesh identity is the exact SPIFFE principal, checked below after
+         * mandatory CA verification. It is independent of the dial address. */
+        if (mbedtls_ssl_set_hostname(&c->ssl, NULL))
+            goto fail;
+        memcpy(c->mesh_tenant, tenant, 37);
+        memcpy(c->mesh_device, device, 37);
+        c->mesh_roots = malloc(roots.size);
+        if (!c->mesh_roots)
+            goto fail;
+        memcpy(c->mesh_roots, roots.data, roots.size);
+        c->mesh_roots_size = roots.size;
+    }
+    else if (mbedtls_ssl_set_hostname(&c->ssl, host))
+        goto fail;
+    int64_t deadline = esp_timer_get_time() + 30000000;
+    if (stream)
+        c->stream = *stream;
+    else
+    {
+        stage = "DNS";
+        char service[6];
+        snprintf(service, sizeof service, "%u", port);
+        char direct_address[INET_ADDRSTRLEN];
+        const char* dial_host = host;
+        if (interface) {
+            if (direct_resolve(host, resolver, interface, direct_address)) goto fail;
+            dial_host = direct_address;
+            hints.ai_flags = AI_NUMERICHOST;
+        }
+        if ((tls_error = getaddrinfo(dial_host, service, &hints, &addresses)) != 0)
+            goto fail;
+        /* A gateway handshake carries certificate chains over the mesh radio.
+         * Keep a finite budget that includes BLE transmission and TCP retries. */
+        deadline = esp_timer_get_time() + network_budget_us(gateway, interface);
+        stage = "TCP connect";
+        for (struct addrinfo* a = addresses; a; a = a->ai_next)
         {
+            c->fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+            if (c->fd < 0)
+                continue;
+            if (c->fd >= FD_SETSIZE)
+            {
+                close(c->fd);
+                c->fd = -1;
+                continue;
+            }
+            if (bind_interface(c->fd, interface)) {
+                close(c->fd); c->fd = -1; continue;
+            }
+            fcntl(c->fd, F_SETFL, O_NONBLOCK);
+            int r = connect(c->fd, a->ai_addr, a->ai_addrlen);
+            if (r == 0)
+                break;
+            if (errno == EINPROGRESS && !wait_socket(c, MBEDTLS_ERR_SSL_WANT_WRITE, deadline))
+            {
+                int e = 0;
+                socklen_t n = sizeof e;
+                if (!getsockopt(c->fd, SOL_SOCKET, SO_ERROR, &e, &n) && !e)
+                    break;
+            }
             close(c->fd);
             c->fd = -1;
-            continue;
         }
-        fcntl(c->fd, F_SETFL, O_NONBLOCK);
-        int r = connect(c->fd, a->ai_addr, a->ai_addrlen);
-        if (r == 0)
-            break;
-        if (errno == EINPROGRESS && !wait_socket(c, MBEDTLS_ERR_SSL_WANT_WRITE, deadline))
-        {
-            int e = 0;
-            socklen_t n = sizeof e;
-            if (!getsockopt(c->fd, SOL_SOCKET, SO_ERROR, &e, &n) && !e)
-                break;
-        }
-        close(c->fd);
-        c->fd = -1;
+        freeaddrinfo(addresses);
+        addresses = NULL;
+        if (c->fd < 0)
+            goto fail;
     }
-    freeaddrinfo(addresses);
-    addresses = NULL;
-    if (c->fd < 0)
-        goto fail;
+    if (mesh && !gateway)
+    {
+        uint8_t preface[36] = { 'W', 'M', 'L', '3' };
+        const char* uuids[] = { tenant, server ? router : device };
+        for (unsigned u = 0; u < 2; u++)
+        {
+            unsigned offset = 4 + u * 16;
+            for (unsigned i = 0; i < 36;)
+            {
+                if (uuids[u][i] == '-')
+                {
+                    i++;
+                    continue;
+                }
+                unsigned value = 0;
+                for (unsigned j = 0; j < 2; j++)
+                {
+                    char x = uuids[u][i++];
+                    value = value * 16 + (x <= '9' ? x - '0' : x - 'a' + 10);
+                }
+                preface[offset++] = value;
+            }
+        }
+        uint8_t received[36];
+        size_t written = 0;
+        while (written < sizeof preface)
+        {
+            int sent = server ? io_recv(c, received + written, sizeof received - written)
+                              : io_send(c, preface + written, sizeof preface - written);
+            if (sent > 0)
+                written += sent;
+            else if (wait_socket(c, sent, deadline))
+                goto fail;
+        }
+        if (server && memcmp(received, preface, sizeof preface))
+            goto fail;
+    }
     stage = "TLS handshake";
     int r;
-    while ((r = mbedtls_ssl_handshake(&c->ssl)) != 0) {
+    while ((r = mbedtls_ssl_handshake(&c->ssl)) != 0)
+    {
         tls_error = r;
-        if (wait_socket(c, r, deadline)) goto fail;
+        if (wait_socket(c, r, deadline))
+            goto fail;
     }
     stage = "certificate verification";
     tls_error = (int)mbedtls_ssl_get_verify_result(&c->ssl);
-    if (tls_error) goto fail;
+    if (tls_error)
+        goto fail;
+    if (mesh)
+    {
+        const char* alpn = mbedtls_ssl_get_alpn_protocol(&c->ssl);
+        const mbedtls_x509_crt* peer = mbedtls_ssl_get_peer_cert(&c->ssl);
+        char expected[106];
+        snprintf(
+            expected, sizeof expected, "spiffe://wendy.sh/tenant/%s/device/%s", tenant, router);
+        if (!alpn || strcmp(alpn, gateway ? "wendy-mesh-internet/1" : WENDY_PKI_MESH_ALPN) || !peer
+            || wendy_pki_verify_peer(peer->raw.p, peer->raw.len, tenant) != WENDY_PEER_ROLE_DEVICE)
+            goto fail;
+        unsigned count = 0;
+        for (const mbedtls_x509_sequence* a = &peer->subject_alt_names; a && a->buf.p; a = a->next)
+        {
+            mbedtls_x509_subject_alternative_name san;
+            if (mbedtls_x509_parse_subject_alt_name(&a->buf, &san)
+                || san.type != MBEDTLS_X509_SAN_UNIFORM_RESOURCE_IDENTIFIER)
+                continue;
+            if (san.san.unstructured_name.len != strlen(expected)
+                || memcmp(san.san.unstructured_name.p, expected, strlen(expected)))
+                goto fail;
+            count++;
+        }
+        if (count != 1)
+            goto fail;
+        /* The TLS callback capped the peer's actual verified path. Verify
+         * our own path independently; unrelated retired roots in the trust
+         * bundle must not shorten either path's lifetime. */
+        const uint8_t* der[8];
+        size_t sizes[8], cert_count = 0;
+        for (const mbedtls_x509_crt* cert = &c->certificate; cert && cert->raw.len;
+            cert = cert->next)
+        {
+            if (cert_count == 8)
+                goto fail;
+            der[cert_count] = cert->raw.p;
+            sizes[cert_count++] = cert->raw.len;
+        }
+        struct wendy_pki_mesh_peer self;
+        time_t now = time(NULL);
+        if (!c->operator_expires || c->operator_expires <= now
+            || wendy_pki_mesh_chain(
+                der, sizes, cert_count, roots.data, roots.size, tenant, now, &self)
+            || strcmp(self.device, device))
+            goto fail;
+        if (self.expires < c->operator_expires)
+            c->operator_expires = self.expires;
+        c->peer_role = WENDY_PEER_ROLE_DEVICE;
+    }
     *out = c;
     return 0;
 fail:
-    ESP_LOGW("wendy_pki", "TLS client failed at %s (%s:%u, tls=%d, errno=%d)",
-             stage, host, port, tls_error, errno);
+    ESP_LOGW("wendy_pki", "TLS peer failed at %s (%s:%u, tls=%d, errno=%d)", stage, host, port,
+        tls_error, errno);
     if (addresses)
         freeaddrinfo(addresses);
     wendy_pki_close(c);
     return -1;
 }
-int wendy_pki_fd(void *v) { return ((wendy_pki_connection *)v)->fd; }
+int pki_tls_connect(const char* host, unsigned port, const uint8_t* key, size_t key_size,
+    const char* cert, struct wendy_conf_span roots, wendy_pki_connection** out)
+{
+    return open_tls(host, port, key, key_size, cert, roots, out, NULL, NULL, NULL, NULL, false, false, NULL, NULL);
+}
+int pki_tls_mesh_connect(const char* host, unsigned port, const char* tenant, const char* device,
+    const char* router, const uint8_t* key, size_t key_size, const char* cert,
+    struct wendy_conf_span roots, wendy_pki_connection** out)
+{
+    return open_tls(host, port, key, key_size, cert, roots, out, tenant, device, router, NULL, false, false, NULL, NULL);
+}
+int pki_tls_mesh_stream(const struct wendy_pki_stream* stream, bool server,
+    const char* tenant, const char* device, const char* peer, const uint8_t* key,
+    size_t key_size, const char* cert, struct wendy_conf_span roots, wendy_pki_connection** out)
+{
+    return open_tls("radio", 0, key, key_size, cert, roots, out,
+        tenant, device, peer, stream, server, false, NULL, NULL);
+}
+int pki_tls_gateway_connect(const char* host, unsigned port, const char* tenant, const char* device,
+    const char* router, const uint8_t* key, size_t key_size, const char* cert,
+    struct wendy_conf_span roots, wendy_pki_connection** out)
+{
+    return open_tls(host, port, key, key_size, cert, roots, out,
+        tenant, device, router, NULL, false, true, NULL, NULL);
+}
+int pki_tls_bound_connect(const char* host, unsigned port, const char* interface, const char* resolver,
+    const uint8_t* key, size_t key_size, const char* cert,
+    struct wendy_conf_span roots, wendy_pki_connection** out)
+{
+    if (!interface || !interface[0]) return -1;
+    return open_tls(host, port, key, key_size, cert, roots, out,
+        NULL, NULL, NULL, NULL, false, false, interface, resolver);
+}
+/* Readiness is only a hint. Stream callbacks may wake spuriously. */
+int wendy_pki_wait(wendy_pki_connection* c, bool writing, int64_t deadline)
+{
+    if (!c || wendy_pki_reset_in_progress()) return -1;
+    if (!writing && wendy_pki_pending(c)) return 1;
+    int64_t left = deadline - esp_timer_get_time();
+    if (left <= 0) return 0;
+    if (c->stream.wait)
+        return c->stream.wait(c->stream.context, writing, deadline) < 0 ? -1 : 1;
+    if (c->fd < 0 || c->fd >= FD_SETSIZE) return -1;
+    fd_set set;
+    FD_ZERO(&set);
+    FD_SET(c->fd, &set);
+    struct timeval timeout = { left / 1000000, left % 1000000 };
+    return select(c->fd + 1, writing ? NULL : &set, writing ? &set : NULL, NULL, &timeout);
+}
+int wendy_pki_mesh_sign(wendy_pki_connection* c, const char* principal, const void* body,
+    size_t size, uint8_t signature[80], size_t* signature_size)
+{
+    if (!c || !principal || strlen(principal) != 105 || memcmp(principal + 25, c->mesh_tenant, 36)
+        || strcmp(principal + 69, c->mesh_device) || !signature || !signature_size
+        || !c->mesh_deadline_us || esp_timer_get_time() >= c->mesh_deadline_us
+        || wendy_pki_reset_in_progress())
+        return -1;
+    uint8_t hash[32];
+    return wendy_pki_mesh_digest(principal, body, size, hash)
+            || mbedtls_pk_sign(
+                &c->key, MBEDTLS_MD_SHA256, hash, sizeof hash, signature, 80, signature_size)
+        ? -1
+        : 0;
+}
+int wendy_pki_mesh_bundle(wendy_pki_connection* c, char* out, size_t capacity)
+{
+    if (!c || !out || capacity < 3 || !c->mesh_roots)
+        return -1;
+    size_t pos = 0, count = 0;
+    out[pos++] = '[';
+    for (const mbedtls_x509_crt* cert = &c->certificate; cert && cert->raw.len; cert = cert->next)
+    {
+        if (++count > 8 || capacity - pos < 4)
+            return -1;
+        if (count > 1)
+            out[pos++] = ',';
+        out[pos++] = '"';
+        size_t encoded = 0;
+        if (mbedtls_base64_encode((unsigned char*)out + pos, capacity - pos - 2, &encoded,
+                cert->raw.p, cert->raw.len))
+            return -1;
+        pos += encoded;
+        out[pos++] = '"';
+    }
+    if (!count || capacity - pos < 2)
+        return -1;
+    out[pos++] = ']';
+    out[pos] = 0;
+    return (int)pos;
+}
+int wendy_pki_mesh_verify_bundle(wendy_pki_connection* c, const uint8_t* const* der,
+    const size_t* sizes, size_t count, time_t now, struct wendy_pki_mesh_peer* peer)
+{
+    return !c || !c->mesh_roots || !c->mesh_deadline_us
+            || esp_timer_get_time() >= c->mesh_deadline_us || wendy_pki_reset_in_progress()
+        ? -1
+        : wendy_pki_mesh_chain(
+              der, sizes, count, c->mesh_roots, c->mesh_roots_size, c->mesh_tenant, now, peer);
+}
+int wendy_pki_fd(void* v)
+{
+    return ((wendy_pki_connection*)v)->fd;
+}
 static ssize_t result(int n)
 {
-    if (n == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) return 0;
+    if (n == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY)
+        return 0;
     if (n >= 0)
         return n;
     int e = n;
     return e == MBEDTLS_ERR_SSL_WANT_READ ? -2 : e == MBEDTLS_ERR_SSL_WANT_WRITE ? -3 : -1;
 }
-ssize_t wendy_pki_read(void *v, void *b, size_t n)
+ssize_t wendy_pki_read(void* v, void* b, size_t n)
 {
-    wendy_pki_connection *c = v;
-    if (wendy_pki_reset_in_progress() ||
-        (c->relay_expires_us && esp_timer_get_time() >= c->relay_expires_us)) return -1;
+    wendy_pki_connection* c = v;
+    if (wendy_pki_reset_in_progress()
+        || (c->relay_expires_us && esp_timer_get_time() >= c->relay_expires_us))
+        return -1;
     return result(mbedtls_ssl_read(&c->ssl, b, n));
 }
 ssize_t wendy_pki_write(void *v, const void *b, size_t n)
@@ -333,7 +650,7 @@ int pki_http_post_enrollment(const char *url, const char *type, const char *toke
                          .capture_lite_authority = lite_authority_header != NULL};
     if (!r.bytes || n < 0 || n >= sizeof headers)
         goto done;
-    int64_t deadline = esp_timer_get_time() + 15000000;
+    int64_t deadline = esp_timer_get_time() + network_budget_us(false, NULL);
     if (write_all(c, headers, n, deadline) || write_all(c, body, body_size, deadline))
         goto done;
     http_parser parser;

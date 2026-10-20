@@ -9,6 +9,7 @@ void wendy_com_uart_init(wendy_com_uart_t *uart, int fd)
 {
     uart->fd = fd;
     uart->write_bytes = NULL;
+    uart->write_ready = NULL;
     uart->raw_pos = 0;
     uart->raw_len = 0;
     uart->pending_esc = false;

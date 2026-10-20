@@ -318,6 +318,14 @@ static void _main(void *arg)
             if (tx_delay >= 0 && (wait_us < 0 || tx_delay < wait_us))
                 wait_us = tx_delay;
 
+            // UART VFS reports TX-space edges but may omit initial writable
+            // state. A bounded retry also covers a software writer releasing
+            // its mutex without sending bytes, which generates no UART IRQ.
+            if (ch->type == LINK_TYPE_UART && ch->uart->write_ready &&
+                ch->tx_chunk_first && !ch->tx_need_read &&
+                (wait_us < 0 || wait_us > 10000))
+                wait_us = 10000;
+
             // Only let the auto-close deadline run while a read is posted:
             // with no rx chunk queued, _link_do_rx() never reaches read(), so
             // nothing drains the fd and nothing refreshes the keep-alive
@@ -366,6 +374,11 @@ static void _main(void *arg)
                 continue;
             // Bytes buffered inside the TLS layer rather than on the raw fd.
             if (ch->rx_tls_readable && ch->rx_chunk_first) {
+                progress_pending = true;
+                break;
+            }
+            if (ch->type == LINK_TYPE_UART && ch->tx_chunk_first && !ch->tx_need_read &&
+                ch->uart->write_ready && ch->uart->write_ready()) {
                 progress_pending = true;
                 break;
             }
@@ -448,7 +461,9 @@ static void _main(void *arg)
                 readable = FD_ISSET(ch->fd, &rfds) || ch->rx_tls_readable
                            || (ch->type == LINK_TYPE_UART && ch->rx_chunk_first
                                && wendy_com_uart_auto_close_delay(ch->uart) == 0);
-                writable = FD_ISSET(ch->fd, &wfds);
+                writable = FD_ISSET(ch->fd, &wfds) ||
+                           (ch->type == LINK_TYPE_UART && ch->tx_chunk_first &&
+                            !ch->tx_need_read && ch->uart->write_ready && ch->uart->write_ready());
             }
 
             // resume stalled read: was waiting for writable, socket is now writable

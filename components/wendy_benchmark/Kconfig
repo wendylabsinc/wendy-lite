@@ -1,0 +1,19 @@
+menu "Wendy board benchmarks"
+    config WENDY_KORVO_BENCHMARK
+        bool "Run Korvo-1 memory and SIMD benchmarks at startup"
+        default n
+        depends on IDF_TARGET_ESP32S31
+        help
+            Runs bounded memory-copy and INT8 convolution benchmarks on Core 1
+            ten seconds after startup, then reports heap headroom every five
+            seconds while camera/audio/networking run. Requires PSRAM and
+            both CPU cores; configuration fails if either is disabled.
+            Output lines contain
+            WENDY_BENCH followed by JSON. The convolution output is compared
+            with ESP-NN's ANSI reference implementation before timing it.
+
+            Intended for hardware qualification, not release firmware. This
+            temporarily competes with application tasks and uses ESP-NN's
+            global convolution scratch buffer. Do not enable in a firmware
+            that runs another ESP-NN convolution user concurrently.
+endmenu

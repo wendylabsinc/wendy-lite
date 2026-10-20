@@ -1,0 +1,5 @@
+dependencies:
+  espressif/esp-nn:
+    version: "1.4.1"
+    rules:
+      - if: "target == esp32s31 && $CONFIG{WENDY_KORVO_BENCHMARK} == True"

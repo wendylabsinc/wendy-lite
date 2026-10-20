@@ -58,8 +58,16 @@ static inline int xTaskCreatePinnedToCore(void (*fn)(void *), const char *name,
 
 struct wendy_conf_span { const void *data; size_t size; };
 extern bool test_enrolled, test_reset, test_current;
+extern char test_enrollment_device_id[65];
 static inline bool wendy_conf_has_enrollment(void) { return test_enrolled; }
 static inline bool wendy_conf_is_current(void) { return test_current; }
+static inline void wendy_conf_enrollment_identity(char tenant[37], char device[65]) {
+    tenant[0] = device[0] = '\0';
+    if (test_current && test_enrolled) {
+        strcpy(tenant, "11111111-2222-3333-4444-555555555555");
+        strcpy(device, test_enrollment_device_id);
+    }
+}
 static inline bool wendy_pki_reset_in_progress(void) { return test_reset; }
 static inline const char *wendy_conf_get_device_id(void) { return "lite-123"; }
 static inline const char *wendy_conf_get_resolved_device_name(void) { return "wendy-lite-123"; }

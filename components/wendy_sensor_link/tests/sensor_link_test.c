@@ -22,6 +22,7 @@ static esp_err_t mic_start_result = ESP_OK;
 static bool fail_events, fail_task;
 static EventBits_t event_bits;
 static void (*sender_task)(void *);
+static void *sender_arg;
 static jmp_buf sender_idle;
 
 static const uint8_t jpeg_frame[] = {0xff, 0xd8, 0xff, 0xd9};
@@ -36,6 +37,9 @@ static void (*while_frame_pending)(void);
 static unsigned stop_phase;
 static bool stop_by_disconnect;
 static char last_warning[256];
+static int64_t mock_now = 123456789;
+static unsigned capture_latency_us, completion_latency_us;
+static bool reject_push, complete_inline, fail_capture_once;
 
 void sensor_link_test_warning(const char *tag, const char *format, ...)
 {
@@ -57,7 +61,7 @@ static enum wcom_sensor_link_result unsubscribe(int client, uint32_t channel)
 }
 
 const char *esp_err_to_name(esp_err_t error) { return "injected failure"; }
-int64_t esp_timer_get_time(void) { return 123456789; }
+int64_t esp_timer_get_time(void) { return mock_now; }
 
 esp_err_t cam_capture_init(void) { camera_inits++; return camera_init_result; }
 void cam_capture_deinit(void) { camera_deinits++; }
@@ -68,6 +72,11 @@ esp_err_t cam_capture_retrieve_jpeg_frame(const uint8_t **jpeg, size_t *size,
                                          int *width, int *height)
 {
     assert(!camera_buffer_held && !frame_done && stream_open);
+    mock_now += capture_latency_us;
+    if (fail_capture_once) {
+        fail_capture_once = false;
+        return ESP_ERR_TIMEOUT;
+    }
     captures++;
     camera_buffer_held = true;
     *jpeg = jpeg_frame;
@@ -170,9 +179,12 @@ int xTaskCreate(void (*task)(void *), const char *name, unsigned stack,
     task_creates++;
     if (fail_task) return 0;
     sender_task = task;
+    sender_arg = arg;
     *handle = &event_bits;
     return pdPASS;
 }
+
+void vTaskDelete(TaskHandle_t task) { assert(task); }
 
 void vTaskDelay(TickType_t ticks)
 {
@@ -195,20 +207,23 @@ WendyComResult wcom_sensor_stream_begin(int client, uint32_t channel)
 
 WendyComResult wcom_sensor_stream_end(int client, uint32_t channel)
 {
-    assert(stream_open && !frame_done && !camera_buffer_held);
+    assert(stream_open);
     assert(client == stream_client && channel == stream_channel);
-    if (channel == 1) assert(mic_stops == mic_starts);
     stream_open = false;
     stream_ends++;
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 
-void wendy_core_sensor_stream_push(int client, uint32_t channel, const void *data,
+WendyComResult wendy_core_sensor_stream_try_push(int client, uint32_t channel, const void *data,
                                   size_t size, uint64_t timestamp,
                                   void (*done)(uint32_t))
 {
     assert(stream_open && !frame_done && done);
     assert(client == stream_client && channel == stream_channel);
+    if (reject_push) {
+        assert(unsubscribe(client, channel) == WCOM_SENSOR_LINK_OK);
+        return WendyComResult_WENDY_COM_RESULT_BUSY;
+    }
     if (channel == 0) {
         assert(data == jpeg_frame && size == sizeof(jpeg_frame));
         assert(camera_buffer_held && timestamp == (uint64_t)esp_timer_get_time());
@@ -219,12 +234,22 @@ void wendy_core_sensor_stream_push(int client, uint32_t channel, const void *dat
     }
     frame_pushes++;
     frame_done = done;
+    if (complete_inline) {
+        assert(unsubscribe(client, channel) == WCOM_SENSOR_LINK_OK);
+        frame_done = NULL;
+        mock_now += completion_latency_us;
+        done(channel);
+        struct wendy_sensor_link_stats stats;
+        assert(wendy_sensor_link_get_stats(channel, &stats) == ESP_OK);
+        assert(stats.frames_submitted == 0 && stats.frames_completed == 0);
+    }
+    return WendyComResult_WENDY_COM_RESULT_OK;
 }
 
 static void run_sender_until_idle(void)
 {
     assert(sender_task);
-    if (!setjmp(sender_idle)) sender_task(NULL);
+    if (!setjmp(sender_idle)) sender_task(sender_arg);
 }
 
 static void initialize(void)
@@ -344,8 +369,9 @@ static void test_subscription_lifecycle(void)
 
 static void stop_with_frame_in_flight(void)
 {
-    assert(frame_done && !stream_ends && !releases && !mic_stops);
+    assert(frame_done && !releases && !mic_stops);
     if (stop_phase++ == 0) {
+        assert(!stream_ends);
         // A different client or channel must not cancel the active producer.
         assert(unsubscribe(stream_client + 1, stream_channel) == WCOM_SENSOR_LINK_OK);
         assert(unsubscribe(stream_client, 1 - stream_channel) == WCOM_SENSOR_LINK_OK);
@@ -362,9 +388,42 @@ static void stop_with_frame_in_flight(void)
         return;
     }
     assert(stop_phase == 2);
+    assert(stream_ends == 1 && !stream_open);
     void (*done)(uint32_t) = frame_done;
     frame_done = NULL;
+    mock_now += completion_latency_us;
     done(stream_channel);
+}
+
+static void test_stats(bool rejected, bool inline_done, bool capture_failed)
+{
+    struct wendy_sensor_link_stats stats;
+    assert(wendy_sensor_link_get_stats(2, &stats) == ESP_ERR_INVALID_ARG);
+    assert(wendy_sensor_link_get_stats(0, NULL) == ESP_ERR_INVALID_ARG);
+    assert(wendy_sensor_link_get_stats(0, &stats) == ESP_OK);
+    assert(stats.frames_submitted == 0 && stats.frames_completed == 0);
+    capture_latency_us = 50;
+    completion_latency_us = 200;
+    reject_push = rejected;
+    complete_inline = inline_done;
+    fail_capture_once = capture_failed;
+    initialize();
+    while_frame_pending = stop_with_frame_in_flight;
+    assert(subscribe(7, 0) == WCOM_SENSOR_LINK_OK);
+    run_sender_until_idle();
+    assert(releases == 1 && !camera_buffer_held && stream_ends == 1);
+    assert(wendy_sensor_link_get_stats(0, &stats) == ESP_OK);
+    assert(stats.frames_submitted == (rejected ? 0u : 1u));
+    assert(stats.frames_completed == stats.frames_submitted);
+    assert(stats.bytes_submitted == (rejected ? 0u : sizeof(jpeg_frame)));
+    assert(stats.queue_rejected == rejected);
+    assert(stats.capture_errors == capture_failed);
+    assert(stats.capture_time_us == (capture_failed ? 100u : 50u));
+    assert(stats.capture_time_max_us == 50);
+    assert(stats.completion_time_us == (rejected ? 0u : 200u));
+    assert(stats.completion_time_max_us == stats.completion_time_us);
+    assert(wendy_sensor_link_get_stats(1, &stats) == ESP_OK);
+    assert(stats.frames_submitted == 0 && stats.frames_completed == 0 && stats.capture_time_us == 0);
 }
 
 static void test_frame_lifetime(bool audio)
@@ -417,6 +476,10 @@ int main(int argc, char **argv)
     else if (!strcmp(scenario, "microphone_frame_lifetime")) test_frame_lifetime(true);
     else if (!strcmp(scenario, "stream_begin_failure")) test_stream_begin_failure();
     else if (!strcmp(scenario, "microphone_start_failure")) test_microphone_start_failure();
+    else if (!strcmp(scenario, "stats_completion")) test_stats(false, false, false);
+    else if (!strcmp(scenario, "stats_rejection")) test_stats(true, false, false);
+    else if (!strcmp(scenario, "stats_inline_completion")) test_stats(false, true, false);
+    else if (!strcmp(scenario, "stats_capture_failure")) test_stats(false, false, true);
     else assert(!"unknown scenario");
     puts(scenario);
     return 0;

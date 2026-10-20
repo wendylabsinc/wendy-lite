@@ -16,5 +16,12 @@ public entry point without test-only reset functions.
 Coverage includes partial sensor availability, initialization cleanup and retry,
 channel formats, competing subscriptions, client-specific cancellation, and
 waiting for frame completion before releasing camera buffers or stopping audio.
+The Korvo scenarios run two sender tasks on host threads and verify concurrent
+camera/audio ownership, independent disconnects, stereo timestamps, and cleanup
+when creation of the second sender fails.
+Counter tests check cancellation completions, queue refusal, failed capture,
+duration totals/maxima, and a completion that races ahead of submission return.
+Cancellation tests require stream-end before releasing a pending frame, and
+require the frame callback before freeing its buffer or stopping capture.
 The tests do not validate hardware pin configuration, capture drivers, or task
 scheduling on the device.

@@ -151,6 +151,9 @@ typedef struct _WendyComEnrollmentChallenge {
     bool cloud_enrollment_supported; /* absent on older firmware */
     bool has_mldsa_verification_supported;
     bool mldsa_verification_supported; /* ML-DSA-65 CA and peer certificate verification */
+    char device_id[65]; /* configured PKI identity; distinct from the USB hardware ID */
+    char tenant_id[37];
+    bool uuid_enrollment_supported; /* UUID discovery and enrollment identity reporting */
 } WendyComEnrollmentChallenge;
 
 /* Clear local enrollment after Cloud cleanup. Physical USB only; the hardware
@@ -417,7 +420,7 @@ extern "C" {
 #define WendyComDeviceIdentity_init_default      {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define WendyComGetDeviceInfoParams_init_default {0}
 #define WendyComEnrollmentChallengeParams_init_default {0}
-#define WendyComEnrollmentChallenge_init_default {"", 0, 0, 0, 0, 0, 0, false, 0, false, 0}
+#define WendyComEnrollmentChallenge_init_default {"", 0, 0, 0, 0, 0, 0, false, 0, false, 0, "", "", 0}
 #define WendyComEnrollmentResetParams_init_default {"", ""}
 #define WendyComSyncTimeParams_init_default      {{{NULL}, NULL}, {{NULL}, NULL}}
 #define WendyComSyncTimeResult_init_default      {0, 0}
@@ -454,7 +457,7 @@ extern "C" {
 #define WendyComDeviceIdentity_init_zero         {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define WendyComGetDeviceInfoParams_init_zero    {0}
 #define WendyComEnrollmentChallengeParams_init_zero {0}
-#define WendyComEnrollmentChallenge_init_zero    {"", 0, 0, 0, 0, 0, 0, false, 0, false, 0}
+#define WendyComEnrollmentChallenge_init_zero    {"", 0, 0, 0, 0, 0, 0, false, 0, false, 0, "", "", 0}
 #define WendyComEnrollmentResetParams_init_zero  {"", ""}
 #define WendyComSyncTimeParams_init_zero         {{{NULL}, NULL}, {{NULL}, NULL}}
 #define WendyComSyncTimeResult_init_zero         {0, 0}
@@ -504,6 +507,9 @@ extern "C" {
 #define WendyComEnrollmentChallenge_enrollment_reset_supported_tag 7
 #define WendyComEnrollmentChallenge_cloud_enrollment_supported_tag 8
 #define WendyComEnrollmentChallenge_mldsa_verification_supported_tag 9
+#define WendyComEnrollmentChallenge_device_id_tag 10
+#define WendyComEnrollmentChallenge_tenant_id_tag 11
+#define WendyComEnrollmentChallenge_uuid_enrollment_supported_tag 12
 #define WendyComEnrollmentResetParams_expected_device_id_tag 1
 #define WendyComEnrollmentResetParams_nonce_hex_tag 2
 #define WendyComSyncTimeParams_server_tag        1
@@ -670,7 +676,10 @@ X(a, STATIC,   SINGULAR, BOOL,     builtin_roots_ready,   5) \
 X(a, STATIC,   SINGULAR, BOOL,     builtin_tsa_roots_ready,   6) \
 X(a, STATIC,   SINGULAR, BOOL,     enrollment_reset_supported,   7) \
 X(a, STATIC,   OPTIONAL, BOOL,     cloud_enrollment_supported,   8) \
-X(a, STATIC,   OPTIONAL, BOOL,     mldsa_verification_supported,   9)
+X(a, STATIC,   OPTIONAL, BOOL,     mldsa_verification_supported,   9) \
+X(a, STATIC,   SINGULAR, STRING,   device_id,        10) \
+X(a, STATIC,   SINGULAR, STRING,   tenant_id,        11) \
+X(a, STATIC,   SINGULAR, BOOL,     uuid_enrollment_supported,  12)
 #define WendyComEnrollmentChallenge_CALLBACK NULL
 #define WendyComEnrollmentChallenge_DEFAULT NULL
 
@@ -970,7 +979,7 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComConsoleDetachParams_size         6
 #define WendyComConsoleEnd_size                  0
 #define WendyComEnrollmentChallengeParams_size   2
-#define WendyComEnrollmentChallenge_size         82
+#define WendyComEnrollmentChallenge_size         188
 #define WendyComEnrollmentResetParams_size       80
 #define WendyComGetDeviceIdentityParams_size     0
 #define WendyComGetDeviceInfoParams_size         0

@@ -3,3 +3,11 @@ dependencies:
     version: "^2.0.0"
     rules:
       - if: "target == esp32s3 && $CONFIG{WENDY_SENSOR_LINK_XIAO_ESP32S3} == True"
+  espressif/esp_video:
+    version: "2.5.0"
+    rules:
+      - if: "target == esp32s31 && $CONFIG{WENDY_SENSOR_LINK_ESP32S31_KORVO_1} == True"
+  espressif/esp_codec_dev:
+    version: "2.0.0-beta4"
+    rules:
+      - if: "target == esp32s31 && $CONFIG{WENDY_SENSOR_LINK_ESP32S31_KORVO_1} == True"

@@ -5,6 +5,7 @@
 #include <stdio.h>
 
 bool test_enrolled, test_reset, test_current;
+char test_enrollment_device_id[65];
 unsigned test_adv_starts;
 bool test_fail_semaphore, test_fail_task;
 unsigned test_semaphore_calls, test_semaphores_allocated, test_semaphores_deleted;
@@ -39,6 +40,7 @@ static void reset_fixture(void)
     _mfg_data_len = 0;
     test_enrolled = test_reset = false;
     test_current = true;
+    strcpy(test_enrollment_device_id, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
     test_adv_starts = 0;
     test_fail_semaphore = test_fail_task = false;
     test_semaphore_calls = test_semaphores_allocated = test_semaphores_deleted = 0;
@@ -87,8 +89,10 @@ static void assert_advertisement(uint8_t expected_mtls)
     struct os_mbuf mtls = read_info(INFO_MTLS);
     assert(mtls.len == 1 && mtls.data[0] == expected_mtls);
     struct os_mbuf id = read_info(INFO_DEVICE_ID);
-    assert(id.len == strlen("lite-123"));
-    assert(memcmp(id.data, "lite-123", id.len) == 0);
+    const char *expected_id = test_enrolled && test_enrollment_device_id[0]
+        ? test_enrollment_device_id : "lite-123";
+    assert(id.len == strlen(expected_id));
+    assert(memcmp(id.data, expected_id, id.len) == 0);
     struct os_mbuf psm = read_info(INFO_PSM);
     assert(psm.len == 2 && psm.data[0] == 128 && psm.data[1] == 0);
 }
@@ -132,6 +136,17 @@ static void test_unenrolled(void)
     assert(test_task_calls == 1 && test_tasks_created == 1);
     assert(test_semaphore_calls == 1);
 
+#endif
+}
+
+static void test_empty_enrollment_identity(void)
+{
+#if CONFIG_WENDY_PKI
+    reset_fixture();
+    test_enrolled = true;
+    test_enrollment_device_id[0] = '\0';
+    assert(wendy_ble_start() == ESP_OK);
+    assert_advertisement(1);
 #endif
 }
 
@@ -258,6 +273,7 @@ int main(void)
 {
     test_pki_enrollment();
     test_unenrolled();
+    test_empty_enrollment_identity();
     test_reset_blocks_start_and_restart();
     test_identity_change_blocks_restart();
     test_allocation_failure_retry();

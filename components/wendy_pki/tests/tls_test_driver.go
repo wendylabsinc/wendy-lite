@@ -419,6 +419,10 @@ func main() {
 	must(err)
 	defer raw.Close()
 	must(raw.SetDeadline(time.Now().Add(10 * time.Second)))
+	if len(os.Args) > 3 && os.Args[3] == "slow-uplink" {
+		must(raw.SetDeadline(time.Now().Add(30 * time.Second)))
+		time.Sleep(16 * time.Second)
+	}
 	server := tls.Server(raw, &tls.Config{
 		MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13,
 		Certificates: []tls.Certificate{broker}, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: pool,
