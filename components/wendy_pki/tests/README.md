@@ -11,6 +11,11 @@ cmake --build build-pki
 ctest --test-dir build-pki --output-on-failure
 ```
 
+`dependency_patches_in_checkout` reproduces a build directory inside a Git
+checkout. It requires a patch to change the copied source on both initial
+configuration and reconfiguration, without changing the dependency source.
+This catches Git reporting success while silently skipping the security patches.
+
 `crypto_test` verifies PSA initialization and P-256 private-key and CSR output
 compatibility. Production firmware and host tests use the same crypto helper.
 

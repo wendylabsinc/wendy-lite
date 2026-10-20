@@ -5,9 +5,15 @@ function(wendy_prepare_patched_tree source destination)
     file(REMOVE_RECURSE "${destination}")
     file(MAKE_DIRECTORY "${destination}")
     file(COPY "${source}/" DESTINATION "${destination}" PATTERN ".git" EXCLUDE)
+    # Do not let git apply discover the checkout enclosing an in-tree build.
+    # It otherwise reports success while skipping paths outside that build.
+    get_filename_component(patch_parent "${destination}" DIRECTORY)
     foreach(patch IN LISTS ARGN)
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${patch}")
-        execute_process(COMMAND "${GIT_EXECUTABLE}" apply --no-index "${patch}"
+        execute_process(COMMAND "${CMAKE_COMMAND}" -E env
+            --unset=GIT_DIR --unset=GIT_WORK_TREE
+            "GIT_CEILING_DIRECTORIES=${patch_parent}"
+            "${GIT_EXECUTABLE}" apply --no-index "${patch}"
             WORKING_DIRECTORY "${destination}"
             RESULT_VARIABLE result ERROR_VARIABLE error)
         if(NOT result EQUAL 0)

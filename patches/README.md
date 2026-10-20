@@ -18,6 +18,14 @@ unchanged. Configuration fails if a patch no longer applies. Mbed TLS, its PSA
 libraries and the IDF adapter all use the copied headers and sources so their
 private structures agree. Review and retest each patch when updating a dependency.
 
+Patch application ignores inherited `GIT_DIR` and `GIT_WORK_TREE` and stops Git
+repository discovery at the copied tree's parent. Without this isolation, an
+in-checkout build can report successful patch application while skipping every
+file. That produces firmware without the CA-verification and TLS-fragmentation
+fixes below. The `dependency_patches_in_checkout` host test checks application
+and reconfiguration inside a Git checkout, and verifies that the original
+dependency stays unchanged.
+
 ## TLS certificate transmission
 
 `esp-pqc-mbedtls-tls13-certificate-fragmentation.patch` lets TLS 1.3 clients and
