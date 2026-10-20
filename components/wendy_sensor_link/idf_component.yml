@@ -11,15 +11,17 @@ dependencies:
     version: "2.0.0-beta4"
     rules:
       - if: "target == esp32s31 && $CONFIG{WENDY_SENSOR_LINK_ESP32S31_KORVO_1} == True"
+  # ESP-IDF omits the Mosaico symbol when its target or Korvo dependency is
+  # false. Short-circuit those profiles before reading the symbol.
   esp-mosaico-bsp:
     git: https://github.com/esp-mosaico/esp-mosaico-bsp.git
     version: 5f88b91e1be055d1d3674364123b2779a1758377
     path: components/esp-mosaico-bsp
     rules:
-      - if: "$CONFIG{WENDY_SENSOR_LINK_MOSAICO} == True"
+      - if: "target == esp32s31 && ($CONFIG{WENDY_SENSOR_LINK_ESP32S31_KORVO_1} == False && $CONFIG{WENDY_SENSOR_LINK_MOSAICO} == True)"
   mosaico_module_camera:
     git: https://github.com/esp-mosaico/esp-mosaico-bsp.git
     version: 5f88b91e1be055d1d3674364123b2779a1758377
     path: components/mosaico_module_camera
     rules:
-      - if: "$CONFIG{WENDY_SENSOR_LINK_MOSAICO} == True"
+      - if: "target == esp32s31 && ($CONFIG{WENDY_SENSOR_LINK_ESP32S31_KORVO_1} == False && $CONFIG{WENDY_SENSOR_LINK_MOSAICO} == True)"
