@@ -22,10 +22,12 @@ docker run --rm -v "$PWD:/project" -w /project espressif/idf:v6.0.3 \
 
 Use a fresh build directory and configuration when upgrading from ESP-IDF 5.
 
-An opt-in [signed mesh leaf profile](docs/signed-mesh-leaf.md) is available for
-native ESP32-S3 builds with PSRAM. It connects to one pinned Linux mesh router
-and has a 125-second startup quarantine. The source and host tests are available;
-hardware validation is still pending.
+[Signed mesh networking](docs/signed-mesh-leaf.md) is enabled by default in the
+XIAO ESP32S3, ESP32-S31 Korvo-1 and Mosaico native firmware profiles. Enrolled
+devices discover a same-tenant Wi-Fi mesh router, with incoming BLE mesh as a
+fallback. Routers need their Lite listener or BLE peer configuration enabled.
+Mesh traffic has a 125-second startup quarantine. Other
+profiles keep mesh disabled; support requires an ESP32-S3 or ESP32-S31 with PSRAM.
 
 ## Optional WASM support
 
