@@ -13,7 +13,7 @@ struct wendy_pki_mesh_peer
 };
 struct wendy_pki_mesh_identity
 {
-    char tenant[37], device[37];
+    char tenant[37], device[37], peer[37];
     time_t certificate_expires, verified_seconds;
     int64_t verified_monotonic_us;
     uint64_t revision_first, revision_limit;
@@ -47,6 +47,11 @@ int wendy_pki_mesh_digest(const char* principal, const void* body, size_t size, 
  * to its enrolled timestamp authority and needs Internet access. */
 esp_err_t wendy_pki_mesh_stream(const struct wendy_pki_stream* stream, bool server,
     const char* peer, wendy_pki_connection** connection, struct wendy_pki_mesh_identity* identity);
+/* BLE fallback: authenticate any other device in the enrolled tenant. The
+ * authenticated UUID is returned in identity->peer. TLS client streams only;
+ * TCP, ESP-NOW and gateway APIs retain their explicit peer requirements. */
+esp_err_t wendy_pki_mesh_stream_same_tenant(const struct wendy_pki_stream* stream,
+    wendy_pki_connection** connection, struct wendy_pki_mesh_identity* identity);
 /* 1: wake/readiness hint, 0: timeout, -1: closed/error. */
 int wendy_pki_wait(wendy_pki_connection* connection, bool writing, int64_t deadline_us);
 

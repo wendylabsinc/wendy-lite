@@ -684,6 +684,7 @@ int pki_tls_mesh_connect(const char* host, unsigned port, const char* tenant, co
     assert(roots.data == wendy_pki_device_roots_start && strcmp(device, router));
     memset(&stream_connection, 0, sizeof stream_connection);
     stream_connection.operator_expires = signed_now + 3600;
+    snprintf(stream_connection.mesh_peer, sizeof stream_connection.mesh_peer, "%s", router);
     monotonic_us += mesh_connect_delay;
     *out = &stream_connection;
     return 0;
@@ -692,7 +693,9 @@ int pki_tls_mesh_stream(const struct wendy_pki_stream* stream, bool server,
     const char* tenant, const char* device, const char* router, const uint8_t* key,
     size_t key_size, const char* cert, struct wendy_conf_span roots, wendy_pki_connection** out)
 {
-    return pki_tls_mesh_connect("stream", 0, tenant, device, router, key, key_size, cert, roots, out);
+    return pki_tls_mesh_connect("stream", 0, tenant, device,
+        router ? router : "12345678-9abc-4def-8123-000000000003",
+        key, key_size, cert, roots, out);
 }
 struct radio_time_io { size_t read, written; uint8_t response[7], request[256]; };
 static ssize_t radio_time_read(void* context, void* data, size_t n)
@@ -713,22 +716,30 @@ static ssize_t radio_time_write(void* context, const void* data, size_t n)
 static void test_mesh_radio_time(void)
 {
     const char* peer = "12345678-9abc-4def-8123-000000000003";
-    for (int scenario = 0; scenario < 4; ++scenario) {
+    for (int scenario = 0; scenario < 8; ++scenario) {
         reset();
         strcpy(config.device_id, "12345678-9abc-4def-8123-000000000002");
         struct radio_time_io io = { .response = {0,0,0,3,'t','s','a'} };
-        if (scenario == 1) io.response[1] = 2; // >64 KiB
-        if (scenario == 2) io.response[3] = 0; // empty
-        reject_radio_time = scenario == 3; // signature/nonce verifier rejects
+        if (scenario % 4 == 1) io.response[1] = 2; // >64 KiB
+        if (scenario % 4 == 2) io.response[3] = 0; // empty
+        reject_radio_time = scenario % 4 == 3; // signature/nonce verifier rejects
         struct wendy_pki_stream stream = { .context = &io, .read = radio_time_read,
             .write = radio_time_write, .wait = unused_stream_wait };
         struct wendy_pki_mesh_identity identity;
         wendy_pki_connection* connection = NULL;
-        esp_err_t result = wendy_pki_mesh_stream(&stream, false, peer, &connection, &identity);
-        assert((result == ESP_OK) == (scenario == 0));
+        assert(wendy_pki_mesh_stream(&stream, false, NULL, &connection, &identity) == ESP_ERR_INVALID_ARG);
+        assert(wendy_pki_mesh_stream_same_tenant(NULL, &connection, &identity) == ESP_ERR_INVALID_ARG);
+        esp_err_t result = scenario < 4
+            ? wendy_pki_mesh_stream(&stream, false, peer, &connection, &identity)
+            : wendy_pki_mesh_stream_same_tenant(&stream, &connection, &identity);
+        assert((result == ESP_OK) == (scenario % 4 == 0));
         assert(!timestamp_calls && !renewal_calls && !broker_calls);
         assert(io.written == 9 && !memcmp(io.request, "WMT3", 4));
-        if (scenario == 0) { assert(mesh_reserved == 1024 && mesh_connect_calls == 1); wendy_pki_close(connection); }
+        if (scenario % 4 == 0) {
+            assert(mesh_reserved == 1024 && mesh_connect_calls == 1);
+            assert(!strcmp(identity.peer, peer));
+            wendy_pki_close(connection);
+        }
         else assert(!connection && !mesh_connect_calls && !mesh_reserved);
     }
     reject_radio_time = false;

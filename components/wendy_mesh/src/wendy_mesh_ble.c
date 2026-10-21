@@ -76,6 +76,7 @@ static bool _initialized;
 /* Guarded by _mutex. */
 static struct ble_l2cap_chan* _chan;
 static struct ble_l2cap_chan* _pending_chan;
+static bool _accepting;
 static bool _closing;
 static bool _disconnect_sent;
 static uint8_t _tx_pending[TX_SDU_MAX];
@@ -170,7 +171,7 @@ static int _l2cap_event(struct ble_l2cap_event* event, void* arg)
     switch (event->type) {
     case BLE_L2CAP_EVENT_COC_ACCEPT: {
         _lock();
-        bool busy = (_chan != NULL || _pending_chan != NULL);
+        bool busy = (!_accepting || _chan != NULL || _pending_chan != NULL);
         if (!busy)
             _pending_chan = event->accept.chan;
         _unlock();
@@ -208,18 +209,26 @@ static int _l2cap_event(struct ble_l2cap_event* event, void* arg)
         }
         _lock();
         _chan = event->connect.chan;
-        _closing = false;
+        /* An accepted channel may finish opening after its wait timed out.
+         * Close it on the host task instead of retaining an idle BLE peer
+         * while the mesh worker is using Wi-Fi. */
+        bool rejected = !_accepting;
+        _closing = rejected;
         _disconnect_sent = false;
         _tx_pending_size = 0;
         _tx_mtu = tx_mtu;
         _tx_stalled = false;
         _tx_backoff = false;
         _tx_backoff_count = 0;
-        _peer_gone = false;
+        _peer_gone = rejected;
         _recv_ready_owed = false;
         _ring_head = 0;
         _ring_len = 0;
         _unlock();
+        if (rejected) {
+            _schedule_io();
+            return 0;
+        }
         // The mbuf count is the baseline for the "msys free" figure in the
         // transmit error path: a session that starts lower than the last
         // one means blocks are not coming back.
@@ -372,6 +381,7 @@ bool wm_l2cap_session_alive(void)
 void wm_l2cap_end_session(void)
 {
     _lock();
+    _accepting = false;
     struct ble_l2cap_chan* chan = _chan;
     _closing = chan != NULL;
     _peer_gone = true;
@@ -691,8 +701,24 @@ int wm_ble_open(struct wm_carrier* carrier)
             return -1;
         vTaskDelay(pdMS_TO_TICKS(20));
     }
-    if (wm_l2cap_init() != ESP_OK || !wm_l2cap_wait_session(pdMS_TO_TICKS(1000)))
+    if (wm_l2cap_init() != ESP_OK)
         return -1;
+    _lock();
+    _accepting = true;
+    _unlock();
+#if CONFIG_WENDY_MESH_WIFI_BLE
+    wm_l2cap_wait_session(pdMS_TO_TICKS(5000));
+#else
+    wm_l2cap_wait_session(pdMS_TO_TICKS(1000));
+#endif
+    _lock();
+    bool ready = _chan != NULL && !_closing;
+    _accepting = false;
+    _unlock();
+    if (!ready) {
+        wm_l2cap_end_session();
+        return -1;
+    }
     *carrier = (struct wm_carrier) { .stream = { .read = mesh_read, .write = mesh_write, .wait = mesh_wait }, .close = wm_l2cap_end_session, .name = "BLE" };
     return 0;
 }

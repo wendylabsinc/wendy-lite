@@ -8,7 +8,7 @@
 #include "lwip/dns.h"
 #include "lwip/ip4.h"
 #endif
-#include "wendy_mesh_radio.h"
+#include "wendy_mesh_connect.h"
 #include "wendy_mesh_directory.h"
 #include "wendy_conf.h"
 #include "esp_heap_caps.h"
@@ -40,6 +40,7 @@ struct queued_packet
 struct mesh_state
 {
     char peer[37]; // authenticated peer, protected by state_lock for UI snapshots
+    char active_carrier[16]; // protected by state_lock
     struct wm_directory directory;
     struct wm_epoch epoch;
     struct wm_identity_requests identity_requests;
@@ -92,7 +93,9 @@ void wendy_mesh_get_snapshot(struct wendy_mesh_snapshot* out)
 {
     if (!out) return;
     memset(out, 0, sizeof *out);
-#if CONFIG_WENDY_MESH_TCP
+#if CONFIG_WENDY_MESH_WIFI_BLE
+    snprintf(out->carrier, sizeof out->carrier, "Wi-Fi/BLE");
+#elif CONFIG_WENDY_MESH_TCP
     snprintf(out->carrier, sizeof out->carrier, "Wi-Fi TCP");
 #elif CONFIG_WENDY_MESH_BLE
     snprintf(out->carrier, sizeof out->carrier, "BLE");
@@ -100,7 +103,7 @@ void wendy_mesh_get_snapshot(struct wendy_mesh_snapshot* out)
     snprintf(out->carrier, sizeof out->carrier, "ESP-NOW");
 #endif
 
-#if !CONFIG_WENDY_MESH_AUTO_DISCOVER
+#if !CONFIG_WENDY_MESH_AUTO_DISCOVER && !CONFIG_WENDY_MESH_WIFI_BLE
     uint8_t peer_uuid[16];
     if (wm_uuid_parse(CONFIG_WENDY_MESH_ROUTER_DEVICE, peer_uuid)
 #if CONFIG_WENDY_MESH_TCP
@@ -116,6 +119,8 @@ void wendy_mesh_get_snapshot(struct wendy_mesh_snapshot* out)
     struct mesh_state* s = state;
     out->phase = phase;
     if (s) {
+        if (s->active_carrier[0])
+            memcpy(out->carrier, s->active_carrier, sizeof out->carrier);
         memcpy(out->peer, s->peer, sizeof out->peer);
         int64_t now = esp_timer_get_time();
         if (wendy_conf_is_current() && !wendy_pki_reset_in_progress()) {
@@ -558,46 +563,16 @@ static int receive_frame(struct mesh_state* s, uint8_t first)
 }
 static int session(struct mesh_state* s)
 {
-    char peer[37];
-#if CONFIG_WENDY_MESH_AUTO_DISCOVER
-    if (!wendy_wifi_is_connected()) {
-        publish_phase(WENDY_MESH_WAITING_WIFI);
-        return -1;
-    }
-    publish_phase(WENDY_MESH_DISCOVERING);
-    char tenant[37], self[65];
-    wendy_conf_enrollment_identity(tenant, self);
-    struct wm_discovered_peer candidates[WM_DISCOVERY_MAX];
-    size_t count = wm_discover_peers(tenant, self, candidates);
-    for (size_t i = 0; i < count; ++i) {
-        if (!wendy_wifi_is_connected() || !wendy_conf_is_current() ||
-            wendy_pki_reset_in_progress()) return -1;
-        publish_phase(WENDY_MESH_CONNECTING);
-        if (wendy_pki_mesh_connect(candidates[i].host, CONFIG_WENDY_MESH_ROUTER_PORT,
-                candidates[i].device, &s->connection, &s->identity) == ESP_OK) {
-            memcpy(peer, candidates[i].device, sizeof peer);
-            break;
-        }
-    }
-    if (!s->connection) { publish_phase(WENDY_MESH_DISCOVERING); return -1; }
-    s->carrier.name = "Wi-Fi TCP";
-#elif CONFIG_WENDY_MESH_TCP
-    if (wendy_pki_mesh_connect(CONFIG_WENDY_MESH_ROUTER_HOST, CONFIG_WENDY_MESH_ROUTER_PORT,
-            CONFIG_WENDY_MESH_ROUTER_DEVICE, &s->connection, &s->identity) != ESP_OK) return -1;
-    snprintf(peer, sizeof peer, "%s", CONFIG_WENDY_MESH_ROUTER_DEVICE);
-    s->carrier.name = "Wi-Fi TCP";
-#else
-#if CONFIG_WENDY_MESH_BLE
-    if (wm_ble_open(&s->carrier)) return -1;
-#else
-    if (wm_espnow_open(&s->carrier)) return -1;
-#endif
-    if (wendy_pki_mesh_stream(&s->carrier.stream, s->carrier.server,
-            CONFIG_WENDY_MESH_ROUTER_DEVICE, &s->connection, &s->identity) != ESP_OK) return -1;
-    snprintf(peer, sizeof peer, "%s", CONFIG_WENDY_MESH_ROUTER_DEVICE);
-#endif
+    struct wm_mesh_connection attempt = { 0 };
+    int result = wm_mesh_connect(&attempt, publish_phase);
+    s->connection = attempt.connection;
+    s->identity = attempt.identity;
+    s->carrier = attempt.carrier;
+    if (result) return -1;
+    const char* peer = s->identity.peer;
     pthread_mutex_lock(&state_lock);
     memcpy(s->peer, peer, sizeof s->peer);
+    snprintf(s->active_carrier, sizeof s->active_carrier, "%s", s->carrier.name);
     pthread_mutex_unlock(&state_lock);
     ESP_LOGI(TAG, "mesh peer %s authenticated over %s", peer, s->carrier.name);
     if (wm_uuid_parse(s->identity.device, s->device))
@@ -918,12 +893,15 @@ static void mesh_task(void* unused)
         pthread_mutex_lock(&state_lock);
         s->own_deadline_us = 0;
         memset(s->peer, 0, sizeof s->peer);
+        memset(s->active_carrier, 0, sizeof s->active_carrier);
         pthread_mutex_unlock(&state_lock);
         memset(&s->assembler, 0, sizeof s->assembler);
         xQueueReset(s->queue);
 #if CONFIG_WENDY_MESH_ESPNOW
         /* Avoid two rebooting peers repeating disjoint rendezvous windows. */
         vTaskDelay(pdMS_TO_TICKS(500 + esp_random() % 1500));
+#elif CONFIG_WENDY_MESH_WIFI_BLE
+        vTaskDelay(pdMS_TO_TICKS(1000));
 #else
         vTaskDelay(pdMS_TO_TICKS(5000));
 #endif
@@ -933,10 +911,10 @@ esp_err_t wendy_mesh_start(void)
 {
     if (mesh_task_handle)
         return ESP_OK;
-#if !CONFIG_WENDY_MESH_AUTO_DISCOVER || CONFIG_WENDY_MESH_CLOUD_UPLINK
+#if (!CONFIG_WENDY_MESH_AUTO_DISCOVER && !CONFIG_WENDY_MESH_WIFI_BLE) || CONFIG_WENDY_MESH_CLOUD_UPLINK
     uint8_t router[16];
 #endif
-#if !CONFIG_WENDY_MESH_AUTO_DISCOVER
+#if !CONFIG_WENDY_MESH_AUTO_DISCOVER && !CONFIG_WENDY_MESH_WIFI_BLE
     if (wm_uuid_parse(CONFIG_WENDY_MESH_ROUTER_DEVICE, router))
         return ESP_ERR_INVALID_ARG;
 #endif

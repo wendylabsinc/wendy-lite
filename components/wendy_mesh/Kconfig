@@ -7,8 +7,8 @@ menu "Wendy signed mesh leaf"
         depends on LWIP_HOOK_IP6_ROUTE_CUSTOM
         help
             Experimental endpoint for ESP32-S3 or ESP32-S31 with PSRAM. Connect
-            to one same-tenant peer over TLS 1.3, discovered on Wi-Fi or
-            explicitly configured. No transit forwarding or legacy fallback.
+            to one same-tenant peer over TLS 1.3, discovered on Wi-Fi,
+            accepted over BLE, or explicitly configured. No transit forwarding.
             Requires fresh signed time and a canonical UUID enrollment.
             Select the lwIP custom IPv6 route hook before enabling this option.
 
@@ -25,13 +25,21 @@ menu "Wendy signed mesh leaf"
             bool "BLE L2CAP (Linux router dials this device)"
             depends on WENDY_BLE && BT_NIMBLE_L2CAP_COC_MAX_NUM >= 2
             depends on BT_NIMBLE_MSYS_1_BLOCK_SIZE >= 248
+        config WENDY_MESH_WIFI_BLE
+            bool "Wi-Fi TCP with BLE L2CAP fallback"
+            depends on WENDY_BLE && BT_NIMBLE_L2CAP_COC_MAX_NUM >= 2
+            depends on BT_NIMBLE_MSYS_1_BLOCK_SIZE >= 248
+            help
+                Try Wi-Fi first, then wait for an incoming BLE router. Keep
+                one working connection until it closes. BLE authenticates
+                the router's same-tenant device certificate without a pin.
         config WENDY_MESH_ESPNOW
             bool "ESP-NOW (ESP32 peer)"
     endchoice
 
     config WENDY_MESH_BLE_PSM
         int "Mesh BLE PSM (must differ from WendyCom PSM)"
-        depends on WENDY_MESH_BLE
+        depends on WENDY_MESH_BLE || WENDY_MESH_WIFI_BLE
         range 128 255
         default 129
 
@@ -60,7 +68,7 @@ menu "Wendy signed mesh leaf"
 
     config WENDY_MESH_AUTO_DISCOVER
         bool "Automatically discover same-tenant mesh routers"
-        depends on WENDY_MESH_TCP
+        depends on WENDY_MESH_TCP || WENDY_MESH_WIFI_BLE
         default n
         help
             Discover _wendy-mesh._tcp on the local network and try candidates
@@ -70,7 +78,7 @@ menu "Wendy signed mesh leaf"
 
     config WENDY_MESH_ROUTER_HOST
         string "Explicit router IP address or hostname"
-        depends on WENDY_MESH_TCP && !WENDY_MESH_AUTO_DISCOVER
+        depends on (WENDY_MESH_TCP || WENDY_MESH_WIFI_BLE) && !WENDY_MESH_AUTO_DISCOVER
         default ""
 
     config WENDY_MESH_ROUTER_DEVICE
@@ -80,7 +88,7 @@ menu "Wendy signed mesh leaf"
 
     config WENDY_MESH_ROUTER_PORT
         int "Router leaf listener TCP port"
-        depends on WENDY_MESH_TCP
+        depends on WENDY_MESH_TCP || WENDY_MESH_WIFI_BLE
         range 1 65535
         default 43024
     config WENDY_MESH_CLOUD_UPLINK
