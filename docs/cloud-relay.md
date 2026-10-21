@@ -31,7 +31,7 @@ next control connection and refuse relay access until one is installed. This pin
 is separate from device, HTTPS and TSA roots and cannot be set through the CLI,
 BLE or configuration. See [enrollment](cloud-enrollment.md).
 
-Before WendyCom, the CLI must send the WLG2 compact grant as its first inner TLS
+Before WendyCom, the CLI must send the WLG3 compact grant as its first inner TLS
 application record. Firmware checks the P-256 signature, trusted key ID,
 upgrade session and grant hash, its own device identity, authenticated operator
 identity, and SHA-256 of the authenticated operator certificate's SubjectPublicKeyInfo
@@ -39,11 +39,14 @@ DER. The operator's signing and TLS certificates may differ, but their principal
 URI and public key must match. A matching URI with a different key is refused.
 Success sends WLA2; failure closes the socket.
 
-The current Cloud WLG2 record is `309 + key_id_length` bytes (at most 437).
-After the key ID it contains two 8-byte timestamps; four 16-byte identifiers
-(session, grant, correlation, asset); five 32-byte hashes (device URI, operator
+The WLG3 record is `293 + key_id_length` bytes (at most 421).
+After the key ID it contains two 8-byte timestamps; three 16-byte identifiers
+(session, grant, correlation); five 32-byte hashes (device URI, operator
 URI, operator SPKI, principal payload, attestation); and a 64-byte raw P-256
-signature. Earlier `213 + key_id_length` records are rejected.
+signature. The device URI hash is the only device identifier: the UUID in
+`spiffe://wendy.sh/tenant/<tenant>/device/<uuid>` is the device's one id and
+its cloud asset id. WLG2 records (with a 16-byte asset UUID) and earlier
+`213 + key_id_length` records are rejected.
 
 The signed expiry is a presentation deadline: firmware requires
 `issued_at <= now < present_by` and `0 < present_by - issued_at <= 60` seconds.

@@ -1,0 +1,74 @@
+name: Mosaico dashboard
+
+on:
+  pull_request:
+    paths:
+      - 'samples/mosaico_dashboard/**'
+      - 'components/**'
+      - 'cmake/**'
+      - 'patches/**'
+      - 'sdkconfig.defaults*'
+      - 'partitions.ota.8mb.csv'
+      - '.github/workflows/mosaico.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'samples/mosaico_dashboard/**'
+      - 'components/**'
+      - 'cmake/**'
+      - 'patches/**'
+      - 'sdkconfig.defaults*'
+      - 'partitions.ota.8mb.csv'
+      - '.github/workflows/mosaico.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    container:
+      # ESP-IDF 6.2-dev at 1c42e514c90ae621af33bde3b6ad3dac22edcbfd.
+      image: espressif/idf@sha256:30b42a38415e918b1b14825ccf0e4c40e7910c5132618dcd12e3c45361be0943
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: Build the native dashboard
+        shell: bash
+        working-directory: samples/mosaico_dashboard
+        run: |
+          . "$IDF_PATH/export.sh"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          idf.py --preview build
+          grep -q '^CONFIG_MBEDTLS_USE_BUNDLED_PQC=y$' sdkconfig
+          grep -q '^# CONFIG_MBEDTLS_DYNAMIC_BUFFER is not set$' sdkconfig
+          grep -q '^CONFIG_SPIRAM=y$' sdkconfig
+          grep -q '^CONFIG_LV_OS_FREERTOS=y$' sdkconfig
+          grep -q '^CONFIG_LV_USE_CLIB_MALLOC=y$' sdkconfig
+          grep -q '^CONFIG_TINYUSB_CDC_ENABLED=y$' sdkconfig
+          grep -q '^CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y$' sdkconfig
+          grep -q '^# CONFIG_WENDY_USJ is not set$' sdkconfig
+          grep -q '^CONFIG_TINYUSB_CDC_COUNT=2$' sdkconfig
+          grep -q '^CONFIG_WENDY_CLOUD=y$' sdkconfig
+          grep -q '^CONFIG_WENDY_MESH_LEAF=y$' sdkconfig
+          grep -q '^CONFIG_WENDY_MESH_TCP=y$' sdkconfig
+          grep -q '^CONFIG_WENDY_MESH_AUTO_DISCOVER=y$' sdkconfig
+          grep -q '^CONFIG_LWIP_HOOK_IP6_ROUTE_CUSTOM=y$' sdkconfig
+          grep -q '^CONFIG_WENDY_SENSOR_LINK_MOSAICO=y$' sdkconfig
+          grep -q '^CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=8$' sdkconfig
+          grep -q '^CONFIG_ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE=y$' sdkconfig
+          grep -q '^# CONFIG_USJ_ENABLE_USB_SERIAL_JTAG is not set$' sdkconfig
+          grep -q 'SC101IOT_PCLK_DELAY_STEP' build/wendy_patched/mosaico_cam_sensor/sensors/sc101iot/sc101iot.c
+          grep -q 'display_config.profile.use_psram = false;' build/wendy_patched/mosaico_bsp/onboard/display.c
+      - name: Upload the sample firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: mosaico-dashboard
+          path: |
+            samples/mosaico_dashboard/build/mosaico_dashboard.bin
+            samples/mosaico_dashboard/build/mosaico_dashboard.elf
+            samples/mosaico_dashboard/build/bootloader/bootloader.bin
+            samples/mosaico_dashboard/build/partition_table/partition-table.bin
+            samples/mosaico_dashboard/build/ota_data_initial.bin
+            samples/mosaico_dashboard/build/flash_args

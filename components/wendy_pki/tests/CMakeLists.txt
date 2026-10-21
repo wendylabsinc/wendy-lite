@@ -186,7 +186,7 @@ target_compile_definitions(tx_stall_test PRIVATE CONFIG_WENDY_COM_TASK_PRIORITY=
     CONFIG_WENDY_COM_TASK_CORE_AFFINITY=0)
 target_compile_options(tx_stall_test PRIVATE -UNDEBUG)
 target_link_libraries(tx_stall_test PRIVATE capability_proto mbedtls)
-foreach(scenario socket stream want_read no_bytes progress uart_initial uart_full uart_want_read)
+foreach(scenario socket stream want_read no_bytes progress uart_initial uart_full uart_cdc uart_want_read)
     add_test(NAME wendycom_tx_stall_${scenario} COMMAND tx_stall_test ${scenario})
     set_tests_properties(wendycom_tx_stall_${scenario} PROPERTIES TIMEOUT 5)
 endforeach()
@@ -217,3 +217,21 @@ add_test(NAME mesh_uplink_identity_lifecycle COMMAND mesh_uplink_identity_test
 
 add_test(NAME pki_tls_slow_cloud_uplink COMMAND "${GO_EXECUTABLE}" run "${CMAKE_CURRENT_LIST_DIR}/tls_test_driver.go" "$<TARGET_FILE:tls_uplink_test>" "p256" "slow-uplink")
 set_tests_properties(pki_tls_slow_cloud_uplink PROPERTIES TIMEOUT 90)
+
+add_executable(mesh_topology_test ../../wendy_mesh/tests/topology_test.c)
+target_link_libraries(mesh_topology_test PRIVATE mesh_protocol)
+target_compile_options(mesh_topology_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME mesh_topology_snapshot COMMAND mesh_topology_test)
+
+add_executable(uart_cdc_test ../../wendy_com/tests/uart_cdc_test.c)
+target_include_directories(uart_cdc_test PRIVATE stubs ../../wendy_com/include)
+target_compile_options(uart_cdc_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+add_test(NAME wendycom_cdc_framing COMMAND uart_cdc_test)
+
+add_executable(mesh_discovery_test ../../wendy_mesh/tests/discovery_test.c
+    ../../wendy_mesh/src/wendy_mesh_discovery.c
+    ../../wendy_mesh/src/wendy_mesh_discovery_protocol.c)
+target_include_directories(mesh_discovery_test PRIVATE ../../wendy_mesh/tests/discovery_stubs)
+target_link_libraries(mesh_discovery_test PRIVATE mesh_protocol)
+target_compile_options(mesh_discovery_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME mesh_router_discovery COMMAND mesh_discovery_test)

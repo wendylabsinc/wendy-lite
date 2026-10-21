@@ -11,10 +11,10 @@
 extern "C" {
 #endif
 
-/* Starts the shared camera/audio sender. Capture drivers must be initialized first. */
+/* Starts the camera and audio senders. Capture drivers must be initialized first. */
 esp_err_t cam_loop_init(void);
 
-/* Reserves a sender. Korvo has one per channel; XIAO keeps one shared sender.
+/* Reserves the channel's sender; each channel has its own.
  * Returns BUSY while another subscription owns it or it is stopping. */
 enum wcom_sensor_link_result cam_loop_start(int client_id, uint32_t channel_id);
 /* Atomically validates and reserves all requested channels. */

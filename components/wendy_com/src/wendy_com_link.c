@@ -342,7 +342,8 @@ static void _main(void *arg)
             // It is always watched for read and never for write: an eventfd
             // is permanently writable, so putting it in wfds would turn a
             // stalled transmit into a busy loop.
-            if (ch->type == LINK_TYPE_STREAM) {
+            if (ch->type == LINK_TYPE_STREAM ||
+                (ch->type == LINK_TYPE_UART && ch->uart->read_ready)) {
                 FD_SET(ch->fd, &rfds);
                 continue;
             }
@@ -379,6 +380,12 @@ static void _main(void *arg)
             }
             if (ch->type == LINK_TYPE_UART && ch->tx_chunk_first && !ch->tx_need_read &&
                 ch->uart->write_ready && ch->uart->write_ready()) {
+                progress_pending = true;
+                break;
+            }
+            if (ch->type == LINK_TYPE_UART && ch->uart->read_ready &&
+                ch->rx_chunk_first && (ch->uart->raw_pos < ch->uart->raw_len ||
+                                      ch->uart->eof_pending || ch->uart->read_ready())) {
                 progress_pending = true;
                 break;
             }
@@ -457,6 +464,15 @@ static void _main(void *arg)
                 }
                 readable = ch->ops->can_read(ch->stream_ctx) || ch->rx_tls_readable;
                 writable = ch->ops->can_write(ch->stream_ctx);
+            } else if (ch->type == LINK_TYPE_UART && ch->uart->read_ready) {
+                if (FD_ISSET(ch->fd, &rfds)) {
+                    uint64_t drain;
+                    read(ch->fd, &drain, sizeof drain);
+                }
+                readable = ch->uart->raw_pos < ch->uart->raw_len ||
+                           ch->uart->eof_pending || ch->uart->read_ready() ||
+                           wendy_com_uart_auto_close_delay(ch->uart) == 0;
+                writable = ch->uart->write_ready && ch->uart->write_ready();
             } else {
                 readable = FD_ISSET(ch->fd, &rfds) || ch->rx_tls_readable
                            || (ch->type == LINK_TYPE_UART && ch->rx_chunk_first

@@ -123,8 +123,16 @@ void sys_reboot(void);
 __attribute__((import_module("wendy"), import_name("sys_firmware_version")))
 int sys_firmware_version(char *buf, int len);
 
+/* The device's one id: its enrolled UUID (36 chars), also its cloud asset id.
+ * Writes 0 bytes (empty string) while the board is unenrolled; apps must handle
+ * that. Returns bytes written, or -1 if len < 37. */
 __attribute__((import_module("wendy"), import_name("sys_device_id")))
 int sys_device_id(char *buf, int len);
+
+/* The hardware id (factory MAC, 12 hex digits), stable across enrollments.
+ * Returns bytes written, or -1 if len < 13. */
+__attribute__((import_module("wendy"), import_name("sys_serial_number")))
+int sys_serial_number(char *buf, int len);
 
 __attribute__((import_module("wendy"), import_name("sys_sleep_ms")))
 void sys_sleep_ms(int ms);

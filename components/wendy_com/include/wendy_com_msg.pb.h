@@ -125,9 +125,14 @@ typedef struct _WendyComGetDeviceIdentityParams {
 } WendyComGetDeviceIdentityParams;
 
 typedef struct _WendyComDeviceIdentity {
+    /* Hardware id (factory MAC), recorded only as the asset serial number. */
     pb_callback_t id;
     pb_callback_t name;
     pb_callback_t display_name;
+    /* The device's one id once enrolled: the UUID segment of the device
+ certificate's SAN spiffe://wendy.sh/tenant/<tenant>/device/<uuid>, minted
+ by the CLI at enrollment and also the cloud asset id. Empty when unenrolled. */
+    pb_callback_t enrolled_device_id;
 } WendyComDeviceIdentity;
 
 typedef struct _WendyComGetDeviceInfoParams {
@@ -417,7 +422,7 @@ extern "C" {
 #define WendyComConfPushDataParams_init_default  {0, {{NULL}, NULL}}
 #define WendyComConfPushEndParams_init_default   {0}
 #define WendyComGetDeviceIdentityParams_init_default {0}
-#define WendyComDeviceIdentity_init_default      {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define WendyComDeviceIdentity_init_default      {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define WendyComGetDeviceInfoParams_init_default {0}
 #define WendyComEnrollmentChallengeParams_init_default {0}
 #define WendyComEnrollmentChallenge_init_default {"", 0, 0, 0, 0, 0, 0, false, 0, false, 0, "", "", 0}
@@ -454,7 +459,7 @@ extern "C" {
 #define WendyComConfPushDataParams_init_zero     {0, {{NULL}, NULL}}
 #define WendyComConfPushEndParams_init_zero      {0}
 #define WendyComGetDeviceIdentityParams_init_zero {0}
-#define WendyComDeviceIdentity_init_zero         {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define WendyComDeviceIdentity_init_zero         {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define WendyComGetDeviceInfoParams_init_zero    {0}
 #define WendyComEnrollmentChallengeParams_init_zero {0}
 #define WendyComEnrollmentChallenge_init_zero    {"", 0, 0, 0, 0, 0, 0, false, 0, false, 0, "", "", 0}
@@ -497,6 +502,7 @@ extern "C" {
 #define WendyComDeviceIdentity_id_tag            1
 #define WendyComDeviceIdentity_name_tag          2
 #define WendyComDeviceIdentity_display_name_tag  3
+#define WendyComDeviceIdentity_enrolled_device_id_tag 4
 #define WendyComEnrollmentChallengeParams_status_only_tag 1
 #define WendyComEnrollmentChallenge_nonce_hex_tag 1
 #define WendyComEnrollmentChallenge_enrolled_tag 2
@@ -653,7 +659,8 @@ X(a, CALLBACK, SINGULAR, BYTES,    data,              2)
 #define WendyComDeviceIdentity_FIELDLIST(X, a) \
 X(a, CALLBACK, SINGULAR, STRING,   id,                1) \
 X(a, CALLBACK, SINGULAR, STRING,   name,              2) \
-X(a, CALLBACK, SINGULAR, STRING,   display_name,      3)
+X(a, CALLBACK, SINGULAR, STRING,   display_name,      3) \
+X(a, CALLBACK, SINGULAR, STRING,   enrolled_device_id,   4)
 #define WendyComDeviceIdentity_CALLBACK pb_default_field_callback
 #define WendyComDeviceIdentity_DEFAULT NULL
 

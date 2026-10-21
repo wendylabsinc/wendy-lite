@@ -20,9 +20,10 @@ static unsigned camera_deinits, mic_deinits, event_creates, event_deletes, task_
 static esp_err_t camera_init_result = ESP_OK, mic_init_result = ESP_OK;
 static esp_err_t mic_start_result = ESP_OK;
 static bool fail_events, fail_task;
-static EventBits_t event_bits;
-static void (*sender_task)(void *);
-static void *sender_arg;
+static EventBits_t event_bits[2];
+static bool event_used[2];
+static void (*sender_tasks[2])(void *);
+static void *sender_args[2];
 static jmp_buf sender_idle;
 
 static const uint8_t jpeg_frame[] = {0xff, 0xd8, 0xff, 0xd9};
@@ -40,6 +41,7 @@ static char last_warning[256];
 static int64_t mock_now = 123456789;
 static unsigned capture_latency_us, completion_latency_us;
 static bool reject_push, complete_inline, fail_capture_once;
+static size_t queued_samples, expected_audio_samples = MIC_READ_SAMPLES;
 
 void sensor_link_test_warning(const char *tag, const char *format, ...)
 {
@@ -104,6 +106,17 @@ esp_err_t mic_read(int16_t *buffer, size_t samples, size_t *bytes_read)
     return ESP_OK;
 }
 
+esp_err_t mic_read_queued(int16_t *buffer, size_t samples, size_t *bytes_read)
+{
+    // Asked straight after a full block, for the room left behind it.
+    assert(stream_open && !frame_done && samples == MIC_MAX_READ_SAMPLES - MIC_READ_SAMPLES);
+    size_t count = queued_samples < samples ? queued_samples : samples;
+    for (size_t i = 0; i < count; ++i) buffer[i] = (int16_t)(MIC_READ_SAMPLES + i);
+    queued_samples -= count;
+    *bytes_read = count * sizeof(*buffer);
+    return ESP_OK;
+}
+
 void mic_stop(void)
 {
     assert(!frame_done);
@@ -112,54 +125,67 @@ void mic_stop(void)
 
 void wendy_core_register_sensor_link_source(const struct wcom_sensor_link_delegate *source)
 {
-    assert(sender_task && !delegate);
+    assert(sender_tasks[0] && sender_tasks[1] && !delegate);
     delegate = source;
     registrations++;
+}
+
+static bool is_event_group(EventGroupHandle_t group)
+{
+    return group == &event_bits[0] || group == &event_bits[1];
 }
 
 EventGroupHandle_t xEventGroupCreate(void)
 {
     event_creates++;
     if (fail_events) return NULL;
-    event_bits = 0;
-    return &event_bits;
+    for (unsigned i = 0; i < 2; ++i) {
+        if (!event_used[i]) {
+            event_used[i] = true;
+            event_bits[i] = 0;
+            return &event_bits[i];
+        }
+    }
+    assert(!"more event groups than senders");
+    return NULL;
 }
 
 void vEventGroupDelete(EventGroupHandle_t group)
 {
-    assert(group == &event_bits);
+    assert(is_event_group(group));
+    event_used[group - event_bits] = false;
     event_deletes++;
 }
 
 EventBits_t xEventGroupSetBits(EventGroupHandle_t group, EventBits_t bits)
 {
-    assert(group == &event_bits);
-    return event_bits |= bits;
+    assert(is_event_group(group));
+    return *group |= bits;
 }
 
 EventBits_t xEventGroupClearBits(EventGroupHandle_t group, EventBits_t bits)
 {
-    assert(group == &event_bits);
-    EventBits_t before = event_bits;
-    event_bits &= ~bits;
+    assert(is_event_group(group));
+    EventBits_t before = *group;
+    *group &= ~bits;
     return before;
 }
 
 EventBits_t xEventGroupGetBits(EventGroupHandle_t group)
 {
-    assert(group == &event_bits);
-    return event_bits;
+    assert(is_event_group(group));
+    return *group;
 }
 
 EventBits_t xEventGroupWaitBits(EventGroupHandle_t group, EventBits_t bits,
                                int clear, int all, TickType_t ticks)
 {
-    assert(group == &event_bits && ticks == portMAX_DELAY);
+    assert(is_event_group(group) && ticks == portMAX_DELAY);
     for (;;) {
-        EventBits_t matched = event_bits & bits;
+        EventBits_t matched = *group & bits;
         if (all ? matched == bits : matched != 0) {
-            EventBits_t before = event_bits;
-            if (clear) event_bits &= ~bits;
+            EventBits_t before = *group;
+            if (clear) *group &= ~bits;
             return before;
         }
         if (frame_done) {
@@ -178,9 +204,10 @@ int xTaskCreate(void (*task)(void *), const char *name, unsigned stack,
 {
     task_creates++;
     if (fail_task) return 0;
-    sender_task = task;
-    sender_arg = arg;
-    *handle = &event_bits;
+    unsigned channel = !strcmp(name, "mic_loop");
+    sender_tasks[channel] = task;
+    sender_args[channel] = arg;
+    *handle = &sender_args[channel];
     return pdPASS;
 }
 
@@ -228,9 +255,11 @@ WendyComResult wendy_core_sensor_stream_try_push(int client, uint32_t channel, c
         assert(data == jpeg_frame && size == sizeof(jpeg_frame));
         assert(camera_buffer_held && timestamp == (uint64_t)esp_timer_get_time());
     } else {
-        assert(channel == 1 && size == MIC_READ_SAMPLES * sizeof(int16_t));
-        assert(((const int16_t *)data)[MIC_READ_SAMPLES - 1] == MIC_READ_SAMPLES - 1);
-        assert(timestamp == (uint64_t)esp_timer_get_time() - 20000);
+        size_t samples = size / sizeof(int16_t);
+        assert(channel == 1 && samples == expected_audio_samples);
+        assert(((const int16_t *)data)[samples - 1] == (int16_t)(samples - 1));
+        // Stamped when the oldest sample in the frame was captured.
+        assert(timestamp == (uint64_t)esp_timer_get_time() - samples * 1000000ULL / 16000);
     }
     frame_pushes++;
     frame_done = done;
@@ -246,16 +275,16 @@ WendyComResult wendy_core_sensor_stream_try_push(int client, uint32_t channel, c
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 
-static void run_sender_until_idle(void)
+static void run_sender_until_idle(uint32_t channel)
 {
-    assert(sender_task);
-    if (!setjmp(sender_idle)) sender_task(sender_arg);
+    assert(sender_tasks[channel]);
+    if (!setjmp(sender_idle)) sender_tasks[channel](sender_args[channel]);
 }
 
 static void initialize(void)
 {
     assert(wendy_sensor_link_init() == ESP_OK);
-    assert(delegate && registrations == 1 && task_creates == 1);
+    assert(delegate && registrations == 1 && task_creates == 2);
 }
 
 static void check_manifest(bool camera, bool microphone)
@@ -274,7 +303,7 @@ static void check_manifest(bool camera, bool microphone)
     }
     if (microphone) {
         const struct wcom_sensor_descriptor *sensor = &sensors[i++];
-        assert(sensor->channel_id == 1 && sensor->input_id == 0);
+        assert(sensor->channel_id == 1 && sensor->input_id == 1);
         assert(!strcmp(sensor->name, "microphone") && sensor->format_kind == WCOM_SENSOR_FORMAT_AUDIO);
         assert(sensor->format.audio.codec == wendy_lite_sensorlink_AudioFormat_Codec_PCM_S16LE);
         assert(sensor->format.audio.sample_rate == 16000 && sensor->format.audio.channels == 1);
@@ -297,7 +326,7 @@ static void test_manifest(bool camera, bool microphone)
     initialize();
     check_manifest(camera, microphone);
     assert(wendy_sensor_link_init() == ESP_OK);
-    assert(registrations == 1 && camera_inits == 1 && mic_inits == 1 && task_creates == 1);
+    assert(registrations == 1 && camera_inits == 1 && mic_inits == 1 && task_creates == 2);
     if (!camera) assert(subscribe(7, 0) == WCOM_SENSOR_LINK_FAIL);
     if (!microphone) assert(subscribe(7, 1) == WCOM_SENSOR_LINK_FAIL);
     assert(subscribe(7, camera ? 0 : 1) == WCOM_SENSOR_LINK_OK);
@@ -329,15 +358,22 @@ static void test_sender_init_failure_retry(bool events_fail)
     assert(subscribe(7, 0) == WCOM_SENSOR_LINK_OK);
 }
 
+static void run_senders_until_idle(void)
+{
+    run_sender_until_idle(0);
+    run_sender_until_idle(1);
+}
+
 static void test_subscription_lifecycle(void)
 {
     assert(cam_loop_start(7, 0) == WCOM_SENSOR_LINK_FAIL);
     initialize();
-    const uint32_t pair[] = {0, 1};
+    const uint32_t pair[] = {0, 1}, twice[] = {0, 0}, three[] = {0, 1, 0};
     assert(delegate->on_sensor_link_subscribe(7, NULL, 0) == WCOM_SENSOR_LINK_OK);
     assert(delegate->on_sensor_link_unsubscribe(7, NULL, 0) == WCOM_SENSOR_LINK_OK);
-    assert(delegate->on_sensor_link_subscribe(7, pair, 2) == WCOM_SENSOR_LINK_FAIL);
-    assert(delegate->on_sensor_link_unsubscribe(7, pair, 2) == WCOM_SENSOR_LINK_FAIL);
+    assert(delegate->on_sensor_link_subscribe(7, twice, 2) == WCOM_SENSOR_LINK_FAIL);
+    assert(delegate->on_sensor_link_subscribe(7, three, 3) == WCOM_SENSOR_LINK_FAIL);
+    assert(delegate->on_sensor_link_unsubscribe(7, three, 3) == WCOM_SENSOR_LINK_FAIL);
     assert(subscribe(7, 2) == WCOM_SENSOR_LINK_FAIL);
     assert(unsubscribe(7, 2) == WCOM_SENSOR_LINK_FAIL);
 
@@ -346,25 +382,35 @@ static void test_subscription_lifecycle(void)
     assert(subscribe(8, 0) == WCOM_SENSOR_LINK_BUSY);
     assert(strstr(last_warning, "requested client=8 channel=0"));
     assert(strstr(last_warning, "owner client=7 channel=0 (pending, stopping=0)"));
-    assert(subscribe(7, 1) == WCOM_SENSOR_LINK_BUSY);
+    // A pair is all or nothing: refused for the camera, it leaves the
+    // microphone free.
+    assert(delegate->on_sensor_link_subscribe(8, pair, 2) == WCOM_SENSOR_LINK_BUSY);
+    assert(subscribe(9, 1) == WCOM_SENSOR_LINK_OK);
+    assert(unsubscribe(9, 1) == WCOM_SENSOR_LINK_OK);
+    // One client can hold both channels; the one it already has stays put.
+    assert(delegate->on_sensor_link_subscribe(7, pair, 2) == WCOM_SENSOR_LINK_OK);
+    assert(subscribe(8, 1) == WCOM_SENSOR_LINK_BUSY);
     assert(unsubscribe(8, 0) == WCOM_SENSOR_LINK_OK);
-    assert(unsubscribe(7, 1) == WCOM_SENSOR_LINK_OK);
     delegate->on_sensor_link_disconnected(8);
+    assert(subscribe(8, 0) == WCOM_SENSOR_LINK_BUSY);
     assert(subscribe(8, 1) == WCOM_SENSOR_LINK_BUSY);
 
-    // Cancel a latched camera start before the sender can capture anything.
-    assert(unsubscribe(7, 0) == WCOM_SENSOR_LINK_OK);
-    run_sender_until_idle();
+    // Cancel latched starts before the senders can capture anything.
+    assert(delegate->on_sensor_link_unsubscribe(7, pair, 2) == WCOM_SENSOR_LINK_OK);
+    run_senders_until_idle();
     assert(!stream_begins && !captures && !mic_reads);
+
+    // Two clients, one channel each: a disconnect frees only its own.
     assert(subscribe(8, 1) == WCOM_SENSOR_LINK_OK);
-    delegate->on_sensor_link_disconnected(7);
-    assert(subscribe(7, 0) == WCOM_SENSOR_LINK_BUSY);
-    delegate->on_sensor_link_disconnected(8);
-    run_sender_until_idle();
-    assert(!stream_begins && !captures && !mic_reads);
     assert(subscribe(7, 0) == WCOM_SENSOR_LINK_OK);
     delegate->on_sensor_link_disconnected(7);
-    assert(subscribe(8, 1) == WCOM_SENSOR_LINK_OK);
+    assert(subscribe(9, 1) == WCOM_SENSOR_LINK_BUSY);
+    assert(subscribe(9, 0) == WCOM_SENSOR_LINK_OK);
+    delegate->on_sensor_link_disconnected(8);
+    delegate->on_sensor_link_disconnected(9);
+    run_senders_until_idle();
+    assert(!stream_begins && !captures && !mic_reads);
+    assert(delegate->on_sensor_link_subscribe(7, pair, 2) == WCOM_SENSOR_LINK_OK);
 }
 
 static void stop_with_frame_in_flight(void)
@@ -372,19 +418,23 @@ static void stop_with_frame_in_flight(void)
     assert(frame_done && !releases && !mic_stops);
     if (stop_phase++ == 0) {
         assert(!stream_ends);
+        uint32_t other = 1 - stream_channel;
         // A different client or channel must not cancel the active producer.
         assert(unsubscribe(stream_client + 1, stream_channel) == WCOM_SENSOR_LINK_OK);
-        assert(unsubscribe(stream_client, 1 - stream_channel) == WCOM_SENSOR_LINK_OK);
+        assert(unsubscribe(stream_client, other) == WCOM_SENSOR_LINK_OK);
         delegate->on_sensor_link_disconnected(stream_client + 1);
         assert(subscribe(stream_client, stream_channel) == WCOM_SENSOR_LINK_OK);
-        assert(subscribe(stream_client + 1, 1 - stream_channel) == WCOM_SENSOR_LINK_BUSY);
+        assert(subscribe(stream_client + 1, stream_channel) == WCOM_SENSOR_LINK_BUSY);
         assert(strstr(last_warning, "active, stopping=0"));
+        // The other channel's sender stays free for any client meanwhile.
+        assert(subscribe(stream_client + 1, other) == WCOM_SENSOR_LINK_OK);
+        assert(unsubscribe(stream_client + 1, other) == WCOM_SENSOR_LINK_OK);
         if (stop_by_disconnect) delegate->on_sensor_link_disconnected(stream_client);
         else assert(unsubscribe(stream_client, stream_channel) == WCOM_SENSOR_LINK_OK);
-        // Neither a repeat subscription nor a switch may race stream teardown.
+        // Neither a repeat subscription nor a new client may race stream teardown.
         assert(subscribe(stream_client, stream_channel) == WCOM_SENSOR_LINK_BUSY);
         assert(strstr(last_warning, "active, stopping=1"));
-        assert(subscribe(stream_client + 1, 1 - stream_channel) == WCOM_SENSOR_LINK_BUSY);
+        assert(subscribe(stream_client + 1, stream_channel) == WCOM_SENSOR_LINK_BUSY);
         return;
     }
     assert(stop_phase == 2);
@@ -410,7 +460,7 @@ static void test_stats(bool rejected, bool inline_done, bool capture_failed)
     initialize();
     while_frame_pending = stop_with_frame_in_flight;
     assert(subscribe(7, 0) == WCOM_SENSOR_LINK_OK);
-    run_sender_until_idle();
+    run_sender_until_idle(0);
     assert(releases == 1 && !camera_buffer_held && stream_ends == 1);
     assert(wendy_sensor_link_get_stats(0, &stats) == ESP_OK);
     assert(stats.frames_submitted == (rejected ? 0u : 1u));
@@ -432,12 +482,29 @@ static void test_frame_lifetime(bool audio)
     stop_by_disconnect = audio;
     while_frame_pending = stop_with_frame_in_flight;
     assert(subscribe(7, audio ? 1 : 0) == WCOM_SENSOR_LINK_OK);
-    run_sender_until_idle();
+    run_sender_until_idle(audio ? 1 : 0);
     assert(stop_phase == 2 && frame_pushes == 1 && stream_begins == 1 && stream_ends == 1);
     assert(!frame_done && !stream_open && !camera_buffer_held);
     assert(captures == (audio ? 0u : 1u) && releases == captures);
     assert(mic_starts == (audio ? 1u : 0u) && mic_stops == mic_starts && mic_reads == mic_starts);
-    assert(subscribe(8, audio ? 0 : 1) == WCOM_SENSOR_LINK_OK);
+    assert(subscribe(8, audio ? 1 : 0) == WCOM_SENSOR_LINK_OK);
+}
+
+static void test_microphone_catch_up(size_t queued)
+{
+    initialize();
+    queued_samples = queued;
+    size_t carried = MIC_READ_SAMPLES + queued;
+    expected_audio_samples = carried < MIC_MAX_READ_SAMPLES ? carried : MIC_MAX_READ_SAMPLES;
+    while_frame_pending = stop_with_frame_in_flight;
+    assert(subscribe(7, 1) == WCOM_SENSOR_LINK_OK);
+    run_sender_until_idle(1);
+    assert(frame_pushes == 1 && mic_reads == 1 && stream_ends == 1);
+    // What did not fit stays queued for the next frame.
+    assert(queued_samples == MIC_READ_SAMPLES + queued - expected_audio_samples);
+    struct wendy_sensor_link_stats stats;
+    assert(wendy_sensor_link_get_stats(1, &stats) == ESP_OK);
+    assert(stats.bytes_submitted == expected_audio_samples * sizeof(int16_t));
 }
 
 static void test_stream_begin_failure(void)
@@ -445,10 +512,10 @@ static void test_stream_begin_failure(void)
     initialize();
     begin_result = WendyComResult_WENDY_COM_RESULT_BUSY;
     assert(subscribe(7, 1) == WCOM_SENSOR_LINK_OK);
-    run_sender_until_idle();
+    run_sender_until_idle(1);
     assert(stream_begins == 1 && !stream_ends && !frame_pushes);
     assert(mic_starts == 1 && mic_stops == 1 && !mic_reads);
-    assert(subscribe(8, 0) == WCOM_SENSOR_LINK_OK);
+    assert(subscribe(8, 1) == WCOM_SENSOR_LINK_OK);
 }
 
 static void test_microphone_start_failure(void)
@@ -456,9 +523,9 @@ static void test_microphone_start_failure(void)
     initialize();
     mic_start_result = ESP_FAIL;
     assert(subscribe(7, 1) == WCOM_SENSOR_LINK_OK);
-    run_sender_until_idle();
+    run_sender_until_idle(1);
     assert(mic_starts == 1 && !mic_reads && !stream_begins && !frame_pushes);
-    assert(subscribe(8, 0) == WCOM_SENSOR_LINK_OK);
+    assert(subscribe(8, 1) == WCOM_SENSOR_LINK_OK);
 }
 
 int main(int argc, char **argv)
@@ -476,6 +543,8 @@ int main(int argc, char **argv)
     else if (!strcmp(scenario, "microphone_frame_lifetime")) test_frame_lifetime(true);
     else if (!strcmp(scenario, "stream_begin_failure")) test_stream_begin_failure();
     else if (!strcmp(scenario, "microphone_start_failure")) test_microphone_start_failure();
+    else if (!strcmp(scenario, "microphone_catches_up")) test_microphone_catch_up(3 * MIC_READ_SAMPLES);
+    else if (!strcmp(scenario, "microphone_catch_up_bounded")) test_microphone_catch_up(MIC_MAX_READ_SAMPLES);
     else if (!strcmp(scenario, "stats_completion")) test_stats(false, false, false);
     else if (!strcmp(scenario, "stats_rejection")) test_stats(true, false, false);
     else if (!strcmp(scenario, "stats_inline_completion")) test_stats(false, true, false);

@@ -74,7 +74,7 @@ expired/untrusted/missing client certificates, TLS 1.2 refusal, truncated shutdo
 unexpected application data during handoff, valid intermediate chains, and
 rejection of non-CA intermediates, missing keyCertSign usage, path-length
 violations, expired intermediates, and SHA-1 leaf signatures. Relay cases send the
-current Cloud WLG2 layout through authenticated TLS, reject another key for the
+WLG3 layout through authenticated TLS, reject a validly signed WLG2 record, reject another key for the
 same operator URI, and enforce independent presentation and session deadlines.
 They cover both certificate expiry caps, legacy/truncated/expired grants and
 presentation windows over 60 seconds. The valid handoff case exchanges

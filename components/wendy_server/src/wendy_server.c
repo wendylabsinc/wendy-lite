@@ -259,18 +259,16 @@ static void _server_task(void *arg)
     }
 
     if (enrolled) {
-        WendyConfEnrollment enrollment = WendyConfEnrollment_init_zero;
-        struct wendy_conf_enrollment_data enrollment_data = {0};
-        if (wendy_conf_copy_enrollment(&enrollment, &enrollment_data) == ESP_OK) {
-            mdns_service_txt_item_set("_wendy-lite", "_tcp", "tenant", enrollment.tenant_id);
-            mdns_service_txt_item_set("_wendy-lite", "_tcp", "id", enrollment.device_id);
+        char tenant[37], device[65];
+        wendy_conf_get_enrolled_ids(tenant, device);
+        if (device[0]) {
+            mdns_service_txt_item_set("_wendy-lite", "_tcp", "tenant", tenant);
+            mdns_service_txt_item_set("_wendy-lite", "_tcp", "id", device);
             char principal[160];
             snprintf(principal, sizeof principal, "spiffe://wendy.sh/tenant/%s/device/%s",
-                     enrollment.tenant_id, enrollment.device_id);
+                     tenant, device);
             mdns_service_txt_item_set("_wendy-lite", "_tcp", "principal", principal);
         }
-        free(enrollment_data.storage);
-        memset(&enrollment, 0, sizeof enrollment);
     }
 
 

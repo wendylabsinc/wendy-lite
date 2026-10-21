@@ -9,6 +9,7 @@
 enum wendy_conf_write_mode {
     WENDY_CONF_WRITE_MODE_REPLACE = 0,
     WENDY_CONF_WRITE_MODE_UPDATE = 1,
+    WENDY_CONF_WRITE_MODE_WIFI_ONLY = 2, // UPDATE accepting only the wifi root field
 };
 
 /**
@@ -47,7 +48,8 @@ void wendy_conf_enrollment_identity(char tenant[37], char device[65]);
  * In REPLACE mode the given message becomes the whole configuration. In
  * UPDATE mode, any root property of WendyConf (device_name, wifi,
  * enrollment) absent from the given message is kept from the current
- * configuration.
+ * configuration. WIFI_ONLY applies UPDATE semantics but rejects every root
+ * field except wifi, including unknown fields and duplicate wifi fields.
  *
  * Writing invalidates the in-RAM configuration: from that point on the
  * getters return empty spans / zero values. The new configuration takes
@@ -138,6 +140,14 @@ void wendy_conf_copy_span(char *dest, size_t dest_size, struct wendy_conf_span s
  * USB enrollment or reset before network access can resume.
  */
 bool wendy_conf_has_enrollment(void);
+/**
+ * The enrolled tenant and device ids, or empty strings without an enrollment.
+ * Every PKI use checks that the device certificate's only SAN URI is exactly
+ * spiffe://wendy.sh/tenant/<tenant>/device/<device>, so <device> is the
+ * device's one id: the UUID the CLI minted at enrollment, also its cloud asset
+ * id. The hardware id (wendy_conf_get_device_id) is never a device id.
+ */
+void wendy_conf_get_enrolled_ids(char tenant[37], char device[65]);
 #define WENDY_CONF_MAX_TRUST_BUNDLE 16384
 #define WENDY_CONF_MAX_ENROLLMENT_DATA 65536
 struct wendy_conf_enrollment_data {

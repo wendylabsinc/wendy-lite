@@ -77,7 +77,7 @@ WendyComResult wcom_cmd_app_push_end(int client_id)
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 
-WendyComResult wcom_cmd_conf_push_begin(int client_id, size_t size, WendyComConfPushMode mode)
+WendyComResult wcom_cmd_conf_push_begin(int client_id, size_t size, WendyComConfPushMode mode, bool wifi_only)
 {
     ESP_LOGI(TAG, "CONF_PUSH_BEGIN client=%d size=%zu mode=%s", client_id, size,
              mode == WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE ? "update" : "replace");
@@ -88,7 +88,7 @@ WendyComResult wcom_cmd_conf_push_begin(int client_id, size_t size, WendyComConf
     _push_kind = PUSH_CONF;
     _pushing_client_id = client_id;
     if (_app_delegate && _app_delegate->on_conf_push_begin)
-        return _app_delegate->on_conf_push_begin(size, mode);
+        return _app_delegate->on_conf_push_begin(size, mode, wifi_only);
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 
@@ -144,15 +144,17 @@ static bool _encode_string(pb_ostream_t *stream, const pb_field_t *field, void *
 WendyComResult wcom_cmd_get_device_identity(WendyComDeviceIdentity *out)
 {
     ESP_LOGI(TAG, "GET_DEVICE_IDENTITY");
-    const char *id = "???", *name = "???", *display_name = "???";
+    const char *id = "???", *name = "???", *display_name = "???", *enrolled_device_id = "";
     if (_app_delegate && _app_delegate->on_get_device_identity)
-        _app_delegate->on_get_device_identity(&id, &name, &display_name);
+        _app_delegate->on_get_device_identity(&id, &name, &display_name, &enrolled_device_id);
     out->id.funcs.encode           = _encode_string;
     out->id.arg                    = (void *)id;
     out->name.funcs.encode         = _encode_string;
     out->name.arg                  = (void *)name;
     out->display_name.funcs.encode = _encode_string;
     out->display_name.arg          = (void *)display_name;
+    out->enrolled_device_id.funcs.encode = _encode_string;
+    out->enrolled_device_id.arg          = (void *)enrolled_device_id;
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 

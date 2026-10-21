@@ -16,9 +16,16 @@ public enum System {
         sys_firmware_version(buffer, length)
     }
 
+    /// The enrolled device UUID (needs 37 bytes); 0 bytes while unenrolled.
     @inline(__always)
     public static func deviceId(buffer: UnsafeMutablePointer<CChar>, length: Int32) -> Int32 {
         sys_device_id(buffer, length)
+    }
+
+    /// The hardware id (factory MAC, needs 13 bytes), stable across enrollments.
+    @inline(__always)
+    public static func serialNumber(buffer: UnsafeMutablePointer<CChar>, length: Int32) -> Int32 {
+        sys_serial_number(buffer, length)
     }
 
     @inline(__always)

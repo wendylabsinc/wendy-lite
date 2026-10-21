@@ -505,8 +505,26 @@ esp_err_t wendy_conf_write(const void *data, size_t size, enum wendy_conf_write_
 {
     if (!data || size == 0)
         return ESP_ERR_INVALID_ARG;
+    bool wifi_only = mode == WENDY_CONF_WRITE_MODE_WIFI_ONLY;
+    if (wifi_only) {
+        pb_istream_t input = pb_istream_from_buffer(data, size);
+        bool seen = false;
+        while (input.bytes_left) {
+            pb_wire_type_t wire;
+            uint32_t tag;
+            bool eof;
+            if (!pb_decode_tag(&input, &wire, &tag, &eof) ||
+                tag != WendyConf_wifi_tag || wire != PB_WT_STRING || seen ||
+                !pb_skip_field(&input, wire))
+                return ESP_ERR_INVALID_ARG;
+            seen = true;
+        }
+        if (!seen) return ESP_ERR_INVALID_ARG;
+        mode = WENDY_CONF_WRITE_MODE_UPDATE;
+    }
     pthread_mutex_lock(&s_cache_lock);
-    esp_err_t result = _write_conf(data, size, mode);
+    esp_err_t result = wifi_only && s_enrollment_required && !s_cache.valid
+        ? ESP_ERR_INVALID_STATE : _write_conf(data, size, mode);
     pthread_mutex_unlock(&s_cache_lock);
     return result;
 }
@@ -662,15 +680,23 @@ done:
     return result;
 }
 
-void wendy_conf_enrollment_identity(char tenant[37], char device[65])
+void wendy_conf_get_enrolled_ids(char tenant[37], char device[65])
 {
+    _Static_assert(sizeof s_cache.conf.enrollment.tenant_id == 37 &&
+                   sizeof s_cache.conf.enrollment.device_id == 65, "enrollment id sizes");
     tenant[0] = device[0] = 0;
     pthread_mutex_lock(&s_cache_lock);
     if (s_cache.valid && s_cache.conf.has_enrollment) {
-        snprintf(tenant, 37, "%s", s_cache.conf.enrollment.tenant_id);
-        snprintf(device, 65, "%s", s_cache.conf.enrollment.device_id);
+        memcpy(tenant, s_cache.conf.enrollment.tenant_id, 37);
+        memcpy(device, s_cache.conf.enrollment.device_id, 65);
+        tenant[36] = device[64] = 0;
     }
     pthread_mutex_unlock(&s_cache_lock);
+}
+
+void wendy_conf_enrollment_identity(char tenant[37], char device[65])
+{
+    wendy_conf_get_enrolled_ids(tenant, device);
 }
 
 bool wendy_conf_has_enrollment(void)

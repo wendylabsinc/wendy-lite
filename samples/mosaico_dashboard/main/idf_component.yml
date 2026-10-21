@@ -1,0 +1,7 @@
+dependencies:
+  idf: ">=6.2"
+  esp-mosaico-bsp:
+    git: https://github.com/esp-mosaico/esp-mosaico-bsp.git
+    version: 5f88b91e1be055d1d3674364123b2779a1758377
+    path: components/esp-mosaico-bsp
+  espressif/esp_tinyusb: "2.3.0"

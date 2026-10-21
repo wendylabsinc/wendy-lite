@@ -1,8 +1,9 @@
 # Experimental signed mesh leaf
 
 Wendy Lite can join a Wendy local mesh as an IPv6 endpoint through one explicitly
-configured peer over Wi-Fi TCP, BLE L2CAP, or ESP-NOW. The build is opt-in and limited to native ESP32-S3
-profiles with PSRAM. The Seeed XIAO ESP32S3 profile compiles with ESP-IDF 6.0.3.
+configured peer over Wi-Fi TCP, BLE L2CAP, or ESP-NOW. Wi-Fi TCP can also
+discover a peer automatically. The build is opt-in and limited to native
+ESP32-S3 and ESP32-S31 profiles with PSRAM. The Seeed XIAO ESP32S3 profile compiles with ESP-IDF 6.0.3.
 The BLE image was tested on an ESP32-S3 DevKit with 8 MB PSRAM against a Linux
 router with no Wi-Fi credentials on the leaf. Logs confirmed mutual TLS,
 signed route leases and activation of the IPv6 interface after the replay
@@ -36,11 +37,28 @@ authorization stays in the existing application protocol. This is raw IP
 endpoint support; it does not implement Linux mesh application QUIC, the Linux
 application catalog, or the topology gRPC service on Lite. A router can report
 the leaf's signed announcements to the mesh visualizer. A direct topology
-snapshot from Lite remains unsupported.
+snapshot is available through `wendy_mesh_get_snapshot()` for an on-device
+display. It contains the authenticated direct peer and live signed membership,
+not remote adjacency.
+
+## Automatic Wi-Fi peer selection
+
+Enable `CONFIG_WENDY_MESH_AUTO_DISCOVER` with the TCP carrier to use local
+`_wendy-mesh._tcp` advertisements. The leaf filters canonical principals for its
+enrolled tenant, ignores itself and expired or malformed records, and tries up
+to eight IPv4 candidates in random order. It dials the Lite listener on port
+43024, not the advertised full-mesh transport port. Routers must enable
+`leafListen`. mDNS is an untrusted hint; mutual TLS verifies the advertised device
+against the tenant roots before mesh traffic is accepted.
+
+The leaf keeps a working connection, then rediscovers after disconnection. No
+peer pin is persisted. BLE, ESP-NOW, and TCP builds without discovery retain the
+explicit peer settings. The [Mosaico dashboard](../samples/mosaico_dashboard)
+enables discovery by default and displays waiting-for-Wi-Fi and discovery states.
 
 ## Authentication and route leases
 
-Each endpoint pins its peer's full same-tenant SPIFFE device principal.
+Each connection authenticates the peer's full same-tenant SPIFFE device principal.
 IP, Bluetooth and station MAC addresses are dial addresses, not identities.
 TCP and BLE leaves are TLS clients. One ESP-NOW endpoint is a TLS server.
 TLS 1.3 verifies both certificate chains with ALPN `wendy-local-mesh-leaf/3`.

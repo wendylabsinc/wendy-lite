@@ -70,6 +70,7 @@ extern "C" {
     fn sys_reboot();
     fn sys_firmware_version(buf: *mut u8, len: i32) -> i32;
     fn sys_device_id(buf: *mut u8, len: i32) -> i32;
+    fn sys_serial_number(buf: *mut u8, len: i32) -> i32;
     fn sys_sleep_ms(ms: i32);
     fn sys_yield();
 
@@ -373,9 +374,16 @@ pub mod sys {
         unsafe { sys_firmware_version(buf.as_mut_ptr() as *mut u8, buf.len() as i32) }
     }
 
+    /// The enrolled device UUID (needs 37 bytes); writes 0 bytes while unenrolled.
     #[inline(always)]
     pub fn device_id(buf: &mut [u8]) -> i32 {
         unsafe { sys_device_id(buf.as_mut_ptr() as *mut u8, buf.len() as i32) }
+    }
+
+    /// The hardware id (factory MAC, needs 13 bytes), stable across enrollments.
+    #[inline(always)]
+    pub fn serial_number(buf: &mut [u8]) -> i32 {
+        unsafe { sys_serial_number(buf.as_mut_ptr() as *mut u8, buf.len() as i32) }
     }
 
     #[inline(always)]

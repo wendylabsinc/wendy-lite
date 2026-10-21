@@ -21,7 +21,9 @@ esp_err_t wendy_ble_host_init(void);
 ///
 /// The advertised identity is read from wendy_conf, the same source
 /// com_get_device_identity() serves to WendyCom, so a scan and an `identity`
-/// command can never disagree.
+/// command can never disagree. Enrolled devices also publish their device
+/// principal (characteristic 0006), whose UUID is the device's one id; the
+/// advertised hardware id is never that id.
 ///
 /// Enrolled devices advertise with mTLS enabled and use their enrolled
 /// identity to authenticate same-tenant operators over TLS 1.3. They never

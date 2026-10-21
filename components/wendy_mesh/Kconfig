@@ -3,12 +3,12 @@ menu "Wendy signed mesh leaf"
         bool "Enable experimental signed mesh leaf"
         default n
         depends on WENDY_PKI && WENDY_WIFI_ENABLED && LWIP_IPV6
-        depends on IDF_TARGET_ESP32S3 && SPIRAM && !WENDY_WASM && !LWIP_IPV6_FORWARD
+        depends on (IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32S31) && SPIRAM && !WENDY_WASM && !LWIP_IPV6_FORWARD
         depends on LWIP_HOOK_IP6_ROUTE_CUSTOM
         help
-            Source-only experimental profile for ESP32-S3 with PSRAM. Connect
-            to one explicitly pinned same-tenant peer over TLS 1.3.
-            No transit forwarding, donor role, discovery, or legacy fallback.
+            Experimental endpoint for ESP32-S3 or ESP32-S31 with PSRAM. Connect
+            to one same-tenant peer over TLS 1.3, discovered on Wi-Fi or
+            explicitly configured. No transit forwarding or legacy fallback.
             Requires fresh signed time and a canonical UUID enrollment.
             Select the lwIP custom IPv6 route hook before enabling this option.
 
@@ -58,14 +58,24 @@ menu "Wendy signed mesh leaf"
             device UUID. The responder relays nonce-bound timestamp requests
             to its own enrolled timestamp authority before mutual TLS.
 
+    config WENDY_MESH_AUTO_DISCOVER
+        bool "Automatically discover same-tenant mesh routers"
+        depends on WENDY_MESH_TCP
+        default n
+        help
+            Discover _wendy-mesh._tcp on the local network and try candidates
+            in random order. Authenticate the advertised device and tenant
+            over mutual TLS at the Lite listener port. Keep a working peer
+            until disconnection, then discover again. No peer pin is stored.
+
     config WENDY_MESH_ROUTER_HOST
         string "Explicit router IP address or hostname"
-        depends on WENDY_MESH_TCP
+        depends on WENDY_MESH_TCP && !WENDY_MESH_AUTO_DISCOVER
         default ""
 
     config WENDY_MESH_ROUTER_DEVICE
         string "Pinned peer device UUID"
-        depends on WENDY_MESH_LEAF
+        depends on WENDY_MESH_LEAF && !WENDY_MESH_AUTO_DISCOVER
         default ""
 
     config WENDY_MESH_ROUTER_PORT

@@ -16,12 +16,20 @@ public entry point without test-only reset functions.
 Coverage includes partial sensor availability, initialization cleanup and retry,
 channel formats, competing subscriptions, client-specific cancellation, and
 waiting for frame completion before releasing camera buffers or stopping audio.
-The Korvo scenarios run two sender tasks on host threads and verify concurrent
-camera/audio ownership, independent disconnects, stereo timestamps, and cleanup
-when creation of the second sender fails.
+The concurrent scenarios build once per board, run both sender tasks on host
+threads, and verify concurrent camera/audio ownership, independent disconnects,
+audio timestamps, and cleanup when creation of the second sender fails.
+Catch-up tests check that an XIAO audio frame carries the samples queued behind
+its block, up to the frame's capacity.
 Counter tests check cancellation completions, queue refusal, failed capture,
 duration totals/maxima, and a completion that races ahead of submission return.
 Cancellation tests require stream-end before releasing a pending frame, and
 require the frame callback before freeing its buffer or stopping capture.
 The tests do not validate hardware pin configuration, capture drivers, or task
 scheduling on the device.
+
+The Mosaico camera tests also compile the production capture worker. A controlled
+camera and encoder verify that capture continues while a JPEG is borrowed,
+waiting images are replaced, restart discards stale images, shutdown waits for
+an active encode, and capture/encoding errors return raw buffers. Allocation,
+event-group, and task-creation failures must clean up and allow a later retry.

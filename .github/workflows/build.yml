@@ -24,7 +24,7 @@ jobs:
           # catalog.json names are unprefixed (e.g. "esp32c5"); artifacts,
           # release assets, and GCS publish paths have a wendy_mcu_ prefix,
           # stored as asset_name here for downstream jobs to use.
-          echo "matrix=$(jq -c '{include: (.binaries | map({idf_version: "v6.0.3", preview: false} + . + {asset_name: ("wendy_mcu_" + .name)}))}' catalog.json)" >> "$GITHUB_OUTPUT"
+          echo "matrix=$(jq -c '{include: (.binaries | map({idf_version: "v6.0.3", preview: false, project_dir: "."} + . + {asset_name: ("wendy_mcu_" + .name)}))}' catalog.json)" >> "$GITHUB_OUTPUT"
 
   build:
     needs: catalog
@@ -33,7 +33,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.catalog.outputs.matrix) }}
     container:
-      image: espressif/idf:${{ matrix.idf_version }}
+      image: ${{ matrix.idf_image || format('espressif/idf:{0}', matrix.idf_version) }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -90,11 +90,18 @@ jobs:
           BOARD_CFG: ${{ matrix.board_cfg }}
           TARGET: ${{ matrix.target }}
           PREVIEW: ${{ matrix.preview }}
+          PROJECT_DIR: ${{ matrix.project_dir }}
         run: |
           . "$IDF_PATH/export.sh"
           idf_args=()
           if [ "$PREVIEW" = true ]; then
             idf_args+=(--preview)
+          fi
+          if [ "$PROJECT_DIR" != . ]; then
+            idf.py "${idf_args[@]}" -C "$PROJECT_DIR" -B "$GITHUB_WORKSPACE/build" \
+              -D SDKCONFIG="$GITHUB_WORKSPACE/build/sdkconfig" \
+              -D WENDY_VERSION_DEFAULTS="$GITHUB_WORKSPACE/version.defaults" build
+            exit 0
           fi
           # boards/<board>.cfg is a one-line idf.py argfile holding
           # "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;boards/<board>.defaults".
@@ -119,7 +126,7 @@ jobs:
 
           build = Path("build")
           config = json.loads((build / "config/sdkconfig.json").read_text())
-          for option in ("WENDY_USJ", "WENDY_WIFI_ENABLED", "WENDY_BLE",
+          for option in ("WENDY_WIFI_ENABLED", "WENDY_BLE",
                          "BT_NIMBLE_ENABLED", "WENDY_CLOUD", "WENDY_PKI",
                          "WENDY_CORE_WATCHDOG", "BOOTLOADER_WDT_DISABLE_IN_USER_CODE",
                          "MBEDTLS_USE_BUNDLED_PQC", "MBEDTLS_SSL_TLS1_3_SIG_MLDSA65"):
@@ -134,6 +141,8 @@ jobs:
           assert config.get("ESPTOOLPY_NO_STUB")
           assert flash["extra_esptool_args"]["stub"] is False
           assert flash["extra_esptool_args"]["chip"] == "esp32s31"
+          if os.environ["BOARD_CFG"] != "esp32s31_mosaico_native":
+              assert config.get("WENDY_USJ")
           if os.environ["BOARD_CFG"] == "esp32s31_generic_native":
               assert not config.get("SPIRAM")
               assert not config.get("WENDY_USJ_USE_UART")
@@ -180,6 +189,27 @@ jobs:
                   "flash_size": "16MB", "flash_mode": "dio", "flash_freq": "80m",
               }
               assert flash["otadata"]["offset"] == "0xfc0000"
+          elif os.environ["BOARD_CFG"] == "esp32s31_mosaico_native":
+              for option in ("SPIRAM", "WENDY_MESH_LEAF", "WENDY_MESH_TCP",
+                             "WENDY_MESH_AUTO_DISCOVER", "LWIP_HOOK_IP6_ROUTE_CUSTOM",
+                             "LV_OS_FREERTOS", "LV_USE_CLIB_MALLOC", "TINYUSB_CDC_ENABLED"):
+                  assert config.get(option), f"{option} must be enabled on Mosaico"
+              assert not config.get("WENDY_USJ")
+              assert config["TINYUSB_CDC_COUNT"] == 2
+              assert config["ESPTOOLPY_FLASHSIZE"] == "16MB"
+              assert flash["otadata"]["offset"] == "0x7c0000"
+              assert config.get("BOOTLOADER_APP_ROLLBACK_CONFIRM_BY_APP")
+              assert config["SPIRAM_MALLOC_ALWAYSINTERNAL"] == 64
+              assert config["SPIRAM_MALLOC_RESERVE_INTERNAL"] == 131072
+              # Unpatched SDK headers have a different PQC key layout from
+              # the bundled libraries and silently break certificate parsing.
+              import shlex
+              sdk_vendor = Path(os.environ["IDF_PATH"]) / "components" / "mbedtls" / "mbedtls"
+              commands = json.loads((build / "compile_commands.json").read_text())
+              for command in commands:
+                  for arg in shlex.split(command["command"]):
+                      if arg.startswith("-I"):
+                          assert not Path(arg[2:]).is_relative_to(sdk_vendor), command["file"]
           else:
               raise AssertionError(f"Unverified ESP32-S31 board: {os.environ['BOARD_CFG']}")
           PY

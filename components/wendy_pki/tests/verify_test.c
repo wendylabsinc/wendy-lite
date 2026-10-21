@@ -82,7 +82,7 @@ int main(int argc, char **argv)
         free(p);
     }
     const char *principal =
-        "spiffe://wendy.sh/tenant/2558fd76-afc7-466e-9613-6b715296a526/device/lite-test";
+        "spiffe://wendy.sh/tenant/2558fd76-afc7-466e-9613-6b715296a526/device/00000000-0000-4000-8000-000000000004";
     size_t key_n;
     unsigned char *key = load(argv[1], "device-key.der", &key_n);
     const char *identities[] = {"identity", "identity-expired", "identity-wrong-eku",

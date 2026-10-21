@@ -155,9 +155,9 @@ idf.py monitor
 The `seeed_xiao_esp32s3_native` board overlay and released
 `esp32s3_seeed_xiao_native` firmware bundle SensorLink support for the XIAO
 ESP32S3 Sense expansion board. Channel 0 streams 800×600 MJPEG video. Channel 1
-streams signed 16-bit little-endian PCM audio at 16 kHz, mono, in 20 ms chunks.
-One stream can be active at a time, so stop camera viewing before listening to
-the microphone.
+streams signed 16-bit little-endian PCM audio at 16 kHz, mono, in chunks of
+20 ms or more. The two are separate inputs and can stream at the same time,
+to one client or to two.
 
 After enrolling the device, use a Wendy CLI with SensorLink camera/audio support:
 
@@ -185,6 +185,10 @@ Configure a fresh build to apply these defaults, as described above.
 No published `espressif/wasm-micro-runtime` release lists `esp32c61` as a supported target yet, so WASM app support -- and every component that exists solely to bridge native code to WASM guests (`wendy_wasm`, `wendy_hal`, `wendy_hal_export`, and everything `wendy_hal_export` pulls in) -- is dropped from the build on this target via `EXCLUDE_COMPONENTS` set conditionally on `IDF_TARGET` in the root `CMakeLists.txt`, rather than depending on an unofficial WAMR fork. This is target-conditioned in `CMakeLists.txt` itself (not the board argfile) so it applies however `esp32c61` gets selected as the target. The C61 also has no RMT peripheral, so the NeoPixel HAL falls back to the SPI-backed `led_strip` driver automatically on chips where it's built.
 
 ### ESP32-S31 notes
+
+The [Mosaico dashboard sample](samples/mosaico_dashboard/README.md) adds a native
+touch UI with live motion and Wendy device status for ESP-Mosaico. It uses a
+separately pinned ESP-IDF 6.2 development toolchain required by the board package.
 
 Use ESP-IDF 6.1 for ESP32-S31. The SDK still lists `esp32s31` as a
 [preview target](https://github.com/espressif/esp-idf/blob/v6.1/tools/idf_py_actions/constants.py),
@@ -514,7 +518,7 @@ The `WendyLite` module provides Swift-idiomatic APIs for every subsystem:
 | `RMT` | `configure`, `transmit`, `release` |
 | `NeoPixel` | `initialize`, `set`, `clear` |
 | `Timer` | `delayMs`, `millis`, `setTimeout`, `setInterval`, `cancel` |
-| `System` | `uptimeMs`, `reboot`, `firmwareVersion`, `deviceId`, `sleepMs`, `yield` |
+| `System` | `uptimeMs`, `reboot`, `firmwareVersion`, `deviceId`, `serialNumber`, `sleepMs`, `yield` |
 | `Console` | `print` |
 | `Storage` | `get`, `set`, `delete`, `exists` |
 | `BLE` | `initialize`, `startAdvertising`, `stopAdvertising`, `startScan`, `stopScan`, `connect`, `disconnect` |
@@ -528,6 +532,13 @@ The `WendyLite` module provides Swift-idiomatic APIs for every subsystem:
 | `USB` | `cdcWrite`, `cdcRead`, `hidSendReport` |
 
 Type-safe enums: `GPIOMode`, `GPIOPull`, `GPIOInterruptEdge`, `SocketDomain`, `SocketType`, `OTelLogLevel`.
+
+`System.deviceId` (`sys_device_id`) returns the device's one id: the UUID it was
+enrolled with, which is also its cloud asset id. It needs a 37-byte buffer and
+writes an empty string while the board is unenrolled, so apps must handle an
+empty id. `System.serialNumber` (`sys_serial_number`, 13-byte buffer) returns
+the hardware id (factory MAC) for apps that need a stable hardware identity.
+Firmware before WDY-3919 returned the hardware id from `sys_device_id`.
 
 The raw C functions are also available through the re-exported `CWendyLite` module.
 

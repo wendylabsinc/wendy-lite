@@ -48,7 +48,7 @@ static uint8_t key_der[256];
 static size_t key_der_size;
 static WendyConfEnrollment config = {
     .tenant_id = "2558fd76-afc7-466e-9613-6b715296a526",
-    .device_id = "lite-test",
+    .device_id = "00000000-0000-4000-8000-000000000004",
     .token = "test-token",
     .csr_url = "https://csr.example/v1/2558fd76-afc7-466e-9613-6b715296a526",
     .time_url = "https://time.example",
@@ -739,6 +739,9 @@ static void test_mesh_identity(void)
     wendy_pki_connection* connection = NULL;
     struct wendy_pki_mesh_identity identity;
     reset();
+    // The default enrollment now has a valid UUID. Explicitly exercise the
+    // legacy non-UUID identity that mesh must reject before requesting time.
+    strcpy(config.device_id, "lite-test");
     assert(wendy_pki_mesh_connect("router", 43024, router, &connection, &identity) != ESP_OK);
     assert(!timestamp_calls && !mesh_connect_calls);
     strcpy(config.device_id, "12345678-9abc-4def-8123-000000000002");
@@ -898,6 +901,18 @@ int main(int argc, char **argv)
     build_roots_size = 0;
     assert(wendy_pki_connect(&connection) != ESP_OK);
     assert(broker_calls == 0 && renewal_calls == 0);
+    /* The device id is the canonical lowercase UUID the CLI minted (WDY-3919);
+     * hardware-derived, upper-case or malformed ids are refused before use. */
+    const char *bad_ids[] = {"lite-441bf6804824", "441bf6804824",
+        "00000000-0000-4000-8000-00000000000A", "00000000-0000-4000-8000-0000000000044",
+        "00000000_0000-4000-8000-000000000004"};
+    for (size_t i = 0; i < sizeof bad_ids / sizeof *bad_ids; i++) {
+        reset();
+        strcpy(config.device_id, bad_ids[i]);
+        assert(wendy_pki_connect(&connection) != ESP_OK);
+        assert(broker_calls == 0 && renewal_calls == 0);
+    }
+    strcpy(config.device_id, "00000000-0000-4000-8000-000000000004");
     /* A failed verification retains only a pending response. The retry must
      * verify again and must not spend the one-use enrollment token twice. */
     reset();

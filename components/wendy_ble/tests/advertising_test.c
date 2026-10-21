@@ -4,7 +4,7 @@
 
 #include <stdio.h>
 
-bool test_enrolled, test_reset, test_current;
+bool test_enrolled, test_reset, test_current, test_nimble_initialized;
 char test_enrollment_device_id[65];
 unsigned test_adv_starts;
 bool test_fail_semaphore, test_fail_task;
@@ -32,7 +32,9 @@ static void reset_fixture(void)
     free(_device_name);
     free(_display_name);
     _device_id = _device_name = _display_name = NULL;
+    _principal[0] = 0;
     _host_initialized = _started = _enrolled = false;
+    test_nimble_initialized = false;
     if (_link_closed)
         vSemaphoreDelete(_link_closed);
     _link_closed = NULL;
@@ -95,6 +97,13 @@ static void assert_advertisement(uint8_t expected_mtls)
     assert(memcmp(id.data, expected_id, id.len) == 0);
     struct os_mbuf psm = read_info(INFO_PSM);
     assert(psm.len == 2 && psm.data[0] == 128 && psm.data[1] == 0);
+    // The enrolled principal carries the full device UUID; the hardware id
+    // never stands in for it, and an unenrolled board publishes nothing.
+    const char *principal = expected_mtls
+        ? "spiffe://wendy.sh/tenant/00000000-0000-4000-8000-000000000001/device/00000000-0000-4000-8000-000000000004"
+        : "";
+    struct os_mbuf uri = read_info(INFO_PRINCIPAL);
+    assert(uri.len == strlen(principal) && memcmp(uri.data, principal, uri.len) == 0);
 }
 #endif
 

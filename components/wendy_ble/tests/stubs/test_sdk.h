@@ -70,13 +70,17 @@ static inline void wendy_conf_enrollment_identity(char tenant[37], char device[6
 }
 static inline bool wendy_pki_reset_in_progress(void) { return test_reset; }
 static inline const char *wendy_conf_get_device_id(void) { return "lite-123"; }
+static inline void wendy_conf_get_enrolled_ids(char tenant[37], char device[65]) {
+    strcpy(tenant, test_enrolled ? "00000000-0000-4000-8000-000000000001" : "");
+    strcpy(device, test_enrolled ? "00000000-0000-4000-8000-000000000004" : "");
+}
 static inline const char *wendy_conf_get_resolved_device_name(void) { return "wendy-lite-123"; }
 static inline const char *wendy_conf_get_resolved_device_display_name(void) { return "Test Lite"; }
 
 typedef struct { uint8_t type; } ble_uuid_t;
 typedef struct { ble_uuid_t u; uint8_t value[16]; } ble_uuid128_t;
 #define BLE_UUID128_INIT(...) { .u = { 128 }, .value = { __VA_ARGS__ } }
-struct os_mbuf { uint8_t data[128]; size_t len; };
+struct os_mbuf { uint8_t data[192]; size_t len; };
 static inline int os_mbuf_append(struct os_mbuf *buf, const void *data, uint16_t len) {
     assert(buf->len + len <= sizeof(buf->data));
     memcpy(buf->data + buf->len, data, len); buf->len += len; return 0;
@@ -144,7 +148,11 @@ static inline int ble_gap_adv_start(uint8_t type, const void *addr, int duration
 static inline int ble_hs_util_ensure_addr(int privacy) { return 0; }
 static inline int ble_hs_id_infer_auto(int privacy, uint8_t *type) { *type = 0; return 0; }
 static inline int ble_hs_synced(void) { return 1; }
-static inline esp_err_t nimble_port_init(void) { return ESP_OK; }
+extern bool test_nimble_initialized;
+static inline esp_err_t nimble_port_init(void) {
+    test_nimble_initialized = true;
+    return ESP_OK;
+}
 static inline void nimble_port_run(void) {}
 static inline void nimble_port_freertos_deinit(void) {}
 static inline void nimble_port_freertos_init(void (*fn)(void *)) {}
@@ -154,7 +162,11 @@ static inline int ble_gatts_count_cfg(const struct ble_gatt_svc_def *svcs) { ret
 static inline int ble_gatts_add_svcs(const struct ble_gatt_svc_def *svcs) {
     test_services = svcs; return 0;
 }
-static inline int ble_svc_gap_device_name_set(const char *name) { return 0; }
+static inline int ble_svc_gap_device_name_set(const char *name) {
+    // NimBLE takes its host mutex here, which only exists after port init.
+    assert(test_nimble_initialized);
+    return 0;
+}
 
 enum wcom_interruption_reason { WCOM_INTERRUPTION_CONNECTION_CLOSED };
 struct wcom_operation { void (*func)(struct wcom_operation *); };

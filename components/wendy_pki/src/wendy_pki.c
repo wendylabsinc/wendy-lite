@@ -533,21 +533,27 @@ done:
     cJSON_Delete(reply);
     return result;
 }
-static int valid_config(const WendyConfEnrollment *c)
+/* Canonical lowercase 8-4-4-4-12 UUID, the only form tenant and device ids take. */
+static int canonical_uuid(const char *id)
 {
-    if (strlen(c->tenant_id) != 36 || !c->device_id[0] || !c->broker_host[0] || !c->broker_port ||
-        c->broker_port > 65535)
+    if (strlen(id) != 36)
         return 0;
     for (int i = 0; i < 36; i++)
         if (i == 8 || i == 13 || i == 18 || i == 23)
         {
-            if (c->tenant_id[i] != '-')
+            if (id[i] != '-')
                 return 0;
         }
-        else if (!strchr("0123456789abcdef", c->tenant_id[i]))
+        else if (!strchr("0123456789abcdef", id[i]))
             return 0;
-    if (strspn(c->device_id, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.") !=
-        strlen(c->device_id))
+    return 1;
+}
+static int valid_config(const WendyConfEnrollment *c)
+{
+    /* The device id is the device's one id (WDY-3919): the CLI-minted UUID in
+     * the certificate's SAN, also its cloud asset id. */
+    if (!canonical_uuid(c->tenant_id) || !canonical_uuid(c->device_id) || !c->broker_host[0] ||
+        !c->broker_port || c->broker_port > 65535)
         return 0;
     char suffix[48];
     snprintf(suffix, sizeof suffix, "/v1/%s", c->tenant_id);

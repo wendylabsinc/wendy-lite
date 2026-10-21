@@ -1,5 +1,6 @@
 #pragma once
 #include "wendy_mesh_protocol.h"
+#include "wendy_mesh_status.h"
 #include "wendy_pki_mesh.h"
 
 struct wm_origin
@@ -54,3 +55,7 @@ int wm_directory_apply(struct wm_directory* directory, const char* tenant,
     const struct wm_json* doc, unsigned envelope, int64_t now, int64_t now_us);
 bool wm_directory_address(
     const struct wm_directory* directory, const uint8_t address[16], int64_t now_us);
+
+/* Copies live, unambiguous signed claims without mutating replay receipts. */
+unsigned wm_directory_members(const struct wm_directory* directory, int64_t now_us,
+    struct wendy_mesh_member* members, unsigned capacity);

@@ -1,14 +1,40 @@
 # Bundled SensorLink sources
 
-`CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3` keeps the XIAO ESP32S3 Sense path:
-800x600 MJPEG or 16 kHz mono PCM, with one active source at a time.
+`CONFIG_WENDY_SENSOR_LINK_MOSAICO` exposes 1280x720 MJPEG at quality 75 on
+channel 0 and mono microphone audio on channel 1. A dedicated capture task
+drains the camera while a subscriber sends its previous JPEG. Two JPEG output
+buffers hold at most one borrowed image and one waiting image. Capture replaces
+the waiting image, so a slow subscriber resumes with the latest completed
+capture. It never overwrites a borrowed image. Resolution and JPEG quality stay
+unchanged.
+
+The second JPEG buffer reserves another 1,843,200 bytes plus allocator alignment,
+and the capture task has a 4 KiB stack. Capture and encoding run only while
+subscribed. Stop waits for the bounded camera read or encode to finish and for
+its raw buffer to return before stopping the driver. Restart discards any waiting
+JPEG from the previous subscription.
+
+For Mosaico, the sender's capture-duration counters measure waiting for a JPEG
+from that task, not the background capture and encoding time. Dropped waiting
+images are not transport submissions. Delivered FPS, end-to-end latency, and
+memory headroom still need measurement on the board.
+
+All three boards expose camera channel 0/input 0 and microphone channel 1/input 1.
+Each channel has its own sender and retains at most one frame until its
+transport completion callback, so the two stream concurrently and can have
+different subscribing clients. A second subscriber for an occupied channel
+receives `BUSY`; a two-channel request reserves both channels only when both
+are available.
+
+`CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3` targets the XIAO ESP32S3 Sense: 800x600
+MJPEG and 16 kHz mono PCM. An audio frame carries a 20 ms block plus up to
+140 ms that queued while the previous frame was sent, which is as much as the
+PDM driver queues. Audio thus keeps pace while camera chunks slow the link and
+loses samples only when one send stalls for longer than that.
 
 `CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1` targets the ESP32-S31-Korvo-1 V1.1.
-It exposes camera channel 0/input 0 and microphone channel 1/input 1. Each channel
-has its own sender and retains at most one frame until its transport completion
-callback. The two channels can have different subscribing clients. A second
-subscriber for an occupied channel receives `BUSY`; a two-channel request
-reserves both channels only when both are available.
+Its audio goes through `esp_codec_dev`, which cannot report queued samples, so
+each frame carries one 20 ms block.
 
 `wendy_sensor_link_get_stats()` snapshots lifetime counters for each channel.
 It reports accepted submissions, submitted bytes, buffer-return completions,

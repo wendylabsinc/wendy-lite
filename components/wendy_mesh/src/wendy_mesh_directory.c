@@ -185,3 +185,22 @@ bool wm_directory_address(const struct wm_directory* d, const uint8_t address[16
         }
     return owners == 1;
 }
+
+unsigned wm_directory_members(const struct wm_directory* d, int64_t now_us,
+    struct wendy_mesh_member* members, unsigned capacity)
+{
+    if (!d || !members || now_us < 0) return 0;
+    unsigned count = 0;
+    for (unsigned i = 0; i < d->count && count < capacity; i++) {
+        const struct wm_origin* origin = &d->origins[i];
+        if (!origin->revision || origin->expires_us <= now_us) continue;
+        uint8_t address[16];
+        wm_address(origin->device, address);
+        if (!wm_directory_address(d, address, now_us)) continue;
+        wm_uuid_format(origin->device, members[count].device);
+        int64_t remaining = (origin->expires_us - now_us - 1) / 1000000 + 1;
+        members[count].lease_seconds = remaining > UINT32_MAX ? UINT32_MAX : (uint32_t)remaining;
+        count++;
+    }
+    return count;
+}
