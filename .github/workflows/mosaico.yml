@@ -52,7 +52,7 @@ jobs:
           grep -q '^CONFIG_TINYUSB_CDC_COUNT=2$' sdkconfig
           grep -q '^CONFIG_WENDY_CLOUD=y$' sdkconfig
           grep -q '^CONFIG_WENDY_MESH_LEAF=y$' sdkconfig
-          grep -q '^CONFIG_WENDY_MESH_TCP=y$' sdkconfig
+          grep -q '^CONFIG_WENDY_MESH_WIFI_BLE=y$' sdkconfig
           grep -q '^CONFIG_WENDY_MESH_AUTO_DISCOVER=y$' sdkconfig
           grep -q '^CONFIG_LWIP_HOOK_IP6_ROUTE_CUSTOM=y$' sdkconfig
           grep -q '^CONFIG_WENDY_SENSOR_LINK_MOSAICO=y$' sdkconfig

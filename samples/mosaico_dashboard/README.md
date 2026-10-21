@@ -96,19 +96,23 @@ BLE management. The sample discovers `_wendy-mesh._tcp` advertisements on the
 local network, filters for the enrolled tenant, and tries routers in random
 order on the Lite listener port, 43024. It keeps a working connection and
 rediscovers after a disconnect. No router address or peer UUID is pinned.
+If Wi-Fi cannot establish a mesh session, the sample accepts an incoming BLE
+router with a valid same-tenant device certificate. Configure the Linux router's
+`leafBLEPeers` entry as described in the signed mesh guide below.
 
 Advertisements are only discovery hints. Mutual TLS must authenticate the
 advertised device under the enrolled tenant's trust roots before the dashboard
 shows a connection. Routers need the Lite TCP listener enabled and must be
 reachable on the same multicast network. The endpoint does not forward transit
 traffic. Existing saved sdkconfig files must enable
-`CONFIG_WENDY_MESH_AUTO_DISCOVER=y`; changed defaults do not override them.
+`CONFIG_WENDY_MESH_AUTO_DISCOVER=y`, `CONFIG_WENDY_MESH_WIFI_BLE=y`, two NimBLE
+L2CAP channels, and 256-byte MSYS1 blocks; changed defaults do not override them.
 
 After mutual authentication, a fresh trust epoch waits 125 seconds before
 admitting IP traffic. The dashboard shows the remaining wait. The membership
 list can populate during that wait. See [the signed mesh guide](../../docs/signed-mesh-leaf.md)
-for router setup, enrollment, transport options, and the replay rules. BLE and
-ESP-NOW remain selectable in the component; this sample's build check uses TCP.
+for router setup, enrollment, transport options, and the replay rules. The sample
+keeps one active session and reports its Wi-Fi or BLE carrier.
 
 ## Install and connect
 
@@ -206,7 +210,7 @@ cannot open the same USB serial port. Existing builds must enable
 
 ## Validation
 
-The CI build checks that mesh, the TCP carrier, and the custom IPv6 route hook
+The CI build checks that mesh, Wi-Fi/BLE fallback, and the custom IPv6 route hook
 are enabled alongside networking, enrollment, PSRAM, display, touch, and the IMU.
 The topology host test covers lease expiry, withdrawals, unsigned entries,
 address collisions, bounded output, and preservation of replay receipts.
