@@ -739,6 +739,9 @@ static void test_mesh_identity(void)
     wendy_pki_connection* connection = NULL;
     struct wendy_pki_mesh_identity identity;
     reset();
+    // The default enrollment now has a valid UUID. Explicitly exercise the
+    // legacy non-UUID identity that mesh must reject before requesting time.
+    strcpy(config.device_id, "lite-test");
     assert(wendy_pki_mesh_connect("router", 43024, router, &connection, &identity) != ESP_OK);
     assert(!timestamp_calls && !mesh_connect_calls);
     strcpy(config.device_id, "12345678-9abc-4def-8123-000000000002");
