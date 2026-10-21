@@ -260,11 +260,12 @@ static int open_tls(const char* host, unsigned port, const uint8_t* key, size_t 
         || (stream ? (!mesh || !stream->read || !stream->write || !stream->wait)
                    : (!host || !host[0] || strlen(host) > 253 || !port || port > 65535)))
         return -1;
+    bool discover_peer = mesh && stream && !server && !gateway && !router;
     if (mesh
-        && (!device || !router || !wendy_identity_uuid((const unsigned char*)tenant, strlen(tenant))
+        && (!device || (!router && !discover_peer) || !wendy_identity_uuid((const unsigned char*)tenant, strlen(tenant))
             || !wendy_identity_uuid((const unsigned char*)device, strlen(device))
-            || !wendy_identity_uuid((const unsigned char*)router, strlen(router))
-            || !strcmp(device, router)))
+            || (router && (!wendy_identity_uuid((const unsigned char*)router, strlen(router))
+                || !strcmp(device, router)))))
         return -1;
     wendy_pki_connection* c = calloc(1, sizeof *c);
     if (!c)
@@ -405,8 +406,7 @@ static int open_tls(const char* host, unsigned port, const uint8_t* key, size_t 
         const char* alpn = mbedtls_ssl_get_alpn_protocol(&c->ssl);
         const mbedtls_x509_crt* peer = mbedtls_ssl_get_peer_cert(&c->ssl);
         char expected[106];
-        snprintf(
-            expected, sizeof expected, "spiffe://wendy.sh/tenant/%s/device/%s", tenant, router);
+        snprintf(expected, sizeof expected, "spiffe://wendy.sh/tenant/%s/device/", tenant);
         if (!alpn || strcmp(alpn, gateway ? "wendy-mesh-internet/1" : WENDY_PKI_MESH_ALPN) || !peer
             || wendy_pki_verify_peer(peer->raw.p, peer->raw.len, tenant) != WENDY_PEER_ROLE_DEVICE)
             goto fail;
@@ -417,9 +417,14 @@ static int open_tls(const char* host, unsigned port, const uint8_t* key, size_t 
             if (mbedtls_x509_parse_subject_alt_name(&a->buf, &san)
                 || san.type != MBEDTLS_X509_SAN_UNIFORM_RESOURCE_IDENTIFIER)
                 continue;
-            if (san.san.unstructured_name.len != strlen(expected)
-                || memcmp(san.san.unstructured_name.p, expected, strlen(expected)))
+            const unsigned char* uri = san.san.unstructured_name.p;
+            if (san.san.unstructured_name.len != 105
+                || memcmp(uri, expected, 69)
+                || !wendy_identity_uuid(uri + 69, 36)
+                || !memcmp(uri + 69, device, 36)
+                || (router && memcmp(uri + 69, router, 36)))
                 goto fail;
+            memcpy(c->mesh_peer, uri + 69, 36);
             count++;
         }
         if (count != 1)

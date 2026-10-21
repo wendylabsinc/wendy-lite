@@ -222,9 +222,32 @@ Go verifier, including tampering and restart replay. Its separate Linux
 namespace test covers TLS, Babel and TUN routing with a synthetic leaf. Neither
 test substitutes for running the C lwIP interface on a physical board.
 
+## Wi-Fi with BLE fallback
+
+`CONFIG_WENDY_MESH_WIFI_BLE=y` includes both transports in one firmware image.
+Each connection attempt tries Wi-Fi first. Automatic discovery tries one randomly
+ordered candidate per round, then opens a five-second BLE acceptance window.
+After a failed round, the worker waits one second before trying again. BLE works
+without Wi-Fi credentials or an access-point connection. A working session stays
+on its carrier until it disconnects or its signed-time window expires; Wi-Fi
+recovery does not interrupt a working BLE session.
+
+The Linux router must dial the leaf using `leafBLEPeers`, as shown below. This
+mode does not scan for Bluetooth routers. A BLE connection accepts a canonical
+device UUID from the enrolled tenant's verified certificate, excluding the leaf's
+own identity. It requires the same fresh signed time, mutual TLS, ALPN, route
+proofs and replay quarantine as Wi-Fi. No router UUID pin is needed on the leaf.
+TCP connections still verify the exact peer advertised by discovery or configured
+explicitly. The optional Internet gateway always retains its explicit UUID pin.
+
+Only one mesh session is active. BLE mesh channels are refused outside the
+acceptance window, including while Wi-Fi mesh is active. WendyCom's separate
+management channel remains available. The status snapshot reports the active
+carrier, or `Wi-Fi/BLE` while waiting.
+
 ## BLE without access-point association
 
-Choose `CONFIG_WENDY_MESH_BLE=y` instead of TCP, enable
+For a dedicated BLE-only build, choose `CONFIG_WENDY_MESH_BLE=y`, enable
 `CONFIG_BT_NIMBLE_L2CAP_COC_MAX_NUM=2` and
 `CONFIG_BT_NIMBLE_MSYS_1_BLOCK_SIZE=256`, and set
 `CONFIG_WENDY_MESH_BLE_PSM=129`. Keep `CONFIG_WENDY_BLE=y` and
@@ -239,8 +262,10 @@ Bulk sends also reserve four blocks in NimBLE's smallest host buffer pool for
 credit updates, ATT and incoming HCI traffic. Under buffer pressure, sends
 back off so credit updates can keep the channel moving.
 
-Set `CONFIG_WENDY_MESH_ROUTER_DEVICE` to the Linux router's enrolled UUID.
-The host and TCP port settings are unused for BLE. Add this to the router's
+Dedicated BLE-only builds require `CONFIG_WENDY_MESH_ROUTER_DEVICE` to contain
+the Linux router's enrolled UUID. Combined Wi-Fi/BLE builds authenticate the
+incoming router's same-tenant certificate instead. The host and TCP port settings
+are unused for BLE. Add this to the router's
 existing `local-mesh.json`, using the actual ESP32 identity and Bluetooth address:
 
 ```json
@@ -291,9 +316,9 @@ epoch cannot acknowledge or append to the current stream. TLS protects the
 contents and identity; ESP-NOW link-layer encryption is not required.
 
 This is a direct two-endpoint link. Lite does not forward packets for a third
-ESP32. Each build selects one mesh carrier and one pinned peer; simultaneous
-links, automatic carrier failover and ESP-NOW route discovery are not implemented.
-Wi-Fi TCP remains the default mesh carrier.
+ESP32. ESP-NOW builds select one pinned peer and do not discover routes or
+fall back to another carrier. The combined Wi-Fi/BLE profile supports carrier
+fallback while retaining one active mesh session.
 
 ## Signed time over radio
 
