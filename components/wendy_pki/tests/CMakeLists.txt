@@ -130,6 +130,12 @@ add_test(NAME mesh_crypto_tls_interoperability COMMAND "${GO_EXECUTABLE}" run
     "${CMAKE_CURRENT_LIST_DIR}/../../wendy_mesh/tests/host_test_driver.go"
     "$<TARGET_FILE:mesh_crypto_test>" "$<TARGET_FILE:mesh_tls_test>")
 set_tests_properties(mesh_crypto_tls_interoperability PROPERTIES TIMEOUT 90)
+# Linux router vectors made by the WendyOS manifest signer: ML-DSA-65 and P-256.
+add_executable(mesh_mldsa_router_test ../../wendy_mesh/tests/mldsa_router_test.c)
+target_link_libraries(mesh_mldsa_router_test PRIVATE mesh_protocol)
+target_compile_options(mesh_mldsa_router_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME mesh_mldsa_router_manifests COMMAND mesh_mldsa_router_test
+    "${CMAKE_CURRENT_LIST_DIR}/../../wendy_mesh/tests/mldsa-router-fixtures")
 add_executable(lite_authority_test lite_authority_test.c)
 target_link_libraries(lite_authority_test PRIVATE pki)
 add_test(NAME lite_authority_policy COMMAND "${GO_EXECUTABLE}" run
