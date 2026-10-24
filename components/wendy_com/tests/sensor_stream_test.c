@@ -1,6 +1,6 @@
 /* Production SensorLink framing and cross-task submissions with a transport
- * whose completion order is controlled by the test. No payload is copied by
- * the sender; the test copies wire bytes only to decode and verify them. */
+ * whose completion order is controlled by the test. Both borrowed payloads and
+ * XIAO coalesced messages are decoded to verify bytes, ordering and lifetime. */
 #include <arpa/inet.h>
 #include <assert.h>
 #include <pthread.h>
@@ -74,6 +74,9 @@ static void run_ops(void)
 void wcom_send(int link_id, struct wcom_tx_chunk *chunk)
 {
     assert(link_id == 10 || link_id == 20);
+#if CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3
+    assert(chunk->next == NULL); // One node per submission, before queue linkage.
+#endif
     if (wire_last) wire_last->next = chunk;
     else wire_first = chunk;
     while (chunk->next) chunk = chunk->next;
@@ -99,14 +102,20 @@ static void pump_message(void)
 {
     assert(wire_first);
     struct wcom_agent_msg_header header;
-    assert(wire_first->size == sizeof(header));
+    assert(wire_first->size >= sizeof(header));
     memcpy(&header, wire_first->data, sizeof(header));
+#if CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3
+    assert(wire_first->size == sizeof(header) + ntohs(header.body_size));
+#else
+    assert(wire_first->size == sizeof(header));
+#endif
     assert(header.magic == WCOM_AGENT_MSG_MAGIC && header.version == WCOM_AGENT_MSG_VERSION);
     uint8_t bytes[10 * 1024];
     size_t size = 0;
-    for (unsigned n = 0; n < 3; n++) {
+    for (unsigned n = 0; size < sizeof(header) + ntohs(header.body_size); n++) {
         struct wcom_tx_chunk *chunk = wire_first;
         assert(chunk && size + chunk->size <= sizeof(bytes));
+#if !CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3
         if (n == 2) {
             bool borrowed = false;
             for (size_t i = 0; i < 4; i++) {
@@ -116,6 +125,7 @@ static void pump_message(void)
             }
             assert(borrowed); // The payload tx node references the producer.
         }
+#endif
         memcpy(bytes + size, chunk->data, chunk->size);
         size += chunk->size;
         wire_first = chunk->next;

@@ -148,6 +148,11 @@ static esp_err_t wifi_connect(const char *ssid, const char *password)
 
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
+#if CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3
+    // A SensorLink camera is a continuous source: modem sleep adds beacon/DTIM
+    // waits between the TLS records that carry each frame.
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+#endif
 
     ESP_LOGI(TAG, "connecting to WiFi SSID '%s'...", ssid);
 

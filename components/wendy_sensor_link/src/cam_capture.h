@@ -17,8 +17,8 @@
 #define CAM_FRAME_WIDTH 640
 #define CAM_FRAME_HEIGHT 480
 #else
-#define CAM_FRAME_WIDTH 800
-#define CAM_FRAME_HEIGHT 600
+#define CAM_FRAME_WIDTH 640
+#define CAM_FRAME_HEIGHT 480
 #endif
 
 #ifdef __cplusplus

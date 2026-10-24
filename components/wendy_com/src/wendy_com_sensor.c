@@ -1,5 +1,7 @@
 #include <arpa/inet.h>
 #include <inttypes.h>
+#include <stdlib.h>
+#include <string.h>
 #include "wendy_com_sensor.h"
 #include "wendy_com_agent.h"
 #include "wendy_com_link.h"
@@ -44,6 +46,9 @@ struct sensor_frame {
     struct wcom_agent_msg_header header;
     struct wcom_tx_chunk tx_chunks[3];
     uint8_t prefix[_PREFIX_SIZE];
+#if CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3
+    uint8_t *wire;
+#endif
     int client_id;
     uint32_t channel_id;
     uint32_t frame_seq;
@@ -56,7 +61,8 @@ struct sensor_frame {
 };
 
 // A closed stream keeps its slot until the transport releases its frame.
-// The frame owns only metadata; payload bytes remain in the producer's buffer.
+// Payload bytes remain in the producer's buffer; XIAO additionally owns a
+// staging buffer for the currently queued message.
 static struct sensor_stream {
     bool active;
     int client_id;
@@ -157,7 +163,21 @@ static WendyComResult _send_chunk(struct sensor_frame *frame)
     frame->chunk_seq++;
 
     frame->queued = true;
+#if CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3
+    // Submit the complete message in one TLS write instead of emitting two
+    // tiny writes for framing before the payload. The staging buffer
+    // remains owned until transport completion, including WANT_WRITE retries.
+    size_t wire_size = sizeof(frame->header) + out_stream.bytes_written + size;
+    memcpy(frame->wire, &frame->header, sizeof(frame->header));
+    memcpy(frame->wire + sizeof(frame->header), frame->prefix, out_stream.bytes_written);
+    memcpy(frame->wire + sizeof(frame->header) + out_stream.bytes_written,
+           frame->tx_chunks[2].data, size);
+    frame->tx_chunks[2].data = frame->wire;
+    frame->tx_chunks[2].size = wire_size;
+    wcom_send(link_id, &frame->tx_chunks[2]);
+#else
     wcom_send(link_id, &frame->tx_chunks[0]);
+#endif
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 
@@ -171,6 +191,10 @@ static void _finish_frame(struct sensor_frame *frame)
     frame->queued = false;
     frame->done = NULL;
     frame->data = NULL;
+#if CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3
+    free(frame->wire);
+    frame->wire = NULL;
+#endif
     if (done)
         done(channel_id);
 }
@@ -306,7 +330,14 @@ WendyComResult wcom_sensor_stream_push(int client_id, uint32_t channel_id,
     if (link_id < 0 || wcom_get_channel(client_id) < 0)
         return WendyComResult_WENDY_COM_RESULT_BAD_STATE;
 
+#if CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3
+    uint8_t *wire = malloc(_IDEAL_MSG_SIZE);
+    if (!wire) return WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
+#endif
     stream->frame = (struct sensor_frame){
+#if CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3
+        .wire = wire,
+#endif
         .busy = true,
         .link_id = link_id,
         .client_id = client_id,
