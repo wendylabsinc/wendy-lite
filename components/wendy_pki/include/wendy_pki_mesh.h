@@ -3,7 +3,11 @@
 #include <time.h>
 
 #define WENDY_PKI_MESH_ALPN "wendy-local-mesh-leaf/3"
-#define WENDY_PKI_MESH_SPKI_MAX 128
+/* A remote origin's key is P-256 (91-byte SPKI) or, for Linux routers, pure
+ * ML-DSA-65: a 1974-byte SPKI and 3309-byte signatures. Keep peers off task
+ * stacks. This leaf's own mesh key remains P-256. */
+#define WENDY_PKI_MESH_SPKI_MAX 1974
+#define WENDY_PKI_MESH_SIGNATURE_MAX 3309
 struct wendy_pki_mesh_peer
 {
     char device[37];
@@ -31,13 +35,17 @@ int wendy_pki_mesh_sign(wendy_pki_connection* connection, const char* principal,
 /* Public leaf-first certificate bundle, rendered as JSON base64 DER array. */
 int wendy_pki_mesh_bundle(wendy_pki_connection* connection, char* out, size_t capacity);
 /* Each remote chain is independently anchored to the enrolled tenant's roots.
- * Its P-256 public key is copied into a bounded cache; no private material. */
+ * Its P-256 or ML-DSA-65 public key is copied into a bounded cache; no
+ * private material. */
 int wendy_pki_mesh_verify_bundle(wendy_pki_connection* connection, const uint8_t* const* der,
     const size_t* sizes, size_t count, time_t now, struct wendy_pki_mesh_peer* peer);
 /* Portable verifier used by the firmware and host conformance tests. */
 int wendy_pki_mesh_chain(const uint8_t* const* der, const size_t* sizes, size_t count,
     const uint8_t* roots, size_t roots_size, const char* tenant, time_t now,
     struct wendy_pki_mesh_peer* peer);
+/* The v3 preimage is domain || uint32_be(105) || principal || body. P-256
+ * peers sign its SHA-256 (ECDSA); ML-DSA-65 peers sign it unhashed, as pure
+ * ML-DSA with an empty context. The peer's certified key selects the scheme. */
 int wendy_pki_mesh_verify(const struct wendy_pki_mesh_peer* peer, const char* principal,
     const void* body, size_t size, const uint8_t* signature, size_t signature_size);
 int wendy_pki_mesh_digest(const char* principal, const void* body, size_t size, uint8_t hash[32]);
