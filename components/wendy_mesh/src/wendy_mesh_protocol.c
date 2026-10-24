@@ -301,17 +301,44 @@ int wm_manifest_write(const struct wm_manifest* m, char* out, size_t cap)
         m->withdraw ? "\"withdraw\":true," : "", prefix, m->router_id, m->seqno);
     return n < 0 || (size_t)n >= cap ? -1 : n;
 }
+/* Linux routers sign optional agent metadata into their own manifest. The
+ * leaf does not use it, but bounds it like the router. Escaped JSON text uses
+ * at most six bytes for each decoded byte. */
+static bool agent_metadata(const struct wm_json* d, int agent)
+{
+    static const char* const fields[] = { "version", "os", "osVersion", "deviceType",
+        "cpuArchitecture", NULL };
+    static const unsigned limits[] = { 255, 128, 255, 128, 32 };
+    if (agent < 0)
+        return true;
+    if (!wm_json_fields(d, agent, fields))
+        return false;
+    for (unsigned i = 0; fields[i]; i++)
+    {
+        int value = wm_json_member(d, agent, fields[i]);
+        if (value < 0 && i == 0)
+            return false;
+        if (value < 0)
+            continue;
+        const struct wm_token* t = &d->tokens[value];
+        if (t->type != '"' || t->end - t->start > limits[i] * 6 + 2
+            || (i == 0 && t->end - t->start == 2))
+            return false;
+    }
+    return true;
+}
 int wm_manifest_parse(const struct wm_json* d, unsigned body, struct wm_manifest* m)
 {
     static const char* const fields[] = { "version", "device", "revision", "Issued", "Expires",
-        "name", "agentPort", "withdraw", "route", NULL };
+        "name", "agentPort", "withdraw", "route", "agent", NULL };
     static const char* const route_fields[] = { "prefix", "routerId", "seqno", NULL };
     memset(m, 0, sizeof *m);
     uint64_t version, issued, expires, port, seq;
     char id[37], prefix[48], actual[48];
     int route = wm_json_member(d, body, "route"), withdraw = wm_json_member(d, body, "withdraw"),
-        name = wm_json_member(d, body, "name");
+        name = wm_json_member(d, body, "name"), agent = wm_json_member(d, body, "agent");
     if (!wm_json_fields(d, body, fields) || route < 0 || !wm_json_fields(d, route, route_fields)
+        || !agent_metadata(d, agent)
         || number(d, body, "version", &version) || version != 3
         || number(d, body, "revision", &m->revision) || !m->revision
         || number(d, body, "Issued", &issued) || issued == 0 || issued > INT64_MAX
@@ -346,7 +373,7 @@ int wm_manifest_parse(const struct wm_json* d, unsigned body, struct wm_manifest
             return -1;
         m->withdraw = t == 't';
     }
-    if (!m->withdraw && !port)
+    if ((!m->withdraw || agent >= 0) && !port)
         return -1;
     m->issued = issued;
     m->expires = expires;

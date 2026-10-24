@@ -2,6 +2,7 @@
 #include "wendy_pki_crypto.h"
 #include <mbedtls/base64.h>
 #include <limits.h>
+#include <stdlib.h>
 #include <string.h>
 
 bool wm_identity_request_due(struct wm_identity_requests* requests,
@@ -114,12 +115,24 @@ int wm_directory_add(struct wm_directory* d, const struct wendy_pki_mesh_peer* p
     memcpy(o->device, device, 16);
     return 0;
 }
-int wm_directory_apply(struct wm_directory* d, const char* tenant, const struct wm_json* doc,
-    unsigned envelope, int64_t now, int64_t now_us)
+/* Base64 never needs JSON escapes. Decode the token in place: an ML-DSA-65
+ * router signature is 4412 base64 bytes, too large to copy to the stack. */
+static int json_base64(
+    const struct wm_json* doc, int token, uint8_t* out, size_t capacity, size_t* size)
+{
+    if (token < 0 || (unsigned)token >= doc->count || doc->tokens[token].type != '"')
+        return -1;
+    const struct wm_token* t = &doc->tokens[token];
+    const unsigned char* text = (const unsigned char*)doc->text + t->start + 1;
+    size_t n = t->end - t->start - 2;
+    return memchr(text, '\\', n) || mbedtls_base64_decode(out, capacity, size, text, n) ? -1 : 0;
+}
+static int apply(struct wm_directory* d, const char* tenant, const struct wm_json* doc,
+    unsigned envelope, int64_t now, int64_t now_us, uint8_t signature[WENDY_PKI_MESH_SIGNATURE_MAX])
 {
     static const char* const fields[] = { "principal", "body", "signature", NULL };
-    char principal[106], signature64[113];
-    uint8_t device[16], signature[80], hash[32];
+    char principal[106];
+    uint8_t device[16], hash[32];
     size_t sigsize = 0;
     struct wm_manifest m;
     int body = wm_json_member(doc, envelope, "body");
@@ -130,11 +143,8 @@ int wm_directory_apply(struct wm_directory* d, const char* tenant, const struct 
                doc, wm_json_member(doc, envelope, "principal"), principal, sizeof principal)
             < 0
         || wm_principal_device(principal, tenant, device) || memcmp(device, m.device, 16)
-        || wm_json_string(
-               doc, wm_json_member(doc, envelope, "signature"), signature64, sizeof signature64)
-            < 0
-        || mbedtls_base64_decode(signature, sizeof signature, &sigsize,
-            (const unsigned char*)signature64, strlen(signature64))
+        || json_base64(doc, wm_json_member(doc, envelope, "signature"), signature,
+            WENDY_PKI_MESH_SIGNATURE_MAX, &sigsize)
         || m.issued > now + 5000)
         return -1;
     if (m.expires <= now)
@@ -169,6 +179,17 @@ int wm_directory_apply(struct wm_directory* d, const char* tenant, const struct 
     o->expires_unix_ms = m.expires;
     o->expires_us = m.withdraw ? 0 : now_us + (m.expires - now) * INT64_C(1000);
     return 0;
+}
+int wm_directory_apply(struct wm_directory* d, const char* tenant, const struct wm_json* doc,
+    unsigned envelope, int64_t now, int64_t now_us)
+{
+    /* Runs on the mesh task, which also verifies certificate chains. */
+    uint8_t* signature = malloc(WENDY_PKI_MESH_SIGNATURE_MAX);
+    if (!signature)
+        return -1;
+    int result = apply(d, tenant, doc, envelope, now, now_us, signature);
+    free(signature);
+    return result;
 }
 bool wm_directory_address(const struct wm_directory* d, const uint8_t address[16], int64_t now_us)
 {

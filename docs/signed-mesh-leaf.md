@@ -68,10 +68,15 @@ TLS 1.3 verifies both certificate chains with ALPN `wendy-local-mesh-leaf/3`.
 Session tickets, resumption, PSK and 0-RTT are disabled. The separate carrier
 does not alter or fall back to the existing `WMT1` TCP/QUIC carrier.
 
-Each announcement uses the production version 3 manifest format. A P-256
-signature covers SHA-256 of `wendy-local-mesh/manifest/3`, a zero byte, a
-four-byte big-endian length of the canonical full SPIFFE principal, that
-principal, and the exact JSON body. Version 1/2 proofs and version 2 carrier
+Each announcement uses the production version 3 manifest format. Its signed
+input is `wendy-local-mesh/manifest/3`, a zero byte, a four-byte big-endian
+length of the canonical full SPIFFE principal, that principal, and the exact
+JSON body. The leaf, and any P-256 device, signs SHA-256 of that input with
+ECDSA. A Linux router with an ML-DSA-65 device key signs the input itself with
+pure ML-DSA-65 and an empty context. The leaf selects the scheme from the
+remote device's certified key, never from the message. A router's body may
+also carry signed `agent` metadata, which the leaf bounds but does not use.
+Version 1/2 proofs and version 2 carrier
 handshakes are rejected. The body binds the device UUID, exact prefix, router ID, Babel
 sequence number, revision, issue time and expiry. `Issued` and `Expires` are
 Unix milliseconds. Revisions and router IDs use exact decimal uint64 values;

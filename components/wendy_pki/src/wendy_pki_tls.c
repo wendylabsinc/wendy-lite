@@ -442,15 +442,18 @@ static int open_tls(const char* host, unsigned port, const uint8_t* key, size_t 
             der[cert_count] = cert->raw.p;
             sizes[cert_count++] = cert->raw.len;
         }
-        struct wendy_pki_mesh_peer self;
+        /* A peer has room for an ML-DSA-65 key; keep it off the caller's stack. */
+        struct wendy_pki_mesh_peer* self = calloc(1, sizeof *self);
         time_t now = time(NULL);
-        if (!c->operator_expires || c->operator_expires <= now
-            || wendy_pki_mesh_chain(
-                der, sizes, cert_count, roots.data, roots.size, tenant, now, &self)
-            || strcmp(self.device, device))
+        bool verified = self && c->operator_expires && c->operator_expires > now
+            && !wendy_pki_mesh_chain(
+                der, sizes, cert_count, roots.data, roots.size, tenant, now, self)
+            && !strcmp(self->device, device);
+        if (verified && self->expires < c->operator_expires)
+            c->operator_expires = self->expires;
+        free(self);
+        if (!verified)
             goto fail;
-        if (self.expires < c->operator_expires)
-            c->operator_expires = self.expires;
         c->peer_role = WENDY_PEER_ROLE_DEVICE;
     }
     *out = c;
