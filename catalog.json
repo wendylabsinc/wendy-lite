@@ -54,6 +54,12 @@
             "flash_size": "8MB"
         },
         {
+            "name": "esp32s3_devkit_8mb_mesh_native",
+            "target": "esp32s3",
+            "board_cfg": "esp32s3_devkit_8mb_mesh_native",
+            "flash_size": "8MB"
+        },
+        {
             "name": "esp32s31_mosaico_native",
             "target": "esp32s31",
             "board_cfg": "esp32s31_mosaico_native",
@@ -132,6 +138,12 @@
             "name": "esp32s3_m5_stamp_s3_native",
             "display_name": "M5Stack StampS3, 8MB flash",
             "binary": "esp32s3_m5_stamp_s3_native",
+            "target": "esp32s3"
+        },
+        {
+            "name": "esp32s3_devkit_8mb_mesh_native",
+            "display_name": "ESP32-S3 DevKit, 8MB flash + 8MB octal PSRAM (mesh test)",
+            "binary": "esp32s3_devkit_8mb_mesh_native",
             "target": "esp32s3"
         },
         {
