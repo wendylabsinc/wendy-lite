@@ -53,6 +53,7 @@ struct mesh_state
     uint8_t queue_storage[MESH_QUEUE_PACKETS * sizeof(struct queued_packet)];
     char control[WENDY_MESH_CONTROL_MAX + 1];
     uint8_t certificate_scratch[32768];
+    struct wendy_pki_mesh_peer certificate_peer; /* ML-DSA-65 keys are too large for the stack. */
     uint8_t own_address[16], device[16];
     uint64_t revision, router_id;
     uint16_t seqno, hello_seq;
@@ -73,8 +74,9 @@ struct mesh_state
 #endif
 };
 /* Protocol storage has a compile-time cap, including the certificate decode
- * workspace. TLS/X.509 allocations are separately bounded by input limits. */
-_Static_assert(sizeof(struct mesh_state) < 128 * 1024, "mesh protocol storage exceeds 128 KiB");
+ * workspace and an ML-DSA-65 key slot for each origin. TLS/X.509 allocations
+ * are separately bounded by input limits. The state lives in PSRAM. */
+_Static_assert(sizeof(struct mesh_state) < 192 * 1024, "mesh protocol storage exceeds 192 KiB");
 static _Atomic(struct mesh_state*) state;
 static pthread_mutex_t state_lock = PTHREAD_MUTEX_INITIALIZER;
 static TaskHandle_t mesh_task_handle;
@@ -423,20 +425,20 @@ static int receive_control(struct mesh_state* s, size_t size)
             der[count] = s->certificate_scratch + total;
             total += sizes[count++];
         }
-        struct wendy_pki_mesh_peer peer;
+        struct wendy_pki_mesh_peer* peer = &s->certificate_peer;
         if (wendy_pki_mesh_verify_bundle(
-                s->connection, der, sizes, count, signed_now(s, now_us) / 1000, &peer))
+                s->connection, der, sizes, count, signed_now(s, now_us) / 1000, peer))
             return -1;
-        if (!strcmp(peer.device, s->identity.device))
+        if (!strcmp(peer->device, s->identity.device))
             return 0;
         uint8_t peer_uuid[16], peer_address[16];
-        if (wm_uuid_parse(peer.device, peer_uuid))
+        if (wm_uuid_parse(peer->device, peer_uuid))
             return -1;
         wm_address(peer_uuid, peer_address);
         if (!memcmp(peer_address, s->own_address, 16))
             return -1;
         pthread_mutex_lock(&state_lock);
-        int result = wm_directory_add(&s->directory, &peer);
+        int result = wm_directory_add(&s->directory, peer);
         pthread_mutex_unlock(&state_lock);
         /* Full cache is a resource refusal, never an eviction of replay state. */
         return result < 0 ? -1 : 0;

@@ -35,6 +35,45 @@ int main(void)
     assert(wm_manifest_parse(&d, 0, &parsed));
     *version = '1';
     assert(wm_manifest_parse(&d, 0, &parsed));
+    /* Linux routers sign optional agent metadata into their own manifest. */
+    char prefix[48], wide[256], router[1024];
+    wm_prefix(m.device, prefix);
+    /* At most 32 bytes, so never more than 194 bytes of escaped JSON text. */
+    n = snprintf(wide, sizeof wide, ",\"agent\":{\"version\":\"1\",\"cpuArchitecture\":\"");
+    memset(wide + n, 'a', 193);
+    strcpy(wide + n + 193, "\"}");
+    const struct
+    {
+        unsigned port;
+        const char *withdraw, *agent;
+        bool valid;
+    } agents[] = {
+        { 50052, "",
+            ",\"agent\":{\"version\":\"0.0.0-dev\",\"os\":\"WendyOS\",\"osVersion\":\"2026.10.1\","
+            "\"deviceType\":\"jetson-orin-nano\",\"cpuArchitecture\":\"arm64\"}",
+            true },
+        { 50052, "", ",\"agent\":{\"version\":\"1\",\"os\":\"\",\"osVersion\":\"\"}", true },
+        { 50052, "", "", true },
+        { 0, "\"withdraw\":true,", "", true },
+        { 0, "", ",\"agent\":{\"version\":\"1\"}", false },
+        { 0, "\"withdraw\":true,", ",\"agent\":{\"version\":\"1\"}", false },
+        { 50052, "", ",\"agent\":{\"os\":\"WendyOS\"}", false },
+        { 50052, "", ",\"agent\":{\"version\":\"\"}", false },
+        { 50052, "", ",\"agent\":{\"version\":\"1\",\"kernel\":\"6.8\"}", false },
+        { 50052, "", ",\"agent\":{\"version\":1}", false },
+        { 50052, "", ",\"agent\":\"1\"", false },
+        { 50052, "", wide, false },
+    };
+    for (unsigned i = 0; i < sizeof agents / sizeof *agents; i++)
+    {
+        n = snprintf(router, sizeof router,
+            "{\"version\":3,\"device\":\"%s\",\"revision\":42,\"Issued\":1800000000000,"
+            "\"Expires\":1800000060000,\"name\":\"jetson-router\",\"agentPort\":%u,%s"
+            "\"route\":{\"prefix\":\"%s\",\"routerId\":81985529216486895,\"seqno\":7}%s}",
+            device, agents[i].port, agents[i].withdraw, prefix, agents[i].agent);
+        assert(n > 0 && (size_t)n < sizeof router && !wm_json_parse(&d, router, n));
+        assert(!wm_manifest_parse(&d, 0, &parsed) == agents[i].valid);
+    }
     const char* bad[] = { "{\"a\":1,\"a\":2}", "{\"a\":01}", "{\"a\":1e3}", "{\"a\":1.5}",
         "{\"a\":1,}", "[1,]", "{\"\\u0061\":1}", "{\"a\":[1,2]", "true false" };
     for (unsigned i = 0; i < sizeof bad / sizeof *bad; i++)
