@@ -57,8 +57,22 @@ static void services_task(void *unused);
 #define WIFI_FAIL_BIT       BIT1
 
 #define WIFI_MAX_RETRIES    5
+#define WIFI_RETRY_DELAY_MS 10000
 static int s_retry_count = 0;
-static bool s_connect_requested;
+static atomic_bool s_connect_requested;
+static atomic_bool s_reconnect_pending;
+
+static void connect_station(void)
+{
+    if (!s_connect_requested || s_connected) return;
+    esp_err_t err = esp_wifi_connect();
+    if (err != ESP_OK && s_connect_requested && !s_connected) {
+        ESP_LOGW(TAG, "WiFi connect request failed: %s; retrying in %d ms",
+                 esp_err_to_name(err), WIFI_RETRY_DELAY_MS);
+        s_reconnect_pending = true;
+        xTaskNotifyGive(s_services_task);
+    }
+}
 
 /* ── WiFi event handler ────────────────────────────────────────────── */
 
@@ -66,23 +80,38 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                 int32_t event_id, void *event_data)
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        if (s_connect_requested) esp_wifi_connect();
+        connect_station();
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
+        const wifi_event_sta_connected_t *event = event_data;
+        if (event) {
+            ESP_LOGI(TAG, "WiFi associated: channel=%u authmode=%u",
+                     (unsigned)event->channel, (unsigned)event->authmode);
+        }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        const wifi_event_sta_disconnected_t *event = event_data;
+        ESP_LOGW(TAG, "WiFi disconnected: reason=%u rssi=%d",
+                 event ? (unsigned)event->reason : 0,
+                 event ? (int)event->rssi : 0);
         s_connected = false;
         xEventGroupClearBits(s_wifi_events, WIFI_CONNECTED_BIT);
-        xTaskNotifyGive(s_services_task);
         if (s_connect_requested && s_retry_count < WIFI_MAX_RETRIES) {
-            esp_wifi_connect();
             s_retry_count++;
             ESP_LOGI(TAG, "retrying WiFi connection (%d/%d)", s_retry_count, WIFI_MAX_RETRIES);
+            connect_station();
         } else {
             xEventGroupSetBits(s_wifi_events, WIFI_FAIL_BIT);
-            ESP_LOGE(TAG, "WiFi connection failed after %d retries", WIFI_MAX_RETRIES);
+            s_reconnect_pending = s_connect_requested;
+            if (s_connect_requested) {
+                ESP_LOGW(TAG, "WiFi unavailable after %d retries; retrying in %d ms",
+                         WIFI_MAX_RETRIES, WIFI_RETRY_DELAY_MS);
+            }
         }
+        xTaskNotifyGive(s_services_task);
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "connected, IP: " IPSTR, IP2STR(&event->ip_info.ip));
         s_retry_count = 0;
+        s_reconnect_pending = false;
         s_connected = true;
         xEventGroupSetBits(s_wifi_events, WIFI_CONNECTED_BIT);
         // DHCP may complete after the synchronous connection wait timed out.
@@ -132,6 +161,7 @@ static esp_err_t wifi_infra_init(void)
 static esp_err_t wifi_connect(const char *ssid, const char *password)
 {
     s_connect_requested = true;
+    s_reconnect_pending = false;
     s_retry_count = 0;
     xEventGroupClearBits(s_wifi_events, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
 
@@ -150,6 +180,9 @@ static esp_err_t wifi_connect(const char *ssid, const char *password)
     ESP_ERROR_CHECK(esp_wifi_start());
 
     ESP_LOGI(TAG, "connecting to WiFi SSID '%s'...", ssid);
+    ESP_LOGI(TAG, "WiFi security: minimum authmode=%u SAE PWE=%u",
+             (unsigned)wifi_config.sta.threshold.authmode,
+             (unsigned)wifi_config.sta.sae_pwe_h2e);
 
     EventBits_t bits = xEventGroupWaitBits(s_wifi_events,
         WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
@@ -297,7 +330,16 @@ static void services_task(void *unused)
 {
     (void)unused;
     for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        TickType_t wait = s_connect_requested && !s_connected && s_reconnect_pending
+            ? pdMS_TO_TICKS(WIFI_RETRY_DELAY_MS) : portMAX_DELAY;
+        uint32_t notified = ulTaskNotifyTake(pdTRUE, wait);
+        // A fresh event restarts the delay. Never reconnect from the system
+        // event task after the initial burst, or while shutting down.
+        if (!notified && wait != portMAX_DELAY &&
+            atomic_exchange(&s_reconnect_pending, false)) {
+            ESP_LOGI(TAG, "retrying WiFi connection after backoff");
+            connect_station();
+        }
         while (s_connected) {
             if (start_services()) break;
             // Retry resource failures without needing another WiFi event.
@@ -392,6 +434,8 @@ bool wendy_wifi_is_connected(void)
 
 void wendy_wifi_deinit(void)
 {
+    s_connect_requested = false;
+    s_reconnect_pending = false;
     s_connected = false;
     if (s_services_task) xTaskNotifyGive(s_services_task);
     pthread_mutex_lock(&s_services_lock);
