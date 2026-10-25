@@ -53,6 +53,9 @@ extern const char wifi_event_base[], ip_event_base[];
 #define IP_EVENT_STA_GOT_IP 3
 typedef void *esp_event_handler_instance_t;
 typedef struct { struct { uint32_t ip; } ip_info; } ip_event_got_ip_t;
+typedef struct { uint8_t reason; } wifi_event_sta_disconnected_t;
+#define WIFI_REASON_BEACON_TIMEOUT 200
+#define WIFI_REASON_NO_AP_FOUND 201
 #define IPSTR "%u"
 #define IP2STR(ip) (*(ip))
 esp_err_t esp_event_loop_create_default(void);

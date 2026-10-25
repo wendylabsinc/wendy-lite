@@ -13,3 +13,9 @@ FreeRTOS stubs. It delivers an IP event after the synchronous connection wait ha
 timed out, runs the worker until idle, and verifies that network services start.
 It also exercises startup failures, repeated IP events, disconnects during retry,
 and mDNS hostname failure after successful mDNS initialization.
+
+The reconnection tests model the driver: each connection attempt reports an
+address while the access point is up, or "no AP found" while it is down. They
+cover an access point that disappears for five minutes and returns, one that is
+off at boot, a refused attempt, and deinitialization. The PKI workflow runs this
+suite with address and undefined-behavior sanitizers.

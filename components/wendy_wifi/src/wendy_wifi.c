@@ -57,8 +57,12 @@ static void services_task(void *unused);
 #define WIFI_FAIL_BIT       BIT1
 
 #define WIFI_MAX_RETRIES    5
+// After the fast retries, keep rejoining at this interval. An access point
+// such as a phone hotspot can be gone for minutes and then return.
+#define WIFI_RECONNECT_INTERVAL_MS 10000
 static int s_retry_count = 0;
 static bool s_connect_requested;
+static atomic_bool s_reconnect_pending;
 
 /* ── WiFi event handler ────────────────────────────────────────────── */
 
@@ -68,21 +72,32 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         if (s_connect_requested) esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        wifi_event_sta_disconnected_t *event = (wifi_event_sta_disconnected_t *)event_data;
         s_connected = false;
         xEventGroupClearBits(s_wifi_events, WIFI_CONNECTED_BIT);
-        xTaskNotifyGive(s_services_task);
         if (s_connect_requested && s_retry_count < WIFI_MAX_RETRIES) {
             esp_wifi_connect();
             s_retry_count++;
-            ESP_LOGI(TAG, "retrying WiFi connection (%d/%d)", s_retry_count, WIFI_MAX_RETRIES);
+            ESP_LOGI(TAG, "retrying WiFi connection (%d/%d, reason %u)", s_retry_count,
+                     WIFI_MAX_RETRIES, (unsigned)event->reason);
         } else {
+            // Report the failure to a synchronous connect, but never give up:
+            // the worker retries after an interval, off this event task.
             xEventGroupSetBits(s_wifi_events, WIFI_FAIL_BIT);
-            ESP_LOGE(TAG, "WiFi connection failed after %d retries", WIFI_MAX_RETRIES);
+            s_reconnect_pending = s_connect_requested;
+            if (s_connect_requested)
+                ESP_LOGW(TAG, "WiFi unavailable (reason %u); retrying in %d s",
+                         (unsigned)event->reason, WIFI_RECONNECT_INTERVAL_MS / 1000);
+            else
+                ESP_LOGE(TAG, "WiFi connection failed after %d retries", WIFI_MAX_RETRIES);
         }
+        // The worker reads the reconnect state when woken.
+        xTaskNotifyGive(s_services_task);
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "connected, IP: " IPSTR, IP2STR(&event->ip_info.ip));
         s_retry_count = 0;
+        s_reconnect_pending = false;
         s_connected = true;
         xEventGroupSetBits(s_wifi_events, WIFI_CONNECTED_BIT);
         // DHCP may complete after the synchronous connection wait timed out.
@@ -293,11 +308,22 @@ static bool start_services(void)
     return ready;
 }
 
+static void reconnect(void)
+{
+    if (!atomic_exchange(&s_reconnect_pending, false) || s_connected || !s_connect_requested)
+        return;
+    // A refused attempt produces no disconnect event to schedule the next one.
+    if (esp_wifi_connect() != ESP_OK) s_reconnect_pending = true;
+}
+
 static void services_task(void *unused)
 {
     (void)unused;
     for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        TickType_t wait = s_reconnect_pending ? pdMS_TO_TICKS(WIFI_RECONNECT_INTERVAL_MS)
+                                              : portMAX_DELAY;
+        // Any WiFi event restarts the interval; only a quiet one reconnects.
+        if (!ulTaskNotifyTake(pdTRUE, wait)) reconnect();
         while (s_connected) {
             if (start_services()) break;
             // Retry resource failures without needing another WiFi event.
@@ -392,6 +418,8 @@ bool wendy_wifi_is_connected(void)
 
 void wendy_wifi_deinit(void)
 {
+    s_connect_requested = false;
+    s_reconnect_pending = false;
     s_connected = false;
     if (s_services_task) xTaskNotifyGive(s_services_task);
     pthread_mutex_lock(&s_services_lock);
