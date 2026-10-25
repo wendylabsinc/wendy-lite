@@ -16,8 +16,9 @@ extern "C" {
 /**
  * Initialize WiFi station and connect using stored or compile-time credentials.
  *
- * Credential resolution: NVS ("wendy_prov" namespace) first, then compile-time
- * CONFIG_WENDY_WIFI_SSID/PASSWORD, then returns WENDY_WIFI_ERR_NO_CREDS.
+ * Credential resolution: NVS ("wendy_prov" namespace) first, then wendy-conf,
+ * then compile-time CONFIG_WENDY_WIFI_SSID/PASSWORD, then returns
+ * WENDY_WIFI_ERR_NO_CREDS.
  *
  * After receiving an IP address, starts mDNS and device/cloud services in a
  * worker, including when DHCP finishes after this call times out. The names

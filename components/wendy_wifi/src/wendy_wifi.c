@@ -79,9 +79,7 @@ static void connect_station(void)
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                 int32_t event_id, void *event_data)
 {
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        connect_station();
-    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
         const wifi_event_sta_connected_t *event = event_data;
         if (event) {
             ESP_LOGI(TAG, "WiFi associated: channel=%u authmode=%u",
@@ -178,6 +176,9 @@ static esp_err_t wifi_connect(const char *ssid, const char *password)
 
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
+    // An already-started station emits no new STA_START event on credential
+    // fallback. Request each connection here, including the initial one.
+    connect_station();
 
     ESP_LOGI(TAG, "connecting to WiFi SSID '%s'...", ssid);
     ESP_LOGI(TAG, "WiFi security: minimum authmode=%u SAE PWE=%u",
