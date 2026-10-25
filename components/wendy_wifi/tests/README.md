@@ -1,4 +1,4 @@
-# WiFi service startup regression
+# WiFi service startup and reconnection regression
 
 Run without ESP-IDF or a board:
 
@@ -13,3 +13,13 @@ FreeRTOS stubs. It delivers an IP event after the synchronous connection wait ha
 timed out, runs the worker until idle, and verifies that network services start.
 It also exercises startup failures, repeated IP events, disconnects during retry,
 and mDNS hostname failure after successful mDNS initialization.
+
+The driver model also covers an access point returning after a simulated
+five-minute outage, recovery after losing an established connection, refused
+connection requests that emit no event, and cancellation on IP arrival or
+shutdown. It checks that reconnection does not duplicate service startup and
+that security diagnostics do not log the password or change authentication
+settings. The outage case fails against the original implementation, which
+stops after the initial attempt and five retries.
+
+CI runs this suite with AddressSanitizer and UndefinedBehaviorSanitizer.

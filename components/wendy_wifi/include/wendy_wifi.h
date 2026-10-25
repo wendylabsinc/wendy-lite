@@ -22,6 +22,9 @@ extern "C" {
  * After receiving an IP address, starts mDNS and device/cloud services in a
  * worker, including when DHCP finishes after this call times out. The names
  * come from wendy_conf, so wendy_conf_init() must have run first.
+ * A failed connection result does not stop background reconnection: after
+ * five immediate retries, the station tries again every ten seconds until
+ * an IP address arrives or wendy_wifi_deinit() stops the transport.
  */
 esp_err_t wendy_wifi_init(void);
 

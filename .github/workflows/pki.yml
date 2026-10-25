@@ -35,6 +35,13 @@ jobs:
           cmake -S components/wendy_server/tests -B build-server-tests -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
           cmake --build build-server-tests -j2
           ctest --test-dir build-server-tests --output-on-failure
+      - name: Verify Wi-Fi service startup and reconnection
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          cmake -S components/wendy_wifi/tests -B build-wifi-tests -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          cmake --build build-wifi-tests -j2
+          ctest --test-dir build-wifi-tests --output-on-failure
       - name: Verify pki-core timestamp and certificate fixtures
         shell: bash
         run: |
