@@ -654,9 +654,8 @@ int pki_http_post_enrollment(const char *url, const char *type, const char *toke
                      "%zu\r\nConnection: close\r\n%s%s%s\r\n",
                      path, authority, type, body_size, token ? "Authorization: Bearer " : "",
                      token ? token : "", token ? "\r\n" : "");
-    struct response r = {.bytes = calloc(1, PKI_MAX_RESPONSE + 1),
-                         .capture_lite_authority = lite_authority_header != NULL};
-    if (!r.bytes || n < 0 || n >= sizeof headers)
+    struct response r = {.capture_lite_authority = lite_authority_header != NULL};
+    if (n < 0 || n >= sizeof headers)
         goto done;
     int64_t deadline = esp_timer_get_time() + network_budget_us(false, NULL);
     if (write_all(c, headers, n, deadline) || write_all(c, body, body_size, deadline))
@@ -691,6 +690,8 @@ int pki_http_post_enrollment(const char *url, const char *type, const char *toke
         ESP_LOGE("wendy_pki", "PKI HTTP request returned status %u", parser.status_code);
         goto done;
     }
+    if (!r.bytes)
+        goto done;
     *response = r.bytes;
     *response_size = r.size;
     r.bytes = NULL;
@@ -700,6 +701,8 @@ int pki_http_post_enrollment(const char *url, const char *type, const char *toke
     }
     answer = 0;
 done:
+    if (r.alloc_failed)
+        ESP_LOGE("wendy_pki", "PKI HTTP response allocation failed (%zu bytes received)", r.size);
     free(r.lite_authority);
     free(r.bytes);
     wendy_pki_close(c);

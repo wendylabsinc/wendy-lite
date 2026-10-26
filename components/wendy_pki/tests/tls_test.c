@@ -267,6 +267,8 @@ int main(int argc, char **argv) {
     if (argc == 7) {
         assert(!strncmp(argv[4], "http-", 5));
         bool renew = !strcmp(argv[4], "http-renew");
+        /* http-body-N expects an N-byte body of 'A's instead of "{}". */
+        size_t expected_body = !strncmp(argv[4], "http-body-", 10) ? strtoul(argv[4] + 10, NULL, 10) : 0;
         uint8_t *body = NULL;
         size_t body_size = 0;
         char *authority = NULL;
@@ -276,7 +278,11 @@ int main(int argc, char **argv) {
         if (!strcmp(argv[4], "http-reject")) {
             assert(result && !body && !authority);
         } else {
-            assert(!result && body_size == 2 && !memcmp(body, "{}", 2));
+            if (expected_body) {
+                assert(!result && body_size == expected_body && !body[body_size]);
+                for (size_t i = 0; i < body_size; i++) assert(body[i] == 'A');
+            } else
+                assert(!result && body_size == 2 && !memcmp(body, "{}", 2));
             if (!strcmp(argv[6], "-")) assert(!authority);
             else {
                 size_t expected_size;

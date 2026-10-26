@@ -5,8 +5,8 @@
 #define LITE_AUTHORITY_HEADER "x-wendy-lite-operator-authority"
 struct response {
     uint8_t *bytes;
-    size_t size;
-    bool complete, capture_lite_authority, headers_complete;
+    size_t size, capacity;
+    bool complete, capture_lite_authority, headers_complete, alloc_failed;
     char field[sizeof LITE_AUTHORITY_HEADER];
     size_t field_size;
     bool in_value, authority_value, authority_seen;
@@ -68,6 +68,15 @@ static int on_headers_complete(http_parser *p)
     struct response *r = p->data;
     if (r->capture_lite_authority && finish_header(r)) return -1;
     r->headers_complete = true;
+    /* With Content-Length, allocate the body once instead of growing it. */
+    if (!r->bytes && p->content_length > 0 && p->content_length <= PKI_MAX_RESPONSE) {
+        r->bytes = malloc(p->content_length + 1);
+        if (!r->bytes) {
+            r->alloc_failed = true;
+            return -1;
+        }
+        r->capacity = p->content_length + 1;
+    }
     return 0;
 }
 
@@ -75,8 +84,23 @@ static int on_body(http_parser *p, const char *bytes, size_t size)
 {
     struct response *r = p->data;
     if (size > PKI_MAX_RESPONSE - r->size) return -1;
+    /* Grow a body without Content-Length: boards without PSRAM may lack a free
+     * 64 KiB block for a fixed buffer. */
+    if (r->size + size + 1 > r->capacity) {
+        size_t capacity = r->capacity ? r->capacity : 4096;
+        while (capacity < r->size + size + 1) capacity *= 2;
+        if (capacity > PKI_MAX_RESPONSE + 1) capacity = PKI_MAX_RESPONSE + 1;
+        uint8_t *grown = realloc(r->bytes, capacity);
+        if (!grown) {
+            r->alloc_failed = true;
+            return -1;
+        }
+        r->bytes = grown;
+        r->capacity = capacity;
+    }
     memcpy(r->bytes + r->size, bytes, size);
     r->size += size;
+    r->bytes[r->size] = 0;
     return 0;
 }
 
