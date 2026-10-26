@@ -46,8 +46,9 @@ not remote adjacency.
 ## Automatic Wi-Fi peer selection
 
 Enable `CONFIG_WENDY_MESH_AUTO_DISCOVER` with the TCP carrier to use local
-`_wendy-mesh._tcp` advertisements. The leaf filters canonical principals for its
-enrolled tenant, ignores itself and expired or malformed records, and tries up
+`_wendy-net._udp` advertisements with `protocol=quic-v1` and either `version=1`
+or no version. The leaf filters canonical principals for its enrolled tenant,
+ignores itself and expired or malformed records, and tries up
 to eight IPv4 candidates in random order. It dials the Lite listener on port
 43024, not the advertised full-mesh transport port. Routers must enable
 `leafListen`. mDNS is an untrusted hint; mutual TLS verifies the advertised device

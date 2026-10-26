@@ -71,7 +71,7 @@ menu "Wendy signed mesh leaf"
         depends on WENDY_MESH_TCP || WENDY_MESH_WIFI_BLE
         default n
         help
-            Discover _wendy-mesh._tcp on the local network and try candidates
+            Discover _wendy-net._udp on the local network and try candidates
             in random order. Authenticate the advertised device and tenant
             over mutual TLS at the Lite listener port. Keep a working peer
             until disconnection, then discover again. No peer pin is stored.
