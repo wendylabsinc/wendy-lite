@@ -34,6 +34,7 @@
 #include "lwip/netdb.h"
 
 static const char *TAG = "wendy_wifi";
+ESP_EVENT_DEFINE_BASE(WENDY_WIFI_CONTROL_EVENT);
 
 #define NVS_NAMESPACE  "wendy_prov"
 #define NVS_KEY_SSID   "ssid"
@@ -46,6 +47,7 @@ static bool s_infra_initialized = false;
 static atomic_bool s_connected;
 static TaskHandle_t s_services_task;
 static pthread_mutex_t s_services_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t s_station_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool s_mdns_initialized, s_mdns_started, s_server_started;
 #if CONFIG_WENDY_CLOUD
 static bool s_cloud_started;
@@ -55,9 +57,11 @@ static void services_task(void *unused);
 
 #define WIFI_CONNECTED_BIT  BIT0
 #define WIFI_FAIL_BIT       BIT1
+#define WIFI_QUIESCED_BIT   BIT2
 
 #define WIFI_MAX_RETRIES    5
 #define WIFI_RETRY_DELAY_MS 10000
+#define WIFI_QUIESCE_TIMEOUT_MS 5000
 static int s_retry_count = 0;
 static atomic_bool s_connect_requested;
 static atomic_bool s_reconnect_pending;
@@ -65,6 +69,11 @@ static atomic_bool s_reconnect_pending;
 static void connect_station(void)
 {
     if (!s_connect_requested || s_connected) return;
+    pthread_mutex_lock(&s_station_lock);
+    if (!s_connect_requested || s_connected) {
+        pthread_mutex_unlock(&s_station_lock);
+        return;
+    }
     esp_err_t err = esp_wifi_connect();
     if (err != ESP_OK && s_connect_requested && !s_connected) {
         ESP_LOGW(TAG, "WiFi connect request failed: %s; retrying in %d ms",
@@ -72,6 +81,7 @@ static void connect_station(void)
         s_reconnect_pending = true;
         xTaskNotifyGive(s_services_task);
     }
+    pthread_mutex_unlock(&s_station_lock);
 }
 
 /* ── WiFi event handler ────────────────────────────────────────────── */
@@ -79,7 +89,9 @@ static void connect_station(void)
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                 int32_t event_id, void *event_data)
 {
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
+    if (event_base == WENDY_WIFI_CONTROL_EVENT) {
+        xEventGroupSetBits(s_wifi_events, WIFI_QUIESCED_BIT);
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
         const wifi_event_sta_connected_t *event = event_data;
         if (event) {
             ESP_LOGI(TAG, "WiFi associated: channel=%u authmode=%u",
@@ -106,6 +118,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         }
         xTaskNotifyGive(s_services_task);
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        if (!s_connect_requested) return;
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "connected, IP: " IPSTR, IP2STR(&event->ip_info.ip));
         s_retry_count = 0;
@@ -143,10 +156,13 @@ static esp_err_t wifi_infra_init(void)
 
     esp_event_handler_instance_t instance_any_id;
     esp_event_handler_instance_t instance_got_ip;
+    esp_event_handler_instance_t instance_control;
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, &instance_any_id));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, &instance_got_ip));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        WENDY_WIFI_CONTROL_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, &instance_control));
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
 
@@ -158,8 +174,23 @@ static esp_err_t wifi_infra_init(void)
 
 static esp_err_t wifi_connect(const char *ssid, const char *password)
 {
-    s_connect_requested = true;
+    // A synchronous timeout can leave the driver connecting. Stop it with
+    // retries disabled before replacing credentials, then drain its events.
+    s_connect_requested = false;
     s_reconnect_pending = false;
+    s_connected = false;
+    xEventGroupClearBits(s_wifi_events, WIFI_QUIESCED_BIT);
+    pthread_mutex_lock(&s_station_lock);
+    esp_err_t err = esp_wifi_stop();
+    pthread_mutex_unlock(&s_station_lock);
+    if (err != ESP_OK) return err;
+    err = esp_event_post(WENDY_WIFI_CONTROL_EVENT, 0, NULL, 0,
+                         pdMS_TO_TICKS(WIFI_QUIESCE_TIMEOUT_MS));
+    if (err != ESP_OK) return err;
+    EventBits_t quiesced = xEventGroupWaitBits(s_wifi_events, WIFI_QUIESCED_BIT,
+        pdTRUE, pdFALSE, pdMS_TO_TICKS(WIFI_QUIESCE_TIMEOUT_MS));
+    if (!(quiesced & WIFI_QUIESCED_BIT)) return ESP_ERR_TIMEOUT;
+
     s_retry_count = 0;
     xEventGroupClearBits(s_wifi_events, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
 
@@ -174,16 +205,19 @@ static esp_err_t wifi_connect(const char *ssid, const char *password)
         wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
     }
 
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
-    // An already-started station emits no new STA_START event on credential
-    // fallback. Request each connection here, including the initial one.
-    connect_station();
+    pthread_mutex_lock(&s_station_lock);
+    err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+    if (err == ESP_OK) err = esp_wifi_start();
+    if (err == ESP_OK) s_connect_requested = true;
+    pthread_mutex_unlock(&s_station_lock);
+    if (err != ESP_OK) return err;
 
     ESP_LOGI(TAG, "connecting to WiFi SSID '%s'...", ssid);
     ESP_LOGI(TAG, "WiFi security: minimum authmode=%u SAE PWE=%u",
              (unsigned)wifi_config.sta.threshold.authmode,
              (unsigned)wifi_config.sta.sae_pwe_h2e);
+    // Configuration owns the first request; STA_START must not duplicate it.
+    connect_station();
 
     EventBits_t bits = xEventGroupWaitBits(s_wifi_events,
         WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
@@ -411,14 +445,6 @@ esp_err_t wendy_wifi_try_connect(const char *ssid, const char *password)
     esp_err_t err = wifi_infra_init();
     if (err != ESP_OK) return err;
 
-    /* Disconnect if currently connected */
-    if (s_connected) {
-        esp_wifi_disconnect();
-        esp_wifi_stop();
-        s_connected = false;
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-
     err = wifi_connect(ssid, password);
     if (err != ESP_OK) return err;
 
@@ -443,8 +469,10 @@ void wendy_wifi_deinit(void)
     mdns_free();
     s_mdns_initialized = s_mdns_started = false;
     pthread_mutex_unlock(&s_services_lock);
+    pthread_mutex_lock(&s_station_lock);
     esp_wifi_stop();
     esp_wifi_deinit();
+    pthread_mutex_unlock(&s_station_lock);
 }
 
 #if CONFIG_WENDY_MESH_ESPNOW

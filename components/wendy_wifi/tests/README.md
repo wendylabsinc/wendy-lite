@@ -23,10 +23,13 @@ settings. The outage case fails against the original implementation, which
 stops after the initial attempt and five retries.
 
 Credential fallback cases exercise the public initialization and provisioning
-APIs. The model emits a station-start event only when the radio first starts,
-and resolves connection results during the synchronous wait. These cases verify
-that an unavailable NVS network (including a refused connection request) does
-not prevent a reachable wendy-conf network or newly supplied credentials from
-connecting on the already-started station.
+APIs. The model delivers station-start events asynchronously, rejects
+configuration changes while a connection is in flight, and queues disconnect
+events when the radio stops. It verifies that exhausted
+retries, refused requests, and a synchronous timeout during an active scan do
+not prevent the next credential source or newly supplied credentials from
+connecting. Handoff drains old events with retries disabled before configuring
+the next network. It also covers a missing drain acknowledgement and an IP
+event arriving after shutdown.
 
 CI runs this suite with AddressSanitizer and UndefinedBehaviorSanitizer.
