@@ -34,6 +34,7 @@
 #include "lwip/netdb.h"
 
 static const char *TAG = "wendy_wifi";
+ESP_EVENT_DEFINE_BASE(WENDY_WIFI_CONTROL_EVENT);
 
 #define NVS_NAMESPACE  "wendy_prov"
 #define NVS_KEY_SSID   "ssid"
@@ -46,6 +47,7 @@ static bool s_infra_initialized = false;
 static atomic_bool s_connected;
 static TaskHandle_t s_services_task;
 static pthread_mutex_t s_services_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t s_station_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool s_mdns_initialized, s_mdns_started, s_server_started;
 #if CONFIG_WENDY_CLOUD
 static bool s_cloud_started;
@@ -55,34 +57,77 @@ static void services_task(void *unused);
 
 #define WIFI_CONNECTED_BIT  BIT0
 #define WIFI_FAIL_BIT       BIT1
+#define WIFI_QUIESCED_BIT   BIT2
 
 #define WIFI_MAX_RETRIES    5
+#define WIFI_RETRY_DELAY_MS 10000
+#define WIFI_QUIESCE_TIMEOUT_MS 5000
 static int s_retry_count = 0;
-static bool s_connect_requested;
+static atomic_bool s_connect_requested;
+static atomic_bool s_reconnect_pending;
+static atomic_bool s_handoff_pending;
+static wifi_config_t s_handoff_config; // Protected by s_station_lock.
+static uint32_t s_request_generation, s_next_drain_id;
+static atomic_int s_quiesced_id = -1;
+
+static void connect_station(void)
+{
+    if (!s_connect_requested || s_connected) return;
+    pthread_mutex_lock(&s_station_lock);
+    if (!s_connect_requested || s_connected) {
+        pthread_mutex_unlock(&s_station_lock);
+        return;
+    }
+    esp_err_t err = esp_wifi_connect();
+    if (err != ESP_OK && s_connect_requested && !s_connected) {
+        ESP_LOGW(TAG, "WiFi connect request failed: %s; retrying in %d ms",
+                 esp_err_to_name(err), WIFI_RETRY_DELAY_MS);
+        s_reconnect_pending = true;
+        xTaskNotifyGive(s_services_task);
+    }
+    pthread_mutex_unlock(&s_station_lock);
+}
 
 /* ── WiFi event handler ────────────────────────────────────────────── */
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                 int32_t event_id, void *event_data)
 {
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        if (s_connect_requested) esp_wifi_connect();
+    if (event_base == WENDY_WIFI_CONTROL_EVENT) {
+        s_quiesced_id = event_id;
+        xEventGroupSetBits(s_wifi_events, WIFI_QUIESCED_BIT);
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
+        const wifi_event_sta_connected_t *event = event_data;
+        if (event) {
+            ESP_LOGI(TAG, "WiFi associated: channel=%u authmode=%u",
+                     (unsigned)event->channel, (unsigned)event->authmode);
+        }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        const wifi_event_sta_disconnected_t *event = event_data;
+        ESP_LOGW(TAG, "WiFi disconnected: reason=%u rssi=%d",
+                 event ? (unsigned)event->reason : 0,
+                 event ? (int)event->rssi : 0);
         s_connected = false;
         xEventGroupClearBits(s_wifi_events, WIFI_CONNECTED_BIT);
-        xTaskNotifyGive(s_services_task);
         if (s_connect_requested && s_retry_count < WIFI_MAX_RETRIES) {
-            esp_wifi_connect();
             s_retry_count++;
             ESP_LOGI(TAG, "retrying WiFi connection (%d/%d)", s_retry_count, WIFI_MAX_RETRIES);
+            connect_station();
         } else {
             xEventGroupSetBits(s_wifi_events, WIFI_FAIL_BIT);
-            ESP_LOGE(TAG, "WiFi connection failed after %d retries", WIFI_MAX_RETRIES);
+            s_reconnect_pending = s_connect_requested;
+            if (s_connect_requested) {
+                ESP_LOGW(TAG, "WiFi unavailable after %d retries; retrying in %d ms",
+                         WIFI_MAX_RETRIES, WIFI_RETRY_DELAY_MS);
+            }
         }
+        xTaskNotifyGive(s_services_task);
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        if (!s_connect_requested) return;
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "connected, IP: " IPSTR, IP2STR(&event->ip_info.ip));
         s_retry_count = 0;
+        s_reconnect_pending = false;
         s_connected = true;
         xEventGroupSetBits(s_wifi_events, WIFI_CONNECTED_BIT);
         // DHCP may complete after the synchronous connection wait timed out.
@@ -116,10 +161,13 @@ static esp_err_t wifi_infra_init(void)
 
     esp_event_handler_instance_t instance_any_id;
     esp_event_handler_instance_t instance_got_ip;
+    esp_event_handler_instance_t instance_control;
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, &instance_any_id));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, &instance_got_ip));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        WENDY_WIFI_CONTROL_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, &instance_control));
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
 
@@ -129,12 +177,82 @@ static esp_err_t wifi_infra_init(void)
 
 /* ── WiFi connect (configure + start + block until result) ─────────── */
 
-static esp_err_t wifi_connect(const char *ssid, const char *password)
+static esp_err_t retry_handoff_later(uint32_t request, const char *step, esp_err_t err)
 {
-    s_connect_requested = true;
+    pthread_mutex_lock(&s_station_lock);
+    if (request == s_request_generation) {
+        ESP_LOGW(TAG, "WiFi handoff %s failed: %s; retrying in %d ms",
+                 step, esp_err_to_name(err), WIFI_RETRY_DELAY_MS);
+        s_handoff_pending = true;
+        xTaskNotifyGive(s_services_task);
+    }
+    pthread_mutex_unlock(&s_station_lock);
+    return err;
+}
+
+static esp_err_t wait_for_drain(int32_t id)
+{
+    TickType_t started = xTaskGetTickCount();
+    TickType_t timeout = pdMS_TO_TICKS(WIFI_QUIESCE_TIMEOUT_MS);
+    TickType_t remaining = timeout;
+    for (;;) {
+        EventBits_t bits = xEventGroupWaitBits(s_wifi_events, WIFI_QUIESCED_BIT,
+            pdTRUE, pdFALSE, remaining);
+        if ((bits & WIFI_QUIESCED_BIT) && s_quiesced_id == id) return ESP_OK;
+        TickType_t elapsed = xTaskGetTickCount() - started;
+        if (!(bits & WIFI_QUIESCED_BIT) || elapsed >= timeout) return ESP_ERR_TIMEOUT;
+        remaining = timeout - elapsed;
+    }
+}
+
+static esp_err_t attempt_handoff(uint32_t request)
+{
+    pthread_mutex_lock(&s_station_lock);
+    if (request != s_request_generation) {
+        pthread_mutex_unlock(&s_station_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    // Each retry gets a new marker: an acknowledgement arriving after a timeout
+    // must never authorize a later stop/configure sequence.
+    s_next_drain_id = (s_next_drain_id + 1) & INT32_MAX;
+    int32_t id = (int32_t)s_next_drain_id;
+    xEventGroupClearBits(s_wifi_events, WIFI_QUIESCED_BIT);
+    esp_err_t err = esp_wifi_stop();
+    pthread_mutex_unlock(&s_station_lock);
+    if (err != ESP_OK) return retry_handoff_later(request, "stop", err);
+    err = esp_event_post(WENDY_WIFI_CONTROL_EVENT, id, NULL, 0,
+                         pdMS_TO_TICKS(WIFI_QUIESCE_TIMEOUT_MS));
+    if (err != ESP_OK) return retry_handoff_later(request, "event post", err);
+    err = wait_for_drain(id);
+    if (err != ESP_OK) return retry_handoff_later(request, "event drain", err);
+
+    pthread_mutex_lock(&s_station_lock);
+    if (request != s_request_generation) {
+        pthread_mutex_unlock(&s_station_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
     s_retry_count = 0;
     xEventGroupClearBits(s_wifi_events, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
+    err = esp_wifi_set_config(WIFI_IF_STA, &s_handoff_config);
+    if (err == ESP_OK) err = esp_wifi_start();
+    if (err == ESP_OK) {
+        s_connect_requested = true;
+        ESP_LOGI(TAG, "connecting to WiFi SSID '%s'...", (char *)s_handoff_config.sta.ssid);
+        ESP_LOGI(TAG, "WiFi security: minimum authmode=%u SAE PWE=%u",
+                 (unsigned)s_handoff_config.sta.threshold.authmode,
+                 (unsigned)s_handoff_config.sta.sae_pwe_h2e);
+        memset(&s_handoff_config, 0, sizeof(s_handoff_config));
+    }
+    pthread_mutex_unlock(&s_station_lock);
+    if (err != ESP_OK) return retry_handoff_later(request, "configure/start", err);
 
+    // Configuration owns the first request; STA_START must not duplicate it.
+    connect_station();
+    return ESP_OK;
+}
+
+static esp_err_t wifi_connect(const char *ssid, const char *password)
+{
     wifi_config_t wifi_config = {
         .sta = {
             .threshold.authmode = WIFI_AUTH_OPEN,
@@ -155,10 +273,26 @@ static esp_err_t wifi_connect(const char *ssid, const char *password)
 #endif
 
     ESP_LOGI(TAG, "connecting to WiFi SSID '%s'...", ssid);
+    // Own the credentials before returning an error: the caller's buffers may
+    // disappear while the worker waits for the event loop to recover.
+    pthread_mutex_lock(&s_station_lock);
+    uint32_t request = ++s_request_generation;
+    s_handoff_config = wifi_config;
+    s_handoff_pending = false;
+    s_connect_requested = false;
+    s_reconnect_pending = false;
+    s_connected = false;
+    pthread_mutex_unlock(&s_station_lock);
+    esp_err_t err = attempt_handoff(request);
+    if (err != ESP_OK) return err;
 
     EventBits_t bits = xEventGroupWaitBits(s_wifi_events,
         WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
         pdFALSE, pdFALSE, pdMS_TO_TICKS(30000));
+    pthread_mutex_lock(&s_station_lock);
+    bool current = request == s_request_generation;
+    pthread_mutex_unlock(&s_station_lock);
+    if (!current) return ESP_ERR_INVALID_STATE;
 
     if (bits & WIFI_CONNECTED_BIT) {
         ESP_LOGI(TAG, "WiFi connected");
@@ -302,7 +436,24 @@ static void services_task(void *unused)
 {
     (void)unused;
     for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        TickType_t wait = s_handoff_pending ||
+            (s_connect_requested && !s_connected && s_reconnect_pending)
+            ? pdMS_TO_TICKS(WIFI_RETRY_DELAY_MS) : portMAX_DELAY;
+        uint32_t notified = ulTaskNotifyTake(pdTRUE, wait);
+        // A fresh event restarts the delay. Never reconnect from the system
+        // event task after the initial burst, or while shutting down.
+        if (!notified && wait != portMAX_DELAY) {
+            pthread_mutex_lock(&s_station_lock);
+            bool handoff = atomic_exchange(&s_handoff_pending, false);
+            uint32_t request = s_request_generation;
+            pthread_mutex_unlock(&s_station_lock);
+            if (handoff) {
+                attempt_handoff(request);
+            } else if (atomic_exchange(&s_reconnect_pending, false)) {
+                ESP_LOGI(TAG, "retrying WiFi connection after backoff");
+                connect_station();
+            }
+        }
         while (s_connected) {
             if (start_services()) break;
             // Retry resource failures without needing another WiFi event.
@@ -373,14 +524,6 @@ esp_err_t wendy_wifi_try_connect(const char *ssid, const char *password)
     esp_err_t err = wifi_infra_init();
     if (err != ESP_OK) return err;
 
-    /* Disconnect if currently connected */
-    if (s_connected) {
-        esp_wifi_disconnect();
-        esp_wifi_stop();
-        s_connected = false;
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-
     err = wifi_connect(ssid, password);
     if (err != ESP_OK) return err;
 
@@ -397,14 +540,24 @@ bool wendy_wifi_is_connected(void)
 
 void wendy_wifi_deinit(void)
 {
+    s_connect_requested = false;
+    s_reconnect_pending = false;
     s_connected = false;
+    pthread_mutex_lock(&s_station_lock);
+    ++s_request_generation;
+    s_handoff_pending = false;
+    memset(&s_handoff_config, 0, sizeof(s_handoff_config));
+    s_connect_requested = false;
+    s_reconnect_pending = false;
+    s_connected = false;
+    esp_wifi_stop();
+    esp_wifi_deinit();
+    pthread_mutex_unlock(&s_station_lock);
     if (s_services_task) xTaskNotifyGive(s_services_task);
     pthread_mutex_lock(&s_services_lock);
     mdns_free();
     s_mdns_initialized = s_mdns_started = false;
     pthread_mutex_unlock(&s_services_lock);
-    esp_wifi_stop();
-    esp_wifi_deinit();
 }
 
 #if CONFIG_WENDY_MESH_ESPNOW
