@@ -104,7 +104,10 @@ func main() {
 	wrong := certificate("wrong", tenant, device, false)
 	foreign := certificate("foreign", device, router, false)
 	expired := certificate("expired", tenant, router, true)
-	for _, mode := range []string{"tcp", "client", "server", "gateway"} {
+	otherDevice := "12345678-9abc-4def-8123-000000000005"
+	other := certificate("other", tenant, otherDevice, false)
+	malformed := certificate("malformed", tenant, "not-a-uuid", false)
+	for _, mode := range []string{"tcp", "client", "server", "gateway", "same-tenant"} {
 		for _, test := range []struct {
 			name, alpn string
 			cert       tls.Certificate
@@ -114,6 +117,8 @@ func main() {
 			{"valid", "wendy-local-mesh-leaf/3", good, tls.VersionTLS13, true},
 			{"legacy-v2", "wendy-local-mesh-leaf/2", good, tls.VersionTLS13, false},
 			{"wrong-router", "wendy-local-mesh-leaf/3", wrong, tls.VersionTLS13, false},
+			{"other-router", "wendy-local-mesh-leaf/3", other, tls.VersionTLS13, mode == "same-tenant"},
+			{"malformed-device", "wendy-local-mesh-leaf/3", malformed, tls.VersionTLS13, false},
 			{"wrong-tenant", "wendy-local-mesh-leaf/3", foreign, tls.VersionTLS13, false},
 			{"wrong-alpn", "wendy-local-mesh-ble/3", good, tls.VersionTLS13, false},
 			{"missing-alpn", "", good, tls.VersionTLS13, false},
@@ -205,7 +210,11 @@ func main() {
 				expectation = "accept"
 			}
 			port := fmt.Sprint(listener.Addr().(*net.TCPAddr).Port)
-			cmd := exec.Command(os.Args[2], filepath.Join(dir, "leaf.der"), filepath.Join(dir, "leaf.pem"), filepath.Join(dir, "roots.pem"), port, tenant, device, router, expectation)
+			expectedPeer := router
+			if mode == "same-tenant" && test.name == "other-router" {
+				expectedPeer = otherDevice
+			}
+			cmd := exec.Command(os.Args[2], filepath.Join(dir, "leaf.der"), filepath.Join(dir, "leaf.pem"), filepath.Join(dir, "roots.pem"), port, tenant, device, expectedPeer, expectation)
 			cmd.Env = append(os.Environ(), "MESH_STREAM_MODE="+mode)
 			output, err := cmd.CombinedOutput()
 			listener.Close()

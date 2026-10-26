@@ -2,8 +2,10 @@
 
 Wendy Lite can join a Wendy local mesh as an IPv6 endpoint through one explicitly
 configured peer over Wi-Fi TCP, BLE L2CAP, or ESP-NOW. Wi-Fi TCP can also
-discover a peer automatically. The build is opt-in and limited to native
-ESP32-S3 and ESP32-S31 profiles with PSRAM. The Seeed XIAO ESP32S3 profile compiles with ESP-IDF 6.0.3.
+discover a peer automatically. The XIAO ESP32S3, ESP32-S31 Korvo-1 and Mosaico
+native firmware profiles enable automatic Wi-Fi discovery and BLE fallback by default.
+Other profiles keep mesh disabled. Support is limited to native ESP32-S3 and
+ESP32-S31 profiles with PSRAM. The Seeed XIAO ESP32S3 profile compiles with ESP-IDF 6.0.3.
 The BLE image was tested on an ESP32-S3 DevKit with 8 MB PSRAM against a Linux
 router with no Wi-Fi credentials on the leaf. Logs confirmed mutual TLS,
 signed route leases and activation of the IPv6 interface after the replay
@@ -52,8 +54,8 @@ to eight IPv4 candidates in random order. It dials the Lite listener on port
 against the tenant roots before mesh traffic is accepted.
 
 The leaf keeps a working connection, then rediscovers after disconnection. No
-peer pin is persisted. BLE, ESP-NOW, and TCP builds without discovery retain the
-explicit peer settings. The [Mosaico dashboard](../samples/mosaico_dashboard)
+peer pin is persisted. Dedicated BLE, ESP-NOW, and TCP builds without discovery
+retain the explicit peer settings. The [Mosaico dashboard](../samples/mosaico_dashboard)
 enables discovery by default and displays waiting-for-Wi-Fi and discovery states.
 
 ## Authentication and route leases
@@ -131,13 +133,20 @@ On the Linux router, add `"leafListen": "0.0.0.0:43024"` to its existing
 adapter is explicit and does not discover or configure leaves automatically.
 The TCP port must be reachable from the leaf's Wi-Fi network.
 
-Create a local `mesh.defaults` with the actual router address and enrolled UUID:
+The standard XIAO ESP32S3, Korvo-1 and Mosaico profiles discover a router
+automatically after Wi-Fi connection and enrollment. If Wi-Fi cannot establish
+a mesh session, they accept a BLE router instead. Use a fresh sdkconfig when
+adopting these defaults; existing sdkconfig choices take precedence.
+
+To pin a router instead, create a local `mesh.defaults` with its actual address
+and enrolled UUID:
 
 ```ini
 CONFIG_LWIP_HOOK_IP6_ROUTE_CUSTOM=y
 CONFIG_LWIP_IPV6_FORWARD=n
 CONFIG_WENDY_MESH_LEAF=y
 CONFIG_WENDY_MESH_TCP=y
+CONFIG_WENDY_MESH_AUTO_DISCOVER=n
 CONFIG_WENDY_MESH_ROUTER_HOST="192.0.2.1"
 CONFIG_WENDY_MESH_ROUTER_DEVICE="12345678-9abc-4def-8123-000000000001"
 CONFIG_WENDY_MESH_ROUTER_PORT=43024
@@ -154,9 +163,10 @@ idf.py -B build-mesh-s3 -D SDKCONFIG=sdkconfig.mesh-s3 \
   -D IDF_TARGET=esp32s3 build size
 ```
 
-The equivalent container is `espressif/idf:v6.0.3`. Keep `mesh.defaults` local;
-this change does not add mesh to the firmware catalog or existing OTA profiles.
-The default build leaves the feature disabled.
+The equivalent container is `espressif/idf:v6.0.3`. Keep `mesh.defaults` local.
+To disable mesh in a supported board profile, set `CONFIG_WENDY_MESH_LEAF=n`
+and restore `CONFIG_LWIP_HOOK_IP6_ROUTE_NONE=y` in a final defaults overlay
+or through menuconfig.
 
 ## Memory and outstanding hardware validation
 
@@ -224,9 +234,32 @@ Go verifier, including tampering and restart replay. Its separate Linux
 namespace test covers TLS, Babel and TUN routing with a synthetic leaf. Neither
 test substitutes for running the C lwIP interface on a physical board.
 
+## Wi-Fi with BLE fallback
+
+`CONFIG_WENDY_MESH_WIFI_BLE=y` includes both transports in one firmware image.
+Each connection attempt tries Wi-Fi first. Automatic discovery tries one randomly
+ordered candidate per round, then opens a five-second BLE acceptance window.
+After a failed round, the worker waits one second before trying again. BLE works
+without Wi-Fi credentials or an access-point connection. A working session stays
+on its carrier until it disconnects or its signed-time window expires; Wi-Fi
+recovery does not interrupt a working BLE session.
+
+The Linux router must dial the leaf using `leafBLEPeers`, as shown below. This
+mode does not scan for Bluetooth routers. A BLE connection accepts a canonical
+device UUID from the enrolled tenant's verified certificate, excluding the leaf's
+own identity. It requires the same fresh signed time, mutual TLS, ALPN, route
+proofs and replay quarantine as Wi-Fi. No router UUID pin is needed on the leaf.
+TCP connections still verify the exact peer advertised by discovery or configured
+explicitly. The optional Internet gateway always retains its explicit UUID pin.
+
+Only one mesh session is active. BLE mesh channels are refused outside the
+acceptance window, including while Wi-Fi mesh is active. WendyCom's separate
+management channel remains available. The status snapshot reports the active
+carrier, or `Wi-Fi/BLE` while waiting.
+
 ## BLE without access-point association
 
-Choose `CONFIG_WENDY_MESH_BLE=y` instead of TCP, enable
+For a dedicated BLE-only build, choose `CONFIG_WENDY_MESH_BLE=y`, enable
 `CONFIG_BT_NIMBLE_L2CAP_COC_MAX_NUM=2` and
 `CONFIG_BT_NIMBLE_MSYS_1_BLOCK_SIZE=256`, and set
 `CONFIG_WENDY_MESH_BLE_PSM=129`. Keep `CONFIG_WENDY_BLE=y` and
@@ -241,8 +274,10 @@ Bulk sends also reserve four blocks in NimBLE's smallest host buffer pool for
 credit updates, ATT and incoming HCI traffic. Under buffer pressure, sends
 back off so credit updates can keep the channel moving.
 
-Set `CONFIG_WENDY_MESH_ROUTER_DEVICE` to the Linux router's enrolled UUID.
-The host and TCP port settings are unused for BLE. Add this to the router's
+Dedicated BLE-only builds require `CONFIG_WENDY_MESH_ROUTER_DEVICE` to contain
+the Linux router's enrolled UUID. Combined Wi-Fi/BLE builds authenticate the
+incoming router's same-tenant certificate instead. The host and TCP port settings
+are unused for BLE. Add this to the router's
 existing `local-mesh.json`, using the actual ESP32 identity and Bluetooth address:
 
 ```json
@@ -293,9 +328,9 @@ epoch cannot acknowledge or append to the current stream. TLS protects the
 contents and identity; ESP-NOW link-layer encryption is not required.
 
 This is a direct two-endpoint link. Lite does not forward packets for a third
-ESP32. Each build selects one mesh carrier and one pinned peer; simultaneous
-links, automatic carrier failover and ESP-NOW route discovery are not implemented.
-Wi-Fi TCP remains the default mesh carrier.
+ESP32. ESP-NOW builds select one pinned peer and do not discover routes or
+fall back to another carrier. The combined Wi-Fi/BLE profile supports carrier
+fallback while retaining one active mesh session.
 
 ## Signed time over radio
 

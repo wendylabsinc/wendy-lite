@@ -791,10 +791,11 @@ done:
 #if CONFIG_WENDY_MESH_LEAF
 static esp_err_t mesh_connect(const char* host, unsigned port, const char* router,
     wendy_pki_connection** connection, struct wendy_pki_mesh_identity* identity,
-    const struct wendy_pki_stream* stream, bool server)
+    const struct wendy_pki_stream* stream, bool server, bool discover_peer)
 {
-    if (!connection || !identity || !router
-        || !wendy_identity_uuid((const unsigned char*)router, strlen(router)))
+    if (!connection || !identity
+        || (discover_peer ? (!stream || server || router)
+            : (!router || !wendy_identity_uuid((const unsigned char*)router, strlen(router)))))
         return ESP_ERR_INVALID_ARG;
     *connection = NULL;
     memset(identity, 0, sizeof *identity);
@@ -811,7 +812,7 @@ static esp_err_t mesh_connect(const char* host, unsigned port, const char* route
         || wendy_conf_copy_enrollment(&cfg, &data) != ESP_OK
         || validate_config_and_trust(&cfg, &data)
         || !wendy_identity_uuid((const unsigned char*)cfg.device_id, strlen(cfg.device_id))
-        || !strcmp(cfg.device_id, router) || open_identity(&h) != ESP_OK)
+        || (router && !strcmp(cfg.device_id, router)) || open_identity(&h) != ESP_OK)
         goto done;
     opened = true;
     if (seed_clock(h, data.signed_time, data.tsa_roots)
@@ -852,6 +853,7 @@ static esp_err_t mesh_connect(const char* host, unsigned port, const char* route
         goto done;
     memcpy(identity->tenant, cfg.tenant_id, 37);
     memcpy(identity->device, cfg.device_id, 37);
+    memcpy(identity->peer, (*connection)->mesh_peer, sizeof identity->peer);
     identity->certificate_expires = expires;
     identity->verified_seconds = mesh_verified_seconds;
     identity->verified_monotonic_us = mesh_verified_monotonic_us;
@@ -885,13 +887,20 @@ done:
 esp_err_t wendy_pki_mesh_connect(const char* host, unsigned port, const char* peer,
     wendy_pki_connection** connection, struct wendy_pki_mesh_identity* identity)
 {
-    return mesh_connect(host, port, peer, connection, identity, NULL, false);
+    return mesh_connect(host, port, peer, connection, identity, NULL, false, false);
 }
 esp_err_t wendy_pki_mesh_stream(const struct wendy_pki_stream* stream, bool server,
     const char* peer, wendy_pki_connection** connection, struct wendy_pki_mesh_identity* identity)
 {
     if (!stream || !stream->read || !stream->write || !stream->wait) return ESP_ERR_INVALID_ARG;
-    return mesh_connect(NULL, 0, peer, connection, identity, stream, server);
+    return mesh_connect(NULL, 0, peer, connection, identity, stream, server, false);
+}
+
+esp_err_t wendy_pki_mesh_stream_same_tenant(const struct wendy_pki_stream* stream,
+    wendy_pki_connection** connection, struct wendy_pki_mesh_identity* identity)
+{
+    if (!stream || !stream->read || !stream->write || !stream->wait) return ESP_ERR_INVALID_ARG;
+    return mesh_connect(NULL, 0, NULL, connection, identity, stream, false, true);
 }
 
 #endif

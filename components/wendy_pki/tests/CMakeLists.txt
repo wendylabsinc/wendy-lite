@@ -235,3 +235,12 @@ target_include_directories(mesh_discovery_test PRIVATE ../../wendy_mesh/tests/di
 target_link_libraries(mesh_discovery_test PRIVATE mesh_protocol)
 target_compile_options(mesh_discovery_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 add_test(NAME mesh_router_discovery COMMAND mesh_discovery_test)
+
+add_executable(mesh_connect_test ../../wendy_mesh/tests/connect_test.c
+    ../../wendy_mesh/src/wendy_mesh_connect.c)
+target_include_directories(mesh_connect_test PRIVATE ../../wendy_wifi/include)
+target_link_libraries(mesh_connect_test PRIVATE mesh_protocol)
+target_compile_definitions(mesh_connect_test PRIVATE CONFIG_WENDY_MESH_WIFI_BLE=1
+    CONFIG_WENDY_MESH_AUTO_DISCOVER=1 CONFIG_WENDY_MESH_ROUTER_PORT=43024)
+target_compile_options(mesh_connect_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME mesh_transport_fallback COMMAND mesh_connect_test)
