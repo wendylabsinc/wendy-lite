@@ -47,6 +47,7 @@ int xTaskCreate(void (*task)(void *), const char *name, unsigned stack, void *ar
 void xTaskNotifyGive(TaskHandle_t task);
 uint32_t ulTaskNotifyTake(int clear, TickType_t ticks);
 void vTaskDelay(TickType_t ticks);
+TickType_t xTaskGetTickCount(void);
 typedef const char *esp_event_base_t;
 #define ESP_EVENT_DEFINE_BASE(name) const char name[] = #name
 extern const char wifi_event_base[], ip_event_base[];

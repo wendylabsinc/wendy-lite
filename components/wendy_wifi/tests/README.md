@@ -32,4 +32,10 @@ connecting. Handoff drains old events with retries disabled before configuring
 the next network. It also covers a missing drain acknowledgement and an IP
 event arriving after shutdown.
 
+Handoff recovery cases delay acknowledgements or refuse event posting and
+driver operations, then verify automatic recovery at ten-second intervals.
+They check that credentials outlive the caller's buffers, stale markers cannot
+complete a newer drain or extend its deadline, and newer requests or shutdown
+cancel both pending and in-progress recovery.
+
 CI runs this suite with AddressSanitizer and UndefinedBehaviorSanitizer.
