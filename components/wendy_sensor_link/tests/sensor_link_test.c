@@ -83,8 +83,8 @@ esp_err_t cam_capture_retrieve_jpeg_frame(const uint8_t **jpeg, size_t *size,
     camera_buffer_held = true;
     *jpeg = jpeg_frame;
     *size = sizeof(jpeg_frame);
-    *width = 800;
-    *height = 600;
+    *width = 640;
+    *height = 480;
     return ESP_OK;
 }
 
@@ -299,7 +299,7 @@ static void check_manifest(bool camera, bool microphone)
         assert(sensor->channel_id == 0 && sensor->input_id == 0);
         assert(!strcmp(sensor->name, "camera") && sensor->format_kind == WCOM_SENSOR_FORMAT_VIDEO);
         assert(sensor->format.video.codec == wendy_lite_sensorlink_VideoFormat_Codec_MJPEG);
-        assert(sensor->format.video.width == 800 && sensor->format.video.height == 600);
+        assert(sensor->format.video.width == 640 && sensor->format.video.height == 480);
     }
     if (microphone) {
         const struct wcom_sensor_descriptor *sensor = &sensors[i++];

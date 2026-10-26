@@ -55,8 +55,8 @@ static const camera_config_t s_config = {
     .ledc_channel = LEDC_CHANNEL_0,
 
     .pixel_format = PIXFORMAT_JPEG,
-    .frame_size = FRAMESIZE_SVGA,
-    .jpeg_quality = 12,
+    .frame_size = FRAMESIZE_VGA,
+    .jpeg_quality = 24,
     .fb_count = CAM_CAPTURE_MAX_INFLIGHT,
     .fb_location = CAMERA_FB_IN_PSRAM,
     .grab_mode = CAMERA_GRAB_LATEST,
