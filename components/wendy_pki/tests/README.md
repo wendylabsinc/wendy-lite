@@ -172,6 +172,16 @@ authenticated time under incorrect device clocks, including certificate date,
 CA, key usage, path length, identity, and signature failures. See
 `mldsa-fixtures/README.md` for provenance and regeneration commands.
 
+`mesh_mldsa_router_test` feeds Linux router `bundle` and `manifest` control
+messages, produced by the WendyOS router's own manifest signer, through the
+leaf's JSON parser, chain verifier and directory. An ML-DSA-65 router leaf under
+ML-DSA-87/65 CAs and its pure ML-DSA-65 manifest are accepted, as is a P-256
+router through the same signer. Signatures over the SHA-256 digest, with a
+non-empty context, without the principal, or by another key are rejected, along
+with damaged signatures, bodies and agent metadata, cross-algorithm signatures,
+wrong tenants, expiry and an unrelated root. See
+`../../wendy_mesh/tests/mldsa-router-fixtures/README.md`.
+
 The enrollment capability tests compile the production WendyCom capability
 helper with Cloud, Wi-Fi, and PKI individually disabled. They ensure unsupported
 profiles report an explicit false enrollment capability while retaining local

@@ -627,7 +627,11 @@ int wendy_pki_mesh_chain(const uint8_t* const* data, const size_t* sizes, size_t
     mbedtls_x509_crt* certs[8] = { 0 };
     int result = -1;
     size_t total = 0;
-    struct wendy_pki_mesh_peer peer = { 0 };
+    /* An ML-DSA-65 key makes a peer about 2 KiB. Keep it off the TLS and mesh
+     * task stacks, which also run the chain's ML-DSA verification. */
+    struct wendy_pki_mesh_peer* peer = calloc(1, sizeof *peer);
+    if (!peer)
+        return -1;
     for (size_t i = 0; i < count; i++)
     {
         if (!sizes[i] || sizes[i] > 32768 || total > 32768 - sizes[i])
@@ -638,10 +642,10 @@ int wendy_pki_mesh_chain(const uint8_t* const* data, const size_t* sizes, size_t
             goto done;
     }
     mbedtls_x509_crt* leaf = certs[0];
-    if (verify_chain(leaf, certs, (int)count, roots, roots_size, now, &peer.expires)
+    if (verify_chain(leaf, certs, (int)count, roots, roots_size, now, &peer->expires)
         || wendy_peer_auth_role(leaf, tenant) != WENDY_PEER_ROLE_DEVICE
         || !has_eku(leaf, MBEDTLS_OID_SERVER_AUTH, MBEDTLS_OID_SIZE(MBEDTLS_OID_SERVER_AUTH))
-        || peer.expires <= now)
+        || peer->expires <= now)
         goto done;
     unsigned uris = 0;
     for (const mbedtls_x509_sequence* a = &leaf->subject_alt_names; a && a->buf.p; a = a->next)
@@ -667,21 +671,37 @@ int wendy_pki_mesh_chain(const uint8_t* const* data, const size_t* sizes, size_t
         mbedtls_x509_subject_alternative_name san;
         if (!mbedtls_x509_parse_subject_alt_name(&a->buf, &san)
             && san.type == MBEDTLS_X509_SAN_UNIFORM_RESOURCE_IDENTIFIER)
-            memcpy(peer.device, san.san.unstructured_name.p + 69, 36);
+            memcpy(peer->device, san.san.unstructured_name.p + 69, 36);
     }
     der raw = { leaf->raw.p, leaf->raw.p, leaf->raw.len, leaf->raw.len, 0 }, serial, issuer, spki;
-    if (certificate_parts(raw, &serial, &issuer, &spki) || !ec_public_key(spki, false))
+    der id, params, key;
+    if (certificate_parts(raw, &serial, &issuer, &spki))
         goto done;
-    int n = mbedtls_pk_write_pubkey_der(&leaf->pk, peer.spki, sizeof peer.spki);
-    if (n <= 0 || (size_t)n > sizeof peer.spki)
-        goto done;
-    memmove(peer.spki, peer.spki + sizeof peer.spki - n, n);
-    peer.spki_size = n;
-    *out = peer;
+    if (ec_public_key(spki, false))
+    {
+        int n = mbedtls_pk_write_pubkey_der(&leaf->pk, peer->spki, sizeof peer->spki);
+        if (n <= 0 || (size_t)n > sizeof peer->spki)
+            goto done;
+        memmove(peer->spki, peer->spki + sizeof peer->spki - n, n);
+        peer->spki_size = n;
+    }
+    else
+    {
+        /* Linux routers can hold pure ML-DSA-65 device keys. Keep the exact
+         * certified SPKI; ML-DSA-44/87 and other algorithms stay rejected. */
+        if (public_key_parts(spki, &id, &params, &key)
+            || !bytes(id, mldsa65_oid, sizeof mldsa65_oid) || params.n || key.n != 1953
+            || spki.raw_n > sizeof peer->spki)
+            goto done;
+        memcpy(peer->spki, spki.raw, spki.raw_n);
+        peer->spki_size = spki.raw_n;
+    }
+    *out = *peer;
     result = 0;
 done:
     for (size_t i = 0; i < count; i++)
         free_cert(certs[i]);
+    free(peer);
     return result;
 }
 
