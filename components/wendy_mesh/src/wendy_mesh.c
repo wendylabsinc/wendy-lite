@@ -78,6 +78,13 @@ _Static_assert(sizeof(struct mesh_state) < 128 * 1024, "mesh protocol storage ex
 static _Atomic(struct mesh_state*) state;
 static pthread_mutex_t state_lock = PTHREAD_MUTEX_INITIALIZER;
 static TaskHandle_t mesh_task_handle;
+/* The worker stack stays in internal RAM: the worker commits signed-time and
+ * revision state to NVS, and flash writes assert on a PSRAM stack. It is
+ * reserved at link time because the worker starts after Wi-Fi, BLE and the
+ * Wi-Fi service tasks. By then no 32 KiB internal block may be left, even with
+ * enough free memory in total, as on the XIAO ESP32S3 Sense with its camera. */
+static StackType_t mesh_task_stack[MESH_STACK_BYTES];
+static StaticTask_t mesh_task_buffer;
 static const char* TAG = "wendy_mesh";
 static enum wendy_mesh_phase phase = WENDY_MESH_UNAVAILABLE;
 
@@ -964,8 +971,9 @@ esp_err_t wendy_mesh_start(void)
     state = s;
     phase = WENDY_MESH_WAITING_ENROLLMENT;
     pthread_mutex_unlock(&state_lock);
-    if (xTaskCreate(mesh_task, "wendy_mesh", MESH_STACK_BYTES, NULL, 4, &mesh_task_handle)
-        != pdPASS)
+    mesh_task_handle = xTaskCreateStatic(
+        mesh_task, "wendy_mesh", MESH_STACK_BYTES, NULL, 4, mesh_task_stack, &mesh_task_buffer);
+    if (!mesh_task_handle)
     {
         pthread_mutex_lock(&state_lock);
         state = NULL;
