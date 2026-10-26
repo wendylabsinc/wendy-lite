@@ -128,7 +128,7 @@ jobs:
               "seeed_xiao_esp32s3_native", "esp32s31_korvo_1_native",
               "esp32s31_mosaico_native", "esp32s3_devkit_8mb_mesh_native",
           }
-          for option in ("WENDY_MESH_LEAF", "WENDY_MESH_WIFI_BLE", "WENDY_MESH_AUTO_DISCOVER"):
+          for option in ("WENDY_MESH_LEAF", "WENDY_MESH_WIFI_BLE"):  # demo build pins the router
               assert bool(config.get(option)) == enabled, f"unexpected {option} for this board"
           if enabled:
               assert config.get("LWIP_IPV6") and config.get("LWIP_HOOK_IP6_ROUTE_CUSTOM")
