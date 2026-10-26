@@ -1,5 +1,6 @@
 #include "wendy_core.h"
 #include "esp_log.h"
+#include "wendy_heap_diag.h"
 
 #if CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3 || CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1
 #include "wendy_sensor_link.h"
@@ -14,8 +15,10 @@
 void app_main(void)
 {
 #if CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3 || CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1
+    WENDY_HEAP_DIAG("main", "before sensor_link_init");
     // Reserve sensor DMA memory before networking fragments the internal heap.
     esp_err_t err = wendy_sensor_link_init();
+    WENDY_HEAP_DIAG("main", "after sensor_link_init");
     if (err != ESP_OK) {
         ESP_LOGW("main", "SensorLink unavailable (%s); device management remains active",
                  esp_err_to_name(err));

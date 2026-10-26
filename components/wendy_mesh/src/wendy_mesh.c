@@ -909,7 +909,51 @@ static void mesh_task(void* unused)
 #endif
     }
 }
+/* TEST-ONLY heap diagnostics for the XIAO ESP_ERR_NO_MEM investigation. */
+#define MESH_HEAP_DIAG(where)                                                                  \
+    ESP_LOGW(TAG,                                                                              \
+        "heapdiag[%s] internal free=%u largest=%u min=%u | dma free=%u largest=%u | "          \
+        "spiram free=%u largest=%u",                                                           \
+        (where),                                                                               \
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),              \
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),     \
+        (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),      \
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),                                     \
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),                            \
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),                                  \
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM))
+static void mesh_heap_diag_tick(void* unused)
+{
+    (void)unused;
+    MESH_HEAP_DIAG("periodic");
+    TaskHandle_t task = mesh_task_handle;
+    if (task)
+        ESP_LOGW(TAG, "heapdiag mesh stack high-water free=%u of %u",
+            (unsigned)uxTaskGetStackHighWaterMark(task), (unsigned)MESH_STACK_BYTES);
+}
+static void mesh_heap_diag_arm(void)
+{
+    static esp_timer_handle_t timer;
+    if (timer)
+        return;
+    const esp_timer_create_args_t args = { .callback = mesh_heap_diag_tick, .name = "heapdiag" };
+    if (esp_timer_create(&args, &timer) == ESP_OK)
+        esp_timer_start_periodic(timer, 30 * 1000 * 1000);
+}
+static esp_err_t wendy_mesh_start_impl(void);
 esp_err_t wendy_mesh_start(void)
+{
+    MESH_HEAP_DIAG("mesh_start entry");
+    ESP_LOGW(TAG, "heapdiag sizeof(mesh_state)=%u stack=%u psram-admission=%u",
+        (unsigned)sizeof(struct mesh_state), (unsigned)MESH_STACK_BYTES,
+        (unsigned)(sizeof(struct mesh_state) + 512 * 1024));
+    heap_caps_print_heap_info(MALLOC_CAP_INTERNAL);
+    esp_err_t err = wendy_mesh_start_impl();
+    MESH_HEAP_DIAG(err == ESP_OK ? "mesh_start ok" : "mesh_start failed");
+    mesh_heap_diag_arm();
+    return err;
+}
+static esp_err_t wendy_mesh_start_impl(void)
 {
     if (mesh_task_handle)
         return ESP_OK;
@@ -923,14 +967,21 @@ esp_err_t wendy_mesh_start(void)
     /* PSRAM is required for this experimental profile. Refuse allocation if
      * concurrent TLS/chain verification cannot retain at least 512 KiB free. */
     if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < sizeof(struct mesh_state) + 512 * 1024)
+    {
+        ESP_LOGE(TAG, "heapdiag FAIL: PSRAM admission check");
         return ESP_ERR_NO_MEM;
+    }
     struct mesh_state* s = heap_caps_calloc(1, sizeof *s, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s)
+    {
+        ESP_LOGE(TAG, "heapdiag FAIL: PSRAM state calloc");
         return ESP_ERR_NO_MEM;
+    }
     s->queue = xQueueCreateStatic(
         MESH_QUEUE_PACKETS, sizeof(struct queued_packet), s->queue_storage, &s->queue_control);
     if (!s->queue)
     {
+        ESP_LOGE(TAG, "heapdiag FAIL: queue");
         free(s);
         return ESP_ERR_NO_MEM;
     }
@@ -947,6 +998,8 @@ esp_err_t wendy_mesh_start(void)
     if (xTaskCreate(mesh_task, "wendy_mesh", MESH_STACK_BYTES, NULL, 4, &mesh_task_handle)
         != pdPASS)
     {
+        ESP_LOGE(TAG, "heapdiag FAIL: xTaskCreate(wendy_mesh, %u-byte internal stack)",
+            (unsigned)MESH_STACK_BYTES);
         pthread_mutex_lock(&state_lock);
         state = NULL;
         phase = WENDY_MESH_UNAVAILABLE;
