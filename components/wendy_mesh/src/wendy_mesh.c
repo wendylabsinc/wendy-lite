@@ -916,7 +916,49 @@ static void mesh_task(void* unused)
 #endif
     }
 }
+/* TEST-ONLY heap diagnostics for the XIAO ESP_ERR_NO_MEM investigation. */
+#define MESH_HEAP_DIAG(where)                                                                  \
+    ESP_LOGW(TAG,                                                                              \
+        "heapdiag[%s] internal free=%u largest=%u min=%u | dma free=%u largest=%u | "          \
+        "spiram free=%u largest=%u",                                                           \
+        (where),                                                                               \
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),              \
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),     \
+        (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),      \
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),                                     \
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),                            \
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),                                  \
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM))
+static void mesh_heap_diag_tick(void* unused)
+{
+    (void)unused;
+    TaskHandle_t task = mesh_task_handle;
+    if (task)
+        ESP_LOGW(TAG, "heapdiag mesh stack high-water free=%u of %u phase=%d",
+            (unsigned)uxTaskGetStackHighWaterMark(task), (unsigned)MESH_STACK_BYTES, (int)phase);
+}
+static void mesh_heap_diag_arm(void)
+{
+    static esp_timer_handle_t timer;
+    if (timer)
+        return;
+    const esp_timer_create_args_t args = { .callback = mesh_heap_diag_tick, .name = "heapdiag" };
+    if (esp_timer_create(&args, &timer) == ESP_OK)
+        esp_timer_start_periodic(timer, 30 * 1000 * 1000);
+}
+static esp_err_t wendy_mesh_start_impl(void);
 esp_err_t wendy_mesh_start(void)
+{
+    MESH_HEAP_DIAG("mesh_start entry");
+    ESP_LOGW(TAG, "heapdiag sizeof(mesh_state)=%u stack=%u (static at %p)",
+        (unsigned)sizeof(struct mesh_state), (unsigned)MESH_STACK_BYTES, (void*)mesh_task_stack);
+    heap_caps_print_heap_info(MALLOC_CAP_INTERNAL);
+    esp_err_t err = wendy_mesh_start_impl();
+    MESH_HEAP_DIAG(err == ESP_OK ? "mesh_start ok" : "mesh_start failed");
+    mesh_heap_diag_arm();
+    return err;
+}
+static esp_err_t wendy_mesh_start_impl(void)
 {
     if (mesh_task_handle)
         return ESP_OK;

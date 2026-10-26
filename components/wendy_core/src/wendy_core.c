@@ -21,6 +21,7 @@
 
 #include "wendy_core.h"
 #include "wendy_core_wdt.h"
+#include "wendy_heap_diag.h"
 #include "wendy_conf.h"
 
 #if CONFIG_WENDY_WASM
@@ -992,8 +993,10 @@ esp_err_t wendy_core_init(void)
         .on_get_device_info     = com_get_device_info,
     };
     wcom_set_app_delegate(&app_delegate);
+    WENDY_HEAP_DIAG(TAG, "before wcom_start");
     wcom_start();
     wendy_core_wdt_start();
+    WENDY_HEAP_DIAG(TAG, "after wcom_start");
 
     /* Initialize the BLE transport (if enabled). Deliberately before WiFi and
      * not gated on it: a board with no credentials is exactly the case BLE
@@ -1008,6 +1011,7 @@ esp_err_t wendy_core_init(void)
                      esp_err_to_name(ble_err));
         }
     }
+    WENDY_HEAP_DIAG(TAG, "after wendy_ble_start");
 #endif
 
     /* Initialize WiFi transport (if enabled) */
@@ -1022,6 +1026,7 @@ esp_err_t wendy_core_init(void)
     }
 #endif /* CONFIG_WENDY_WIFI_ENABLED */
 #if CONFIG_WENDY_MESH_LEAF
+    WENDY_HEAP_DIAG(TAG, "before wendy_mesh_start");
     err = wendy_mesh_start();
     if (err != ESP_OK) ESP_LOGW(TAG, "mesh not started: %s", esp_err_to_name(err));
 #endif
