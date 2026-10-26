@@ -180,7 +180,9 @@ The shared protocol state remains below 128 KiB.
 That includes a 64 KiB control buffer, 32 KiB certificate decode workspace,
 32 origin receipts, one packet assembler and a four-packet output queue. A
 compile-time assertion caps the state below 128 KiB. The worker has a separate
-32 KiB task stack. ESP-NOW adds a 64 KiB PSRAM receive window and a
+32 KiB task stack, reserved in internal RAM at link time. It cannot use PSRAM
+because the worker writes NVS, and once Wi-Fi, BLE and a camera have started,
+the heap may have no 32 KiB block left. ESP-NOW adds a 64 KiB PSRAM receive window and a
 bounded 16-datagram callback queue. The window lets both endpoints send their
 certificate bundles before reading without deadlocking. Startup requires enough free PSRAM for the state plus
 512 KiB of remaining headroom for TLS, X.509 and other work. That admission
