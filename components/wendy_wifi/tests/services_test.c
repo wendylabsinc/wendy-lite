@@ -14,6 +14,17 @@ static unsigned mdns_inits, hostname_sets, server_starts, cloud_starts;
 static unsigned mdns_failures, hostname_failures, cloud_failures;
 static bool fail_task, enrolled, disconnect_on_retry;
 static bool driver_model, driver_event_pending, access_point_up;
+static bool driver_started, driver_start_pending;
+static bool driver_connected, driver_disconnect_pending, timeout_with_connect_pending;
+static bool drop_control_marker;
+static unsigned control_posts, control_post_failures, control_ack_timeouts, control_waits;
+static unsigned stop_failures, config_failures;
+static int32_t delayed_control_id, latest_control_id, delivered_control_id, queued_control_id;
+static bool replay_stale_control, deinit_on_control_wait, replace_on_control_wait;
+static TickType_t test_ticks;
+static TickType_t stale_ack_elapsed, last_control_wait_ticks;
+static unsigned driver_starts, station_start_events, credential_saves;
+static const char *access_point_ssid, *conf_ssid, *conf_password;
 static bool cancel_retry_with_ip, cancel_retry_with_deinit;
 static unsigned connect_calls, connect_failures, reconnect_waits, restore_after_waits;
 static wifi_config_t last_config;
@@ -26,6 +37,34 @@ void test_log(const char *format, ...)
     va_start(args, format);
     vsnprintf(log_output + used, sizeof(log_output) - used, format, args);
     va_end(args);
+}
+
+static void deliver_station_start(void)
+{
+    if (!driver_start_pending) return;
+    driver_start_pending = false;
+    station_start_events++;
+    wifi_event_handler(NULL, WIFI_EVENT, WIFI_EVENT_STA_START, NULL);
+}
+
+static void deliver_driver_event(void)
+{
+    driver_event_pending = false;
+    if (access_point_up && (!access_point_ssid ||
+        !strcmp((const char *)last_config.sta.ssid, access_point_ssid))) {
+        driver_connected = true;
+        ip_event_got_ip_t event = {0};
+        wifi_event_handler(NULL, IP_EVENT, IP_EVENT_STA_GOT_IP, &event);
+    } else {
+        wifi_event_sta_disconnected_t event = {.reason = 201, .rssi = -60};
+        wifi_event_handler(NULL, WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &event);
+    }
+}
+
+static void deliver_control(int32_t id)
+{
+    delivered_control_id = id;
+    wifi_event_handler(NULL, WENDY_WIFI_CONTROL_EVENT, id, NULL);
 }
 
 const char *esp_err_to_name(esp_err_t error) { return "injected failure"; }
@@ -44,7 +83,41 @@ EventBits_t xEventGroupSetBits(EventGroupHandle_t group, EventBits_t bits)
 EventBits_t xEventGroupWaitBits(EventGroupHandle_t group, EventBits_t bits,
                                int clear, int all, TickType_t ticks)
 {
+    if (bits == BIT2) {
+        control_waits++;
+        last_control_wait_ticks = ticks;
+        if (deinit_on_control_wait) {
+            deinit_on_control_wait = false;
+            wendy_wifi_deinit();
+        }
+        if (replace_on_control_wait) {
+            replace_on_control_wait = false;
+            assert(wendy_wifi_try_connect("replacement-network", "replacement-password") == ESP_OK);
+            deliver_control(delayed_control_id);
+        }
+        if (!(event_bits & bits) && queued_control_id >= 0) {
+            int32_t id = queued_control_id;
+            queued_control_id = -1;
+            deliver_control(id);
+        }
+        EventBits_t result = event_bits & bits;
+        if (result && queued_control_id >= 0) test_ticks += stale_ack_elapsed;
+        if (clear) event_bits &= ~bits;
+        if (!result) test_ticks += ticks;
+        return result;
+    }
     connect_wait_ms = ticks;
+    deliver_station_start();
+    if (timeout_with_connect_pending) {
+        timeout_with_connect_pending = false;
+        assert(driver_event_pending);
+        return 0;
+    }
+    unsigned events = 0;
+    while (driver_model && driver_event_pending && !(event_bits & bits)) {
+        assert(++events <= WIFI_MAX_RETRIES + 1);
+        deliver_driver_event();
+    }
     return event_bits & bits;
 }
 int xTaskCreate(void (*task)(void *), const char *name, unsigned stack,
@@ -64,16 +137,8 @@ void xTaskNotifyGive(TaskHandle_t task)
 uint32_t ulTaskNotifyTake(int clear, TickType_t ticks)
 {
     assert(clear == pdTRUE);
-    if (driver_model && driver_event_pending) {
-        driver_event_pending = false;
-        if (access_point_up) {
-            ip_event_got_ip_t event = {0};
-            wifi_event_handler(NULL, IP_EVENT, IP_EVENT_STA_GOT_IP, &event);
-        } else {
-            wifi_event_sta_disconnected_t event = {.reason = 201, .rssi = -60};
-            wifi_event_handler(NULL, WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &event);
-        }
-    }
+    deliver_station_start();
+    if (driver_model && driver_event_pending) deliver_driver_event();
     if (notifications) {
         uint32_t pending = notifications;
         notifications = 0;
@@ -105,15 +170,45 @@ uint32_t ulTaskNotifyTake(int clear, TickType_t ticks)
     return 0;
 }
 void vTaskDelay(TickType_t ticks) {}
+TickType_t xTaskGetTickCount(void) { return test_ticks; }
 esp_err_t esp_event_loop_create_default(void) { return ESP_OK; }
 esp_err_t esp_event_handler_instance_register(esp_event_base_t base, int32_t id,
     void (*handler)(void *, esp_event_base_t, int32_t, void *), void *arg,
     esp_event_handler_instance_t *instance) { return ESP_OK; }
+esp_err_t esp_event_post(esp_event_base_t base, int32_t id, const void *data, size_t size, TickType_t ticks)
+{
+    control_posts++;
+    if (control_post_failures) {
+        control_post_failures--;
+        return ESP_ERR_TIMEOUT;
+    }
+    latest_control_id = id;
+    // Driver events already queued by stop must precede the control marker.
+    deliver_station_start();
+    if (driver_disconnect_pending) {
+        driver_disconnect_pending = false;
+        unsigned before = connect_calls;
+        wifi_event_handler(NULL, WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, NULL);
+        assert(connect_calls == before);
+    }
+    if (control_ack_timeouts) {
+        control_ack_timeouts--;
+        delayed_control_id = id;
+    } else if (replay_stale_control) {
+        replay_stale_control = false;
+        deliver_control(delayed_control_id);
+        queued_control_id = id;
+    } else if (!drop_control_marker) {
+        deliver_control(id);
+    }
+    return ESP_OK;
+}
 esp_err_t esp_netif_init(void) { return ESP_OK; }
 void *esp_netif_create_default_wifi_sta(void) { return &event_bits; }
 esp_err_t esp_wifi_init(const wifi_init_config_t *config) { return ESP_OK; }
 esp_err_t esp_wifi_connect(void)
 {
+    if (driver_model) assert(driver_started);
     connect_calls++;
     if (connect_failures) { connect_failures--; return ESP_ERR_NO_MEM; }
     if (driver_model) driver_event_pending = true;
@@ -123,11 +218,29 @@ esp_err_t esp_wifi_disconnect(void) { return ESP_OK; }
 esp_err_t esp_wifi_set_mode(int mode) { return ESP_OK; }
 esp_err_t esp_wifi_set_config(int interface, const wifi_config_t *config)
 {
+    assert(delivered_control_id == latest_control_id && queued_control_id < 0);
+    if (config_failures) { config_failures--; return ESP_ERR_NO_MEM; }
+    if (driver_model && (driver_event_pending || driver_connected)) return ESP_ERR_WIFI_STATE;
     last_config = *config;
     return ESP_OK;
 }
-esp_err_t esp_wifi_start(void) { return ESP_OK; }
-esp_err_t esp_wifi_stop(void) { return ESP_OK; }
+esp_err_t esp_wifi_start(void)
+{
+    driver_starts++;
+    if (!driver_started) {
+        driver_started = true;
+        if (driver_model) driver_start_pending = true;
+    }
+    return ESP_OK;
+}
+esp_err_t esp_wifi_stop(void)
+{
+    if (stop_failures) { stop_failures--; return ESP_ERR_NO_MEM; }
+    driver_disconnect_pending |= driver_event_pending || driver_connected;
+    driver_connected = false;
+    driver_started = driver_event_pending = false;
+    return ESP_OK;
+}
 esp_err_t esp_wifi_deinit(void) { return ESP_OK; }
 esp_err_t nvs_open(const char *name, int mode, nvs_handle_t *handle) { *handle = 1; return ESP_OK; }
 esp_err_t nvs_get_str(nvs_handle_t handle, const char *name, char *out, size_t *size)
@@ -136,7 +249,7 @@ esp_err_t nvs_get_str(nvs_handle_t handle, const char *name, char *out, size_t *
     return ESP_OK;
 }
 esp_err_t nvs_set_str(nvs_handle_t handle, const char *name, const char *value) { return ESP_OK; }
-esp_err_t nvs_commit(nvs_handle_t handle) { return ESP_OK; }
+esp_err_t nvs_commit(nvs_handle_t handle) { credential_saves++; return ESP_OK; }
 void nvs_close(nvs_handle_t handle) {}
 esp_err_t mdns_init(void)
 {
@@ -161,8 +274,14 @@ esp_err_t wendy_cloud_start(void)
     return ESP_OK;
 }
 const char *wendy_conf_get_resolved_device_name(void) { return "test-board"; }
-struct wendy_conf_span wendy_conf_get_network_ssid(void) { return (struct wendy_conf_span){0}; }
-struct wendy_conf_span wendy_conf_get_network_password(void) { return (struct wendy_conf_span){0}; }
+struct wendy_conf_span wendy_conf_get_network_ssid(void)
+{
+    return (struct wendy_conf_span){(const uint8_t *)conf_ssid, strlen(conf_ssid)};
+}
+struct wendy_conf_span wendy_conf_get_network_password(void)
+{
+    return (struct wendy_conf_span){(const uint8_t *)conf_password, strlen(conf_password)};
+}
 bool wendy_conf_has_enrollment(void) { return enrolled; }
 size_t strlcpy(char *dest, const char *source, size_t size)
 {
@@ -188,6 +307,18 @@ static void reset_test(void)
     fail_task = disconnect_on_retry = false;
     enrolled = true;
     driver_model = driver_event_pending = access_point_up = false;
+    driver_started = driver_start_pending = false;
+    driver_connected = driver_disconnect_pending = timeout_with_connect_pending = false;
+    drop_control_marker = false;
+    control_posts = control_post_failures = control_ack_timeouts = control_waits = 0;
+    stop_failures = config_failures = 0;
+    delayed_control_id = latest_control_id = delivered_control_id = queued_control_id = -1;
+    replay_stale_control = deinit_on_control_wait = replace_on_control_wait = false;
+    test_ticks = 0;
+    stale_ack_elapsed = last_control_wait_ticks = 0;
+    driver_starts = station_start_events = credential_saves = 0;
+    access_point_ssid = NULL;
+    conf_ssid = conf_password = "";
     cancel_retry_with_ip = cancel_retry_with_deinit = false;
     connect_calls = connect_failures = reconnect_waits = restore_after_waits = 0;
     memset(&last_config, 0, sizeof(last_config));
@@ -196,6 +327,7 @@ static void reset_test(void)
 
 static void got_ip(void)
 {
+    s_connect_requested = true;
     ip_event_got_ip_t event = {0};
     wifi_event_handler(NULL, IP_EVENT, IP_EVENT_STA_GOT_IP, &event);
 }
@@ -280,9 +412,9 @@ static void test_access_point_returns_after_outage(void)
 {
     reset_test();
     assert(wifi_infra_init() == ESP_OK);
-    driver_model = s_connect_requested = true;
+    driver_model = true;
     restore_after_waits = 30; // Five minutes beyond the initial retry burst.
-    wifi_event_handler(NULL, WIFI_EVENT, WIFI_EVENT_STA_START, NULL);
+    assert(wifi_connect("test-network", "") != ESP_OK);
     run_worker_until_idle();
     assert(s_connected && connect_calls == 36 && reconnect_waits == 30);
     assert(server_starts == 1 && cloud_starts == 1);
@@ -295,7 +427,7 @@ static void test_lost_access_point_does_not_restart_services(void)
     assert(wifi_infra_init() == ESP_OK);
     got_ip();
     run_worker_until_idle();
-    driver_model = s_connect_requested = true;
+    driver_model = driver_started = s_connect_requested = true;
     restore_after_waits = 2;
     wifi_event_sta_disconnected_t event = {.reason = 200, .rssi = -70};
     wifi_event_handler(NULL, WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &event);
@@ -308,11 +440,183 @@ static void test_refused_connect_request_retries(void)
 {
     reset_test();
     assert(wifi_infra_init() == ESP_OK);
-    driver_model = access_point_up = s_connect_requested = true;
+    driver_model = access_point_up = true;
     connect_failures = 2;
-    wifi_event_handler(NULL, WIFI_EVENT, WIFI_EVENT_STA_START, NULL);
+    assert(wifi_connect("test-network", "") != ESP_OK);
     run_worker_until_idle();
     assert(s_connected && connect_calls == 3 && reconnect_waits == 2);
+}
+
+static void test_credential_fallback_connects_on_started_station(void)
+{
+    for (unsigned failure = 0; failure < 3; failure++) {
+        reset_test();
+        driver_model = access_point_up = true;
+        access_point_ssid = conf_ssid = "reachable-fallback";
+        conf_password = "fallback-password";
+        connect_failures = failure == 1;
+        timeout_with_connect_pending = failure == 2;
+
+        // The NVS request exhausts its retries, is refused, or remains in
+        // flight when the synchronous wait expires (observed on ESP32-C5).
+        assert(wendy_wifi_init() == ESP_OK);
+        assert(wendy_wifi_is_connected());
+        assert(driver_starts == 2 && station_start_events == 2);
+        assert(connect_calls == (failure ? 2 : 7));
+        assert(!strcmp((const char *)last_config.sta.ssid, conf_ssid));
+        assert(!strcmp((const char *)last_config.sta.password, conf_password));
+        assert(!mdns_inits && !server_starts && !cloud_starts);
+        run_worker_until_idle();
+        assert(!reconnect_waits && connect_calls == (failure ? 2 : 7));
+        assert(mdns_inits == 1 && server_starts == 1 && cloud_starts == 1);
+    }
+}
+
+static void test_new_credentials_after_failed_connection(void)
+{
+    reset_test();
+    driver_model = access_point_up = true;
+    access_point_ssid = "reachable-network";
+    assert(wendy_wifi_init() != ESP_OK);
+    assert(!wendy_wifi_is_connected() && connect_calls == 6);
+
+    assert(wendy_wifi_try_connect(access_point_ssid, "new-password") == ESP_OK);
+    assert(wendy_wifi_is_connected() && credential_saves == 1);
+    assert(driver_starts == 2 && station_start_events == 2 && connect_calls == 7);
+    run_worker_until_idle();
+    assert(!reconnect_waits && connect_calls == 7);
+    assert(server_starts == 1 && cloud_starts == 1);
+
+    // Replacing an established connection stops and starts the radio without
+    // a duplicate connection request from the new STA_START event.
+    access_point_ssid = "replacement-network";
+    assert(wendy_wifi_try_connect(access_point_ssid, "replacement-password") == ESP_OK);
+    assert(wendy_wifi_is_connected() && credential_saves == 2);
+    assert(driver_starts == 3 && station_start_events == 3 && connect_calls == 8);
+    run_worker_until_idle();
+    assert(!reconnect_waits && connect_calls == 8);
+    assert(server_starts == 1 && cloud_starts == 1);
+}
+
+static void test_handoff_timeout_and_stale_ip(void)
+{
+    reset_test();
+    assert(wifi_infra_init() == ESP_OK);
+    drop_control_marker = true;
+    assert(wifi_connect("test-network", "") == ESP_ERR_TIMEOUT);
+    assert(!connect_calls && !driver_starts && !s_connect_requested);
+
+    reset_test();
+    assert(wifi_infra_init() == ESP_OK);
+    got_ip();
+    wendy_wifi_deinit();
+    ip_event_got_ip_t event = {0};
+    wifi_event_handler(NULL, IP_EVENT, IP_EVENT_STA_GOT_IP, &event);
+    run_worker_until_idle();
+    assert(!wendy_wifi_is_connected() && !server_starts && !cloud_starts);
+}
+
+static void test_handoff_recovers_after_event_loop_stall(void)
+{
+    reset_test();
+    driver_model = access_point_up = true;
+    char ssid[] = "test-network", password[] = "retry-password";
+    control_ack_timeouts = 1;
+    assert(wendy_wifi_try_connect(ssid, password) == ESP_ERR_TIMEOUT);
+    assert(!driver_starts && !connect_calls);
+    memset(ssid, 'x', sizeof(ssid) - 1);
+    memset(password, 'x', sizeof(password) - 1);
+    // The event loop resumes after the caller has already received its error.
+    deliver_control(delayed_control_id);
+    run_worker_until_idle();
+    assert(wendy_wifi_is_connected() && reconnect_waits == 1 && control_posts == 2);
+    assert(!strcmp((const char *)last_config.sta.ssid, "test-network"));
+    assert(!strcmp((const char *)last_config.sta.password, "retry-password"));
+    assert(connect_calls == 1 && server_starts == 1 && cloud_starts == 1);
+    assert(strstr(log_output, "WiFi handoff event drain failed"));
+    assert(!strstr(log_output, "retry-password"));
+}
+
+static void test_handoff_retries_resource_failures(void)
+{
+    for (unsigned failure = 0; failure < 3; failure++) {
+        reset_test();
+        driver_model = access_point_up = true;
+        if (failure == 0) control_post_failures = 2;
+        if (failure == 1) stop_failures = 2;
+        if (failure == 2) config_failures = 2;
+        esp_err_t expected = failure == 0 ? ESP_ERR_TIMEOUT : ESP_ERR_NO_MEM;
+        assert(wendy_wifi_try_connect("test-network", "test-password") == expected);
+        assert(!driver_starts && !connect_calls);
+        run_worker_until_idle();
+        assert(wendy_wifi_is_connected() && reconnect_waits == 2);
+        assert(driver_starts == 1 && connect_calls == 1);
+    }
+}
+
+static void test_stale_ack_does_not_complete_next_drain(void)
+{
+    reset_test();
+    driver_model = access_point_up = true;
+    control_ack_timeouts = 1;
+    assert(wendy_wifi_try_connect("test-network", "test-password") == ESP_ERR_TIMEOUT);
+    int32_t expired = delayed_control_id;
+    replay_stale_control = true;
+    stale_ack_elapsed = 2000;
+    test_ticks = UINT32_MAX - 1000; // Exercise tick wrap during the drain wait.
+    // The next wait wakes for the old marker first. Configuration must wait
+    // for the new marker, without restarting its five-second deadline.
+    run_worker_until_idle();
+    assert(wendy_wifi_is_connected() && latest_control_id != expired);
+    assert(control_posts == 2 && control_waits == 3 && reconnect_waits == 1);
+    assert(last_control_wait_ticks == 3000);
+    assert(connect_calls == 1);
+}
+
+static void test_new_request_cancels_handoff_recovery(void)
+{
+    reset_test();
+    driver_model = access_point_up = true;
+    control_ack_timeouts = 1;
+    assert(wendy_wifi_try_connect("obsolete-network", "obsolete-password") == ESP_ERR_TIMEOUT);
+    int32_t expired = delayed_control_id;
+    assert(wendy_wifi_try_connect("replacement-network", "replacement-password") == ESP_OK);
+    deliver_control(expired);
+    run_worker_until_idle();
+    assert(wendy_wifi_is_connected() && control_posts == 2 && connect_calls == 1);
+    assert(!reconnect_waits && credential_saves == 1);
+    assert(!strcmp((const char *)last_config.sta.ssid, "replacement-network"));
+
+    // Also supersede a request while its drain is still waiting.
+    reset_test();
+    driver_model = access_point_up = true;
+    control_ack_timeouts = 1;
+    replace_on_control_wait = true;
+    assert(wendy_wifi_try_connect("obsolete-network", "obsolete-password") == ESP_ERR_INVALID_STATE);
+    run_worker_until_idle();
+    assert(wendy_wifi_is_connected() && control_posts == 2 && connect_calls == 1);
+    assert(!reconnect_waits && credential_saves == 1);
+    assert(!strcmp((const char *)last_config.sta.ssid, "replacement-network"));
+}
+
+static void test_shutdown_cancels_handoff_recovery(void)
+{
+    for (unsigned during_wait = 0; during_wait < 2; during_wait++) {
+        reset_test();
+        driver_model = access_point_up = true;
+        control_ack_timeouts = 2;
+        assert(wendy_wifi_try_connect("test-network", "test-password") == ESP_ERR_TIMEOUT);
+        if (during_wait) {
+            deinit_on_control_wait = true;
+        } else {
+            wendy_wifi_deinit();
+            deliver_control(delayed_control_id);
+        }
+        run_worker_until_idle();
+        assert(!wendy_wifi_is_connected() && !connect_calls && !driver_starts);
+        assert(control_posts == 1 + during_wait && reconnect_waits == during_wait);
+        assert(!server_starts && !cloud_starts);
+    }
 }
 
 static void test_pending_retry_cancellation(void)
@@ -353,6 +657,14 @@ int main(void)
     test_access_point_returns_after_outage();
     test_lost_access_point_does_not_restart_services();
     test_refused_connect_request_retries();
+    test_credential_fallback_connects_on_started_station();
+    test_new_credentials_after_failed_connection();
+    test_handoff_timeout_and_stale_ip();
+    test_handoff_recovers_after_event_loop_stall();
+    test_handoff_retries_resource_failures();
+    test_stale_ack_does_not_complete_next_drain();
+    test_new_request_cancels_handoff_recovery();
+    test_shutdown_cancels_handoff_recovery();
     test_pending_retry_cancellation();
     test_security_diagnostics_do_not_log_password();
     puts("WiFi startup, recovery, cancellation and security diagnostic tests passed");

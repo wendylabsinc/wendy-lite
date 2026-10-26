@@ -16,8 +16,8 @@ extern "C" {
 /**
  * Initialize WiFi station and connect using stored or compile-time credentials.
  *
- * Credential resolution: NVS ("wendy_prov" namespace) first, then compile-time
- * CONFIG_WENDY_WIFI_SSID/PASSWORD, then returns WENDY_WIFI_ERR_NO_CREDS.
+ * Credential resolution: NVS ("wendy_prov" namespace) first, then wendy-conf,
+ * then compile-time CONFIG_WENDY_WIFI_SSID/PASSWORD.
  *
  * After receiving an IP address, starts mDNS and device/cloud services in a
  * worker, including when DHCP finishes after this call times out. The names
@@ -25,6 +25,8 @@ extern "C" {
  * A failed connection result does not stop background reconnection: after
  * five immediate retries, the station tries again every ten seconds until
  * an IP address arrives or wendy_wifi_deinit() stops the transport.
+ * Failed handoffs also retry in the worker, retaining the latest credentials
+ * until they connect, a newer request replaces them, or deinit cancels them.
  */
 esp_err_t wendy_wifi_init(void);
 
@@ -33,6 +35,8 @@ esp_err_t wendy_wifi_init(void);
  * with service startup scheduled by the IP-address event.
  *
  * Can be called multiple times (disconnects previous network first).
+ * A failed handoff returns its error while background retries continue.
+ * A newer request or deinitialization cancels those retries.
  */
 esp_err_t wendy_wifi_try_connect(const char *ssid, const char *password);
 
