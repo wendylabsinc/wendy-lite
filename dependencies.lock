@@ -26,7 +26,7 @@ dependencies:
       type: service
     version: 3.1.0~1
   espressif/mdns:
-    component_hash: b5b30022c46302eab89c1d2e3b6fb5918a627563a7462f0ee284b22b9a934967
+    component_hash: ef0766474b37459f6ad22461e453a8713e780e831a7c993b16919d817988dff6
     dependencies:
     - name: idf
       require: private
@@ -34,7 +34,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 1.14.0
+    version: 1.14.1
   idf:
     source:
       type: idf
@@ -163,8 +163,9 @@ dependencies:
     dependencies:
     - name: idf
       version: '>=6.0.3'
-    - name: esp-pqc
-      override_path: ../esp-pqc
+    - git: https://github.com/espressif/esp-pqc.git
+      name: esp-pqc
+      version: 37953195672cbc7502b06fc845fc9219627f31fd
     - name: espressif/cjson
       version: ^1.7.19
     source:
@@ -337,6 +338,6 @@ direct_dependencies:
 - wendy_wasi_shim
 - wendy_wasm
 - wendy_wifi
-manifest_hash: 0c4c6e4c1b0e45a8cf37f892b3eca2691c334d7cba37dae4a64735fcf2109db8
+manifest_hash: 87433265689d88c294aef11b70b40b40689d2f750ade110864b19e5055e3d965
 target: esp32c6
 version: 3.0.0
