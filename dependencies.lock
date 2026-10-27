@@ -135,6 +135,12 @@ dependencies:
       path: components/wendy_hal
       type: local
     version: '*'
+  wendy_mesh:
+    dependencies: []
+    source:
+      path: components/wendy_mesh
+      type: local
+    version: '*'
   wendy_net:
     dependencies:
     - name: espressif/wasm-micro-runtime
@@ -324,6 +330,7 @@ direct_dependencies:
 - wendy_com
 - wendy_conf
 - wendy_hal
+- wendy_mesh
 - wendy_net
 - wendy_otel
 - wendy_pki
@@ -338,6 +345,6 @@ direct_dependencies:
 - wendy_wasi_shim
 - wendy_wasm
 - wendy_wifi
-manifest_hash: 87433265689d88c294aef11b70b40b40689d2f750ade110864b19e5055e3d965
+manifest_hash: b6edae63a28ab3fec646110a02e407d3cf9a1be730f687c7842f914ab0a89b6b
 target: esp32c6
 version: 3.0.0
