@@ -354,14 +354,6 @@ static esp_err_t start_mdns_service(void)
 {
     char hostname[CONFIG_WENDY_DEVICE_NAME_BUF_SIZE];
     size_t out = 0;
-    // On WendyOS, we prefix the hostname with "wendyos-".
-    // Here, we want to mimic this behavior, but want to use a different prefix.
-    // This prefix should not be longer than "wendyos-" in order to not
-    // overconstrain the hostname length. So we choose "wendylt-".
-    const char prefix[] = "wendylt-";
-    assert(sizeof(prefix) < sizeof(hostname));
-    memcpy(hostname + out, prefix, sizeof(prefix) - 1);
-    out += sizeof(prefix) - 1;
     const char *device_name = wendy_conf_get_resolved_device_name();
     for (size_t in = 0; device_name[in] && out < sizeof(hostname) - 1; in++) {
         unsigned char c = (unsigned char)device_name[in];
@@ -375,6 +367,9 @@ static esp_err_t start_mdns_service(void)
         /* drop everything else */
     }
     hostname[out] = '\0';
+    // A name made only of dropped characters must not give an empty hostname.
+    if (out == 0)
+        strlcpy(hostname, CONFIG_WENDY_DEVICE_NAME_DEFAULT_PREFIX "-badname", sizeof(hostname));
     ESP_LOGI(TAG, "mDNS hostname: '%s'", hostname);
 
     esp_err_t err;

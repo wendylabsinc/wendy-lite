@@ -259,7 +259,7 @@ esp_err_t mdns_init(void)
 }
 esp_err_t mdns_hostname_set(const char *hostname)
 {
-    assert(!strcmp(hostname, "wendylt-test-board"));
+    assert(!strcmp(hostname, "test-board"));
     hostname_sets++;
     if (hostname_failures) { hostname_failures--; return ESP_FAIL; }
     return ESP_OK;
