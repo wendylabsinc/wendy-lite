@@ -5,6 +5,3 @@ dependencies:
     version: 5f88b91e1be055d1d3674364123b2779a1758377
     path: components/esp-mosaico-bsp
   espressif/esp_tinyusb: "2.3.0"
-  # Build the pinned submodule instead of the git revision wendy_pki names.
-  esp-pqc:
-    override_path: "../../../components/esp-pqc"

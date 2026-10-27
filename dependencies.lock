@@ -1,10 +1,18 @@
 dependencies:
   esp-pqc:
-    dependencies: []
+    component_hash: 576a44a6dcb8d05e3598b01771ca7ca3178bcb8377c7cb7ce84857ac19f6c237
+    dependencies:
+    - name: idf
+      version: '>=6.0'
+    - git: https://github.com/espressif/esp-pqc.git
+      name: mbedtls
+      path: components/mbedtls
+      version: 37953195672cbc7502b06fc845fc9219627f31fd
     source:
-      path: components/esp-pqc
-      type: local
-    version: 0.1.0
+      git: https://github.com/espressif/esp-pqc.git
+      path: .
+      type: git
+    version: 37953195672cbc7502b06fc845fc9219627f31fd
   espressif/cjson:
     component_hash: e788323270d90738662d66fffa910bfe1fba019bba087f01557e70c40485b469
     dependencies:
@@ -40,11 +48,13 @@ dependencies:
       type: idf
     version: 6.0.3
   mbedtls:
+    component_hash: 91964642379f2a9a6774faa8bc3965d86e73169d10428bda0b125ee489a961a5
     dependencies: []
     source:
-      path: components/esp-pqc/components/mbedtls
-      type: local
-    version: '*'
+      git: https://github.com/espressif/esp-pqc.git
+      path: components/mbedtls
+      type: git
+    version: 37953195672cbc7502b06fc845fc9219627f31fd
   nanopb:
     dependencies: []
     source:
@@ -320,7 +330,6 @@ direct_dependencies:
 - espressif/led_strip
 - espressif/mdns
 - idf
-- mbedtls
 - nanopb
 - wendy_app_usb
 - wendy_ble
@@ -345,6 +354,6 @@ direct_dependencies:
 - wendy_wasi_shim
 - wendy_wasm
 - wendy_wifi
-manifest_hash: b6edae63a28ab3fec646110a02e407d3cf9a1be730f687c7842f914ab0a89b6b
+manifest_hash: 8ff86cede173f33ada7abb233b24580cdb578353b8f73fe88a4140828f6bb9f0
 target: esp32c6
 version: 3.0.0

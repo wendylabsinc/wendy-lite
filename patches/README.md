@@ -13,18 +13,18 @@ These patches and tests do not change that status. Device heap use, crypto laten
 and the complete enrollment and relay flow still need physical-board validation.
 
 The esp-pqc patches live in `components/wendy_pki/patches/` so that apps fetching
-Wendy components over git receive them. Such apps cannot check out the esp-pqc
-submodule through the component manager, so `components/wendy_pki/idf_component.yml`
-pins esp-pqc's own repository. Keep that revision equal to the submodule commit.
-Projects built from this checkout override it with the submodule.
+Wendy components over git receive them. `components/wendy_pki/idf_component.yml`
+is the only esp-pqc pin. The firmware, the samples and these apps get esp-pqc
+through the component manager. The PKI host tests read the revision from the same
+file. Update the table above when the revision changes.
 
 `components/wendy_pki/cmake/pqc_patches.cmake` copies dependencies into the build
 directory and applies these patches there. wendy_pki's `project_include.cmake`
 runs it for every project that builds Wendy PKI. `cmake/dependency_patches.cmake`
-reuses it for WAMR. The pinned submodules and downloaded components stay
-unchanged. Configuration fails if a patch no longer applies. Mbed TLS, its PSA
-libraries and the IDF adapter all use the copied headers and sources so their
-private structures agree. Review and retest each patch when updating a dependency.
+reuses it for WAMR. The downloaded components stay unchanged. Configuration fails
+if a patch no longer applies. Mbed TLS, its PSA libraries and the IDF adapter all
+use the copied headers and sources so their private structures agree. Review and
+retest each patch when updating a dependency.
 
 Patch application ignores inherited `GIT_DIR` and `GIT_WORK_TREE` and stops Git
 repository discovery at the copied tree's parent. Without this isolation, an
