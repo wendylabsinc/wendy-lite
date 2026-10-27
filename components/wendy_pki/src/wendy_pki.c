@@ -318,6 +318,8 @@ static int refresh_time_via(nvs_handle_t h, const char *url,
         !wendy_pki_verify_time(response, response_size, nonce, data->tsa_roots.data,
                                data->tsa_roots.size, floor, &when))
         result = set_floor(h, when);
+    else
+        ESP_LOGE(TAG, "signed time response rejected");
     if (!result) {
         mesh_verified_seconds = when;
         mesh_verified_monotonic_us = esp_timer_get_time();
@@ -439,7 +441,13 @@ static int issue(nvs_handle_t h, const WendyConfEnrollment *cfg,
                                  old, data->https_roots, &response, &response_size,
                                  &authority_header))
         goto done;
+    /* Release request and response buffers before the post-issuance time
+     * request. Boards without PSRAM cannot hold both responses at once. */
+    free(csr); csr = NULL;
+    free(json); json = NULL;
+    cJSON_Delete(body); body = NULL;
     reply = cJSON_ParseWithLength((char *)response, response_size);
+    free(response); response = NULL;
     if (!reply)
     {
         ESP_LOGE(TAG, "invalid issuance JSON (%zu bytes)", response_size);

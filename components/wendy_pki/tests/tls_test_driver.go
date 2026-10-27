@@ -726,9 +726,9 @@ func exerciseEnrollmentHTTP(directory string, broker tls.Certificate, deviceRoot
 	const headerName = "X-Wendy-Lite-Operator-Authority"
 	const authority = "dGVzdC1saXRlLWF1dGhvcml0eQ=="
 	for _, tc := range []struct {
-		name, header, expected             string
-		renew, reject, truncate, untrusted bool
-		status                             int
+		name, header, expected                      string
+		renew, reject, truncate, untrusted, chunked bool
+		status, body                                int
 	}{
 		{name: "fragmented mixed-case header", header: "x-WeNdY-LiTe-OpErAtOr-AuThOrItY: " + authority + "\r\n", expected: authority},
 		{name: "renewal header", header: headerName + ": " + authority + "\r\n", expected: authority, renew: true},
@@ -740,6 +740,15 @@ func exerciseEnrollmentHTTP(directory string, broker tls.Certificate, deviceRoot
 		{name: "failed issuance", header: headerName + ": " + authority + "\r\n", status: 403, reject: true},
 		{name: "truncated issuance", header: headerName + ": " + authority + "\r\n", truncate: true, reject: true},
 		{name: "untrusted HTTPS", header: headerName + ": " + authority + "\r\n", untrusted: true, reject: true},
+		// Bodies up to the 64 KiB limit, sized by Content-Length or kept in 4 KiB segments.
+		{name: "large body", body: 40000},
+		{name: "maximum body", body: 65536},
+		{name: "oversized body", body: 65537, reject: true},
+		{name: "small chunked body", body: 2, chunked: true},
+		{name: "segment-sized chunked body", body: 8192, chunked: true},
+		{name: "large chunked body", body: 40000, chunked: true},
+		{name: "maximum chunked body", body: 65536, chunked: true},
+		{name: "oversized chunked body", body: 65537, chunked: true, reject: true},
 	} {
 		listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 		must(err)
@@ -747,6 +756,9 @@ func exerciseEnrollmentHTTP(directory string, broker tls.Certificate, deviceRoot
 		mode, expectedPath := "http-valid", "-"
 		if tc.renew {
 			mode = "http-renew"
+		}
+		if tc.body > 0 {
+			mode = fmt.Sprintf("http-body-%d", tc.body)
 		}
 		if tc.reject {
 			mode = "http-reject"
@@ -797,13 +809,30 @@ func exerciseEnrollmentHTTP(directory string, broker tls.Certificate, deviceRoot
 			if statusCode == 0 {
 				statusCode = 200
 			}
-			response := fmt.Sprintf("HTTP/1.1 %d result\r\n%sContent-Length: 2\r\nConnection: close\r\n\r\n{}", statusCode, tc.header)
+			payload, step := "{}", 7
+			if tc.body > 0 {
+				// Larger records keep the large-body cases fast.
+				payload, step = strings.Repeat("A", tc.body), 1000
+			}
+			framing := fmt.Sprintf("Content-Length: %d\r\n", len(payload))
+			if tc.chunked {
+				// Without Content-Length the client keeps the body in segments.
+				var chunks strings.Builder
+				for rest := payload; rest != ""; {
+					n := min(3000, len(rest))
+					fmt.Fprintf(&chunks, "%x\r\n%s\r\n", n, rest[:n])
+					rest = rest[n:]
+				}
+				chunks.WriteString("0\r\n\r\n")
+				framing, payload = "Transfer-Encoding: chunked\r\n", chunks.String()
+			}
+			response := fmt.Sprintf("HTTP/1.1 %d result\r\n%s%sConnection: close\r\n\r\n%s", statusCode, tc.header, framing, payload)
 			if tc.truncate {
 				response = strings.TrimSuffix(response, "}")
 			}
 			// Separate TLS records split both field names and values across parser calls.
 			for offset := 0; offset < len(response); {
-				end := min(offset+7, len(response))
+				end := min(offset+step, len(response))
 				if _, err := server.Write([]byte(response[offset:end])); err != nil {
 					if !tc.reject {
 						must(err)
