@@ -14,6 +14,7 @@
 #include "esp_log.h"
 #include "esp_attr.h"
 #include "esp_system.h"
+#include "esp_heap_caps.h"
 #include "esp_partition.h"
 #include "esp_ota_ops.h"
 #include "esp_vfs_eventfd.h"
@@ -1049,6 +1050,12 @@ esp_err_t wendy_core_init(void)
         };
         wcom_exec(&op);
     }
+
+    const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    ESP_LOGI(TAG, "heap: internal free %zu, largest block %zu, min free %zu, psram free %zu",
+             heap_caps_get_free_size(internal), heap_caps_get_largest_free_block(internal),
+             heap_caps_get_minimum_free_size(internal),
+             heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
 
     return ESP_OK;
 }

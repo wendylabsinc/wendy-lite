@@ -740,10 +740,12 @@ func exerciseEnrollmentHTTP(directory string, broker tls.Certificate, deviceRoot
 		{name: "failed issuance", header: headerName + ": " + authority + "\r\n", status: 403, reject: true},
 		{name: "truncated issuance", header: headerName + ": " + authority + "\r\n", truncate: true, reject: true},
 		{name: "untrusted HTTPS", header: headerName + ": " + authority + "\r\n", untrusted: true, reject: true},
-		// The response buffer grows with the body up to the 64 KiB limit.
+		// Bodies up to the 64 KiB limit, sized by Content-Length or kept in 4 KiB segments.
 		{name: "large body", body: 40000},
 		{name: "maximum body", body: 65536},
 		{name: "oversized body", body: 65537, reject: true},
+		{name: "small chunked body", body: 2, chunked: true},
+		{name: "segment-sized chunked body", body: 8192, chunked: true},
 		{name: "large chunked body", body: 40000, chunked: true},
 		{name: "maximum chunked body", body: 65536, chunked: true},
 		{name: "oversized chunked body", body: 65537, chunked: true, reject: true},
@@ -814,7 +816,7 @@ func exerciseEnrollmentHTTP(directory string, broker tls.Certificate, deviceRoot
 			}
 			framing := fmt.Sprintf("Content-Length: %d\r\n", len(payload))
 			if tc.chunked {
-				// Without Content-Length the client grows its buffer.
+				// Without Content-Length the client keeps the body in segments.
 				var chunks strings.Builder
 				for rest := payload; rest != ""; {
 					n := min(3000, len(rest))
