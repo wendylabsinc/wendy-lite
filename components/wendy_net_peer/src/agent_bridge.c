@@ -71,19 +71,21 @@ static void free_buffer(void *context,void *buffer)
 static void reply_barrier(void *context,uint32_t token,void (*done)(uint32_t))
 {
     struct wnab_bridge *b=context;
-    /* One settings change globally may await a receipt. The release publishes
-     * the immutable callback before the actor sees its token. */
-    assert(!atomic_load(&b->barrier_token));
-    b->barrier_done=done;
-    atomic_store_explicit(&b->barrier_token,token,memory_order_release);wnad_wake();
+    /* A later accepted configuration can follow a timed-out receipt on this
+     * still-retiring stream. The callback is immutable for the stream. Retire
+     * that obsolete receipt instead of asserting or retaining a second queue. */
+    if(!b->barrier_done)b->barrier_done=done;
+    else assert(b->barrier_done==done);
+    uint32_t old=atomic_exchange_explicit(&b->barrier_token,token,memory_order_acq_rel);
+    if(old)done(old);
+    wnad_wake();
 }
-void wnab_output_drained(struct wnab_bridge *b)
+uint32_t wnab_output_receipt(struct wnab_bridge *b)
+{return atomic_load_explicit(&b->barrier_token,memory_order_acquire);}
+void wnab_output_drained(struct wnab_bridge *b,uint32_t token)
 {
-    uint32_t token=atomic_load_explicit(&b->barrier_token,memory_order_acquire);
-    if(token){
-        void (*done)(uint32_t)=b->barrier_done;
-        atomic_store_explicit(&b->barrier_token,0,memory_order_release);done(token);
-    }
+    if(token && atomic_compare_exchange_strong_explicit(&b->barrier_token,&token,0,
+        memory_order_acq_rel,memory_order_acquire))b->barrier_done(token);
 }
 static const struct wcom_stream_ops operations={.read=read_plain,.write=write_plain,
     .wakeup_fd=wake_fd,.can_read=can_read,.can_write=can_write,

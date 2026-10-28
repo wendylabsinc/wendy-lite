@@ -11,9 +11,10 @@ loan to return; established guest flows are not sacrificed. Native sockets
 reach the actor before baseline physical TLS memory admission; the existing
 server retains at most one deferred physical descriptor with a deadline.
 
-Persisted settings, radio selection, public SDK replay, supported board defaults
-and final legacy retirement remain in the following cutover layer. No additional
-operator-origin protocol or independently signed service records are enabled.
+Persisted WendyCom settings select the supported runtime and constrained boot
+radio. Guest SDK intent stays in guest memory and replays on enable. The old
+special leaf runtime is removed; all carriers use the ordinary native protocol.
+No independently signed service record protocol is enabled.
 
 Normal stream completion drains accepted plaintext and encrypted output; explicit
 OFF waits for the crypto loan and WendyCom close acknowledgement before freeing

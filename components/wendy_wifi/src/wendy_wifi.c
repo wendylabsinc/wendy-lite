@@ -482,11 +482,7 @@ esp_err_t wendy_wifi_set_boot_radio_enabled(bool enabled)
 }
 bool wendy_wifi_radio_available(void)
 {
-#if WENDY_WIFI_RADIO_OMITTED
-    return false;
-#else
     return s_boot_radio_enabled;
-#endif
 }
 
 esp_err_t wendy_wifi_init(void)
@@ -585,10 +581,6 @@ esp_err_t wendy_wifi_try_connect(const char *ssid, const char *password)
 {
     if (!ssid || strlen(ssid) == 0) return ESP_ERR_INVALID_ARG;
     if(!wendy_wifi_radio_available())return ESP_ERR_NOT_SUPPORTED;
-#if WENDY_WIFI_RADIO_OMITTED
-    (void)password;
-    return ESP_ERR_NOT_SUPPORTED;
-#endif
 #if CONFIG_WENDY_NET_NAN
     (void)password;
     return ESP_ERR_NOT_SUPPORTED;
@@ -614,9 +606,6 @@ bool wendy_wifi_is_connected(void)
 esp_err_t wendy_wifi_set_station_enabled(bool enabled)
 {
     if(!wendy_wifi_radio_available())return enabled ? ESP_ERR_NOT_SUPPORTED:ESP_OK;
-#if WENDY_WIFI_RADIO_OMITTED
-    return enabled ? ESP_ERR_NOT_SUPPORTED : ESP_OK;
-#endif
     s_connect_requested=enabled;
     s_retry_count=0;
     esp_err_t result=enabled ? esp_wifi_connect() : esp_wifi_disconnect();
@@ -627,10 +616,6 @@ esp_err_t wendy_wifi_set_station_enabled(bool enabled)
 void wendy_wifi_deinit(void)
 {
     if(!wendy_wifi_radio_available())return;
-#if WENDY_WIFI_RADIO_OMITTED
-    /* Shared lwIP/native listeners belong to the boot, not a radio lifetime. */
-    return;
-#endif
     s_connect_requested = false;
     s_reconnect_pending = false;
     s_connected = false;

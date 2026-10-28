@@ -21,6 +21,7 @@
 #include "wendy_core.h"
 #include "wendy_sensor_link.h"
 #include "wendy_net_peer.h"
+#include "wendy_com_msg.pb.h"
 #include "wendy_pki_crypto.h"
 #include "wendy_pki.h"
 #include "wendy_wifi.h"

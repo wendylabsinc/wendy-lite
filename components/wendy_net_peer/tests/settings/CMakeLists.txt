@@ -23,3 +23,13 @@ foreach(profile full constrained no_ble no_wifi)
  target_link_libraries(settings_${profile} PRIVATE Threads::Threads)
  add_test(NAME settings_${profile}_success COMMAND settings_${profile})
 endforeach()
+
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/../../src/peer.c")
+execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/extract_lifecycle_fixture.py"
+ "${CMAKE_CURRENT_LIST_DIR}/../../src/peer.c" "${CMAKE_CURRENT_BINARY_DIR}/lifecycle_poll.inc" COMMAND_ERROR_IS_FATAL ANY)
+add_executable(settings_lifecycle lifecycle_success_test.c)
+target_include_directories(settings_lifecycle PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" ../../../wendy_pki/tests/stubs ../../../wendy_com/include ../../../nanopb)
+target_compile_options(settings_lifecycle PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_link_libraries(settings_lifecycle PRIVATE Threads::Threads)
+add_test(NAME settings_lifecycle_success COMMAND settings_lifecycle)

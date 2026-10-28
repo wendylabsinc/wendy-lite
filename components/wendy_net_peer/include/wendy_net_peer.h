@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "wendy_pki.h"
-#include "wendy_com_msg.pb.h"
+typedef struct _WendyComNetStatus WendyComNetStatus;
 /* Native peer lifecycle; disabled by persisted policy until configured. */
 esp_err_t wendy_net_peer_start(void);
 /* Snapshot desired/applied configuration and bounded runtime counters. */

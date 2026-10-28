@@ -64,9 +64,17 @@ static bool s_boot_ble_enabled=true;
 esp_err_t wendy_core_set_boot_radios(bool ble,bool wifi)
 {
     if(s_events)return ESP_ERR_INVALID_STATE;
+#if CONFIG_WENDY_WIFI_ENABLED
     esp_err_t result=wendy_wifi_set_boot_radio_enabled(wifi);
-    if(result==ESP_OK)s_boot_ble_enabled=ble;
-    return result;
+    if(result!=ESP_OK)return result;
+#else
+    if(wifi)return ESP_ERR_NOT_SUPPORTED;
+#endif
+#if !CONFIG_WENDY_BLE
+    if(ble)return ESP_ERR_NOT_SUPPORTED;
+#endif
+    s_boot_ble_enabled=ble;
+    return ESP_OK;
 }
 
 /* ── Reboot boot-params ─────────────────────────────────────────────────
