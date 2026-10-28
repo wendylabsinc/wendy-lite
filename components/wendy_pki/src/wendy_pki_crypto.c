@@ -127,8 +127,8 @@ static void cleanup_crypto(void *unused)
 void wendy_pki_crypto_cleanup(void)
 {
 #if ESP_PLATFORM && CONFIG_WENDY_PKI
-    /* A non-actor close may wait for this CPU effect; actor callers are
-     * rejected by work_run and their final OFF worker future retries it. */
+    /* Baseline facade executes synchronously on the caller. Native actor
+     * activation is rejected until the serialized worker layer is present. */
     (void)wendy_pki_work_run(cleanup_crypto,NULL);
 #else
     cleanup_crypto(NULL);

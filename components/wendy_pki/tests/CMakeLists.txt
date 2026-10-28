@@ -26,7 +26,7 @@ wendy_patch_mbedtls("${MBEDTLS_ROOT}")
 # Empty values match the bundled config's definitions without redefinition warnings.
 foreach(target mbedtls mbedx509 tfpsacrypto builtin extras platform utilities everest p256-m)
     if(TARGET ${target})
-        target_compile_definitions(${target} PUBLIC MBEDTLS_THREADING_C MBEDTLS_THREADING_PTHREAD
+        target_compile_definitions(${target} PUBLIC MBEDTLS_THREADING_C MBEDTLS_THREADING_PTHREAD MBEDTLS_PLATFORM_MEMORY=
             MBEDTLS_SSL_TLS1_3_SIG_MLDSA65= MBEDTLS_X509_USE_C=)
         target_compile_definitions(${target} PUBLIC
             MBEDTLS_USER_CONFIG_FILE="${CMAKE_CURRENT_LIST_DIR}/mbedtls_user_config.h")
@@ -39,15 +39,19 @@ set(PKI_TLS ../src/wendy_pki_tls.c)
 add_library(cert_bundle STATIC ../../wendy_conf/src/wendy_cert_bundle.c)
 target_include_directories(cert_bundle PUBLIC ../../wendy_conf/include)
 target_link_libraries(cert_bundle PUBLIC tfpsacrypto)
-add_library(pki STATIC ${PKI_VERIFIER} ../src/wendy_pki_der.c ../src/wendy_lite_grant.c ../src/wendy_lite_authority.c ../src/wendy_pki_crypto.c ../src/wendy_operator_auth.c ../src/wendy_pki_mesh_crypto.c)
+add_library(net_common STATIC ../../wendy_net_common/src/memory.c ../../wendy_net_common/src/runtime_memory.c ../../wendy_net_common/src/binary.c)
+target_include_directories(net_common PUBLIC ../../wendy_net_common/include)
+target_link_libraries(net_common PUBLIC Threads::Threads)
+add_library(pki STATIC ../src/wendy_pki_work.c ../src/wendy_pki_tls_input.c ../src/wendy_pki_public_read.c ../src/wendy_pki_public_index.c ${PKI_VERIFIER} ../src/wendy_lite_grant.c ../src/wendy_lite_authority.c ../src/wendy_pki_crypto.c ../src/wendy_operator_auth.c ../src/wendy_pki_mesh_crypto.c)
 target_include_directories(pki PUBLIC ../include stubs ../../wendy_conf/include ../../nanopb)
-target_link_libraries(pki PUBLIC cert_bundle mbedtls mbedx509 tfpsacrypto Threads::Threads)
+target_compile_definitions(pki PUBLIC CONFIG_WENDY_MESH_LEAF=1 WENDY_PKI_MEMORY_HOST_SCOPE_TEST=1)
+target_link_libraries(pki PUBLIC net_common cert_bundle mbedtls mbedx509 tfpsacrypto Threads::Threads)
 add_executable(crypto_test crypto_test.c)
 target_link_libraries(crypto_test PRIVATE pki)
 add_executable(verify_test verify_test.c)
 target_link_libraries(verify_test PRIVATE pki)
 add_executable(renewal_test renewal_test.c)
-target_include_directories(renewal_test PRIVATE stubs ../include ../src
+target_include_directories(renewal_test PRIVATE ../../wendy_net_common/include stubs ../include ../src
     ../../wendy_conf/include ../../nanopb)
 target_sources(renewal_test PRIVATE ../src/wendy_pki_crypto.c)
 target_link_libraries(renewal_test PRIVATE mbedtls mbedx509 tfpsacrypto)
@@ -58,7 +62,7 @@ target_include_directories(conf_test PRIVATE stubs ../../wendy_conf/include ../.
 target_link_libraries(conf_test PRIVATE cert_bundle Threads::Threads)
 target_link_libraries(renewal_test PRIVATE Threads::Threads)
 add_executable(mesh_identity_test renewal_test.c ../src/wendy_pki_crypto.c)
-target_include_directories(mesh_identity_test PRIVATE stubs ../include ../src
+target_include_directories(mesh_identity_test PRIVATE ../../wendy_net_common/include stubs ../include ../src
     ../../wendy_conf/include ../../nanopb)
 target_compile_definitions(mesh_identity_test PRIVATE CONFIG_WENDY_MESH_LEAF=1)
 target_link_libraries(mesh_identity_test PRIVATE mbedtls mbedx509 tfpsacrypto Threads::Threads)
@@ -222,7 +226,7 @@ target_compile_options(dns_probe_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 add_test(NAME uplink_direct_dns_bounds COMMAND dns_probe_test)
 
 add_executable(mesh_uplink_identity_test renewal_test.c ../src/wendy_pki_crypto.c)
-target_include_directories(mesh_uplink_identity_test PRIVATE stubs ../include ../src
+target_include_directories(mesh_uplink_identity_test PRIVATE ../../wendy_net_common/include stubs ../include ../src
     ../../wendy_conf/include ../../nanopb)
 target_compile_definitions(mesh_uplink_identity_test PRIVATE CONFIG_WENDY_MESH_LEAF=1
     CONFIG_WENDY_MESH_CLOUD_UPLINK=1)
@@ -259,3 +263,43 @@ target_compile_definitions(mesh_connect_test PRIVATE CONFIG_WENDY_MESH_WIFI_BLE=
     CONFIG_WENDY_MESH_AUTO_DISCOVER=1 CONFIG_WENDY_MESH_ROUTER_PORT=43024)
 target_compile_options(mesh_connect_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 add_test(NAME mesh_transport_fallback COMMAND mesh_connect_test)
+
+add_executable(tls_reassembly_test tls_reassembly_test.c)
+target_include_directories(tls_reassembly_test PRIVATE "${CMAKE_BINARY_DIR}/wendy_patched/mbedtls/library" "${CMAKE_BINARY_DIR}/wendy_patched/mbedtls/tf-psa-crypto/core" "${CMAKE_BINARY_DIR}/wendy_patched/mbedtls/tf-psa-crypto/drivers/builtin/src" "$<TARGET_PROPERTY:mbedtls,INCLUDE_DIRECTORIES>")
+target_link_libraries(tls_reassembly_test PRIVATE pki)
+add_test(NAME tls_record_reassembly COMMAND tls_reassembly_test --normal-preallocated)
+add_test(NAME tls_record_recycle COMMAND tls_reassembly_test --normal-recycle)
+foreach(fixture tls_input_workspace tls_input_management_loan)
+    add_executable(${fixture}_test ${fixture}_success_test.c ../src/wendy_pki_tls_input.c)
+    target_include_directories(${fixture}_test BEFORE PRIVATE input_stubs ../src)
+    target_link_libraries(${fixture}_test PRIVATE net_common)
+    add_test(NAME ${fixture}_ownership COMMAND ${fixture}_test)
+endforeach()
+add_executable(psa_global_tables_test psa_global_tables_success_test.c)
+target_link_libraries(psa_global_tables_test PRIVATE pki)
+add_test(NAME psa_global_table_ownership COMMAND psa_global_tables_test)
+
+foreach(profile p256 mldsa65)
+    add_test(NAME pki_owned_der_stream_${profile} COMMAND "${GO_EXECUTABLE}" run
+        "${CMAKE_CURRENT_LIST_DIR}/tls_test_driver.go" "$<TARGET_FILE:tls_test>" ${profile})
+    set_tests_properties(pki_owned_der_stream_${profile} PROPERTIES TIMEOUT 90
+        ENVIRONMENT "WENDY_TLS_OWNED_STREAM=1;WENDY_TLS_OWNED_ONLY=1;WENDY_TLS_SCOPED_OWNER=1")
+endforeach()
+
+add_executable(der_cache_test der_cache_test.c ../src/wendy_pki_der_cache.c)
+target_include_directories(der_cache_test PRIVATE ../src)
+target_link_libraries(der_cache_test PRIVATE pki)
+target_compile_options(der_cache_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME pki_own_der_cache COMMAND der_cache_test "${CMAKE_CURRENT_LIST_DIR}/fixtures/identity.pem")
+add_executable(tls_input_epoch_test tls_input_epoch_test.c ../src/wendy_pki_tls_input.c)
+target_include_directories(tls_input_epoch_test BEFORE PRIVATE input_stubs ../src)
+target_link_libraries(tls_input_epoch_test PRIVATE net_common)
+add_test(NAME tls_input_epoch_ownership COMMAND tls_input_epoch_test)
+
+add_test(NAME tls_pending_output_compaction COMMAND tls_reassembly_test --pending-output)
+add_executable(artifact_domain_test artifact_domain_test.c)
+target_include_directories(artifact_domain_test PRIVATE ../src)
+target_link_libraries(artifact_domain_test PRIVATE pki)
+add_test(NAME native_artifact_domain_with_legacy_leaf COMMAND artifact_domain_test)
+
+add_test(NAME pki_normal_der_roots COMMAND verify_test --normal-roots "${CMAKE_CURRENT_LIST_DIR}/fixtures")

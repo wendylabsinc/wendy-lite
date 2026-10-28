@@ -5,7 +5,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -27,12 +26,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 )
-
-var nativeComposedApplication func(*tls.Conn, bool)
 
 func must(err error) {
 	if err != nil {
@@ -78,13 +74,7 @@ func main() {
 	must(err)
 	must(os.WriteFile(filepath.Join(directory, "lite-root.pem"), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: liteRootDER}), 0600))
 	leaf := func(name string, expiry time.Time, usages []x509.ExtKeyUsage, uri string, issuer crypto.Signer, parent *x509.Certificate, signature x509.SignatureAlgorithm) (tls.Certificate, []byte, []byte) {
-		var key crypto.Signer
-		var err error
-		if os.Getenv("WENDY_TLS_OWN_MLDSA65") == "1" {
-			key, err = mldsa.GenerateKey(mldsa.MLDSA65())
-		} else {
-			key, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		}
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		must(err)
 		u, err := url.Parse(uri)
 		must(err)
@@ -115,11 +105,7 @@ func main() {
 		return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, raw, certPEM
 	}
 	tenant := "spiffe://wendy.sh/tenant/2558fd76-afc7-466e-9613-6b715296a526/"
-	serverUsages := []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
-	if os.Getenv("WENDY_TLS_OWNED_STREAM") != "" {
-		serverUsages = append(serverUsages, x509.ExtKeyUsageClientAuth)
-	}
-	_, keyDER, serverPEM := leaf("device", time.Now().Add(time.Hour), serverUsages, tenant+"device/00000000-0000-4000-8000-000000000004", rootKey, root, 0)
+	_, keyDER, serverPEM := leaf("device", time.Now().Add(time.Hour), []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, tenant+"device/00000000-0000-4000-8000-000000000004", rootKey, root, 0)
 	must(os.WriteFile(filepath.Join(directory, "key.der"), keyDER, 0600))
 	must(os.WriteFile(filepath.Join(directory, "server.pem"), serverPEM, 0600))
 	cases := []string{"valid", "wrong-tenant", "wrong-role", "wrong-eku", "expired", "untrusted", "no-client", "tls12", "truncate", "extra", "intermediate", "intermediate-key-usage", "intermediate-not-ca", "intermediate-path-length", "intermediate-expired", "intermediate-sha1", "relay-valid", "relay-operator-expiry", "relay-device-expiry", "relay-wrong-key", "relay-old", "relay-wlg2", "relay-truncated", "relay-expired", "relay-long-presentation", "relay-device-client",
@@ -128,13 +114,8 @@ func main() {
 		"lan-device-expired", "lan-device-future", "lan-device-untrusted", "lan-device-tampered", "lan-no-client",
 		"lite-valid", "lite-wrong-role", "lite-wrong-tenant", "lite-unmarked", "lite-extra-eku", "lite-untrusted", "lite-primary-operator", "lite-lan-device",
 		"stream-valid", "stream-wrong-tenant", "stream-device", "stream-no-client", "stream-expired", "stream-untrusted", "stream-tls12", "stream-timeout"}
+	if os.Getenv("WENDY_TLS_OWNED_ONLY") != "" { cases = nil }
 	for _, name := range cases {
-		if os.Getenv("WENDY_TLS_NORMAL_ONLY") == "1" && name != "stream-valid" {
-			continue
-		}
-		if os.Getenv("WENDY_TLS_OWNED_STREAM") != "" && !strings.HasPrefix(name, "stream-") {
-			continue
-		}
 		expiry := time.Now().Add(time.Hour)
 		usages := []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
 		uri := tenant + "operator/11111111-1111-4111-8111-111111111111"
@@ -392,15 +373,13 @@ func main() {
 		}
 		fmt.Println("PASS", profile, name)
 	}
-	if profile == "mldsa65" {
+	if profile == "mldsa65" && os.Getenv("WENDY_TLS_OWNED_ONLY") == "" {
 		exerciseMixedMLDSACAs(directory)
 	}
 
 	// Exercise the firmware's outbound role. Three ML-DSA-65 intermediates
 	// cross the TLS record boundary, with a P-256 device key.
 	issuer, parent := rootKey, root
-	var middleIssuer crypto.Signer
-	var middleCA *x509.Certificate
 	chain := [][]byte{rootDER}
 	for level := range 3 {
 		caKey, e := newIssuer()
@@ -408,37 +387,9 @@ func main() {
 		ca := &x509.Certificate{SerialNumber: big.NewInt(int64(200 + level)), Subject: pkix.Name{CommonName: fmt.Sprintf("outbound intermediate %d", level)}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
 		der, e := x509.CreateCertificate(rand.Reader, ca, parent, caKey.Public(), issuer)
 		must(e)
-		if level == 2 {
-			// A different but cryptographically valid issuer with the same
-			// subject/key and DER length must still fail the exact verified
-			// presentation binding if the source changes after verification.
-			alternative := *ca
-			alternative.SerialNumber = big.NewInt(203)
-			var changed []byte
-			for range 128 {
-				changed, e = x509.CreateCertificate(rand.Reader, &alternative, parent, caKey.Public(), issuer)
-				must(e)
-				if len(changed) == len(der) {
-					break
-				}
-			}
-			if len(changed) != len(der) {
-				panic("could not match alternative issuer length")
-			}
-			must(os.WriteFile(filepath.Join(directory, "alternative-own-issuer.der"), changed, 0600))
-		}
 		chain = append([][]byte{der}, chain...)
 		parent, issuer = ca, caKey
-		if level == 1 {
-			middleIssuer = caKey
-			middleCA = ca
-		}
 	}
-	otherKey, err := newIssuer()
-	must(err)
-	otherCA := &x509.Certificate{SerialNumber: big.NewInt(999), Subject: pkix.Name{CommonName: "different tenant identity tier"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
-	otherDER, err := x509.CreateCertificate(rand.Reader, otherCA, middleCA, otherKey.Public(), middleIssuer)
-	must(err)
 	device, deviceKey, devicePEM := leaf("outbound device", time.Now().Add(time.Hour), []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}, tenant+"device/00000000-0000-4000-8000-000000000004", issuer, parent, 0)
 	chain = append(device.Certificate, chain...)
 	chainBytes := 0
@@ -500,306 +451,9 @@ func main() {
 	must(err)
 	must(cmd.Wait())
 	fmt.Printf("PASS %s outbound-short-writes chain_bytes=%d certificates=%d cipher=%s\n", profile, chainBytes, len(chain), tls.CipherSuiteName(state.CipherSuite))
-	for _, protocol := range []string{"wendy-net-endpoint/2", "wendy-app-mesh-tls/1", "wendy-local-mesh-ble/2"} {
-		// Native mesh TLS consumes temporary key/PEM input before handshake.
-		for _, test := range []struct {
-			name, mode                                                      string
-			wrongDevice, tampered, expired                                  bool
-			tamperedIssuer                                                  int
-			derInput, corruptSource, corruptPublic, reloadTrust, lateSource bool
-			stream, unknownPeer, wrongTenant, selfPeer                      bool
-		}{
-			{name: "borrowed-input", mode: "connect-net"},
-			{name: "verified-input", mode: "connect-net-verified"},
-			{name: "parsed-input", mode: "connect-net-parsed"},
-			{name: "lazy-der-input", mode: "connect-net-parsed", derInput: true},
-			{name: "corrupt-lazy-own-chain", mode: "connect-net-parsed", derInput: true, corruptSource: true},
-			{name: "corrupt-public-binding", mode: "connect-net-parsed", derInput: true, corruptPublic: true},
-			{name: "changed-verified-own-issuer", mode: "connect-net-reject", derInput: true, lateSource: true},
-			{name: "lazy-trust", mode: "connect-net-parsed", derInput: true, reloadTrust: true},
-			{name: "router-byte-stream", mode: "connect-net-parsed", derInput: true, reloadTrust: true, stream: true},
-			{name: "router-stream-short-hint", mode: "connect-net-parsed", derInput: true, reloadTrust: true, stream: true, unknownPeer: true},
-			{name: "router-stream-wrong-device", mode: "connect-net-reject", derInput: true, stream: true, wrongDevice: true},
-			{name: "router-stream-wrong-tenant", mode: "connect-net-reject", derInput: true, stream: true, unknownPeer: true, wrongTenant: true},
-			{name: "router-stream-self", mode: "connect-net-reject", derInput: true, stream: true, unknownPeer: true, selfPeer: true},
-			{name: "wrong-device", mode: "connect-net-reject", wrongDevice: true},
-			{name: "tampered-leaf", mode: "connect-net-reject", tampered: true},
-			{name: "expired-leaf", mode: "connect-net-reject", expired: true},
-			{name: "tampered-first-issuer", mode: "connect-net-reject", tamperedIssuer: 1},
-			{name: "tampered-last-issuer", mode: "connect-net-reject", tamperedIssuer: 3},
-		} {
-			if os.Getenv("WENDY_TLS_NORMAL_ONLY") == "1" &&
-				(test.wrongDevice || test.tampered || test.expired || test.tamperedIssuer != 0 ||
-					test.corruptSource || test.corruptPublic || test.lateSource || test.wrongTenant || test.selfPeer) {
-				continue
-			}
-			if (test.corruptPublic || test.reloadTrust || test.stream) && protocol != "wendy-local-mesh-ble/2" {
-				continue
-			}
-			if protocol == "wendy-app-mesh-tls/1" {
-				if strings.HasSuffix(test.mode, "reject") {
-					test.mode = "connect-app-reject"
-				} else {
-					test.mode = "connect-app"
-				}
-			}
-			principal := tenant + "device/00000000-0000-4000-8000-000000000005"
-			if test.wrongDevice {
-				principal = tenant + "device/00000000-0000-4000-8000-000000000006"
-			}
-			if test.selfPeer {
-				principal = tenant + "device/00000000-0000-4000-8000-000000000004"
-			}
-			if test.wrongTenant {
-				principal = "spiffe://wendy.sh/tenant/3558fd76-afc7-466e-9613-6b715296a526/device/00000000-0000-4000-8000-000000000005"
-			}
-			expiry := time.Now().Add(time.Hour)
-			if test.expired {
-				expiry = time.Now().Add(-time.Hour)
-			}
-			peer, _, _ := leaf("native peer", expiry,
-				[]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-				principal, issuer, parent, 0)
-			if test.tampered {
-				peer.Certificate[0][len(peer.Certificate[0])-1] ^= 1
-			}
-			peer.Certificate = append(peer.Certificate, chain[1:]...)
-			if test.tamperedIssuer > 0 {
-				i := test.tamperedIssuer
-				peer.Certificate[i] = append([]byte(nil), peer.Certificate[i]...)
-				peer.Certificate[i][len(peer.Certificate[i])-1] ^= 1
-			}
-			listen, e := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
-			must(e)
-			must(listen.SetDeadline(time.Now().Add(10 * time.Second)))
-			command := exec.Command(os.Args[1], filepath.Join(directory, "outbound-key.der"),
-				filepath.Join(directory, "outbound-device.pem"), filepath.Join(directory, "root.pem"),
-				test.mode, fmt.Sprint(listen.Addr().(*net.TCPAddr).Port))
-			command.Stdout, command.Stderr = os.Stdout, os.Stderr
-			if test.derInput {
-				command.Env = append(os.Environ(), "WENDY_TLS_DER_INPUT=1")
-			}
-			if test.corruptSource {
-				command.Env = append(command.Env, "WENDY_TLS_DER_CORRUPT=1")
-			}
-			if test.lateSource {
-				command.Env = append(command.Env, "WENDY_TLS_LATE_DER_PATH="+filepath.Join(directory, "alternative-own-issuer.der"))
-			}
-			if protocol == "wendy-local-mesh-ble/2" {
-				if command.Env == nil {
-					command.Env = os.Environ()
-				}
-				command.Env = append(command.Env, "WENDY_TLS_ROUTER=1")
-			}
-			if test.corruptPublic {
-				command.Env = append(command.Env, "WENDY_TLS_PUBLIC_CORRUPT=1")
-			}
-			if test.reloadTrust {
-				command.Env = append(command.Env, "WENDY_TLS_RELOAD_TRUST=1")
-			}
-			if test.stream {
-				command.Env = append(command.Env, "WENDY_TLS_ROUTER_STREAM=1")
-			}
-			if test.unknownPeer {
-				command.Env = append(command.Env, "WENDY_TLS_UNKNOWN_PEER=1")
-			}
-			must(command.Start())
-			if test.corruptSource || test.corruptPublic {
-				connected := make(chan bool, 1)
-				go func() {
-					raw, err := listen.Accept()
-					if err == nil {
-						raw.Close()
-					}
-					connected <- err == nil
-				}()
-				must(command.Wait())
-				listen.Close()
-				if <-connected {
-					panic("invalid cached own chain reached TCP dial")
-				}
-				continue
-			}
-			raw, e := listen.Accept()
-			must(e)
-			listen.Close()
-			must(raw.SetDeadline(time.Now().Add(10 * time.Second)))
-			secure := tls.Server(raw, &tls.Config{MinVersion: tls.VersionTLS13,
-				Certificates: []tls.Certificate{peer}, ClientAuth: tls.RequireAndVerifyClientCert,
-				ClientCAs: pool, NextProtos: []string{protocol}, SessionTicketsDisabled: true})
-			handshakeError := secure.Handshake()
-			if strings.HasSuffix(test.mode, "-reject") {
-				if handshakeError == nil {
-					var byte [1]byte
-					n, e := secure.Read(byte[:])
-					if n != 0 || e == nil {
-						panic("rejected native peer sent application data")
-					}
-				}
-				must(command.Wait())
-				secure.Close()
-				fmt.Printf("PASS %s native mesh rejects %s\n", profile, test.name)
-				continue
-			}
-			must(handshakeError)
-			if len(secure.ConnectionState().PeerCertificates) != len(chain)-1 {
-				panic("native client should omit its pinned root from the presented chain")
-			}
-			var request [5]byte
-			_, e = io.ReadFull(secure, request[:])
-			must(e)
-			if string(request[:]) != "hello" {
-				panic("invalid native TLS application data")
-			}
-			_, e = secure.Write([]byte("world"))
-			must(e)
-			bulkEcho(secure)
-			must(command.Wait())
-			secure.Close()
-			fmt.Printf("PASS %s native mesh owned-input TLS %s\n", profile, test.name)
-		}
-		for _, ownedLAN := range []bool{false, true} {
-			if ownedLAN && protocol != "wendy-net-endpoint/2" {
-				continue
-			}
-			for _, test := range []string{"valid", "other-issuer", "other-operator-issuer", "wrong-tenant", "operator", "expired", "tampered", "no-client", "wrong-alpn", "self"} {
-				if os.Getenv("WENDY_TLS_NORMAL_ONLY") == "1" && test != "valid" && test != "other-issuer" &&
-					!(ownedLAN && (test == "operator" || test == "other-operator-issuer")) {
-					continue
-				}
-				if ownedLAN && (test == "wrong-alpn" || test == "self") {
-					continue
-				}
-				valid := test == "valid" || test == "other-issuer" || (ownedLAN && (test == "operator" || test == "other-operator-issuer"))
-				uri := tenant + "device/00000000-0000-4000-8000-000000000005"
-				expiry := time.Now().Add(time.Hour)
-				if test == "wrong-tenant" {
-					uri = "spiffe://wendy.sh/tenant/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/device/00000000-0000-4000-8000-000000000005"
-				}
-				if test == "operator" || test == "other-operator-issuer" {
-					uri = tenant + "operator/11111111-1111-4111-8111-111111111111"
-					if os.Getenv("WENDY_TLS_OPERATOR_OPAQUE") == "1" {
-						uri = tenant + "operator/oidc%7Calice"
-					}
-				}
-				if test == "self" {
-					uri = tenant + "device/00000000-0000-4000-8000-000000000004"
-				}
-				if test == "expired" {
-					expiry = time.Now().Add(-time.Hour)
-				}
-				peerIssuer, peerParent := issuer, parent
-				if strings.HasPrefix(test, "other-") {
-					peerIssuer = otherKey
-					peerParent = otherCA
-				}
-				peer, _, _ := leaf("native accepting client", expiry, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}, uri, peerIssuer, peerParent, 0)
-				if strings.HasPrefix(test, "other-") {
-					peer.Certificate = append(peer.Certificate, otherDER)
-					peer.Certificate = append(peer.Certificate, chain[2:]...)
-				} else {
-					peer.Certificate = append(peer.Certificate, chain[1:]...)
-				}
-				if test == "tampered" {
-					peer.Certificate[0][len(peer.Certificate[0])-1] ^= 1
-				}
-				mode := "native-net-reject"
-				if valid {
-					mode = "native-net-valid"
-				}
-				if ownedLAN {
-					mode = strings.Replace(mode, "native-net-", "owned-lan-", 1)
-				}
-				if protocol == "wendy-app-mesh-tls/1" {
-					mode = strings.Replace(mode, "native-net-", "app-net-", 1)
-				}
-				command := exec.Command(os.Args[1], filepath.Join(directory, "outbound-key.der"), filepath.Join(directory, "outbound-device.pem"), filepath.Join(directory, "root.pem"), mode)
-				if protocol == "wendy-local-mesh-ble/2" {
-					command.Env = append(os.Environ(), "WENDY_TLS_ROUTER=1", "WENDY_TLS_DER_INPUT=1", "WENDY_TLS_RELOAD_TRUST=1")
-					if test == "valid" || test == "wrong-tenant" || test == "self" || test == "no-client" {
-						command.Env = append(command.Env, "WENDY_TLS_ROUTER_STREAM=1")
-					}
-				}
-				if ownedLAN {
-					role := "device"
-					if test == "operator" || test == "other-operator-issuer" {
-						role = "operator"
-					}
-					command.Env = append(os.Environ(), "WENDY_TLS_DER_INPUT=1", "WENDY_TLS_EXPECT_ROLE="+role)
-				}
-				stdout, e := command.StdoutPipe()
-				must(e)
-				command.Stderr = os.Stderr
-				must(command.Start())
-				line, e := bufio.NewReader(stdout).ReadString('\n')
-				must(e)
-				port, e := strconv.Atoi(strings.TrimSpace(line))
-				must(e)
-				config := &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: pool, ServerName: "localhost", NextProtos: []string{protocol}, Certificates: []tls.Certificate{peer}, SessionTicketsDisabled: true}
-				if ownedLAN {
-					config.NextProtos = nil
-					if os.Getenv("WENDY_TLS_LARGE_FIRST_RECORD") == "1" {
-						config.DynamicRecordSizingDisabled = true
-					}
-				}
-				if test == "no-client" {
-					config.Certificates = nil
-				}
-				if test == "wrong-alpn" {
-					config.NextProtos = []string{"unrelated/1"}
-				}
-				raw, e := net.DialTimeout("tcp4", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
-				must(e)
-				must(raw.SetDeadline(time.Now().Add(10 * time.Second)))
-				secure := tls.Client(raw, config)
-				handshakeError := secure.Handshake()
-				if ownedLAN && os.Getenv("WENDY_TLS_CV_CANCEL") == "1" {
-					// The ordinary application owner turns mesh OFF during its own
-					// pending CertificateVerify output. No malformed peer traffic.
-					if handshakeError == nil {
-						panic("owner cancellation did not interrupt the pending handshake")
-					}
-					secure.Close()
-					must(command.Wait())
-					fmt.Printf("PASS %s ordinary owner OFF during CertificateVerify %s\n", profile, test)
-					continue
-				}
-				if valid {
-					must(handshakeError)
-					if ownedLAN && os.Getenv("WENDY_TLS_CLOSE_WITHOUT_APP") == "1" {
-						// Normal TLS close immediately after authentication.
-					} else if ownedLAN && nativeComposedApplication != nil {
-						nativeComposedApplication(secure, test == "operator" || test == "other-operator-issuer")
-					} else {
-						_, e = secure.Write([]byte("hello"))
-						must(e)
-						var response [5]byte
-						_, e = io.ReadFull(secure, response[:])
-						must(e)
-						if string(response[:]) != "world" {
-							panic("native accept response mismatch")
-						}
-						bulkEcho(secure)
-					}
-				} else if handshakeError == nil {
-					var response [1]byte
-					n, e := secure.Read(response[:])
-					if n != 0 || e == nil {
-						panic("native accept granted rejected client data")
-					}
-				}
-				secure.Close()
-				must(command.Wait())
-				fmt.Printf("PASS %s native accepting TLS %s\n", profile, test)
-			}
-
-		}
-	}
 	operator, operatorKey, operatorPEM := leaf("large-chain operator", time.Now().Add(time.Hour), []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, tenant+"operator/11111111-1111-4111-8111-111111111111", rootKey, root, 0)
 	exerciseLargeServerStream(directory, profile, pool, operator, chainBytes, len(chain))
-	if os.Getenv("WENDY_TLS_NORMAL_ONLY") == "1" {
-		return
-	}
+	if os.Getenv("WENDY_TLS_OWNED_ONLY") != "" { return }
 	if profile == "mldsa65" {
 		must(os.WriteFile(filepath.Join(directory, "operator-key.der"), operatorKey, 0600))
 		must(os.WriteFile(filepath.Join(directory, "operator-chain.pem"), append(operatorPEM, rootPEM...), 0600))
@@ -866,19 +520,13 @@ func exerciseMixedMLDSACAs(directory string) {
 		chain = append([][]byte{der}, chain...)
 		parent, issuer = ca, key
 	}
-	leafSerial := int64(510)
 	makeLeaf := func(key crypto.Signer, role string) tls.Certificate {
-		subject := "mixed-test"
-		if role == "device" && os.Getenv("WENDY_TLS_OWNED_STREAM") != "" {
-			subject = "00000000-0000-4000-8000-000000000004"
-		}
-		uri, err := url.Parse("spiffe://wendy.sh/tenant/2558fd76-afc7-466e-9613-6b715296a526/" + role + "/" + subject)
+		uri, err := url.Parse("spiffe://wendy.sh/tenant/2558fd76-afc7-466e-9613-6b715296a526/" + role + "/mixed-test")
 		must(err)
-		template := &x509.Certificate{SerialNumber: big.NewInt(leafSerial), Subject: pkix.Name{CommonName: "mixed " + role}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), BasicConstraintsValid: true, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, DNSNames: []string{"localhost"}, URIs: []*url.URL{uri}}
+		template := &x509.Certificate{SerialNumber: big.NewInt(510), Subject: pkix.Name{CommonName: "mixed " + role}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), BasicConstraintsValid: true, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, DNSNames: []string{"localhost"}, URIs: []*url.URL{uri}}
 		if role == "device" {
 			template.ExtKeyUsage = append(template.ExtKeyUsage, x509.ExtKeyUsageServerAuth)
 		}
-		leafSerial++
 		der, err := x509.CreateCertificate(rand.Reader, template, parent, key.Public(), issuer)
 		must(err)
 		return tls.Certificate{Certificate: append([][]byte{der}, chain...), PrivateKey: key}
@@ -896,9 +544,6 @@ func exerciseMixedMLDSACAs(directory string) {
 	}
 	must(os.WriteFile(serverPath, serverPEM, 0600))
 	for _, name := range []string{"valid-65-operator", "tampered-87-intermediate", "tampered-87-issuer-signature", "reject-87-operator", "reject-44-operator"} {
-		if os.Getenv("WENDY_TLS_NORMAL_ONLY") == "1" && name != "valid-65-operator" {
-			continue
-		}
 		params := mldsa.MLDSA65()
 		if name == "reject-87-operator" {
 			params = mldsa.MLDSA87()
@@ -927,94 +572,55 @@ func exerciseMixedMLDSACAs(directory string) {
 			mode = "stream-valid"
 		}
 		command := exec.Command(os.Args[1], keyPath, serverPath, rootPath, mode)
-		var sessionLogs bytes.Buffer
-		command.Stderr = io.MultiWriter(os.Stderr, &sessionLogs)
+		command.Stderr = os.Stderr
 		stdout, err := command.StdoutPipe()
 		must(err)
 		must(command.Start())
-		reader := bufio.NewReader(stdout)
-		repeat := 1
-		if count := os.Getenv("WENDY_TLS_NORMAL_REPEAT"); count != "" {
-			repeat, err = strconv.Atoi(count)
+		line, err := bufio.NewReader(stdout).ReadString('\n')
+		must(err)
+		raw, err := net.DialTimeout("tcp", "127.0.0.1:"+strings.TrimSpace(line), 3*time.Second)
+		must(err)
+		must(raw.SetDeadline(time.Now().Add(10 * time.Second)))
+		requested := false
+		client := tls.Client(raw, &tls.Config{
+			MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13,
+			RootCAs: pool, ServerName: "localhost",
+			GetClientCertificate: func(request *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+				requested = true
+				found65 := false
+				for _, algorithm := range request.SignatureSchemes {
+					if algorithm == tls.MLDSA44 || algorithm == tls.MLDSA87 {
+						return nil, fmt.Errorf("firmware advertised unsupported CertificateVerify algorithm %v", algorithm)
+					}
+					found65 = found65 || algorithm == tls.MLDSA65
+				}
+				if !found65 {
+					return nil, fmt.Errorf("firmware did not advertise ML-DSA-65 CertificateVerify")
+				}
+				return &operator, nil
+			},
+		})
+		handshake := client.Handshake()
+		if mode == "stream-valid" {
+			must(handshake)
+			_, err = client.Write([]byte("hello"))
 			must(err)
-			if os.Getenv("WENDY_TLS_NORMAL_ONLY") != "1" || repeat < 1 || repeat > 8 {
-				panic("invalid normal reconnect bounds")
+			var reply [5]byte
+			_, err = io.ReadFull(client, reply[:])
+			must(err)
+			if string(reply[:]) != "world" || !requested {
+				panic("mixed CA chain did not authenticate and exchange application data")
+			}
+		} else if handshake == nil {
+			var reply [1]byte
+			if _, err = client.Read(reply[:]); err == nil {
+				panic("invalid mixed CA operator was accepted")
 			}
 		}
-		for iteration := 0; iteration < repeat; iteration++ {
-			line, err := reader.ReadString('\n')
-			must(err)
-			raw, err := net.DialTimeout("tcp", "127.0.0.1:"+strings.TrimSpace(line), 3*time.Second)
-			must(err)
-			must(raw.SetDeadline(time.Now().Add(10 * time.Second)))
-			requested := false
-			client := tls.Client(raw, &tls.Config{
-				MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13,
-				RootCAs: pool, ServerName: "localhost",
-				GetClientCertificate: func(request *tls.CertificateRequestInfo) (*tls.Certificate, error) {
-					requested = true
-					found65 := false
-					for _, algorithm := range request.SignatureSchemes {
-						if algorithm == tls.MLDSA44 || algorithm == tls.MLDSA87 {
-							return nil, fmt.Errorf("firmware advertised unsupported CertificateVerify algorithm %v", algorithm)
-						}
-						found65 = found65 || algorithm == tls.MLDSA65
-					}
-					if !found65 {
-						return nil, fmt.Errorf("firmware did not advertise ML-DSA-65 CertificateVerify")
-					}
-					return &operator, nil
-				},
-			})
-			handshake := client.Handshake()
-			if mode == "stream-valid" {
-				must(handshake)
-				if iteration == 1 && repeat > 1 {
-					// Normal certificate renewal: a new valid serial on the same key.
-					device = makeLeaf(deviceKey, "device")
-					var renewed []byte
-					for _, der := range device.Certificate {
-						renewed = append(renewed, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
-					}
-					must(os.WriteFile(serverPath, renewed, 0600))
-				}
-				_, err = client.Write([]byte("hello"))
-				must(err)
-				var reply [5]byte
-				_, err = io.ReadFull(client, reply[:])
-				must(err)
-				if string(reply[:]) != "world" || !requested {
-					panic("mixed CA chain did not authenticate and exchange application data")
-				}
-			} else if handshake == nil {
-				var reply [1]byte
-				if _, err = client.Read(reply[:]); err == nil {
-					panic("invalid mixed CA operator was accepted")
-				}
-			}
-			raw.Close()
-			if !requested {
-				panic("mixed CA reconnect did not authenticate its client")
-			}
-			fmt.Printf("PASS mixed87 normal_session=%d operator_chain_bytes=%d\n", iteration+1, chainBytes)
-		}
+		raw.Close()
 		must(command.Wait())
-		if repeat == 4 {
-			logs := sessionLogs.String()
-			expected := []string{"verified and cached", "reused", "verified and cached", "reused"}
-			remaining := logs
-			for _, state := range expected {
-				prefix := "local certificate path: "
-				index := strings.Index(remaining, prefix)
-				if index < 0 || !strings.HasPrefix(remaining[index+len(prefix):], state+"\n") {
-					panic("normal renewal did not invalidate the local path cache at the next connection")
-				}
-				remaining = remaining[index+len(prefix)+len(state)+1:]
-			}
-			if strings.Count(logs, "local certificate path: verified and cached") != 2 ||
-				strings.Count(logs, "local certificate path: reused") != 2 {
-				panic("normal reconnect/renewal did not verify twice and reuse twice")
-			}
+		if !requested {
+			panic("mixed CA test failed before reaching client certificate authentication")
 		}
 		fmt.Printf("PASS mixed87 %s operator_chain_bytes=%d\n", name, chainBytes)
 	}
@@ -1103,11 +709,8 @@ func exerciseLargeServerStream(directory, profile string, roots *x509.CertPool, 
 	})
 	must(client.Handshake())
 	state := client.ConnectionState()
-	presentedLength := chainLength
-	if os.Getenv("WENDY_TLS_OWNED_STREAM") != "" {
-		presentedLength-- // The independently pinned anchor is omitted on wire.
-	}
-	if len(state.PeerCertificates) != presentedLength || len(state.VerifiedChains) == 0 {
+	if os.Getenv("WENDY_TLS_OWNED_STREAM") != "" { chainLength-- } // independently pinned root
+	if len(state.PeerCertificates) != chainLength || len(state.VerifiedChains) == 0 {
 		panic("stream server chain was not authenticated")
 	}
 	_, err = client.Write([]byte("hello"))
@@ -1126,17 +729,13 @@ func exerciseEnrollmentHTTP(directory string, broker tls.Certificate, deviceRoot
 	const headerName = "X-Wendy-Lite-Operator-Authority"
 	const authority = "dGVzdC1saXRlLWF1dGhvcml0eQ=="
 	for _, tc := range []struct {
-		name, header, expected             string
-		renew, reject, truncate, untrusted bool
-		large, chunked                     bool
-		status, recordBytes                int
+		name, header, expected                      string
+		renew, reject, truncate, untrusted, chunked bool
+		status, body                                int
 	}{
 		{name: "fragmented mixed-case header", header: "x-WeNdY-LiTe-OpErAtOr-AuThOrItY: " + authority + "\r\n", expected: authority},
 		{name: "renewal header", header: headerName + ": " + authority + "\r\n", expected: authority, renew: true},
 		{name: "missing header"},
-		{name: "40KiB issuance body", header: headerName + ": " + authority + "\r\n", expected: authority, large: true},
-		{name: "40KiB issuance body in full TLS records", header: headerName + ": " + authority + "\r\n", expected: authority, large: true, recordBytes: 16384},
-		{name: "40KiB chunked issuance body", header: headerName + ": " + authority + "\r\n", expected: authority, large: true, chunked: true},
 		{name: "maximum header", header: headerName + ": " + strings.Repeat("A", 4096) + "\r\n", expected: strings.Repeat("A", 4096)},
 		{name: "oversized header", header: headerName + ": " + strings.Repeat("A", 4097) + "\r\n", reject: true},
 		{name: "duplicate header", header: headerName + ": " + authority + "\r\n" + strings.ToLower(headerName) + ": " + authority + "\r\n", reject: true},
@@ -1144,16 +743,25 @@ func exerciseEnrollmentHTTP(directory string, broker tls.Certificate, deviceRoot
 		{name: "failed issuance", header: headerName + ": " + authority + "\r\n", status: 403, reject: true},
 		{name: "truncated issuance", header: headerName + ": " + authority + "\r\n", truncate: true, reject: true},
 		{name: "untrusted HTTPS", header: headerName + ": " + authority + "\r\n", untrusted: true, reject: true},
+		// Bodies up to the 64 KiB limit, sized by Content-Length or kept in 4 KiB segments.
+		{name: "large body", body: 40000},
+		{name: "maximum body", body: 65536},
+		{name: "oversized body", body: 65537, reject: true},
+		{name: "small chunked body", body: 2, chunked: true},
+		{name: "segment-sized chunked body", body: 8192, chunked: true},
+		{name: "large chunked body", body: 40000, chunked: true},
+		{name: "maximum chunked body", body: 65536, chunked: true},
+		{name: "oversized chunked body", body: 65537, chunked: true, reject: true},
 	} {
 		listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 		must(err)
 		must(listener.SetDeadline(time.Now().Add(5 * time.Second)))
 		mode, expectedPath := "http-valid", "-"
-		if tc.large {
-			mode = "http-large"
-		}
 		if tc.renew {
 			mode = "http-renew"
+		}
+		if tc.body > 0 {
+			mode = fmt.Sprintf("http-body-%d", tc.body)
 		}
 		if tc.reject {
 			mode = "http-reject"
@@ -1174,7 +782,7 @@ func exerciseEnrollmentHTTP(directory string, broker tls.Certificate, deviceRoot
 		must(err)
 		listener.Close()
 		must(raw.SetDeadline(time.Now().Add(5 * time.Second)))
-		config := &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{broker}, DynamicRecordSizingDisabled: true}
+		config := &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{broker}}
 		if tc.renew {
 			config.ClientAuth, config.ClientCAs = tls.RequireAndVerifyClientCert, deviceRoots
 		}
@@ -1204,24 +812,30 @@ func exerciseEnrollmentHTTP(directory string, broker tls.Certificate, deviceRoot
 			if statusCode == 0 {
 				statusCode = 200
 			}
-			responseBody := "{}"
-			if tc.large {
-				responseBody = strings.Repeat("x", 40000)
+			payload, step := "{}", 7
+			if tc.body > 0 {
+				// Larger records keep the large-body cases fast.
+				payload, step = strings.Repeat("A", tc.body), 1000
 			}
-			response := fmt.Sprintf("HTTP/1.1 %d result\r\n%sContent-Length: %d\r\nConnection: close\r\n\r\n%s", statusCode, tc.header, len(responseBody), responseBody)
+			framing := fmt.Sprintf("Content-Length: %d\r\n", len(payload))
 			if tc.chunked {
-				response = fmt.Sprintf("HTTP/1.1 %d result\r\n%sTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n%x\r\n%s\r\n0\r\n\r\n", statusCode, tc.header, len(responseBody), responseBody)
+				// Without Content-Length the client keeps the body in segments.
+				var chunks strings.Builder
+				for rest := payload; rest != ""; {
+					n := min(3000, len(rest))
+					fmt.Fprintf(&chunks, "%x\r\n%s\r\n", n, rest[:n])
+					rest = rest[n:]
+				}
+				chunks.WriteString("0\r\n\r\n")
+				framing, payload = "Transfer-Encoding: chunked\r\n", chunks.String()
 			}
+			response := fmt.Sprintf("HTTP/1.1 %d result\r\n%s%sConnection: close\r\n\r\n%s", statusCode, tc.header, framing, payload)
 			if tc.truncate {
 				response = strings.TrimSuffix(response, "}")
 			}
-			// Small records split header names/values; full records exercise asymmetric buffers.
-			recordBytes := tc.recordBytes
-			if recordBytes == 0 {
-				recordBytes = 7
-			}
+			// Separate TLS records split both field names and values across parser calls.
 			for offset := 0; offset < len(response); {
-				end := min(offset+recordBytes, len(response))
+				end := min(offset+step, len(response))
 				if _, err := server.Write([]byte(response[offset:end])); err != nil {
 					if !tc.reject {
 						must(err)
@@ -1237,22 +851,5 @@ func exerciseEnrollmentHTTP(directory string, broker tls.Certificate, deviceRoot
 			panic(fmt.Sprintf("HTTP %s: %v", tc.name, err))
 		}
 		fmt.Println("PASS enrollment HTTP", tc.name)
-	}
-}
-
-// Valid 16KiB TLS records must survive demand growth, partial reads and shrink.
-func bulkEcho(c *tls.Conn) {
-	payload := make([]byte, 65536)
-	for i := range payload {
-		payload[i] = byte(i*31 + 7)
-	}
-	written := make(chan error, 1)
-	go func() { _, err := c.Write(payload); written <- err }()
-	received := make([]byte, len(payload))
-	_, err := io.ReadFull(c, received)
-	must(err)
-	must(<-written)
-	if !bytes.Equal(payload, received) {
-		panic("demand-record bulk echo corruption")
 	}
 }

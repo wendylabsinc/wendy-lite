@@ -184,9 +184,46 @@ static void rejection(bool oversized)
     mbedtls_ssl_config_free(&config);
     free(in.bytes);
 }
+struct pending_output {const uint8_t *expected;size_t size,sent,calls;};
+static int send_pending(void *context,const unsigned char *bytes,size_t size)
+{
+    struct pending_output *pending=context;
+    if(++pending->calls%3==0)return MBEDTLS_ERR_SSL_WANT_WRITE;
+    if(size>73)size=73;
+    assert(size<=pending->size-pending->sent && !memcmp(bytes,pending->expected+pending->sent,size));
+    pending->sent+=size;return (int)size;
+}
+static void pending_output(void)
+{
+    mbedtls_ssl_context ssl;mbedtls_ssl_config config;
+    mbedtls_ssl_init(&ssl);mbedtls_ssl_config_init(&config);
+    assert(!mbedtls_ssl_config_defaults(&config,MBEDTLS_SSL_IS_CLIENT,
+        MBEDTLS_SSL_TRANSPORT_STREAM,MBEDTLS_SSL_PRESET_DEFAULT));
+    assert(!mbedtls_ssl_setup(&ssl,&config));
+    uint8_t expected[700];for(size_t i=0;i<sizeof expected;i++)expected[i]=(uint8_t)i;
+    memcpy(ssl.out_buf+8,expected,sizeof expected);
+    ssl.out_hdr=ssl.out_buf+8+sizeof expected;ssl.out_left=sizeof expected;
+    ssl.state=MBEDTLS_SSL_HANDSHAKE_OVER;
+    ssl.in_left=ssl.in_msglen=ssl.in_hsfraglen=ssl.in_hslen=0;ssl.in_offt=NULL;
+    uint8_t *output=ssl.out_buf;size_t output_size=ssl.out_buf_len;
+    struct pending_output pending={.expected=expected,.size=sizeof expected};
+    mbedtls_ssl_set_bio(&ssl,&pending,send_pending,NULL,NULL);
+    for(;;){
+        mbedtls_ssl_compact_input_buffer(&ssl);
+        assert(ssl.in_buf_len==2048 && ssl.out_buf==output && ssl.out_buf_len==output_size);
+        assert(ssl.out_hdr==output+8+sizeof expected && ssl.out_left==sizeof expected-pending.sent);
+        int result=mbedtls_ssl_flush_output(&ssl);
+        if(!result)break;
+        assert(result==MBEDTLS_ERR_SSL_WANT_WRITE);
+    }
+    assert(pending.sent==sizeof expected && pending.calls>3 && !ssl.out_left);
+    mbedtls_ssl_free(&ssl);mbedtls_ssl_config_free(&config);
+    puts("pending ciphertext survives input compaction and repeated partial flushes");
+}
 int main(int argc, char **argv)
 {
     assert(psa_crypto_init() == PSA_SUCCESS);
+    if(argc==2 && !strcmp(argv[1],"--pending-output")){pending_output();return 0;}
     if (argc==2 && !strcmp(argv[1],"--normal-recycle")) {
         recycle_mode=true;exercise(25352,512,7000,32768);
         puts("input compaction returns zeroized storage without changing record bytes");return 0;

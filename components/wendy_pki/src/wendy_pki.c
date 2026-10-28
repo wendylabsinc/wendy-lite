@@ -10,7 +10,6 @@
 #include "wendy_pki_internal.h"
 #include "wendy_pki_der_cache.h"
 #include "wendy_peer_identity.h"
-#include "wendy_pki_operator.h"
 #if CONFIG_WENDY_NET_PEER
 #include "wendy_pki_native_prepare.h"
 #endif
@@ -22,7 +21,7 @@
 #include "freertos/task.h"
 #endif
 #include <unistd.h>
-#if CONFIG_WENDY_NET_PEER || CONFIG_WENDY_NET_TEST_TIME_RELAY
+#if CONFIG_WENDY_NET_PEER
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -92,11 +91,10 @@ static pthread_mutex_t identity_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool identity_use_allowed(void);
 static int validate_config_and_trust(const WendyConfEnrollment *cfg,
     struct wendy_conf_enrollment_data *data);
-#ifndef CONFIG_WENDY_NET_TEST_TIME_RELAY
-#define CONFIG_WENDY_NET_TEST_TIME_RELAY 0
-#endif
+#if CONFIG_WENDY_NET_PEER || CONFIG_WENDY_NET_NAN
 static int select_time_trust(const WendyConfEnrollment *cfg,
     struct wendy_conf_enrollment_data *data,bool https);
+#endif
 static atomic_bool identity_resetting;
 /* These survive mesh shutdown and certificate renewal. Only a reboot may
  * reserve another range or persist another verified clock high-water. */
@@ -125,6 +123,7 @@ static esp_err_t open_identity(nvs_handle_t *handle)
 }
 /* Only the identity/bootstrap worker calls this, under identity_lock. The
  * durable key is retained across enrollment reset as well as renewal. */
+#if CONFIG_WENDY_MESH_LEAF || CONFIG_WENDY_NET_PEER
 static int reserve_boot_revisions(nvs_handle_t handle)
 {
     pthread_mutex_lock(&revision_lock);
@@ -148,6 +147,7 @@ static int reserve_boot_revisions(nvs_handle_t handle)
     pthread_mutex_unlock(&revision_lock);
     return result;
 }
+#endif
 esp_err_t wendy_pki_mesh_revision_next(uint64_t *out)
 {
     if (!out) return ESP_ERR_INVALID_ARG;
@@ -163,6 +163,7 @@ esp_err_t wendy_pki_mesh_revision_next(uint64_t *out)
 }
 /* Compatibility endpoints consume disjoint RAM subranges; full routers use
  * revision_next for each newly signed immutable body. Neither path writes. */
+#if CONFIG_WENDY_MESH_LEAF || CONFIG_WENDY_NET_PEER
 static int legacy_revision_range(struct wendy_pki_mesh_identity *identity)
 {
     pthread_mutex_lock(&revision_lock);
@@ -176,6 +177,7 @@ static int legacy_revision_range(struct wendy_pki_mesh_identity *identity)
     pthread_mutex_unlock(&revision_lock);
     return result;
 }
+#endif
 static void erase(void *p, size_t n)
 {
     volatile uint8_t *q = p;
@@ -430,9 +432,7 @@ esp_err_t wendy_pki_reset(const char *expected_device_id, const char *nonce_hex)
         goto done;
     }
     identity_resetting = true;
-#if CONFIG_WENDY_NET_PEER
     pki_public_certificate_changed();
-#endif
     result = nvs_set_i64(h, "reset_pending", 1);
     if (result == ESP_OK) result = nvs_commit(h);
     if (result != ESP_OK) goto done;
@@ -441,10 +441,8 @@ esp_err_t wendy_pki_reset(const char *expected_device_id, const char *nonce_hex)
     if (result != ESP_OK) goto done;
     const char *keys[] = {"key", "certificate", "pending", "lite_ca", "pending_ca",
                           "tenant", "device", "nonce"
-#if CONFIG_WENDY_NET_PEER
-        ,"net_der_meta","net_der_0","net_der_1","net_der_2","net_der_3",
+        ,"net_der_meta","net_der_ranges","net_der_0","net_der_1","net_der_2","net_der_3",
         "net_der_4","net_der_5","net_der_6","net_der_7"
-#endif
     };
     for (size_t i = 0; i < sizeof keys / sizeof keys[0]; i++) {
         result = nvs_erase_key(h, keys[i]);
@@ -629,7 +627,7 @@ static int refresh_time_via(nvs_handle_t h,const char *url,
 {
     return refresh_time_source(h,url,data,stream,"WMT3");
 }
-#if CONFIG_WENDY_NET_PEER || CONFIG_WENDY_NET_TEST_TIME_RELAY
+#if CONFIG_WENDY_NET_PEER
 static ssize_t time_recv(void *context,void *bytes,size_t size)
 {
     int n=recv(*(int*)context,bytes,size,0);
@@ -651,7 +649,7 @@ static int time_wait(void *context,bool writing,int64_t deadline)
     return select(fd+1,writing ? NULL : &set,writing ? &set : NULL,NULL,&timeout)>0 ? 0 : -1;
 }
 #endif
-#if CONFIG_WENDY_NET_TEST_TIME_RELAY || CONFIG_WENDY_NET_NAN
+#if CONFIG_WENDY_NET_NAN
 static int refresh_time_peer(nvs_handle_t h,const char *url,
     const struct wendy_conf_enrollment_data *data,const char *host,unsigned port)
 {
@@ -874,32 +872,34 @@ static int issue(nvs_handle_t h, const WendyConfEnrollment *cfg,
         ESP_LOGE(TAG, "initial enrollment has no Lite operator authority");
         goto done;
     }
-verify:
-    /* The pre-request timestamp can lag issuance after network and signature
-     * verification work. Obtain authenticated time generated after the response
-     * instead of relaxing notBefore for a freshly minted identity. */
-    if (refresh_time(h, cfg->time_url, data))
-    {
-        ESP_LOGE(TAG, "verified post-issuance time unavailable; response retained");
-        goto done;
-    }
+verify:;
     size_t n = pending ? pending_size : strlen(certificate);
     if(wendy_cert_bundle_measure((const uint8_t*)certificate,n,&der_size))goto done;
     certificate_der=malloc(der_size);
     if(!certificate_der || wendy_cert_bundle_import((const uint8_t*)certificate,n,
                     certificate_der,der_size,&der_size))goto done;
+    /* Keep only DER and the decoded authority through the next TLS request.
+     * A pending replay also allocated a CSR before discovering its response. */
+    free(csr);csr=NULL;
+    free(authority_header);authority_header=NULL;
+    free(pending_authority);pending_authority=NULL;
+    free(pending);pending=NULL;
+    cJSON_Delete(reply);reply=NULL;certificate=NULL;
+    /* Fresh authenticated time must follow issuance; never relax notBefore. */
+    if (refresh_time(h, cfg->time_url, data))
+    {
+        ESP_LOGE(TAG, "verified post-issuance time unavailable; response retained");
+        goto done;
+    }
     if (wendy_pki_verify_identity(certificate_der,der_size, data->device_roots.data,
                                   data->device_roots.size, key, key_size, principal, time(NULL),
                                   expires))
         goto done;
     /* Only an authenticated response with a valid identity may replace the
      * operator pin. Renewal without the header preserves the existing pin. */
-#if CONFIG_WENDY_NET_PEER
-    /* Retire every RAM availability index before changing the derived public
-     * source. A failed write remains a safe metadata miss until fresh setup. */
-    pki_public_certificate_changed();
+    /* Every certificate installer retires derived metadata first, including
+     * baseline issuance before native service activation in a later layer. */
     if(pki_der_cache_invalidate(h))goto done;
-#endif
     esp_err_t saved = authority_der ?
         nvs_set_blob(h,"lite_ca",authority_der,authority_size) : ESP_OK;
     if (saved == ESP_OK)
@@ -998,6 +998,7 @@ static int validate_config_and_trust(const WendyConfEnrollment *cfg,
     }
     return select_trust(cfg, data);
 }
+#if CONFIG_WENDY_NET_PEER || CONFIG_WENDY_NET_NAN
 static int select_time_trust(const WendyConfEnrollment *cfg,
     struct wendy_conf_enrollment_data *data,bool https)
 {
@@ -1010,6 +1011,7 @@ static int select_time_trust(const WendyConfEnrollment *cfg,
     return wendy_pki_verify_roots(data->tsa_roots.data,data->tsa_roots.size) ||
         (https && wendy_pki_verify_roots(data->https_roots.data,data->https_roots.size)) ? -1:0;
 }
+#endif
 static esp_err_t connect_identity(wendy_pki_connection **connection)
 {
     if (wendy_pki_crypto_init())
@@ -1230,9 +1232,7 @@ static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
             free(data.storage);
             data=(struct wendy_conf_enrollment_data){.device_roots=roots,.generation=generation};
         }
-#if !CONFIG_WENDY_NET_TEST_LATE_MANAGEMENT_RECORDS
         input_reservation=pki_tls_input_take(NATIVE_TLS_INPUT_RESERVE);
-#endif
 #endif
     } else if (validate_config_and_trust(&cfg,&data)) goto done;
     stage="identity storage";
@@ -1402,12 +1402,6 @@ int wendy_pki_agent_step(struct wendy_pki_agent_setup *op)
     }
     return r;
 }
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-bool wendy_pki_agent_snapshot(const struct wendy_pki_agent_setup *op,struct wendy_pki_agent_snapshot *out)
-{
-    return op && pki_tls_agent_snapshot(op->connection,out);
-}
-#endif
 wendy_pki_connection *wendy_pki_agent_take(struct wendy_pki_agent_setup *op,struct wendy_pki_agent_info *info)
 {
     if(!op || !op->complete || !info || wendy_pki_reset_in_progress() ||
@@ -1502,10 +1496,6 @@ static esp_err_t mesh_connect(const char* host, unsigned port, const char* route
             if(check_device_roots(&data))goto done;
             input_reservation=pki_tls_input_take(NATIVE_TLS_INPUT_RESERVE);
         }
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-        ESP_LOGI(TAG,"warm native identity: device_trust=%u early_input=%u",
-            (unsigned)data.device_roots.size,input_reservation ? NATIVE_TLS_INPUT_RESERVE:0u);
-#endif
     }else
 #endif
     if(wendy_conf_copy_enrollment(&cfg,&data)!=ESP_OK || validate_config_and_trust(&cfg,&data))goto done;
@@ -1703,17 +1693,9 @@ int wendy_pki_mesh_local_part(const struct wendy_pki_mesh_identity *clock,
     pthread_mutex_unlock(&identity_lock);
     return result;
 }
-bool wendy_pki_operator_snapshot_current(const struct wendy_pki_mesh_identity *clock)
-{
-    if(!clock || !wendy_conf_is_current() || wendy_pki_reset_in_progress() ||
-       !wendy_conf_snapshot_current(clock->config_generation))return false;
-    int64_t now=esp_timer_get_time();
-    return now>=clock->verified_monotonic_us &&
-        now-clock->verified_monotonic_us<INT64_C(300000000);
-}
 static int public_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
     const uint8_t *const *der,const size_t *sizes,size_t count,
-    void *peer,bool operator)
+    struct wendy_pki_mesh_peer *peer)
 {
     if(!clock || !der || !sizes || !count || !peer ||
        !wendy_conf_is_current() || wendy_pki_reset_in_progress())return -1;
@@ -1732,9 +1714,7 @@ static int public_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
        memcmp(hash,clock->trust_hash,32))goto done;
     time_t now=clock->verified_seconds+
         (monotonic-clock->verified_monotonic_us)/INT64_C(1000000);
-    result=operator ? wendy_pki_operator_chain(der,sizes,count,trust.device_roots.data,
-        trust.device_roots.size,clock->tenant,now,peer) :
-        wendy_pki_mesh_chain(der,sizes,count,trust.device_roots.data,
+    result=wendy_pki_mesh_chain(der,sizes,count,trust.device_roots.data,
         trust.device_roots.size,clock->tenant,now,peer);
     if(!wendy_conf_snapshot_current(trust.generation) || wendy_pki_reset_in_progress())result=-1;
 done:
@@ -1742,11 +1722,7 @@ done:
 }
 int wendy_pki_mesh_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
     const uint8_t *const *der,const size_t *sizes,size_t count,struct wendy_pki_mesh_peer *peer)
-{return public_verify_snapshot(clock,der,sizes,count,peer,false);}
-int wendy_pki_operator_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
-    const uint8_t *const *der,const size_t *sizes,size_t count,struct wendy_pki_operator_peer *peer)
-{return public_verify_snapshot(clock,der,sizes,count,peer,true);}
-
+{return public_verify_snapshot(clock,der,sizes,count,peer);}
 esp_err_t wendy_pki_net_begin(const struct wendy_pki_stream *stream,bool server,
     const char *expected,bool application,struct wendy_pki_net_setup **out)
 {
@@ -1998,20 +1974,14 @@ esp_err_t wendy_pki_net_refresh_time(struct wendy_pki_mesh_identity *identity,
                                     const char *relay_host)
 {
     if (!identity) return ESP_ERR_INVALID_ARG;
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-    ESP_LOGI(TAG,"native clock: waiting for identity lock");
-#endif
     pthread_mutex_lock(&identity_lock);
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-    ESP_LOGI(TAG,"native clock: identity lock acquired");
-#endif
     WendyConfEnrollment cfg=WendyConfEnrollment_init_zero;
     struct wendy_conf_enrollment_data data={0};
     nvs_handle_t h=0;bool opened=false;esp_err_t result=ESP_FAIL;
     if (!identity_use_allowed() || !wendy_conf_is_current() ||
-        wendy_conf_copy_time_trust(&cfg,&data,false,!CONFIG_WENDY_NET_TEST_TIME_RELAY)!=ESP_OK ||
+        wendy_conf_copy_time_trust(&cfg,&data,false,1)!=ESP_OK ||
         data.generation!=identity->config_generation ||
-        select_time_trust(&cfg,&data,!CONFIG_WENDY_NET_TEST_TIME_RELAY) ||
+        select_time_trust(&cfg,&data,1) ||
         strcmp(cfg.tenant_id,identity->tenant) ||
         strcmp(cfg.device_id,identity->device) ||
         open_identity(&h)!=ESP_OK) goto done;
@@ -2022,15 +1992,8 @@ esp_err_t wendy_pki_net_refresh_time(struct wendy_pki_mesh_identity *identity,
     bool newer=mesh_time_recent() && mesh_verified_generation==data.generation &&
         mesh_verified_monotonic_us>identity->verified_monotonic_us;
     if(!newer){
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-    ESP_LOGI(TAG,"native clock: trust snapshot ready; requesting signed proof");
-#endif
-#if CONFIG_WENDY_NET_TEST_TIME_RELAY
-    if (!relay_host || refresh_time_peer(h,cfg.time_url,&data,relay_host,43025)) goto done;
-#else
     (void)relay_host;
     if (refresh_time(h,cfg.time_url,&data))goto done;
-#endif
     }
     if(!wendy_conf_is_current() ||
         wendy_pki_reset_in_progress() || identity->certificate_expires<=mesh_verified_seconds+30)
@@ -2066,13 +2029,6 @@ esp_err_t wendy_pki_net_refresh(wendy_pki_connection *connection,
 {
     if (!connection || !identity || !connection->mesh_deadline_us) return ESP_ERR_INVALID_ARG;
     const char *relay=NULL;
-#if CONFIG_WENDY_NET_TEST_TIME_RELAY
-    struct sockaddr_in remote;socklen_t size=sizeof remote;char host[INET_ADDRSTRLEN];
-    if (connection->fd<0 || getpeername(connection->fd,(struct sockaddr*)&remote,&size) ||
-        remote.sin_family!=AF_INET || !inet_ntop(AF_INET,&remote.sin_addr,host,sizeof host))
-        return ESP_FAIL;
-    relay=host;
-#endif
     struct wendy_pki_mesh_identity fresh=*identity;
     esp_err_t result=wendy_pki_net_refresh_time(&fresh,relay);
     if (result==ESP_OK) result=wendy_pki_net_apply_time(connection,&fresh);
@@ -2089,7 +2045,7 @@ esp_err_t wendy_pki_mesh_connect(const char* host, unsigned port, const char* pe
 esp_err_t wendy_pki_mesh_stream(const struct wendy_pki_stream* stream, bool server,
     const char* peer, wendy_pki_connection** connection, struct wendy_pki_mesh_identity* identity)
 {
-    if (!stream || !stream->read || !stream->write || !stream->wait) return ESP_ERR_INVALID_ARG;
+    if (!stream || !stream->read || !stream->write || !stream->wait || !peer) return ESP_ERR_INVALID_ARG;
     return mesh_connect(NULL, 0, peer, connection, identity, stream, server, NULL, -1, NULL,NULL);
 }
 

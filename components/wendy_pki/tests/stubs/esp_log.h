@@ -10,4 +10,6 @@
 #define ESP_LOGI(tag, ...) ((void)(tag))
 #endif
 
+#ifndef ESP_LOGD
 #define ESP_LOGD(tag, ...) ESP_LOGI(tag, __VA_ARGS__)
+#endif

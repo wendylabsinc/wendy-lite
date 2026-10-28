@@ -11,7 +11,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
-	"encoding/hex"
 	"encoding/pem"
 	"math/big"
 	"os"
@@ -68,15 +67,6 @@ func main() {
 	for i := range nonce {
 		nonce[i] = byte(i + 1)
 	}
-	normalOnly := len(os.Args) == 3
-	if normalOnly {
-		nonce, err = hex.DecodeString(os.Args[2])
-		must(err)
-		if len(nonce) != 32 {
-			panic("normal nonce must contain 32 bytes")
-		}
-		write("nonce.bin", nonce)
-	}
 	imprint := sha256.Sum256(nonce)
 	sha256Algorithm := der(0x30, oid(2, 16, 840, 1, 101, 3, 4, 2, 1), der(5))
 	tstOID := oid(1, 2, 840, 113549, 1, 9, 16, 1, 4)
@@ -85,25 +75,7 @@ func main() {
 	tst := der(0x30, value(1), oid(1, 2, 3, 4),
 		der(0x30, sha256Algorithm, value(imprint[:])), value(1), generation, value(new(big.Int).SetBytes(nonce)))
 	digest := sha256.Sum256(tst)
-	if normalOnly {
-		request := struct {
-			Version int
-			Imprint struct {
-				Algorithm pkix.AlgorithmIdentifier
-				Digest    []byte
-			}
-			Nonce   *big.Int
-			CertReq bool
-		}{Version: 1, Nonce: new(big.Int).SetBytes(nonce), CertReq: true}
-		request.Imprint.Algorithm = pkix.AlgorithmIdentifier{Algorithm: asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 1}, Parameters: asn1.RawValue{Tag: 5}}
-		request.Imprint.Digest = imprint[:]
-		write("request.der", value(request))
-	}
-	names := []string{"issuer-present", "issuer-absent", "wrong-issuer", "wrong-serial", "extra-issuer", "unsupported-curve"}
-	if normalOnly {
-		names = []string{"issuer-present"}
-	}
-	for _, name := range names {
+	for _, name := range []string{"issuer-present", "issuer-absent", "wrong-issuer", "wrong-serial", "extra-issuer", "unsupported-curve"} {
 		curve := elliptic.P384()
 		if name == "unsupported-curve" {
 			curve = elliptic.P521()

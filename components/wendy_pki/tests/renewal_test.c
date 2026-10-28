@@ -18,6 +18,11 @@ static size_t build_roots_size = 1;
 #include "../src/wendy_pki.c"
 #include <assert.h>
 
+/* The separate cache fixture covers storage; this flow verifies that every
+ * certificate install passes its invalidation boundary before replacing it. */
+static bool cache_invalidated;
+int pki_der_cache_invalidate(nvs_handle_t h){(void)h;cache_invalidated=true;return 0;}
+void pki_public_certificate_changed(void){}
 const uint8_t wendy_pki_device_roots_start[] = {0};
 const uint8_t wendy_pki_tsa_roots_start[] = {0};
 const uint8_t wendy_pki_https_roots_start[] = {0};
@@ -124,6 +129,7 @@ esp_err_t nvs_erase_key(nvs_handle_t h, const char *name)
         erase_calls++;
     }
     if (fail_erase && !strcmp(name, fail_erase)) return ESP_FAIL;
+    if(!strncmp(name,"net_der_",8))return ESP_ERR_NVS_NOT_FOUND;
     if (!strcmp(name, "pending")) pending_certificate = false;
     else if (!strcmp(name, "lite_ca")) lite_authority[0] = 0;
     else if (!strcmp(name, "pending_ca")) { pending_authority[0] = 0; pending_authority_size = 0; }
@@ -201,7 +207,8 @@ esp_err_t nvs_set_blob(nvs_handle_t h, const char *name, const void *data, size_
     }
     if (!strcmp(name, "certificate"))
     {
-        assert(issuance_success && !invalid_certificate);
+        assert(issuance_success && !invalid_certificate && cache_invalidated);
+        cache_invalidated=false;
         have_certificate = true;
         stored_is_issued = size == 6 && !memcmp(data, "issued", 6);
     }

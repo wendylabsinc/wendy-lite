@@ -100,17 +100,17 @@ diff --git a/library/ssl_tls.c b/library/ssl_tls.c
          return ret;
      }
  
-diff --git a/library/ssl_misc.h b/library/ssl_misc.h
---- a/library/ssl_misc.h
-+++ b/library/ssl_misc.h
-@@ -466,6 +466,10 @@
- void mbedtls_ssl_release_handshake_buffer(mbedtls_ssl_context *ssl);
- void mbedtls_ssl_compact_input_buffer(mbedtls_ssl_context *ssl);
- void mbedtls_ssl_prepare_small_input_buffer(mbedtls_ssl_context *ssl);
-+/* Credentialless stream clients can allocate their small buffer directly,
-+ * avoiding a transient ordinary-record allocation before shrinking it. */
+diff --git a/include/mbedtls/ssl.h b/include/mbedtls/ssl.h
+--- a/include/mbedtls/ssl.h
++++ b/include/mbedtls/ssl.h
+@@ -1966,6 +1966,10 @@
+ int mbedtls_ssl_setup(mbedtls_ssl_context *ssl,
+                       const mbedtls_ssl_config *conf);
+ 
++/* Credentialless stream clients allocate a small input directly. Returns
++ * FEATURE_UNAVAILABLE when variable buffer lengths are disabled. */
 +int mbedtls_ssl_setup_small_input(mbedtls_ssl_context *ssl,
 +                                  const mbedtls_ssl_config *conf);
- 
- static inline size_t mbedtls_ssl_get_output_buflen(const mbedtls_ssl_context *ctx)
- {
+ /**
+  * \brief          Reset an already initialized SSL context for re-use
+  *                 while retaining application-set variables, function

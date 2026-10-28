@@ -18,8 +18,8 @@ void wendy_pki_input_workspace_active(bool active)
     pthread_mutex_lock(&lock);
     if(active && !enabled)cache_scope=wendy_net_memory_scope_current();
     enabled=active;
-    if(!active){mbedtls_free(cached);cached=NULL;}
-    else if(!cached && !loan)cached=mbedtls_calloc(1,PKI_TLS_INPUT_RESERVE);
+    if(!active){mbedtls_free(cached);cached=NULL;loan_cacheable=false;}
+    else if(!cached && !loan && matching_scope())cached=mbedtls_calloc(1,PKI_TLS_INPUT_RESERVE);
     pthread_mutex_unlock(&lock);
 }
 size_t wendy_pki_input_workspace_cached_bytes(void)

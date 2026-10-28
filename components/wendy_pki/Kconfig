@@ -2,6 +2,7 @@ menu "Wendy PKI"
     config WENDY_PKI
         bool "Use pki-core Tier C enrollment"
         default y
+        select MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH
         select MBEDTLS_X509_CREATE_C
         select MBEDTLS_X509_CSR_WRITE_C
         help

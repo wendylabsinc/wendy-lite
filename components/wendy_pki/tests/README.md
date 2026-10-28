@@ -7,8 +7,8 @@ ESP-IDF 6.0.3, and install Go 1.27 or newer before configuring:
 
 ```sh
 cmake -S components/wendy_pki/tests -B build-pki
-cmake --build build-pki
-ctest --test-dir build-pki --output-on-failure
+cmake --build build-pki -j4
+GOTOOLCHAIN=go1.27.3 GOMAXPROCS=2 GOFLAGS=-p=1 ctest --test-dir build-pki --output-on-failure -j2
 ```
 
 `dependency_patches_in_checkout` reproduces a build directory inside a Git
@@ -159,8 +159,8 @@ to 32 KiB while TLS records remain bounded to 16 KiB. A valid chain exceeding th
 handshake limit is rejected.
 Firmware disables IDF dynamic buffers because their allocation can follow the
 current record's size while the bundled library bounds reassembly against the
-configured input size. The fixed-buffer host tests cover the chosen allocation
-model; they do not validate the disabled dynamic-buffer wrappers on hardware.
+configured input size. The host tests use variable-sized buffers from the patched fixed-record backend;
+they do not validate the disabled IDF dynamic-buffer wrappers on hardware.
 
 The outbound server uses Go's default session-ticket settings. Firmware performs
 a fresh certificate handshake. The outbound regression checks application data
@@ -189,18 +189,30 @@ identity recovery wherever PKI is available. They also check that ML-DSA support
 is advertised only when both PKI and ML-DSA-65 verification are enabled and that false values
 survive protobuf encoding.
 
-`pki_time_nonce_normal` covers seven ordinary 256-bit nonce shapes: low/high
-leading bit, all-ones, leading zeroes before low/high bits, one, and zero.
-It compares firmware request bytes with independently marshalled Go ASN.1 and
-verifies a correctly signed disposable P-384 timestamp for each value. The
-imprint always hashes all 32 original bytes; only the INTEGER representation
-strips zeroes or adds a sign octet. Run this positive interoperability check with
-`ctest --test-dir <build> -R '^pki_time_nonce_normal$' --output-on-failure`.
 
-The C6 sustained BLE trial on 2026-10-28 exposed the former fixed-width encoder:
-control-channel renewals used arbitrary random bytes, unlike bootstrap callers
-which masked the high bit. A high-bit nonce was encoded as negative and rejected
-by the timestamp response verifier. Renewal retries sometimes succeeded by
-chance. Canonical positive encoding fixes the source rather than constraining
-the random input, and matching canonical INTEGER values also handles leading
-zeroes in otherwise valid random nonces.
+The direct DER/memory layer retains synchronous baseline PKI execution. Its
+worker API is inactive, creates no task, and provides no serialized admission;
+native actor activation is rejected until the later worker layer is present.
+The optional own ML-DSA private-key backend is off by default and is not qualified
+by this suite.
+
+`pki_owned_der_stream_p256` and `pki_owned_der_stream_mldsa65` import fixture PEM
+once, then drive production owned DER sources through independent full-path
+verification and streamed full-chain TLS with Go. The initiating allocation
+scope follows record reads/writes after setup returns; all charged bytes and
+reservations drain at close. The pinned root is omitted after independent trust
+verification. Issuer-omission negotiation is not enabled.
+
+`pki_own_der_cache` verifies full/range public readers and repeated sessions with
+no flash writes. `tls_input_*_ownership` verifies zeroized reuse, management
+loans, shutdown, and overlapping service epochs. `psa_global_table_ownership`
+keeps a baseline key live while temporary scoped keys retire. Record tests cover
+preallocated input adoption, bounded reassembly, input recycling, and pending
+ciphertext surviving input compaction and repeated partial flushes.
+`native_artifact_domain_with_legacy_leaf` independently checks v4 native signing
+while the existing leaf flag retains its v3 manifest contract and JSON bundle.
+
+The SDK startup hook installs one allocation/free ABI before PSA initialization;
+app_main enables task ownership before networking. Host scope fixtures initialize
+PSA outside task scopes to match that startup order. These host checks do not
+establish hardware heap headroom, radio behavior, or native actor/worker timing.

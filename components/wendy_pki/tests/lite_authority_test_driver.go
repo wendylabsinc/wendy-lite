@@ -124,10 +124,6 @@ func main() {
 	rootDER := issue(root, root, rootKey, rootKey)
 	encoded := base64.StdEncoding.EncodeToString
 	authority("valid-pathlen-zero", encoded(rootDER), rootDER, true)
-	if os.Getenv("WENDY_AUTHORITY_NORMAL_ONLY") != "" {
-		fmt.Println("PASS authority header imported and consumed as DER")
-		return
-	}
 	for _, name := range []string{
 		"not-ca", "missing-basic-constraints", "missing-key-usage", "wrong-key-usage", "extra-key-usage",
 		"omitted-path-length", "unlimited-path-length", "positive-path-length", "negative-path-length",

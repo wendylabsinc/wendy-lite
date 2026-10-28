@@ -3,7 +3,6 @@
 #include "wendy_pki_alloc.h"
 #include "wendy_net_memory.h"
 #include "wendy_pki_tls_input.h"
-#include "wendy_pki_issuers.h"
 #include "wendy_pki_public_index.h"
 #include "wendy_conf.h"
 #include "wendy_pki_mesh.h"
@@ -71,14 +70,10 @@ struct wendy_pki_connection
     uint8_t *mesh_roots;
     size_t mesh_roots_size;
     bool compact_records;
-#if ESP_PLATFORM && CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-    bool record_read_reported,record_idle_reported;
-#endif
     /* Temporary native-DER setup guard. Cleanup owns it until ssl_setup. */
     unsigned char *setup_input_reservation;
     size_t setup_input_capacity;
     struct pki_presented_chain *presented_chain;
-    struct pki_issuer_state *issuers; /* Optional verified native mesh negotiation. */
     struct pki_public_chain *public_chain;
     struct wendy_pki_mesh_peer *authenticated_peer;
     /* Optional index+1 of the EXACT independently trusted single anchor in
@@ -247,6 +242,3 @@ int pki_tls_net_advance(wendy_pki_connection *,bool,const char *);
 int pki_tls_agent_begin(const struct wendy_pki_stream *,const char *,const char *,
     struct pki_tls_owned_identity *,struct wendy_conf_span,wendy_pki_connection **);
 int pki_tls_agent_advance(wendy_pki_connection *);
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-bool pki_tls_agent_snapshot(const wendy_pki_connection *,struct wendy_pki_agent_snapshot *);
-#endif

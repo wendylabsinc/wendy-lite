@@ -2,7 +2,9 @@
 #include "wendy_pki.h"
 #include <time.h>
 
+#if CONFIG_WENDY_MESH_LEAF
 #define WENDY_PKI_MESH_ALPN "wendy-local-mesh-leaf/3"
+#endif
 /* A remote origin's key is P-256 (91-byte SPKI) or, for Linux routers, pure
  * ML-DSA-65: a 1974-byte SPKI and 3309-byte signatures. Keep peers off task
  * stacks. This leaf's own mesh key remains P-256. */
@@ -71,11 +73,13 @@ esp_err_t wendy_pki_mesh_connect(const char* host, unsigned port, const char* ro
 size_t wendy_pki_artifact_signature_capacity(wendy_pki_connection *);
 int wendy_pki_artifact_sign(wendy_pki_connection *,unsigned kind,const char *principal,
     const void *,size_t,uint8_t *signature,size_t capacity,size_t *written);
-/* Legacy digest-only signing entry points below retain their P256/80B ABI. */
+/* Existing leaf builds retain their v3 manifest domain under that flag.
+ * Native artifact_sign and verify_key always use v4. P256/80B ABI below. */
 int wendy_pki_mesh_sign(wendy_pki_connection* connection, const char* principal, const void* body,
     size_t size, uint8_t signature[80], size_t* signature_size);
-/* Public leaf-first certificate bundle, rendered as JSON base64 DER array.
- * out=NULL returns required JSON bytes (excluding its trailing NUL). */
+/* Public leaf-first own certificates. The existing leaf build requires an
+ * output buffer for its JSON/base64 DER array (including a trailing NUL).
+ * Other builds expose native CBOR bytes; NULL queries their encoded size. */
 int wendy_pki_mesh_bundle(wendy_pki_connection* connection, char* out, size_t capacity);
 /* Bounded public certificate descriptor and1024-byte part access, avoiding a
  * contiguous base64 copy of the whole own chain on constrained full routers. */
@@ -190,8 +194,8 @@ int wendy_pki_mesh_authenticated_peer(wendy_pki_connection *,struct wendy_pki_me
 esp_err_t wendy_pki_net_refresh(wendy_pki_connection *connection,
     struct wendy_pki_mesh_identity *identity);
 /* Two-stage renewal for continuously running packet actors. The worker owns
- * only an identity snapshot, never a TLS connection. relay_host is used only
- * by the explicit WNT1 lab profile. Apply from the connection's owning actor;
+ * only an identity snapshot, never a TLS connection. This layer uses direct
+ * HTTPS; relay_host is a reserved staging argument. Apply from the owning actor;
  * a busy identity lock returns ESP_ERR_TIMEOUT for a later bounded retry.
  * Neither failure nor a stale/retired result changes the original deadline. */
 esp_err_t wendy_pki_net_refresh_time(struct wendy_pki_mesh_identity *identity,
@@ -224,7 +228,7 @@ esp_err_t wendy_pki_app_connect(const char *host,unsigned port,const char *peer,
 
 /* Signed-time bootstrap bytes from a peer; the enrolled TSA remains the
  * authority. Supports numeric IPv4 and scoped IPv6 underlay addresses. */
-#if CONFIG_WENDY_NET_TEST_TIME_RELAY || CONFIG_WENDY_NET_NAN
+#if CONFIG_WENDY_NET_NAN
 esp_err_t wendy_pki_net_sync_time(const char *peer_address,unsigned port);
 #endif
 
@@ -256,14 +260,6 @@ esp_err_t wendy_pki_agent_begin(const struct wendy_pki_stream *,struct wendy_pki
 int wendy_pki_agent_step(struct wendy_pki_agent_setup *);
 wendy_pki_connection *wendy_pki_agent_take(struct wendy_pki_agent_setup *,struct wendy_pki_agent_info *);
 void wendy_pki_agent_dispose(struct wendy_pki_agent_setup *);
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-/* Read only while the caller exclusively owns the setup, never during a
- * submitted worker loan. This diagnostic contains counters, no TLS bytes. */
-struct wendy_pki_agent_snapshot {
-    uint32_t state,in_left,in_msglen,in_hslen,in_hsfraglen,input_capacity,output_capacity;
-};
-bool wendy_pki_agent_snapshot(const struct wendy_pki_agent_setup *,struct wendy_pki_agent_snapshot *);
-#endif
 
 /* Same authenticated own P256 signing policy, with an already computed
  * domain-specific SHA256 digest. Allows a bounded worker job without copying
