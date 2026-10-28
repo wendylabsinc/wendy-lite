@@ -153,7 +153,25 @@ void wendy_conf_get_enrolled_ids(char tenant[37], char device[65]);
 struct wendy_conf_enrollment_data {
     struct wendy_conf_span signed_time, device_roots, tsa_roots, https_roots;
     uint8_t *storage;
+    uint64_t generation;
+    /* Stable journal scope of the provisioned source, before DER import. */
+    uint8_t device_roots_source_hash[32];
 };
-/* The caller frees data->storage. All spans survive configuration writes. */
-esp_err_t wendy_conf_copy_enrollment(WendyConfEnrollment *config,
+/* Legacy callers retain provisioned encoded spans during staged adoption. */
+esp_err_t wendy_conf_copy_enrollment(WendyConfEnrollment *,struct wendy_conf_enrollment_data *);
+/* DER snapshot callers free data->storage. Trust spans contain concatenated DER.
+ * All spans survive configuration writes. PEM is decoded from mapped flash at
+ * this import boundary, without allocating a second encoded bundle. */
+esp_err_t wendy_conf_copy_enrollment_der(WendyConfEnrollment *config,
                                      struct wendy_conf_enrollment_data *data);
+
+/* Metadata plus an owned DER device-root snapshot only. Intended
+ * for service TLS using the already established system clock. */
+esp_err_t wendy_conf_copy_device_trust(WendyConfEnrollment *config,
+                                     struct wendy_conf_enrollment_data *data);
+/* Time-only owned snapshot: TSA roots, optional bootstrap seed and HTTPS
+ * roots. Excludes device CA bytes. Generation pins the exact configuration,
+ * so refresh can reject any intervening write without reparsing device CAs. */
+esp_err_t wendy_conf_copy_time_trust(WendyConfEnrollment *config,
+    struct wendy_conf_enrollment_data *data,bool bootstrap,bool https);
+bool wendy_conf_snapshot_current(uint64_t generation);
