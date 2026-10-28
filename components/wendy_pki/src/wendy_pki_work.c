@@ -1,6 +1,8 @@
 #include "wendy_pki_work.h"
 #include "wendy_net_memory.h"
+#if !ESP_PLATFORM
 #include "wendy_net_alloc.h"
+#endif
 #include <pthread.h>
 #include <stddef.h>
 #if ESP_PLATFORM
@@ -15,7 +17,7 @@ static void (*notify_completion)(void);
 #endif
 
 static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
-static bool available,running;
+static bool available,running,polling_enabled;
 #if ESP_PLATFORM
 static TaskHandle_t callback_task;
 #else
@@ -26,11 +28,20 @@ static void *argument;
 static wendy_net_memory_scope_t pending_scope;
 static struct wendy_pki_work_metrics metrics;
 static unsigned synchronous_waiters;
+static unsigned inline_calls;
+static unsigned completions;
 static bool stopping;
+static void (*io_pending)(void *);
+static void *io_argument;
+static wendy_net_memory_scope_t io_scope;
+static bool io_running;
 
 void wendy_pki_work_enable(void)
 {
-    pthread_mutex_lock(&lock);available=true;pthread_mutex_unlock(&lock);
+    pthread_mutex_lock(&lock);
+    polling_enabled=true;
+    if(!stopping)available=true;
+    pthread_mutex_unlock(&lock);
 }
 bool wendy_pki_work_is_current(void)
 {
@@ -44,7 +55,7 @@ bool wendy_pki_work_is_current(void)
 }
 bool wendy_pki_work_available(void)
 {
-    pthread_mutex_lock(&lock);bool ready=available;pthread_mutex_unlock(&lock);return ready;
+    pthread_mutex_lock(&lock);bool ready=available && !stopping;pthread_mutex_unlock(&lock);return ready;
 }
 static bool submit(void (*callback)(void *),void *context,bool synchronous)
 {
@@ -61,10 +72,11 @@ bool wendy_pki_work_submit(void (*callback)(void *),void *context)
 {return submit(callback,context,false);}
 bool wendy_pki_work_poll(void)
 {
-#if ESP_PLATFORM
-    if(worker && xTaskGetCurrentTaskHandle()!=worker)return false;
-#endif
     pthread_mutex_lock(&lock);
+#if ESP_PLATFORM
+    TaskHandle_t caller=xTaskGetCurrentTaskHandle();
+    if((worker && caller!=worker) || caller==mesh_actor){pthread_mutex_unlock(&lock);return false;}
+#endif
     if(!pending || running){pthread_mutex_unlock(&lock);return false;}
     void (*callback)(void *)=pending;void *context=argument;
     wendy_net_memory_scope_t scope=pending_scope;running=true;
@@ -85,11 +97,13 @@ bool wendy_pki_work_poll(void)
     uint64_t elapsed=(uint64_t)(esp_timer_get_time()-started);
     metrics.jobs++;metrics.total_us+=elapsed;if(elapsed>metrics.max_us)metrics.max_us=elapsed;
     if(worker && xTaskGetCurrentTaskHandle()==worker)metrics.stack_free=(unsigned)uxTaskGetStackHighWaterMark(NULL);
+    void (*wake)(void)=notify_completion;
+    if(wake)completions++;
 #endif
-    pending=NULL;argument=NULL;running=false;
+    pending=NULL;argument=NULL;pending_scope=(wendy_net_memory_scope_t){0};running=false;
     pthread_mutex_unlock(&lock);
 #if ESP_PLATFORM
-    if(notify_completion)notify_completion();
+    if(wake){wake();pthread_mutex_lock(&lock);completions--;pthread_mutex_unlock(&lock);}
 #endif
     return true;
 }
@@ -122,9 +136,12 @@ static void run_crypto(void *unused)
         }
         pthread_mutex_lock(&lock);
         bool finish=stopping && !pending;
-        if(finish){worker=NULL;mesh_actor=NULL;stopping=false;}
+        if(finish)worker=NULL;
         pthread_mutex_unlock(&lock);
-        if(finish){if(notify_completion)notify_completion();vTaskDelete(NULL);return;}
+        /* stop() polls retirement; never invoke a stale owner's wake after
+         * publishing worker=NULL. The common helper retains the task charge
+         * through actual idle reaping, even after execution is quiescent. */
+        if(finish){vTaskDelete(NULL);return;}
     }
 }
 #endif
@@ -132,9 +149,11 @@ bool wendy_pki_work_start(void (*wake)(void))
 {
 #if ESP_PLATFORM
     pthread_mutex_lock(&lock);
+    if(worker){bool ok=!stopping && notify_completion==wake;pthread_mutex_unlock(&lock);return ok;}
+    if(stopping || running || inline_calls){pthread_mutex_unlock(&lock);return false;}
     bool ok=worker!=NULL;
     if(!ok){
-        notify_completion=wake;stopping=false;
+        notify_completion=wake;
 #ifndef CONFIG_WENDY_NET_CRYPTO_TASK_STACK_SIZE
 #define CONFIG_WENDY_NET_CRYPTO_TASK_STACK_SIZE 10240
 #endif
@@ -144,42 +163,54 @@ bool wendy_pki_work_start(void (*wake)(void))
         ok=wendy_net_task_create(run_crypto,"net-crypto",CONFIG_WENDY_NET_CRYPTO_TASK_STACK_SIZE,NULL,CONFIG_WENDY_NET_TASK_PRIORITY-1,&worker)==pdPASS;
     }
     if(ok){available=true;if(pending)xTaskNotifyGive(worker);}
+    else notify_completion=NULL;
     pthread_mutex_unlock(&lock);return ok;
 #else
-    (void)wake;wendy_pki_work_enable();return true;
+    (void)wake;pthread_mutex_lock(&lock);
+    bool ok=!stopping && !running && !inline_calls;
+    if(ok){polling_enabled=true;available=true;}
+    pthread_mutex_unlock(&lock);return ok;
 #endif
 }
 bool wendy_pki_work_stop(void)
 {
-#if ESP_PLATFORM
     pthread_mutex_lock(&lock);
-    bool done=worker==NULL;
-    if(!done){stopping=true;xTaskNotifyGive(worker);}
-    pthread_mutex_unlock(&lock);return done;
+    stopping=true;available=false;
+#if ESP_PLATFORM
+    if(worker)xTaskNotifyGive(worker);
+    bool task_done=worker==NULL;
 #else
-    return true;
+    bool task_done=true;
 #endif
+    bool done=task_done && !pending && !running && !io_pending && !synchronous_waiters && !inline_calls && !completions;
+    if(done){
+        stopping=false;available=polling_enabled;
+#if ESP_PLATFORM
+        mesh_actor=NULL;notify_completion=NULL;
+#endif
+    }
+    pthread_mutex_unlock(&lock);return done;
 }
 
 bool wendy_pki_work_idle(void)
 {pthread_mutex_lock(&lock);bool idle=available && !pending && !stopping && !synchronous_waiters;pthread_mutex_unlock(&lock);return idle;}
 
 void wendy_pki_work_metrics(struct wendy_pki_work_metrics *out)
-{pthread_mutex_lock(&lock);*out=metrics;out->running=running;pthread_mutex_unlock(&lock);}
+{if(!out)return;pthread_mutex_lock(&lock);*out=metrics;out->running=running;pthread_mutex_unlock(&lock);}
 
-static void (*io_pending)(void *);
-static void *io_argument;
-static wendy_net_memory_scope_t io_scope;
-static bool io_running;
 bool wendy_pki_io_work_submit(void (*callback)(void *),void *context)
 {
-    pthread_mutex_lock(&lock);bool ok=available && callback && !io_pending;
+    pthread_mutex_lock(&lock);bool ok=polling_enabled && !stopping && callback && !io_pending;
     if(ok){io_pending=callback;io_argument=context;io_scope=wendy_net_memory_scope_current();}
     pthread_mutex_unlock(&lock);return ok;
 }
 bool wendy_pki_io_work_poll(void)
 {
     pthread_mutex_lock(&lock);
+#if ESP_PLATFORM
+    TaskHandle_t caller=xTaskGetCurrentTaskHandle();
+    if(caller==worker || caller==mesh_actor){pthread_mutex_unlock(&lock);return false;}
+#endif
     if(!io_pending || io_running){pthread_mutex_unlock(&lock);return false;}
     void (*callback)(void *)=io_pending;void *context=io_argument;io_running=true;
     wendy_net_memory_scope_t scope=io_scope;
@@ -188,9 +219,14 @@ bool wendy_pki_io_work_poll(void)
     callback(context);
     wendy_net_memory_scope_leave(previous);
     pthread_mutex_lock(&lock);
-    io_pending=NULL;io_argument=NULL;io_running=false;pthread_mutex_unlock(&lock);
+    io_pending=NULL;io_argument=NULL;io_scope=(wendy_net_memory_scope_t){0};io_running=false;
 #if ESP_PLATFORM
-    if(notify_completion)notify_completion();
+    void (*wake)(void)=notify_completion;
+    if(wake)completions++;
+#endif
+    pthread_mutex_unlock(&lock);
+#if ESP_PLATFORM
+    if(wake){wake();pthread_mutex_lock(&lock);completions--;pthread_mutex_unlock(&lock);}
 #endif
     return true;
 }
@@ -279,27 +315,35 @@ static void execute_call(void *context)
 void wendy_pki_work_bind_actor(void)
 {
 #if ESP_PLATFORM
-    mesh_actor=xTaskGetCurrentTaskHandle();
+    pthread_mutex_lock(&lock);mesh_actor=xTaskGetCurrentTaskHandle();pthread_mutex_unlock(&lock);
 #endif
 }
 int wendy_pki_work_run(void (*callback)(void *),void *context)
 {
+    if(!callback)return -1;
 #if ESP_PLATFORM
     TaskHandle_t caller=xTaskGetCurrentTaskHandle();
-    if(worker && caller!=worker){
-        if(caller==mesh_actor)return -1; /* A core/actor must submit a future. */
+    pthread_mutex_lock(&lock);
+    bool actor=caller==mesh_actor,dispatch=worker && caller!=worker;
+    if(!actor && !dispatch)inline_calls++;
+    if(!actor && dispatch)synchronous_waiters++;
+    pthread_mutex_unlock(&lock);
+    if(actor)return -1; /* A core/actor must submit a future. */
+    if(dispatch){
         StaticSemaphore_t storage;
         struct cpu_call call={.callback=callback,.argument=context,.done=xSemaphoreCreateBinaryStatic(&storage)};
-        if(!call.done)return -1;
+        if(!call.done){pthread_mutex_lock(&lock);synchronous_waiters--;pthread_mutex_unlock(&lock);return -1;}
         /* An actor woken by each completion must not repeatedly take the
          * next slot ahead of a management caller sleeping until its tick. */
-        pthread_mutex_lock(&lock);synchronous_waiters++;pthread_mutex_unlock(&lock);
         while(!submit(execute_call,&call,true)){
             pthread_mutex_lock(&lock);
             bool inline_now=worker==NULL;
-            if(inline_now)synchronous_waiters--;
+            if(inline_now){synchronous_waiters--;inline_calls++;}
             pthread_mutex_unlock(&lock);
-            if(inline_now){vSemaphoreDelete(call.done);callback(context);return 0;}
+            if(inline_now){
+                vSemaphoreDelete(call.done);callback(context);
+                pthread_mutex_lock(&lock);inline_calls--;pthread_mutex_unlock(&lock);return 0;
+            }
             vTaskDelay(1);
         }
         pthread_mutex_lock(&lock);synchronous_waiters--;pthread_mutex_unlock(&lock);
@@ -307,6 +351,9 @@ int wendy_pki_work_run(void (*callback)(void *),void *context)
         pthread_mutex_lock(&lock);pthread_mutex_unlock(&lock);
         vSemaphoreDelete(call.done);return 0;
     }
+#else
+    pthread_mutex_lock(&lock);inline_calls++;pthread_mutex_unlock(&lock);
 #endif
-    callback(context);return 0;
+    callback(context);
+    pthread_mutex_lock(&lock);inline_calls--;pthread_mutex_unlock(&lock);return 0;
 }
