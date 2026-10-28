@@ -1680,6 +1680,13 @@ static void router_run(struct peer_state *root)
         progress|=wendy_net_app_poll()!=0;
         progress|=wnrs_poll_effects(root->router_node)!=0;
         collect_slots(root);
+        bool output_drained=true;
+        pthread_mutex_lock(&state_lock);
+        if(root->queue && root->queue->count)output_drained=false;
+        pthread_mutex_unlock(&state_lock);
+        for(struct peer_state *link=root;link;link=link->next)
+            if(link->carrier.queued || (link->tls_channel && link->tls_channel->output.size))output_drained=false;
+        wn_settings_poll(output_drained);
 #if CONFIG_WENDY_NET_BLE
         /* Apply the same actor admission decision before NimBLE allocates an
          * incoming native pipe. Full nodes otherwise churn through CoC setup
@@ -1999,8 +2006,13 @@ void wn_peer_runtime_status(WendyComNetStatus *status)
 }
 static void lifecycle_poll(void)
 {
+    /* When no actor exists, the baseline server drives the same deferred
+     * management receipt. An existing actor owns its carrier queue sample. */
+    if(!atomic_load(&starting) && !state && !atomic_load(&identity_task))wn_settings_poll(true);
+    if(wn_settings_pending())return;
     if(wn_settings_restarting()){
-        if(wn_settings_restart_due()){
+        if(wn_settings_restart_due() && !atomic_load(&starting) && !state &&
+           !atomic_load(&identity_task) && wendy_net_runtime_memory_drained()){
             ESP_LOGI(TAG,"saved carrier change applied; restarting endpoint");
             esp_restart();
         }
