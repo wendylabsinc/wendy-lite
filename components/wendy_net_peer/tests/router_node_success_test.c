@@ -461,7 +461,7 @@ int main(int argc,char **argv)
     uint8_t spki[128];int spki_size=mbedtls_pk_write_pubkey_der(&key,spki,sizeof spki);assert(spki_size>0);
     struct wendy_pki_mesh_identity identity={.verified_seconds=1800000000,
         .verified_monotonic_us=1000000,.certificate_expires=1800003600,
-        .revision_first=1,.revision_limit=1025,.config_generation=1};
+        .config_generation=1};
     strcpy(identity.tenant,tenant);strcpy(identity.device,ids[0]);
     struct wnrs_node *node=NULL;struct endpoint peers[2]={{.index=1,.control_backpressure=1},{.index=2}};
     wendy_pki_connection connections[2]={0};
@@ -469,7 +469,6 @@ int main(int argc,char **argv)
         strcpy(connections[i].peer.device,ids[i+1]);connections[i].peer.expires=1800003600;
         connections[i].peer.spki_size=(size_t)spki_size;
         memcpy(connections[i].peer.spki,spki+sizeof spki-spki_size,(size_t)spki_size);
-        identity.revision_first=1+i*1024;identity.revision_limit=1025+i*1024;
         index_available=i==0; /* A later context miss keeps the current copied index. */
         assert(!wnrs_open(&peers[i].session,&node,&connections[i],&identity,ids[i+1],
                           i ? WNR_BLE_COST:FIRST_LINK_COST,send_frame,&peers[i]));

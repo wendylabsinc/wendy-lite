@@ -184,16 +184,6 @@ authenticated time under incorrect device clocks, including certificate date,
 CA, key usage, path length, identity, and signature failures. See
 `mldsa-fixtures/README.md` for provenance and regeneration commands.
 
-`mesh_mldsa_router_test` feeds Linux router `bundle` and `manifest` control
-messages, produced by the WendyOS router's own manifest signer, through the
-leaf's JSON parser, chain verifier and directory. An ML-DSA-65 router leaf under
-ML-DSA-87/65 CAs and its pure ML-DSA-65 manifest are accepted, as is a P-256
-router through the same signer. Signatures over the SHA-256 digest, with a
-non-empty context, without the principal, or by another key are rejected, along
-with damaged signatures, bodies and agent metadata, cross-algorithm signatures,
-wrong tenants, expiry and an unrelated root. See
-`../../wendy_mesh/tests/mldsa-router-fixtures/README.md`.
-
 The enrollment capability tests compile the production WendyCom capability
 helper with Cloud, Wi-Fi, and PKI individually disabled. They ensure unsupported
 profiles report an explicit false enrollment capability while retaining local
@@ -202,9 +192,8 @@ is advertised only when both PKI and ML-DSA-65 verification are enabled and that
 survive protobuf encoding.
 
 
-The direct DER/memory layer retains synchronous baseline PKI execution. Its
-worker API is inactive, creates no task, and provides no serialized admission;
-native actor activation is rejected until the later worker layer is present.
+The native actor uses the admitted serialized crypto worker for heavyweight
+operations. Ordinary physical management shares the same PKI implementation.
 The optional own ML-DSA private-key backend is off by default and is not qualified
 by this suite.
 
@@ -221,8 +210,8 @@ loans, shutdown, and overlapping service epochs. `psa_global_table_ownership`
 keeps a baseline key live while temporary scoped keys retire. Record tests cover
 preallocated input adoption, bounded reassembly, input recycling, and pending
 ciphertext surviving input compaction and repeated partial flushes.
-`native_artifact_domain_with_legacy_leaf` independently checks v4 native signing
-while the existing leaf flag retains its v3 manifest contract and JSON bundle.
+`native_artifact_domain` independently checks v4 native signing and its
+synchronous digest/signing helpers. No legacy leaf wire format is compiled.
 
 The SDK startup hook installs one allocation/free ABI before PSA initialization;
 app_main enables task ownership before networking. Host scope fixtures initialize

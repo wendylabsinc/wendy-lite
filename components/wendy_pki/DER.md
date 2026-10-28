@@ -72,24 +72,15 @@ extension use the initiating scope too. Polynomial/vector temporaries receive
 firmware still needs separate accounting for raw transient trust/HTTP inputs,
 heap bookkeeping, and SDK/radio memory before claiming a whole-system heap cap.
 
-## Layer activation and existing leaf
+## Native peer activation
 
-This layer streams the complete verified own issuer path. It does not offer or
-select an auxiliary issuer-hint ALPN, infer issuer omission from a peer, or install
-an issuer-negotiation callback. That negotiation belongs to the later sibling
-layer. Ordinary certificate/path/principal/time verification remains mandatory.
+Native peers use binary DER certificates and v4 binary manifests. The retired
+leaf JSON/base64 protocol is not compiled. Issuer omission is negotiated with
+the same auxiliary ALPN as WendyOS; a locally pinned issuer is not assumed to
+be present remotely without that negotiation.
 
-The existing `CONFIG_WENDY_MESH_LEAF` component retains its JSON/base64 DER bundle,
-v3 manifest signature domain and leaf/3 ALPN until final cutover. This preserves
-that already-enabled component's behavior. Native artifact signing and borrowed
-key verification use v4 independently; no old/new wire negotiation is introduced.
-
-The worker API is an inactive synchronous facade: baseline CPU callbacks execute
-inline, asynchronous submissions return false, and no task or serialized
-admission is created. Native actor activation is rejected at compile time until
-the serialized worker layer supplies actual admission and context loans.
-Public own-DER read helpers remain synchronous generic APIs; their future outer
-worker/actor integration is outside this layer.
-
-The optional own ML-DSA private-key backend remains off by default and is not
-qualified here. Normal TLS fixtures use P-256 own keys with P-256/ML-DSA issuers.
+The mesh actor borrows each heavyweight context exclusively to the serialized
+crypto worker. Stored own DER certificates are read directly into TLS; there
+is no DER-to-PEM conversion. Learned peer material stays in bounded RAM caches.
+The optional own ML-DSA private-key backend remains off by default; supported
+fixtures use P-256 own keys with P-256/ML-DSA issuer chains.

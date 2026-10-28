@@ -91,28 +91,16 @@ SDK's CPU-only restart stalling on this board.
 
 ## Join the mesh
 
-Enroll Mosaico in the router's tenant and configure Wi-Fi through Wendy USB or
-BLE management. The sample discovers `_wendy-mesh._tcp` advertisements on the
-local network, filters for the enrolled tenant, and tries routers in random
-order on the Lite listener port, 43024. It keeps a working connection and
-rediscovers after a disconnect. No router address or peer UUID is pinned.
-If Wi-Fi cannot establish a mesh session, the sample accepts an incoming BLE
-router with a valid same-tenant device certificate. Configure the Linux router's
-`leafBLEPeers` entry as described in the signed mesh guide below.
+Enroll Mosaico in the same tenant as the other peers and configure Wi-Fi through
+Wendy USB or BLE management. Native Wendy Net support is compiled into this
+profile but remains off until enabled through WendyCom configuration.
 
-Advertisements are only discovery hints. Mutual TLS must authenticate the
-advertised device under the enrolled tenant's trust roots before the dashboard
-shows a connection. Routers need the Lite TCP listener enabled and must be
-reachable on the same multicast network. The endpoint does not forward transit
-traffic. Existing saved sdkconfig files must enable
-`CONFIG_WENDY_MESH_AUTO_DISCOVER=y`, `CONFIG_WENDY_MESH_WIFI_BLE=y`, two NimBLE
-L2CAP channels, and 256-byte MSYS1 blocks; changed defaults do not override them.
-
-After mutual authentication, a fresh trust epoch waits 125 seconds before
-admitting IP traffic. The dashboard shows the remaining wait. The membership
-list can populate during that wait. See [the signed mesh guide](../../docs/signed-mesh-leaf.md)
-for router setup, enrollment, transport options, and the replay rules. The sample
-keeps one active session and reports its Wi-Fi or BLE carrier.
+Peers discover one another on mDNS and BLE, then authenticate with the enrolled
+identity. The signed binary protocol and Babel routing are the same as WendyOS.
+The dashboard shows runtime state, active carrier count, and managed RAM use;
+the Wendy topology UI supplies the complete verified graph. SensorLink remains
+available through the existing physical and native mesh management interfaces.
+See [native Wendy Net](../../docs/wendy-net.md) for profiles and constraints.
 
 ## Install and connect
 

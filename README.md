@@ -22,12 +22,13 @@ docker run --rm -v "$PWD:/project" -w /project espressif/idf:v6.0.3 \
 
 Use a fresh build directory and configuration when upgrading from ESP-IDF 5.
 
-[Signed mesh networking](docs/signed-mesh-leaf.md) is enabled by default in the
-XIAO ESP32S3, ESP32-S31 Korvo-1 and Mosaico native firmware profiles. Enrolled
-devices discover a same-tenant Wi-Fi mesh router, with incoming BLE mesh as a
-fallback. Routers need their Lite listener or BLE peer configuration enabled.
-Mesh traffic has a 125-second startup quarantine. Other
-profiles keep mesh disabled; support requires an ESP32-S3 or ESP32-S31 with PSRAM.
+[Native Wendy Net](docs/wendy-net.md) uses the same signed binary manifests,
+Babel routing and authenticated VIP services as WendyOS. Build support is
+optional and runtime configuration starts off. C5 devices with PSRAM can retain
+full records and route over several BLE and Wi-Fi carriers; constrained C6
+nodes select one carrier and use their authenticated neighbour as a gateway.
+The native XIAO ESP32S3, ESP32-S31 Korvo-1 and Mosaico profiles also compile this
+interface while retaining their physical sensors and management capabilities.
 
 ## Optional WASM support
 

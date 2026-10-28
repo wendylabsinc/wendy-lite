@@ -128,12 +128,12 @@ jobs:
               "seeed_xiao_esp32s3_native", "esp32s31_korvo_1_native",
               "esp32s31_mosaico_native",
           }
-          for option in ("WENDY_MESH_LEAF", "WENDY_MESH_WIFI_BLE", "WENDY_MESH_AUTO_DISCOVER"):
+          for option in ("WENDY_NET_PEER", "WENDY_NET_BLE"):
               assert bool(config.get(option)) == enabled, f"unexpected {option} for this board"
           if enabled:
               assert config.get("LWIP_IPV6") and config.get("LWIP_HOOK_IP6_ROUTE_CUSTOM")
               assert not config.get("LWIP_IPV6_FORWARD")
-              assert config["BT_NIMBLE_L2CAP_COC_MAX_NUM"] >= 2
+              assert config["BT_NIMBLE_L2CAP_COC_MAX_NUM"] >= 4
               assert config["BT_NIMBLE_MSYS_1_BLOCK_SIZE"] >= 248
           PY
 
@@ -157,7 +157,7 @@ jobs:
               assert config.get(option), f"{option} must be enabled"
           for option in ("WENDY_CORE_WASM_APP_SUPPORT", "MBEDTLS_DYNAMIC_BUFFER"):
               assert not config.get(option), f"{option} must be disabled"
-          assert config["BT_NIMBLE_L2CAP_COC_MAX_NUM"] == (2 if config.get("WENDY_MESH_WIFI_BLE") else 1)
+          assert config["BT_NIMBLE_L2CAP_COC_MAX_NUM"] == (4 if config.get("WENDY_NET_PEER") else 1)
           components = json.loads((build / "project_description.json").read_text())["build_components"]
           assert not {"espressif__wasm-micro-runtime", "wendy_wasm", "wendy_hal"}.intersection(components)
           flash = json.loads((build / "flasher_args.json").read_text())
@@ -214,8 +214,7 @@ jobs:
               }
               assert flash["otadata"]["offset"] == "0xfc0000"
           elif os.environ["BOARD_CFG"] == "esp32s31_mosaico_native":
-              for option in ("SPIRAM", "WENDY_MESH_LEAF", "WENDY_MESH_WIFI_BLE",
-                             "WENDY_MESH_AUTO_DISCOVER", "LWIP_HOOK_IP6_ROUTE_CUSTOM",
+              for option in ("SPIRAM", "WENDY_NET_PEER", "WENDY_NET_BLE", "LWIP_HOOK_IP6_ROUTE_CUSTOM",
                              "LV_OS_FREERTOS", "LV_USE_CLIB_MALLOC", "TINYUSB_CDC_ENABLED"):
                   assert config.get(option), f"{option} must be enabled on Mosaico"
               assert not config.get("WENDY_USJ")

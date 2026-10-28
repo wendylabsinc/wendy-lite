@@ -1,0 +1,24 @@
+# Native peer overlay for an ESP32-C5 with verified 8 MiB quad PSRAM.
+# Append after the board, WASM and boards/wendy_net.defaults.
+# Missing PSRAM is tolerated at boot, but the full service/WASM capacity
+# measurements require it; inspect the boot log before using this profile.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_QUAD=y
+CONFIG_SPIRAM_SPEED_40M=y
+CONFIG_SPIRAM_BOOT_INIT=y
+CONFIG_SPIRAM_MEMTEST=y
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+CONFIG_SPIRAM_USE_MALLOC=y
+# Preserve internal RAM for DMA and task stacks. TLS allocations belong in
+# external RAM even when individual certificate/crypto objects are small.
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC=y
+CONFIG_WENDY_WASM_USE_PSRAM=y
+
+CONFIG_WENDY_NET_MAX_LINKS=6
+CONFIG_WENDY_NET_BLE_CHANNELS=3
+CONFIG_WENDY_NET_BLE_SDU_BUFFERS=16
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=4
+CONFIG_WENDY_NET_CONSTRAINED_PROFILE=n
+CONFIG_WENDY_NET_RECLAIM_PAYLOADS_FOR_TLS=y

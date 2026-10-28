@@ -20,9 +20,6 @@
 #include "wendy_com.h"
 #include "wendy_server.h"
 #include "wendy_conf.h"
-#if CONFIG_WENDY_MESH_LEAF
-
-#endif
 
 #if CONFIG_WENDY_CLOUD
 #include "wendy_cloud.h"
@@ -527,10 +524,6 @@ esp_err_t wendy_wifi_init(void)
         s_server_started = true;
     }
     pthread_mutex_unlock(&s_services_lock);
-#if CONFIG_WENDY_NET_TEST_COLD_BLE
-    ESP_LOGI(TAG,"lab cold BLE boot: station connection skipped; saved credentials retained");
-    return ESP_OK;
-#endif
 #endif
 #if CONFIG_WENDY_NET_NAN
     /* NAN owns Wi-Fi in this explicit operating mode. The common native TLS
@@ -657,19 +650,3 @@ void wendy_wifi_deinit(void)
     s_mdns_initialized = s_mdns_started = false;
     pthread_mutex_unlock(&s_services_lock);
 }
-
-#if CONFIG_WENDY_MESH_ESPNOW
-esp_err_t wendy_wifi_mesh_radio_start(uint8_t channel)
-{
-    if (!wendy_wifi_radio_available() || !channel || channel > 14 || !s_infra_initialized) return ESP_ERR_INVALID_STATE;
-    if (s_connect_requested) {
-        wifi_ap_record_t ap;
-        if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK || ap.primary != channel)
-            return ESP_ERR_INVALID_STATE;
-        return ESP_OK;
-    }
-    esp_err_t err = esp_wifi_start();
-    if (err != ESP_OK) return err;
-    return esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
-}
-#endif
