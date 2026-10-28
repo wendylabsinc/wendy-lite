@@ -303,3 +303,6 @@ target_link_libraries(artifact_domain_test PRIVATE pki)
 add_test(NAME native_artifact_domain_with_legacy_leaf COMMAND artifact_domain_test)
 
 add_test(NAME pki_normal_der_roots COMMAND verify_test --normal-roots "${CMAKE_CURRENT_LIST_DIR}/fixtures")
+
+add_test(NAME pki_own_boot_persistence COMMAND mesh_identity_test
+    "${CMAKE_CURRENT_LIST_DIR}/fixtures/device-key.der" --normal-boot-persistence)

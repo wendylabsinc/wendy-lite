@@ -216,3 +216,12 @@ The SDK startup hook installs one allocation/free ABI before PSA initialization;
 app_main enables task ownership before networking. Host scope fixtures initialize
 PSA outside task scopes to match that startup order. These host checks do not
 establish hardware heap headroom, radio behavior, or native actor/worker timing.
+
+
+`pki_own_boot_persistence` covers the own identity/time boundary retained in this
+layer: reserve one durable publication range per boot and persist only the first
+verified timestamp-floor advance. Reconnect, service OFF/ON, configuration and
+certificate changes use the retained RAM counters; later timestamp proofs move
+the RAM high-water without additional flash writes. A simulated reboot skips
+all potentially issued revision values and resumes time verification from the
+first durable advance. This policy does not persist foreign peer/network state.

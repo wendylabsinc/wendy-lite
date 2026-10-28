@@ -104,6 +104,9 @@ static struct {
     bool attempted, ready;
     uint64_t next, limit;
 } boot_revisions;
+/* Own identity/time preparation may persist one verified TSA-floor advance
+ * per boot. Later proofs advance the RAM high-water; reboot resumes from the
+ * first durable advance. No peer routes, proofs or lifecycle events write it. */
 static struct {
     bool loaded, attempted, failed;
     int64_t high_water;
