@@ -44,6 +44,7 @@ ESP_EVENT_DEFINE_BASE(WENDY_WIFI_CONTROL_EVENT);
 
 static EventGroupHandle_t s_wifi_events;
 static bool s_infra_initialized = false;
+static bool s_boot_radio_enabled = true;
 static atomic_bool s_connected;
 static TaskHandle_t s_services_task;
 static pthread_mutex_t s_services_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -104,9 +105,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         const wifi_event_sta_disconnected_t *event = event_data;
-        ESP_LOGW(TAG, "WiFi disconnected: reason=%u rssi=%d",
-                 event ? (unsigned)event->reason : 0,
-                 event ? (int)event->rssi : 0);
+        if (event) ESP_LOGW(TAG, "station disconnected: reason=%u rssi=%d reconnect=%u",
+            (unsigned)event->reason, (int)event->rssi,
+            (unsigned)atomic_load(&s_connect_requested));
         s_connected = false;
         xEventGroupClearBits(s_wifi_events, WIFI_CONNECTED_BIT);
         if (s_connect_requested && s_retry_count < WIFI_MAX_RETRIES) {
@@ -265,11 +266,25 @@ static esp_err_t wifi_connect(const char *ssid, const char *password)
     }
 
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+#if CONFIG_WENDY_WIFI_TEST_MAX_11N
+#if CONFIG_SOC_WIFI_SUPPORT_5G
+    wifi_protocols_t protocols={.ghz_2g=WIFI_PROTOCOL_11B|WIFI_PROTOCOL_11G|WIFI_PROTOCOL_11N,
+                               .ghz_5g=WIFI_PROTOCOL_11A|WIFI_PROTOCOL_11N};
+    esp_err_t protocol_result=esp_wifi_set_protocols(WIFI_IF_STA,&protocols);
+#else
+    esp_err_t protocol_result=esp_wifi_set_protocol(WIFI_IF_STA,
+        WIFI_PROTOCOL_11B|WIFI_PROTOCOL_11G|WIFI_PROTOCOL_11N);
+#endif
+    ESP_LOGI(TAG,"lab station maximum protocol 11n: result=%s",esp_err_to_name(protocol_result));
+#endif
     ESP_ERROR_CHECK(esp_wifi_start());
 #if CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3
     // A SensorLink camera is a continuous source: modem sleep adds beacon/DTIM
     // waits between the TLS records that carry each frame.
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+#elif CONFIG_WENDY_WIFI_TEST_DISABLE_POWER_SAVE
+    esp_err_t ps_result=esp_wifi_set_ps(WIFI_PS_NONE);
+    ESP_LOGI(TAG,"lab station power save disabled: result=%s",esp_err_to_name(ps_result));
 #endif
 
     ESP_LOGI(TAG, "connecting to WiFi SSID '%s'...", ssid);
@@ -354,6 +369,14 @@ static esp_err_t start_mdns_service(void)
 {
     char hostname[CONFIG_WENDY_DEVICE_NAME_BUF_SIZE];
     size_t out = 0;
+    // On WendyOS, we prefix the hostname with "wendyos-".
+    // Here, we want to mimic this behavior, but want to use a different prefix.
+    // This prefix should not be longer than "wendyos-" in order to not
+    // overconstrain the hostname length. So we choose "wendylt-".
+    const char prefix[] = "wendylt-";
+    assert(sizeof(prefix) < sizeof(hostname));
+    memcpy(hostname + out, prefix, sizeof(prefix) - 1);
+    out += sizeof(prefix) - 1;
     const char *device_name = wendy_conf_get_resolved_device_name();
     for (size_t in = 0; device_name[in] && out < sizeof(hostname) - 1; in++) {
         unsigned char c = (unsigned char)device_name[in];
@@ -367,9 +390,6 @@ static esp_err_t start_mdns_service(void)
         /* drop everything else */
     }
     hostname[out] = '\0';
-    // A name made only of dropped characters must not give an empty hostname.
-    if (out == 0)
-        strlcpy(hostname, CONFIG_WENDY_DEVICE_NAME_DEFAULT_PREFIX "-badname", sizeof(hostname));
     ESP_LOGI(TAG, "mDNS hostname: '%s'", hostname);
 
     esp_err_t err;
@@ -459,10 +479,67 @@ static void services_task(void *unused)
 
 /* ── Public API ─────────────────────────────────────────────────────── */
 
+esp_err_t wendy_wifi_set_boot_radio_enabled(bool enabled)
+{
+    if(s_infra_initialized || s_server_started)return ESP_ERR_INVALID_STATE;
+    s_boot_radio_enabled=enabled;return ESP_OK;
+}
+bool wendy_wifi_radio_available(void)
+{
+#if WENDY_WIFI_RADIO_OMITTED
+    return false;
+#else
+    return s_boot_radio_enabled;
+#endif
+}
+
 esp_err_t wendy_wifi_init(void)
 {
+    if(!wendy_wifi_radio_available()){
+        /* Radio-omitted profile: keep the shared IP core and VIP acceptor, without
+         * creating a station netif, driver, credentials worker or mDNS task. */
+        pthread_mutex_lock(&s_services_lock);
+        if (!s_server_started) {
+            esp_err_t result = esp_netif_init();
+            if (result == ESP_OK) result = esp_event_loop_create_default();
+            if (result != ESP_OK) {
+                pthread_mutex_unlock(&s_services_lock);
+                return result;
+            }
+            wendy_server_start();
+            s_server_started = true;
+            ESP_LOGI(TAG, "WiFi radio omitted; shared IP and native listener retained");
+        }
+        pthread_mutex_unlock(&s_services_lock);
+        return ESP_OK;
+    }
     esp_err_t err = wifi_infra_init();
     if (err != ESP_OK) return err;
+#if CONFIG_WENDY_NET_PEER
+    /* Native BLE peers need the shared TLS/certificate worker even when no
+     * station credentials or AP are available. Initialise mDNS first so the
+     * worker's service registrations survive a later IP-address event. Cloud
+     * startup remains owned by the connected-station services task. */
+    pthread_mutex_lock(&s_services_lock);
+    if (!s_mdns_started)
+        s_mdns_started = start_mdns_service() == ESP_OK;
+    if (!s_server_started) {
+        wendy_server_start();
+        s_server_started = true;
+    }
+    pthread_mutex_unlock(&s_services_lock);
+#if CONFIG_WENDY_NET_TEST_COLD_BLE
+    ESP_LOGI(TAG,"lab cold BLE boot: station connection skipped; saved credentials retained");
+    return ESP_OK;
+#endif
+#endif
+#if CONFIG_WENDY_NET_NAN
+    /* NAN owns Wi-Fi in this explicit operating mode. The common native TLS
+     * worker must also exist before a station or IP route is available. */
+    if(!s_server_started){wendy_server_start();s_server_started=true;}
+    ESP_LOGI(TAG,"NAN-only radio mode; infrastructure station remains disabled");
+    return ESP_OK;
+#endif
 
     /* Try NVS credentials first */
     char ssid[33] = {0};
@@ -515,6 +592,15 @@ esp_err_t wendy_wifi_init(void)
 esp_err_t wendy_wifi_try_connect(const char *ssid, const char *password)
 {
     if (!ssid || strlen(ssid) == 0) return ESP_ERR_INVALID_ARG;
+    if(!wendy_wifi_radio_available())return ESP_ERR_NOT_SUPPORTED;
+#if WENDY_WIFI_RADIO_OMITTED
+    (void)password;
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+#if CONFIG_WENDY_NET_NAN
+    (void)password;
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
 
     esp_err_t err = wifi_infra_init();
     if (err != ESP_OK) return err;
@@ -533,8 +619,26 @@ bool wendy_wifi_is_connected(void)
     return s_connected;
 }
 
+esp_err_t wendy_wifi_set_station_enabled(bool enabled)
+{
+    if(!wendy_wifi_radio_available())return enabled ? ESP_ERR_NOT_SUPPORTED:ESP_OK;
+#if WENDY_WIFI_RADIO_OMITTED
+    return enabled ? ESP_ERR_NOT_SUPPORTED : ESP_OK;
+#endif
+    s_connect_requested=enabled;
+    s_retry_count=0;
+    esp_err_t result=enabled ? esp_wifi_connect() : esp_wifi_disconnect();
+    if(!enabled && result==ESP_ERR_WIFI_NOT_CONNECT)return ESP_OK;
+    return result;
+}
+
 void wendy_wifi_deinit(void)
 {
+    if(!wendy_wifi_radio_available())return;
+#if WENDY_WIFI_RADIO_OMITTED
+    /* Shared lwIP/native listeners belong to the boot, not a radio lifetime. */
+    return;
+#endif
     s_connect_requested = false;
     s_reconnect_pending = false;
     s_connected = false;
@@ -558,7 +662,7 @@ void wendy_wifi_deinit(void)
 #if CONFIG_WENDY_MESH_ESPNOW
 esp_err_t wendy_wifi_mesh_radio_start(uint8_t channel)
 {
-    if (!channel || channel > 14 || !s_infra_initialized) return ESP_ERR_INVALID_STATE;
+    if (!wendy_wifi_radio_available() || !channel || channel > 14 || !s_infra_initialized) return ESP_ERR_INVALID_STATE;
     if (s_connect_requested) {
         wifi_ap_record_t ap;
         if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK || ap.primary != channel)

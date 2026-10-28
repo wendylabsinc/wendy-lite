@@ -29,6 +29,22 @@ typedef unsigned TickType_t;
 typedef void *SemaphoreHandle_t;
 #define portMAX_DELAY UINT32_MAX
 #define pdPASS 1
+#define pdTRUE 1
+typedef void *TaskHandle_t;
+static void (*test_pending_task)(void *);
+static void *test_pending_argument;
+static void (*test_pending_wait)(void);
+static inline TaskHandle_t xTaskGetCurrentTaskHandle(void) { return (void *)1; }
+static inline void xTaskNotifyGive(TaskHandle_t task) { assert(task == (void *)1); }
+static inline void vTaskDelete(TaskHandle_t task) { assert(!task); }
+static inline unsigned ulTaskNotifyTake(int clear, TickType_t timeout) {
+    if(test_pending_wait){test_pending_wait();return 1;}
+    assert(test_pending_task);
+    void (*fn)(void *) = test_pending_task;
+    test_pending_task = NULL;
+    fn(test_pending_argument);
+    return 1;
+}
 extern bool test_fail_semaphore, test_fail_task;
 extern unsigned test_semaphore_calls, test_semaphores_allocated, test_semaphores_deleted;
 extern unsigned test_task_calls, test_tasks_created, test_task_stack;
@@ -53,6 +69,7 @@ static inline int xTaskCreatePinnedToCore(void (*fn)(void *), const char *name,
     test_task_stack = stack;
     if (test_fail_task) return 0;
     ++test_tasks_created;
+    test_pending_task=fn; test_pending_argument=arg;
     return pdPASS;
 }
 
@@ -109,6 +126,13 @@ struct ble_gatt_svc_def {
 #define BLE_GAP_ADV_ITVL_MS(ms) (ms)
 #define BLE_HS_FOREVER INT32_MAX
 #define BLE_HS_EALREADY 2
+#define BLE_HS_ENOMEM 6
+#define BLE_HS_ENOTCONN 7
+#define BLE_ERR_REM_USER_CONN_TERM 19
+#define CONFIG_BT_NIMBLE_MAX_CONNECTIONS 3
+#define BLE_GAP_ROLE_SLAVE 1
+#define BLE_ERR_MEM_CAPACITY 7
+#define BLE_HS_HCI_ERR(code) (0x200+(code))
 #define BLE_GAP_EVENT_CONNECT 1
 #define BLE_GAP_EVENT_DISCONNECT 2
 #define BLE_GAP_EVENT_ADV_COMPLETE 3
@@ -123,10 +147,18 @@ struct ble_hs_adv_fields {
     uint8_t name_len, name_is_complete;
 };
 struct ble_gap_adv_params { int conn_mode, disc_mode, itvl_min, itvl_max; };
+struct ble_gap_conn_desc { uint8_t role;struct {uint8_t val[6];} peer_id_addr;};
+static inline int ble_gap_conn_find(uint16_t handle,struct ble_gap_conn_desc *desc)
+{(void)handle;memset(desc,0,sizeof *desc);desc->role=BLE_GAP_ROLE_SLAVE;return 0;}
+static unsigned test_gap_terminations;
+static uint16_t test_gap_terminated_handle;
+static inline int ble_gap_terminate(uint16_t handle,uint8_t reason)
+{assert(reason==BLE_ERR_REM_USER_CONN_TERM);test_gap_terminations++;test_gap_terminated_handle=handle;return 0;}
+
 struct ble_gap_event {
     int type;
     struct { int status; uint16_t conn_handle; } connect;
-    struct { int reason; } disconnect;
+    struct { int reason; struct {uint16_t conn_handle;} conn; } disconnect;
     struct { int value; } mtu;
 };
 struct test_hs_cfg { void (*sync_cb)(void); void (*reset_cb)(int); };
@@ -134,6 +166,9 @@ extern struct test_hs_cfg ble_hs_cfg;
 extern struct ble_hs_adv_fields test_adv, test_rsp;
 extern const struct ble_gatt_svc_def *test_services;
 extern unsigned test_adv_starts;
+static bool test_advertising_active;
+static int test_advertising_error;
+static inline int ble_gap_adv_active(void){return test_advertising_active;}
 static inline int ble_gap_adv_set_fields(const struct ble_hs_adv_fields *fields) {
     test_adv = *fields; return 0;
 }
@@ -143,7 +178,7 @@ static inline int ble_gap_adv_rsp_set_fields(const struct ble_hs_adv_fields *fie
 static inline int ble_gap_adv_start(uint8_t type, const void *addr, int duration,
         const struct ble_gap_adv_params *params,
         int (*cb)(struct ble_gap_event *, void *), void *arg) {
-    ++test_adv_starts; return 0;
+    ++test_adv_starts; if(test_advertising_error)return test_advertising_error;test_advertising_active=true;return 0;
 }
 static inline int ble_hs_util_ensure_addr(int privacy) { return 0; }
 static inline int ble_hs_id_infer_auto(int privacy, uint8_t *type) { *type = 0; return 0; }

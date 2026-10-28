@@ -12,6 +12,8 @@
 #include "host/ble_l2cap.h"
 #include "os/os_mbuf.h"
 #include "os/os_mempool.h"
+#include "nimble/ble.h"
+#include "nimble/nimble_port.h"
 
 
 //--- literals ---//
@@ -30,6 +32,7 @@
 // dedicated pool rather than msys: an MTU-sized allocation out of msys chains
 // many small blocks and competes with ATT traffic.
 #define SDU_COUNT  6
+#define SDU_BLOCK_SIZE (MTU + BLE_MBUF_MEMBLOCK_OVERHEAD)
 
 // Largest SDU we transmit, chosen so one SDU is one L2CAP PDU, one HCI ACL
 // fragment and one link-layer packet: 245 + 2 (SDU length) + 4 (L2CAP header)
@@ -57,7 +60,7 @@
 
 //--- globals ---//
 
-static os_membuf_t          _sdu_mem[OS_MEMPOOL_SIZE(SDU_COUNT, MTU)];
+static os_membuf_t          _sdu_mem[OS_MEMPOOL_SIZE(SDU_COUNT, SDU_BLOCK_SIZE)];
 static struct os_mempool    _sdu_mempool;
 static struct os_mbuf_pool  _sdu_mbuf_pool;
 
@@ -75,6 +78,11 @@ static bool     _tx_stalled;
 static bool     _tx_backoff;        // out of host mbufs; holding transmits off
 static unsigned _tx_backoff_count;  // consecutive hold-offs, reset on a send
 static bool     _peer_gone;        // channel closed; drain the ring, then EOF
+static bool     _rx_retry;
+static struct ble_npl_event _rx_rearm_event;
+#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
+static unsigned _rx_rearm_failures;
+#endif
 static bool     _recv_ready_owed;  // the stack is waiting on us for a buffer
 static uint8_t  _ring[RING_SIZE];
 static size_t   _ring_head;
@@ -90,6 +98,25 @@ static inline size_t _ring_free(void)
 
 static void _lock(void)   { xSemaphoreTake(_mutex, portMAX_DELAY); }
 static void _unlock(void) { xSemaphoreGive(_mutex); }
+
+bool wble_l2cap_uses_connection(uint16_t handle)
+{
+    if (!_mutex)
+        return false;
+    _lock();
+    bool used = _chan && ble_l2cap_get_conn_handle(_chan) == handle;
+    _unlock();
+    return used;
+}
+
+bool wble_l2cap_connection_idle(uint16_t handle)
+{
+    if(!_mutex)return true;
+    if(xSemaphoreTake(_mutex,0)!=pdTRUE)return false;
+    bool idle=!_chan || ble_l2cap_get_conn_handle(_chan)!=handle;
+    _unlock();
+    return idle;
+}
 
 /// Wake anything waiting on this channel. The eventfd is edge-ish (a counter
 /// the reader drains) but every waiter re-derives readiness from the state
@@ -111,7 +138,10 @@ static void _tx_backoff_expired(void *arg)
     (void)arg;
     _lock();
     _tx_backoff = false;
+    _rx_retry = false;
     _unlock();
+    ble_npl_eventq_put(nimble_port_get_dflt_eventq(),&_rx_rearm_event);
+    _signal(_rx_sem);
     _signal(_tx_sem);
 }
 
@@ -122,10 +152,51 @@ static int _arm_recv(struct ble_l2cap_chan *chan)
 {
     struct os_mbuf *sdu = os_mbuf_get_pkthdr(&_sdu_mbuf_pool, 0);
     if (!sdu) {
-        ESP_LOGE(TAG, "SDU pool exhausted arming receive");
+        ESP_LOGD(TAG, "SDU pool exhausted arming receive");
         return BLE_HS_ENOMEM;
     }
-    return ble_l2cap_recv_ready(chan, sdu);
+    int rc=ble_l2cap_recv_ready(chan,sdu);
+    /* EBUSY refuses before adopting the buffer; an already armed SDK RX
+     * slot still backs the peer's credits. ENOENT occurs after adoption. */
+    if(rc==BLE_HS_EBUSY)os_mbuf_free_chain(sdu);
+    return rc;
+
+}
+
+/* All receive rearm attempts after ACCEPT run on the existing NimBLE host
+ * queue. Keep owed until acceptance; a transient pool refusal must not leave
+ * the remote with zero credits and no future event capable of retrying. */
+static void _rx_rearm_host(struct ble_npl_event *event)
+{
+    (void)event;
+    _lock();
+    if(!_chan || !_recv_ready_owed || _rx_retry || _ring_free()<MTU){_unlock();return;}
+    /* Holding the adapter mutex keeps I/O end_session from releasing this
+     * channel while recv_ready runs. SDK recv_ready invokes no app callback. */
+    int rc=_arm_recv(_chan);
+    bool retry=rc && rc!=BLE_HS_EBUSY;
+    _recv_ready_owed=retry;
+    _rx_retry=retry;
+#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
+    if(retry){
+        unsigned failures=++_rx_rearm_failures;
+        if(failures==1 || !(failures%64))
+            ESP_LOGW(TAG,"physical RX rearm: rc=%d owed=%u private_free=%u ring=%u failures=%u",
+                rc,(unsigned)_recv_ready_owed,(unsigned)_sdu_mempool.mp_num_free,(unsigned)_ring_len,failures);
+    }else if(_rx_rearm_failures){
+        ESP_LOGI(TAG,"physical RX rearm recovered: rc=%d failures=%u private_free=%u",
+            rc,_rx_rearm_failures,(unsigned)_sdu_mempool.mp_num_free);
+        _rx_rearm_failures=0;
+    }
+#endif
+    _unlock();
+    if(retry){
+        esp_err_t err=esp_timer_start_once(_tx_backoff_timer,TX_BACKOFF_MS*1000);
+        /* An already queued shared backoff callback will retry both sides. */
+        if(err!=ESP_OK && err!=ESP_ERR_INVALID_STATE){
+            _lock();_rx_retry=false;_unlock();_signal(_rx_sem);
+        }
+    }
 }
 
 /// Copy an SDU into the ring. Caller holds the lock.
@@ -192,6 +263,7 @@ static int _l2cap_event(struct ble_l2cap_event *event, void *arg)
             _tx_backoff_count = 0;
             _peer_gone = false;
             _recv_ready_owed = false;
+            _rx_retry = false;
             _ring_head = 0;
             _ring_len = 0;
             _unlock();
@@ -213,6 +285,8 @@ static int _l2cap_event(struct ble_l2cap_event *event, void *arg)
                      os_msys_num_free(), os_msys_count());
             _lock();
             _chan = NULL;
+            _recv_ready_owed = false;
+            _rx_retry = false;
             _peer_gone = true;
             _unlock();
             _signal(_rx_sem);
@@ -228,8 +302,7 @@ static int _l2cap_event(struct ble_l2cap_event *event, void *arg)
             _lock();
             _ring_append(sdu);
             bool room = _ring_free() >= MTU;
-            if (!room)
-                _recv_ready_owed = true;
+            _recv_ready_owed = true;
             _unlock();
 
             os_mbuf_free_chain(sdu);
@@ -237,7 +310,7 @@ static int _l2cap_event(struct ble_l2cap_event *event, void *arg)
             // Withholding the next buffer is the backpressure: the peer runs
             // out of credits until a reader drains the ring.
             if (room)
-                _arm_recv(event->receive.chan);
+                ble_npl_eventq_put(nimble_port_get_dflt_eventq(),&_rx_rearm_event);
 
             _signal(_rx_sem);
             return 0;
@@ -263,13 +336,13 @@ esp_err_t wble_l2cap_init(void)
     if (_wakeup_fd >= 0)
         return ESP_OK;
 
-    int rc = os_mempool_init(&_sdu_mempool, SDU_COUNT, MTU, _sdu_mem,
+    int rc = os_mempool_init(&_sdu_mempool, SDU_COUNT, SDU_BLOCK_SIZE, _sdu_mem,
                              "wendy_ble_sdu");
     if (rc != 0) {
         ESP_LOGE(TAG, "os_mempool_init failed: %d", rc);
         return ESP_FAIL;
     }
-    rc = os_mbuf_pool_init(&_sdu_mbuf_pool, &_sdu_mempool, MTU, SDU_COUNT);
+    rc = os_mbuf_pool_init(&_sdu_mbuf_pool, &_sdu_mempool, SDU_BLOCK_SIZE, SDU_COUNT);
     if (rc != 0) {
         ESP_LOGE(TAG, "os_mbuf_pool_init failed: %d", rc);
         return ESP_FAIL;
@@ -284,6 +357,7 @@ esp_err_t wble_l2cap_init(void)
         return ESP_ERR_NO_MEM;
     }
 
+    ble_npl_event_init(&_rx_rearm_event,_rx_rearm_host,NULL);
     const esp_timer_create_args_t backoff_args = {
         .callback = _tx_backoff_expired,
         .name     = "wble_tx_backoff",
@@ -341,6 +415,7 @@ void wble_l2cap_end_session(void)
     _tx_backoff = false;
     _tx_backoff_count = 0;
     _recv_ready_owed = false;
+    _rx_retry = false;
     _ring_head = 0;
     _ring_len = 0;
     _unlock();
@@ -371,15 +446,12 @@ ssize_t wble_l2cap_read(void *buf, size_t len)
         _ring_head = (_ring_head + n) % RING_SIZE;
         _ring_len -= n;
     }
-    bool rearm = _recv_ready_owed && _ring_free() >= MTU && _chan != NULL;
-    if (rearm)
-        _recv_ready_owed = false;
-    struct ble_l2cap_chan *chan = _chan;
+    bool rearm = _recv_ready_owed && !_rx_retry && _ring_free() >= MTU && _chan != NULL;
     bool gone = _peer_gone;
     _unlock();
 
     if (rearm)
-        _arm_recv(chan);
+        ble_npl_eventq_put(nimble_port_get_dflt_eventq(),&_rx_rearm_event);
 
     if (n > 0)
         return (ssize_t)n;
@@ -470,12 +542,11 @@ ssize_t wble_l2cap_write(const void *buf, size_t len)
         _unlock();
 
         if (!exhausted) {
-            if (arm && esp_timer_start_once(_tx_backoff_timer,
-                                            TX_BACKOFF_MS * 1000) != ESP_OK) {
-                // Nothing else would ever lift the hold-off.
-                _lock();
-                _tx_backoff = false;
-                _unlock();
+            if(arm){
+                esp_err_t err=esp_timer_start_once(_tx_backoff_timer,TX_BACKOFF_MS*1000);
+                if(err!=ESP_OK && err!=ESP_ERR_INVALID_STATE){
+                    _lock();_tx_backoff=false;_unlock();
+                }
             }
             return WBLE_ERR_WANT_WRITE;
         }

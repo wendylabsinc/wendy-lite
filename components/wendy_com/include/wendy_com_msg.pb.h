@@ -25,6 +25,14 @@ typedef enum _WendyComConfPushMode {
     WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE = 1
 } WendyComConfPushMode;
 
+typedef enum _WendyComNetState {
+    WendyComNetState_WENDY_COM_NET_OFF = 0,
+    WendyComNetState_WENDY_COM_NET_STARTING = 1,
+    WendyComNetState_WENDY_COM_NET_RUNNING = 2,
+    WendyComNetState_WENDY_COM_NET_STOPPING = 3,
+    WendyComNetState_WENDY_COM_NET_FAILED = 4
+} WendyComNetState;
+
 typedef enum _WendyComConsoleIo {
     WendyComConsoleIo_WENDY_COM_CONSOLE_IO_STANDARD_INPUT = 0,
     WendyComConsoleIo_WENDY_COM_CONSOLE_IO_STANDARD_OUTPUT = 1,
@@ -39,7 +47,12 @@ typedef enum _WendyComResult {
     WendyComResult_WENDY_COM_RESULT_BUSY = 4,
     WendyComResult_WENDY_COM_RESULT_BAD_APP_TYPE = 5,
     WendyComResult_WENDY_COM_RESULT_BAD_APP_SIZE = 6,
-    WendyComResult_WENDY_COM_RESULT_BAD_CONF_SIZE = 7
+    WendyComResult_WENDY_COM_RESULT_BAD_CONF_SIZE = 7,
+    WendyComResult_WENDY_COM_RESULT_APPLIED_RESTARTING = 8,
+    WendyComResult_WENDY_COM_RESULT_NET_NO_WIFI = 9,
+    WendyComResult_WENDY_COM_RESULT_NET_NO_BLE = 10,
+    WendyComResult_WENDY_COM_RESULT_NET_NO_NAN = 11,
+    WendyComResult_WENDY_COM_RESULT_NET_ONE_CARRIER_ONLY = 12
 } WendyComResult;
 
 typedef enum _WendyComChannelErrorReason {
@@ -134,6 +147,48 @@ typedef struct _WendyComDeviceIdentity {
  by the CLI at enrollment and also the cloud asset id. Empty when unenrolled. */
     pb_callback_t enrolled_device_id;
 } WendyComDeviceIdentity;
+
+/* Native Wendy Net policy. Disabled by default; carrier choices are retained
+ independently. Limits are local resource policy, never a special leaf role. */
+typedef struct _WendyComNetConfig {
+    bool enabled;
+    bool ble;
+    bool infrastructure_wifi;
+    bool nan;
+    uint32_t max_links;
+    uint32_t ble_links;
+    uint32_t wifi_links;
+    uint32_t nan_links;
+} WendyComNetConfig;
+
+typedef struct _WendyComNetGetParams {
+    char dummy_field;
+} WendyComNetGetParams;
+
+typedef struct _WendyComNetSetParams {
+    bool has_config;
+    WendyComNetConfig config;
+} WendyComNetSetParams;
+
+typedef struct _WendyComNetStatus {
+    bool has_desired;
+    WendyComNetConfig desired;
+    bool has_applied;
+    WendyComNetConfig applied;
+    WendyComNetState state;
+    bool ble_supported;
+    bool wifi_supported;
+    bool nan_supported;
+    bool psram;
+    uint32_t memory_limit_bytes;
+    bool has_allocated_bytes;
+    uint32_t allocated_bytes;
+    bool has_internal_bytes;
+    uint32_t internal_bytes;
+    uint32_t active_links;
+    uint32_t error_code;
+    bool restarting; /* saved carrier change; reboot is pending */
+} WendyComNetStatus;
 
 typedef struct _WendyComGetDeviceInfoParams {
     char dummy_field;
@@ -251,6 +306,8 @@ typedef struct _WendyComCommand {
         WendyComEnrollmentChallengeParams enrollment_challenge;
         WendyComSyncTimeParams sync_time;
         WendyComEnrollmentResetParams enrollment_reset;
+        WendyComNetGetParams net_get;
+        WendyComNetSetParams net_set;
     } params;
 } WendyComCommand;
 
@@ -265,6 +322,7 @@ typedef struct _WendyComResponse {
         wendy_lite_sensorlink_SensorManifest sensor_link_manifest;
         WendyComEnrollmentChallenge enrollment_challenge;
         WendyComSyncTimeResult sync_time;
+        WendyComNetStatus net_status;
     } data;
 } WendyComResponse;
 
@@ -353,13 +411,17 @@ extern "C" {
 #define _WendyComConfPushMode_MAX WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE
 #define _WendyComConfPushMode_ARRAYSIZE ((WendyComConfPushMode)(WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE+1))
 
+#define _WendyComNetState_MIN WendyComNetState_WENDY_COM_NET_OFF
+#define _WendyComNetState_MAX WendyComNetState_WENDY_COM_NET_FAILED
+#define _WendyComNetState_ARRAYSIZE ((WendyComNetState)(WendyComNetState_WENDY_COM_NET_FAILED+1))
+
 #define _WendyComConsoleIo_MIN WendyComConsoleIo_WENDY_COM_CONSOLE_IO_STANDARD_INPUT
 #define _WendyComConsoleIo_MAX WendyComConsoleIo_WENDY_COM_CONSOLE_IO_STANDARD_ERROR
 #define _WendyComConsoleIo_ARRAYSIZE ((WendyComConsoleIo)(WendyComConsoleIo_WENDY_COM_CONSOLE_IO_STANDARD_ERROR+1))
 
 #define _WendyComResult_MIN WendyComResult_WENDY_COM_RESULT_OK
-#define _WendyComResult_MAX WendyComResult_WENDY_COM_RESULT_BAD_CONF_SIZE
-#define _WendyComResult_ARRAYSIZE ((WendyComResult)(WendyComResult_WENDY_COM_RESULT_BAD_CONF_SIZE+1))
+#define _WendyComResult_MAX WendyComResult_WENDY_COM_RESULT_NET_ONE_CARRIER_ONLY
+#define _WendyComResult_ARRAYSIZE ((WendyComResult)(WendyComResult_WENDY_COM_RESULT_NET_ONE_CARRIER_ONLY+1))
 
 #define _WendyComChannelErrorReason_MIN WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_NOT_OPEN
 #define _WendyComChannelErrorReason_MAX WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_REJECTED
@@ -380,6 +442,11 @@ extern "C" {
 
 
 
+
+
+
+
+#define WendyComNetStatus_state_ENUMTYPE WendyComNetState
 
 
 
@@ -423,6 +490,10 @@ extern "C" {
 #define WendyComConfPushEndParams_init_default   {0}
 #define WendyComGetDeviceIdentityParams_init_default {0}
 #define WendyComDeviceIdentity_init_default      {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define WendyComNetConfig_init_default           {0, 0, 0, 0, 0, 0, 0, 0}
+#define WendyComNetGetParams_init_default        {0}
+#define WendyComNetSetParams_init_default        {false, WendyComNetConfig_init_default}
+#define WendyComNetStatus_init_default           {false, WendyComNetConfig_init_default, false, WendyComNetConfig_init_default, _WendyComNetState_MIN, 0, 0, 0, 0, 0, false, 0, false, 0, 0, 0, 0}
 #define WendyComGetDeviceInfoParams_init_default {0}
 #define WendyComEnrollmentChallengeParams_init_default {0}
 #define WendyComEnrollmentChallenge_init_default {"", 0, 0, 0, 0, 0, 0, false, 0, false, 0, "", "", 0}
@@ -460,6 +531,10 @@ extern "C" {
 #define WendyComConfPushEndParams_init_zero      {0}
 #define WendyComGetDeviceIdentityParams_init_zero {0}
 #define WendyComDeviceIdentity_init_zero         {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
+#define WendyComNetConfig_init_zero              {0, 0, 0, 0, 0, 0, 0, 0}
+#define WendyComNetGetParams_init_zero           {0}
+#define WendyComNetSetParams_init_zero           {false, WendyComNetConfig_init_zero}
+#define WendyComNetStatus_init_zero              {false, WendyComNetConfig_init_zero, false, WendyComNetConfig_init_zero, _WendyComNetState_MIN, 0, 0, 0, 0, 0, false, 0, false, 0, 0, 0, 0}
 #define WendyComGetDeviceInfoParams_init_zero    {0}
 #define WendyComEnrollmentChallengeParams_init_zero {0}
 #define WendyComEnrollmentChallenge_init_zero    {"", 0, 0, 0, 0, 0, 0, false, 0, false, 0, "", "", 0}
@@ -503,6 +578,28 @@ extern "C" {
 #define WendyComDeviceIdentity_name_tag          2
 #define WendyComDeviceIdentity_display_name_tag  3
 #define WendyComDeviceIdentity_enrolled_device_id_tag 4
+#define WendyComNetConfig_enabled_tag            1
+#define WendyComNetConfig_ble_tag                2
+#define WendyComNetConfig_infrastructure_wifi_tag 3
+#define WendyComNetConfig_nan_tag                4
+#define WendyComNetConfig_max_links_tag          5
+#define WendyComNetConfig_ble_links_tag          6
+#define WendyComNetConfig_wifi_links_tag         7
+#define WendyComNetConfig_nan_links_tag          8
+#define WendyComNetSetParams_config_tag          1
+#define WendyComNetStatus_desired_tag            1
+#define WendyComNetStatus_applied_tag            2
+#define WendyComNetStatus_state_tag              3
+#define WendyComNetStatus_ble_supported_tag      4
+#define WendyComNetStatus_wifi_supported_tag     5
+#define WendyComNetStatus_nan_supported_tag      6
+#define WendyComNetStatus_psram_tag              7
+#define WendyComNetStatus_memory_limit_bytes_tag 8
+#define WendyComNetStatus_allocated_bytes_tag    9
+#define WendyComNetStatus_internal_bytes_tag     10
+#define WendyComNetStatus_active_links_tag       11
+#define WendyComNetStatus_error_code_tag         12
+#define WendyComNetStatus_restarting_tag         13
 #define WendyComEnrollmentChallengeParams_status_only_tag 1
 #define WendyComEnrollmentChallenge_nonce_hex_tag 1
 #define WendyComEnrollmentChallenge_enrolled_tag 2
@@ -557,6 +654,8 @@ extern "C" {
 #define WendyComCommand_enrollment_challenge_tag 19
 #define WendyComCommand_sync_time_tag            20
 #define WendyComCommand_enrollment_reset_tag     21
+#define WendyComCommand_net_get_tag              22
+#define WendyComCommand_net_set_tag              23
 #define WendyComResponse_request_id_tag          1
 #define WendyComResponse_result_tag              2
 #define WendyComResponse_device_identity_tag     3
@@ -564,6 +663,7 @@ extern "C" {
 #define WendyComResponse_sensor_link_manifest_tag 5
 #define WendyComResponse_enrollment_challenge_tag 6
 #define WendyComResponse_sync_time_tag           7
+#define WendyComResponse_net_status_tag          8
 #define WendyComEvent_event_id_tag               1
 #define WendyComEvent_console_begin_tag          2
 #define WendyComEvent_console_data_tag           3
@@ -663,6 +763,48 @@ X(a, CALLBACK, SINGULAR, STRING,   display_name,      3) \
 X(a, CALLBACK, SINGULAR, STRING,   enrolled_device_id,   4)
 #define WendyComDeviceIdentity_CALLBACK pb_default_field_callback
 #define WendyComDeviceIdentity_DEFAULT NULL
+
+#define WendyComNetConfig_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, BOOL,     enabled,           1) \
+X(a, STATIC,   SINGULAR, BOOL,     ble,               2) \
+X(a, STATIC,   SINGULAR, BOOL,     infrastructure_wifi,   3) \
+X(a, STATIC,   SINGULAR, BOOL,     nan,               4) \
+X(a, STATIC,   SINGULAR, UINT32,   max_links,         5) \
+X(a, STATIC,   SINGULAR, UINT32,   ble_links,         6) \
+X(a, STATIC,   SINGULAR, UINT32,   wifi_links,        7) \
+X(a, STATIC,   SINGULAR, UINT32,   nan_links,         8)
+#define WendyComNetConfig_CALLBACK NULL
+#define WendyComNetConfig_DEFAULT NULL
+
+#define WendyComNetGetParams_FIELDLIST(X, a) \
+
+#define WendyComNetGetParams_CALLBACK NULL
+#define WendyComNetGetParams_DEFAULT NULL
+
+#define WendyComNetSetParams_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  config,            1)
+#define WendyComNetSetParams_CALLBACK NULL
+#define WendyComNetSetParams_DEFAULT NULL
+#define WendyComNetSetParams_config_MSGTYPE WendyComNetConfig
+
+#define WendyComNetStatus_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  desired,           1) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  applied,           2) \
+X(a, STATIC,   SINGULAR, UENUM,    state,             3) \
+X(a, STATIC,   SINGULAR, BOOL,     ble_supported,     4) \
+X(a, STATIC,   SINGULAR, BOOL,     wifi_supported,    5) \
+X(a, STATIC,   SINGULAR, BOOL,     nan_supported,     6) \
+X(a, STATIC,   SINGULAR, BOOL,     psram,             7) \
+X(a, STATIC,   SINGULAR, UINT32,   memory_limit_bytes,   8) \
+X(a, STATIC,   OPTIONAL, UINT32,   allocated_bytes,   9) \
+X(a, STATIC,   OPTIONAL, UINT32,   internal_bytes,   10) \
+X(a, STATIC,   SINGULAR, UINT32,   active_links,     11) \
+X(a, STATIC,   SINGULAR, UINT32,   error_code,       12) \
+X(a, STATIC,   SINGULAR, BOOL,     restarting,       13)
+#define WendyComNetStatus_CALLBACK NULL
+#define WendyComNetStatus_DEFAULT NULL
+#define WendyComNetStatus_desired_MSGTYPE WendyComNetConfig
+#define WendyComNetStatus_applied_MSGTYPE WendyComNetConfig
 
 #define WendyComGetDeviceInfoParams_FIELDLIST(X, a) \
 
@@ -769,7 +911,9 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (params,sensor_link_subscribe,params.sensor_l
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,sensor_link_unsubscribe,params.sensor_link_unsubscribe),  18) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,enrollment_challenge,params.enrollment_challenge),  19) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,sync_time,params.sync_time),  20) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (params,enrollment_reset,params.enrollment_reset),  21)
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,enrollment_reset,params.enrollment_reset),  21) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,net_get,params.net_get),  22) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,net_set,params.net_set),  23)
 #define WendyComCommand_CALLBACK NULL
 #define WendyComCommand_DEFAULT NULL
 #define WendyComCommand_params_ping_MSGTYPE WendyComPingParams
@@ -792,6 +936,8 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (params,enrollment_reset,params.enrollment_re
 #define WendyComCommand_params_enrollment_challenge_MSGTYPE WendyComEnrollmentChallengeParams
 #define WendyComCommand_params_sync_time_MSGTYPE WendyComSyncTimeParams
 #define WendyComCommand_params_enrollment_reset_MSGTYPE WendyComEnrollmentResetParams
+#define WendyComCommand_params_net_get_MSGTYPE WendyComNetGetParams
+#define WendyComCommand_params_net_set_MSGTYPE WendyComNetSetParams
 
 #define WendyComResponse_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   request_id,        1) \
@@ -800,7 +946,8 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (data,device_identity,data.device_identity), 
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,device_info,data.device_info),   4) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,sensor_link_manifest,data.sensor_link_manifest),   5) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,enrollment_challenge,data.enrollment_challenge),   6) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (data,sync_time,data.sync_time),   7)
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,sync_time,data.sync_time),   7) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,net_status,data.net_status),   8)
 #define WendyComResponse_CALLBACK NULL
 #define WendyComResponse_DEFAULT NULL
 #define WendyComResponse_data_device_identity_MSGTYPE WendyComDeviceIdentity
@@ -808,6 +955,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (data,sync_time,data.sync_time),   7)
 #define WendyComResponse_data_sensor_link_manifest_MSGTYPE wendy_lite_sensorlink_SensorManifest
 #define WendyComResponse_data_enrollment_challenge_MSGTYPE WendyComEnrollmentChallenge
 #define WendyComResponse_data_sync_time_MSGTYPE WendyComSyncTimeResult
+#define WendyComResponse_data_net_status_MSGTYPE WendyComNetStatus
 
 #define WendyComEvent_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   event_id,          1) \
@@ -895,6 +1043,10 @@ extern const pb_msgdesc_t WendyComConfPushDataParams_msg;
 extern const pb_msgdesc_t WendyComConfPushEndParams_msg;
 extern const pb_msgdesc_t WendyComGetDeviceIdentityParams_msg;
 extern const pb_msgdesc_t WendyComDeviceIdentity_msg;
+extern const pb_msgdesc_t WendyComNetConfig_msg;
+extern const pb_msgdesc_t WendyComNetGetParams_msg;
+extern const pb_msgdesc_t WendyComNetSetParams_msg;
+extern const pb_msgdesc_t WendyComNetStatus_msg;
 extern const pb_msgdesc_t WendyComGetDeviceInfoParams_msg;
 extern const pb_msgdesc_t WendyComEnrollmentChallengeParams_msg;
 extern const pb_msgdesc_t WendyComEnrollmentChallenge_msg;
@@ -934,6 +1086,10 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComConfPushEndParams_fields &WendyComConfPushEndParams_msg
 #define WendyComGetDeviceIdentityParams_fields &WendyComGetDeviceIdentityParams_msg
 #define WendyComDeviceIdentity_fields &WendyComDeviceIdentity_msg
+#define WendyComNetConfig_fields &WendyComNetConfig_msg
+#define WendyComNetGetParams_fields &WendyComNetGetParams_msg
+#define WendyComNetSetParams_fields &WendyComNetSetParams_msg
+#define WendyComNetStatus_fields &WendyComNetStatus_msg
 #define WendyComGetDeviceInfoParams_fields &WendyComGetDeviceInfoParams_msg
 #define WendyComEnrollmentChallengeParams_fields &WendyComEnrollmentChallengeParams_msg
 #define WendyComEnrollmentChallenge_fields &WendyComEnrollmentChallenge_msg
@@ -991,6 +1147,10 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComGetDeviceIdentityParams_size     0
 #define WendyComGetDeviceInfoParams_size         0
 #define WendyComHandshake_size                   20
+#define WendyComNetConfig_size                   32
+#define WendyComNetGetParams_size                0
+#define WendyComNetSetParams_size                34
+#define WendyComNetStatus_size                   110
 #define WendyComOpenChannel_size                 0
 #define WendyComPingParams_size                  0
 #define WendyComProtocolVersion_size             12
