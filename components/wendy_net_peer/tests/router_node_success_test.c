@@ -125,7 +125,7 @@ int wendy_pki_mesh_sign(wendy_pki_connection *c,const char *principal,const void
                         uint8_t signature[80],size_t *written)
 {
     (void)c;uint8_t hash[32];
-    return wendy_pki_mesh_digest(principal,body,size,hash) ||
+    return wendy_pki_artifact_digest(0,principal,body,size,hash) ||
         mbedtls_pk_sign(&key,MBEDTLS_MD_SHA256,hash,sizeof hash,signature,80,written);
 }
 size_t wendy_pki_artifact_signature_capacity(wendy_pki_connection *c)
@@ -139,23 +139,9 @@ int wendy_pki_mesh_sign_digest(wendy_pki_connection *c,const char *principal,con
     (void)c;(void)principal;
     return mbedtls_pk_sign(&key,MBEDTLS_MD_SHA256,hash,32,signature,80,written);
 }
-int wendy_pki_service_sign(wendy_pki_connection *c,const char *principal,const void *body,size_t size,
-    uint8_t signature[80],size_t *written)
-{
-    (void)c;(void)principal;uint8_t hash[32];
-    return wendy_pki_service_digest(body,size,hash) ||
-        mbedtls_pk_sign(&key,MBEDTLS_MD_SHA256,hash,sizeof hash,signature,80,written);
-}
-int wendy_pki_inventory_sign(wendy_pki_connection *c,const char *principal,const void *body,size_t size,
-    uint8_t signature[80],size_t *written)
-{
-    (void)c;(void)principal;uint8_t hash[32];
-    return wendy_pki_inventory_digest(body,size,hash) ||
-        mbedtls_pk_sign(&key,MBEDTLS_MD_SHA256,hash,sizeof hash,signature,80,written);
-}
 int wendy_pki_mesh_fingerprint(wendy_pki_connection *c,uint8_t hash[32])
 {(void)c;memset(hash,7,32);return 0;}
-struct endpoint {struct wnrs *session;struct wb_engine remote;unsigned index;};
+struct endpoint {struct wnrs *session;struct wb_engine remote;unsigned index,control_backpressure;};
 struct frame {struct frame *next;struct endpoint *peer;bool incoming;size_t size;uint8_t bytes[WB_PACKET_MAX];};
 static struct frame *head,**tail=&head;
 static unsigned gone_messages;
@@ -168,6 +154,8 @@ static void enqueue(struct endpoint *peer,const void *bytes,size_t size,bool inc
 static int send_frame(void *context,const void *bytes,size_t size,bool control)
 {
     if(control){
+        struct endpoint *peer=context;
+        if(peer->control_backpressure){peer->control_backpressure--;return WNC_LIMIT;}
         struct wg_message message;uint8_t chunk[WG_CHUNK];
         if(!wn_gossip_read(bytes,size,&message,chunk) && message.op==WG_GONE){
             assert(message.id.type==1);gone_messages++;
@@ -424,6 +412,35 @@ static void parser_pressure_recovery_fixture(void)
     assert(!wnrs_control(&session,missing,(size_t)n)); /* exact same frame retries */
 }
 #endif
+/* A normal full manifest can exceed the old copied-body repair budget.
+ * Async repair keeps metadata only while the gossip download owns its bytes. */
+static void large_manifest_repair_fixture(void)
+{
+    struct wnrs_node node={0};struct wnrs session={.node=&node,.link=1};
+    strcpy(node.clock.tenant,tenant);strcpy(node.clock.device,ids[0]);
+    assert(!wnd_init(&node.core.directory,tenant,ids[0]));
+    const char remote[]="00000000-0000-4000-8000-000000000099";
+    uint8_t device[16],signature[80];char principal[106],base[768];
+    assert(!wn_uuid_parse(remote,device) && wn_principal(tenant,remote,principal)==105);
+    struct wn_origin origin={.router_id=999,.seqno=1};
+    int n=wn_manifest_app_write(device,&origin,1,1800000000000,1800000900000,5054,43022,base,sizeof base);assert(n>0);
+    struct wn_doc doc;assert(!wn_doc_parse(&doc,base,(size_t)n));
+    char *body=malloc(16384),*wire=malloc(16384),*value=malloc(10241);assert(body && wire && value);
+    memset(value,'v',10240);value[10240]=0;
+    unsigned fields=0;for(unsigned i=1;i<doc.storage[0].next;i=doc.storage[i+1].next)fields++;
+    struct wn_writer writer={.data=(uint8_t*)body,.capacity=16384,.maximum=WN_MANIFEST_BODY_MAX};
+    wn_map(&writer,fields+1);wn_text(&writer,"z");wn_text(&writer,value);
+    for(unsigned i=1;i<doc.storage[0].next;i=doc.storage[i+1].next)
+        wn_raw(&writer,doc.text+doc.storage[i].start,doc.storage[i+1].end-doc.storage[i].start);
+    n=wn_finish(&writer);assert(n>8192);size_t signature_size;
+    assert(!wendy_pki_mesh_sign(NULL,principal,body,(size_t)n,signature,&signature_size));
+    n=wn_manifest_wire_write(principal,body,(size_t)n,signature,signature_size,wire,16384);assert(n>8192);
+    struct wg_id id={.type=1};assert(!wn_gossip_identify(NULL,1,wire,(size_t)n,id.hash));
+    assert(complete(&session,&id,wire,(size_t)n)==WG_DEFER);
+    assert(node.pending_count==1 && node.pending && !node.pending_bytes && !node.pending->size);
+    assert(!strcmp(node.pending->principal,principal));
+    wendy_net_free(node.pending);wnd_deinit(&node.core.directory);free(body);free(wire);free(value);
+}
 int main(int argc,char **argv)
 {
     assert(argc==2 && !wendy_pki_crypto_init());
@@ -435,6 +452,7 @@ int main(int argc,char **argv)
     endpoint_availability_fixture();
     FILE *file=fopen(argv[1],"rb");assert(file);uint8_t der[512];size_t size=fread(der,1,sizeof der,file);fclose(file);
     mbedtls_pk_init(&key);assert(!mbedtls_pk_parse_key(&key,der,size,NULL,0));
+    large_manifest_repair_fixture();
     identity_repair_expiry_fixture();
 #if defined(WENDY_NET_MEMORY_HOST_BUDGET_TEST) && WN_ROUTE_ASYNC
     parser_pressure_recovery_fixture();
@@ -444,7 +462,7 @@ int main(int argc,char **argv)
         .verified_monotonic_us=1000000,.certificate_expires=1800003600,
         .revision_first=1,.revision_limit=1025,.config_generation=1};
     strcpy(identity.tenant,tenant);strcpy(identity.device,ids[0]);
-    struct wnrs_node *node=NULL;struct endpoint peers[2]={{.index=1},{.index=2}};
+    struct wnrs_node *node=NULL;struct endpoint peers[2]={{.index=1,.control_backpressure=1},{.index=2}};
     wendy_pki_connection connections[2]={0};
     for(unsigned i=0;i<2;i++){
         strcpy(connections[i].peer.device,ids[i+1]);connections[i].peer.expires=1800003600;
@@ -454,8 +472,12 @@ int main(int argc,char **argv)
         index_available=i==0; /* A later context miss keeps the current copied index. */
         assert(!wnrs_open(&peers[i].session,&node,&connections[i],&identity,ids[i+1],
                           i ? WNR_BLE_COST:FIRST_LINK_COST,send_frame,&peers[i]));
+        if(!i){assert(peers[i].session->own_descriptor_pending);assert(!wnrs_tick(peers[i].session));assert(!peers[i].session->own_descriptor_pending);}
     }
     assert(node->core.directory.count==2);
+    const char exact_type[16]="_sensorlink._tcp";char empty_browse[8];
+    assert(wnrs_service_action(peers[0].session,NULL,0,exact_type,sizeof exact_type,empty_browse,sizeof empty_browse,NULL,NULL)==2);
+    assert(!strcmp(empty_browse,"[]"));
 #if CONFIG_WENDY_NET_TEST_C6_BLE_TRANSIT
     assert(!node->core.config.non_transit);
     assert(node->core.directory.key_limit==8);

@@ -48,9 +48,8 @@ int wnsc_guest_withdraw(struct wnsc_node *node,const char *service,int64_t wall,
 {
     if(!node || !service || !wns_label_valid(service))return -1;
     const struct wns_entry *e=wns_store_find(&node->records,node->self,WNS_GUEST_APP_ID,service);
-    /* A new RAM-only catalogue may have forgotten an unexpired publication
-     * still held by peers. Sign a fresh withdrawal even without a local row.
-     * Only a currently retained signed tombstone acknowledges this intent. */
+    /* Withdrawal removes local intent; the next complete manifest carries
+     * that omission under its one signature and inherited expiry. */
     if(e && e->withdraw && e->wire && e->expires>wall)return 0;
     struct workspace *w=wendy_net_calloc(1,sizeof *w);if(!w)return 1;
     strcpy(w->record.service,service);w->record.withdraw=true;

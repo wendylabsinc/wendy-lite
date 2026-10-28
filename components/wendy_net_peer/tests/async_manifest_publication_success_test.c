@@ -49,5 +49,16 @@ int main(void)
  assert(!wnr_tick(&core,wall+3020,epoch+3020000));assert(a.calls==before+4 && core.publication_pending);
  assert(!wnr_tick(&core,wall+3030,epoch+3030000));assert(!wnr_tick(&core,wall+3040,epoch+3040000));
  assert(a.calls==before+6 && !core.publication_pending && !core.publication_dirty);
+ /* A sequence request just inside the gate may commit local state, but
+  * its new Babel authorization cannot leave before the replacement proof. */
+ a.delay=false;unsigned packets=a.observed.packets,signs=a.calls;
+ uint16_t previous_seq=core.published_seqno;
+ struct wb_message request={.type=WB_SEQ_REQUEST,.router=444,.seqno=(uint16_t)(core.babel.seqno+1),.hops=2,.prefix={.family=6,.bits=128}};
+ memcpy(request.prefix.bytes,a.observed.own,16);
+ assert(!receive(&core,link,&request,wall+3050,epoch+3050000));
+ assert(core.babel.seqno!=previous_seq && core.published_seqno==previous_seq);
+ assert(a.calls==signs && a.observed.packets==packets && wnr_busy(&core));
+ assert(!wnr_tick(&core,wall+4040,epoch+4040000));
+ assert(core.published_seqno==core.babel.seqno && a.calls==signs+1 && a.observed.packets>packets && !wnr_busy(&core));
  wnr_deinit(&core);puts("delayed manifest completion progresses without new edits; later edits survive and respect one second gate PASS");return 0;
 }

@@ -203,6 +203,14 @@ static int finish(struct wnr_core *c, int result)
             c->published_us = c->now_us;
             c->published_seqno = c->babel.seqno;
         }
+        /* A sequence can change inside the one-second publication gate.
+         * Keep its queued Babel updates until the matching signed origin is
+         * available; established IP forwarding still uses committed routes. */
+        if(c->published_seqno!=c->babel.seqno){
+            if(c->babel.pending && wb_commit(&c->babel,c->babel.pending,true))
+                return stop(c,"babel-commit",0);
+            c->ready=true;return 0;
+        }
     }
     else
         c->published = false;
@@ -319,11 +327,7 @@ int wnr_manifest(struct wnr_core *c, const void *data, size_t size,
     int r = clock_at(c, unix_ms, now);
     if (r)
         return r;
-    uint64_t revisions[WND_ORIGINS_MAX];unsigned count=0;
-    for(struct wnd_entry *e=c->directory.entries;e && count<WND_ORIGINS_MAX;e=e->next)revisions[count++]=e->revision;
     r = wnd_accept(&c->directory, data, size, unix_ms, now);
-    if(!r){unsigned i=0;for(struct wnd_entry *e=c->directory.entries;e;e=e->next,i++)
-        if(i>=count || e->revision!=revisions[i])e->pending_receipt=true;}
     if (finish(c, wnr_busy(c) ? 0:wb_tick(&c->babel, babel_now(c))))
         return WB_STOPPED;
     return r;
@@ -334,11 +338,7 @@ int wnr_manifest_verified(struct wnr_core *c, const void *data, size_t size,
     int r = clock_at(c, unix_ms, now);
     if (r)
         return r;
-    uint64_t revisions[WND_ORIGINS_MAX];unsigned count=0;
-    for(struct wnd_entry *e=c->directory.entries;e && count<WND_ORIGINS_MAX;e=e->next)revisions[count++]=e->revision;
     r = wnd_accept_verified(&c->directory, data, size, unix_ms, now);
-    if(!r){unsigned i=0;for(struct wnd_entry *e=c->directory.entries;e;e=e->next,i++)
-        if(i>=count || e->revision!=revisions[i])e->pending_receipt=true;}
     if (finish(c, wnr_busy(c) ? 0:wb_tick(&c->babel, babel_now(c))))
         return WB_STOPPED;
     return !r && !c->durable ? 4:r;

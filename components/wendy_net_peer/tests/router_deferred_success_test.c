@@ -18,22 +18,20 @@ static int future_metadata(const void *base,size_t size,char *out,size_t capacit
 {
     struct wn_doc d;assert(!wn_doc_parse(&d,base,size));
     struct wn_writer w={.data=(uint8_t*)out,.capacity=capacity,.maximum=WN_CONTROL_MAX};
-    wn_map(&w,14);
-    for(unsigned i=1;i<d.tokens[0].next;i=d.tokens[i+1].next){
+    unsigned fields=0;for(unsigned i=1;i<d.storage[0].next;i=d.storage[i+1].next)fields++;
+    wn_map(&w,fields+1);
+    wn_text(&w,"z");wn_map(&w,1);wn_text(&w,"x");wn_array(&w,2);
+    wn_bool(&w,true);wn_map(&w,1);wn_text(&w,"n");wn_text(&w,"温度");
+    for(unsigned i=1;i<d.storage[0].next;i=d.storage[i+1].next){
         unsigned v=i+1;
-        if(wn_doc_equal(&d,(int)i,"Expires")){
-            wn_text(&w,"future");wn_map(&w,1);wn_text(&w,"items");wn_array(&w,2);
-            wn_bool(&w,true);wn_map(&w,1);wn_text(&w,"label");wn_text(&w,"温度");
-        }
-        if(wn_doc_equal(&d,(int)i,"revision")){wn_text(&w,"requires");wn_array(&w,0);}
-        wn_raw(&w,d.text+d.tokens[i].start,d.tokens[i].end-d.tokens[i].start);
-        if(wn_doc_equal(&d,(int)i,"caps")){
+        wn_raw(&w,d.text+d.storage[i].start,d.storage[i].end-d.storage[i].start);
+        if(wn_doc_equal(&d,(int)i,wn_key_name("caps"))){
             wn_array(&w,2);wn_text(&w,"sensors");wn_text(&w,"vendor/future");
-        }else if(wn_doc_equal(&d,(int)i,"route")){
-            wn_map(&w,4);wn_text(&w,"hint");wn_map(&w,1);wn_text(&w,"color");wn_text(&w,"green");
-            for(unsigned j=v+1;j<d.tokens[v].next;j=d.tokens[j+1].next)
-                wn_raw(&w,d.text+d.tokens[j].start,d.tokens[j+1].end-d.tokens[j].start);
-        }else wn_raw(&w,d.text+d.tokens[v].start,d.tokens[v].end-d.tokens[v].start);
+        }else if(wn_doc_equal(&d,(int)i,wn_key_name("route"))){
+            wn_map(&w,4);wn_text(&w,"z");wn_map(&w,1);wn_text(&w,"c");wn_text(&w,"green");
+            for(unsigned j=v+1;j<d.storage[v].next;j=d.storage[j+1].next)
+                wn_raw(&w,d.text+d.storage[j].start,d.storage[j+1].end-d.storage[j].start);
+        }else wn_raw(&w,d.text+d.storage[v].start,d.storage[v].end-d.storage[v].start);
     }
     return wn_finish(&w);
 }
@@ -67,7 +65,7 @@ int main(int argc,char **argv)
     size_t body_size=(size_t)n;
     assert(wn_principal(tenant,peer,principal)==105);
     uint8_t hash[32],signature[80];size_t sig_size=0;
-    assert(!wendy_pki_mesh_digest(principal,body,(size_t)n,hash));
+    assert(!wendy_pki_artifact_digest(0,principal,body,(size_t)n,hash));
     assert(!mbedtls_pk_sign(&key,MBEDTLS_MD_SHA256,hash,sizeof hash,signature,sizeof signature,&sig_size));
     struct wendy_pki_mesh_key view={.spki=identity.spki,.spki_size=identity.spki_size,.expires=identity.expires};
     strcpy(view.device,peer);assert(!wendy_pki_mesh_verify_key(&view,principal,body,(size_t)n,signature,sig_size));

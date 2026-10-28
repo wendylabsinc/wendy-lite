@@ -65,6 +65,9 @@ static void discard_unsubmitted(struct wncrypto_job *job)
 static void execute(void *context)
 {
     struct wncrypto_job *j=context;
+    wendy_net_memory_t *owner=wendy_net_memory_scope_current().owner;
+    wendy_net_memory_snapshot_t before={0},after={0};
+    if(owner)wendy_net_memory_snapshot(owner,&before);
     if(j->signing){
         j->signature=wendy_net_malloc(j->signature_capacity);
         if(!j->signature)j->result=1;
@@ -74,6 +77,14 @@ static void execute(void *context)
                 j->signature,j->signature_capacity,&j->signature_size);
         if(j->result){wendy_net_free(j->signature);j->signature=NULL;j->signature_size=0;}
     }else j->result=wendy_pki_mesh_verify_key(&j->key,j->principal,j->data,j->size,j->verification_signature,j->signature_size);
+    /* Libraries may report an allocation failure as a generic crypto error.
+     * Only this actor's bounded ledger is relevant. A concurrent admission
+     * failure can conservatively cause another retry; it never accepts an
+     * unverified record or loses the completed operation's exact binding. */
+    if(owner && j->result<0){
+        wendy_net_memory_snapshot(owner,&after);
+        if(after.failed_admissions!=before.failed_admissions)j->result=1;
+    }
     release_inputs(j);atomic_store(&j->done,true);release(j);
 }
 static void remove_loan(struct wncrypto_job *j)
@@ -172,7 +183,7 @@ int wncrypto_sign_cached(struct wncrypto_job **slot,struct wncrypto_signature *c
     size_t capacity=wendy_pki_artifact_signature_capacity(c);
     if(!capacity || capacity>WENDY_PKI_MESH_SIGNATURE_MAX){wncrypto_signature_clear(completed);return -1;}
     uint8_t digest[32];
-    int hashed=wendy_pki_mesh_digest(principal,body,size,digest);
+    int hashed=wendy_pki_artifact_digest(kind,principal,body,size,digest);
     if(hashed)return completed->valid ? 1:-1;
     if(completed->valid){
         uint8_t current[32];
@@ -213,7 +224,10 @@ int wncrypto_verify_cached(struct wncrypto_job **slot,struct wncrypto_verdict *c
     (void)wncrypto_take_verification(slot,completed);if(*slot)return 1;
     uint8_t digest[32];if(verification_digest(kind,key,principal,body,size,signature,signature_size,digest))return -1;
     if(completed->valid){
-        if(completed->kind==kind && !memcmp(completed->input,digest,32))return completed->result ? -1:0;
+        if(completed->kind==kind && !memcmp(completed->input,digest,32)){
+            if(completed->result<=0)return completed->result ? -1:0;
+            completed->valid=false; /* Resource pressure: retry the same input. */
+        }
         completed->valid=false;
     }
     if(!wendy_pki_work_idle())return 1;

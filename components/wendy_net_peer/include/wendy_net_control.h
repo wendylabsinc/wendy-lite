@@ -19,4 +19,3 @@ int wn_gossip_read_view(const void *,size_t,struct wg_message *);
  * second full announcement allocation while a download is being verified. */
 int wn_gossip_identify(void *, uint8_t type, const void *, size_t,
                        uint8_t hash[32]);
-

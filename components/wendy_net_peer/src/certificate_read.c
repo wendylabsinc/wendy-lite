@@ -27,13 +27,13 @@ static void execute(void *context)
     }
     atomic_store(&job->done,true);job_release(job);
 }
-static bool same(const struct wncd_reader *reader,uint64_t owner,bool catalog,
+static bool same(const struct wncd_reader *reader,uint64_t owner,
     const uint8_t hash[32],size_t offset)
 {
-    return reader->owner==owner && reader->catalog==catalog &&
+    return reader->owner==owner &&
         reader->offset==offset && !memcmp(reader->hash,hash,32);
 }
-int wncd_read(struct wncd_reader *reader,uint64_t owner,bool catalog,
+int wncd_read(struct wncd_reader *reader,uint64_t owner,
     uint64_t generation,uint32_t certificate_epoch,const uint8_t hash[32],
     size_t offset,size_t expected_total,uint8_t out[1024],size_t *total)
 {
@@ -41,22 +41,22 @@ int wncd_read(struct wncd_reader *reader,uint64_t owner,bool catalog,
        !expected_total || expected_total>65536 || offset>=expected_total || offset%1024)return -1;
     *total=0;
     if(reader->phase==WNCD_IDLE){
-        reader->owner=owner;reader->catalog=catalog;reader->generation=generation;
+        reader->owner=owner;reader->generation=generation;
         reader->certificate_epoch=certificate_epoch;reader->offset=offset;reader->total=expected_total;
         memcpy(reader->hash,hash,32);reader->phase=WNCD_REQUESTED;
         return -2;
     }
-    if(!same(reader,owner,catalog,hash,offset) || reader->phase!=WNCD_READY)return -2;
+    if(!same(reader,owner,hash,offset) || reader->phase!=WNCD_READY)return -2;
     if(reader->generation!=generation || reader->certificate_epoch!=certificate_epoch ||
        reader->total!=expected_total)return -1;
     *total=reader->total;
     if(reader->result>0 && out)memcpy(out,reader->bytes,(size_t)reader->result);
     return reader->result;
 }
-void wncd_release(struct wncd_reader *reader,uint64_t owner,bool catalog,
+void wncd_release(struct wncd_reader *reader,uint64_t owner,
     const uint8_t hash[32],size_t offset)
 {
-    if(reader && hash && reader->phase!=WNCD_IDLE && same(reader,owner,catalog,hash,offset))
+    if(reader && hash && reader->phase!=WNCD_IDLE && same(reader,owner,hash,offset))
         reader->phase=WNCD_CONSUMED;
 }
 void wncd_close(struct wncd_reader *reader)

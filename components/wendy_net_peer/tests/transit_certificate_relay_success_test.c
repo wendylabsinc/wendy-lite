@@ -97,8 +97,8 @@ static void pressure_uploads(struct wnrs *receiver)
     struct wnrs_node *node=receiver->node;uint8_t body[4096],hash[32],out[1024];size_t total;
     for(size_t i=0;i<sizeof body;i++)body[i]=(uint8_t)(i*13+5);
     assert(!wendy_pki_sha256(body,sizeof body,hash) && !wncs_put(&node->certificates,hash,body,sizeof body));
-    assert(read_public_part(node,receiver->link,PUBLIC_ROUTER,hash,0,out,&total)==1024);
-    assert(total==sizeof body && !memcmp(out,body,1024));release_public_part(node,receiver->link,PUBLIC_ROUTER,hash,0);
+    assert(read_public_part(node,receiver->link,hash,0,out,&total)==1024);
+    assert(total==sizeof body && !memcmp(out,body,1024));release_public_part(node,receiver->link,hash,0);
     assert(node->uploads); /* Whole part remains pinned after first chunk. */
     for(unsigned i=0;i<12;i++){
         uint8_t fresh[4096],digest[32];memset(fresh,(int)i,sizeof fresh);assert(!wendy_pki_sha256(fresh,sizeof fresh,digest));
@@ -106,7 +106,7 @@ static void pressure_uploads(struct wnrs *receiver)
         assert(node->certificates.bytes<=32768 && node->certificates.count<=8 && node->certificates.chains<=4);
     }
     for(size_t offset=1024;offset<sizeof body;offset+=1024){
-        assert(read_public_part(node,receiver->link,PUBLIC_ROUTER,hash,offset,out,&total)==1024);
+        assert(read_public_part(node,receiver->link,hash,offset,out,&total)==1024);
         assert(!memcmp(out,body+offset,1024));
         if(offset==3072){
             /* Actual native reply queue pressure must retain the final-chunk
@@ -122,16 +122,20 @@ static void pressure_uploads(struct wnrs *receiver)
             struct wn_doc d;parse_wire(end,&d);int at=wn_doc_member(&d,0,"certificate");struct wncf_chunk chunk;uint8_t last[1024];
             assert(!wncf_chunk_read(&d,(unsigned)wn_doc_member(&d,(unsigned)at,"chunk"),&chunk,last));
             assert(chunk.offset==offset && chunk.total==sizeof body && !memcmp(last,body+offset,1024));
-        }else release_public_part(node,receiver->link,PUBLIC_ROUTER,hash,offset);
+        }else release_public_part(node,receiver->link,hash,offset);
     }
     assert(!node->uploads);
     uint8_t fresh[4096],digest[32];memset(fresh,44,sizeof fresh);assert(!wendy_pki_sha256(fresh,sizeof fresh,digest));
     assert(!wncs_put(&node->certificates,digest,fresh,sizeof fresh));assert(!wncs_read_resident(&node->certificates,hash,0,NULL,&total));
-    /* Different control domains retain independent whole-part loans. */
-    for(unsigned domain=0;domain<3;domain++)assert(read_public_part(node,receiver->link,(enum public_part_domain)domain,digest,0,out,&total)==1024);
-    unsigned count=0;for(struct certificate_upload *u=node->uploads;u;u=u->next)count++;assert(count==3);
+    /* Distinct admitted carriers retain independent whole-part loans. */
+    unsigned count=0;
+    for(struct wnrs *peer=node->sessions;peer;peer=peer->next){
+        assert(read_public_part(node,peer->link,digest,0,out,&total)==1024);count++;
+    }
+    unsigned pinned=0;for(struct certificate_upload *u=node->uploads;u;u=u->next)pinned++;
+    assert(count==2 && pinned==count);
     prune_uploads(node,clock_us+INT64_C(60000001));assert(!node->uploads);
-    assert(read_public_part(node,receiver->link,PUBLIC_ROUTER,digest,0,out,&total)==1024);
+    assert(read_public_part(node,receiver->link,digest,0,out,&total)==1024);
 }
 int main(int argc,char **argv)
 {
@@ -152,7 +156,7 @@ int main(int argc,char **argv)
     for(unsigned i=0;i<links;i++)assert(!wnrs_open(&sessions[i],&node,&connections[i],&identity,connections[i].peer.device,WNR_BLE_COST,relay_send,&ends[i]));
     assert(node->core.config.non_transit==!!WENDY_NET_NON_TRANSIT);
     assert(node->certificates.limit==32768 && node->certificates.part_limit==8 && node->certificates.chain_limit==4);
-    assert(node->core.directory.key_limit==8 && node->pool.config.pending==8);
+    assert(node->core.directory.key_limit==(WENDY_NET_SMALL_RESOURCES ? 8u:128u) && node->pool.config.pending==64);
     struct wncf_chain chain={.count=2};assert(wn_principal(tenant,real.device,chain.principal)>0);
     for(unsigned i=0;i<2;i++)assert(!wendy_pki_sha256(parts[i],sizes[i],chain.hashes[i]));
     char wire[1400];int n=wncf_chain_write(&chain,wire,sizeof wire);assert(n>0);

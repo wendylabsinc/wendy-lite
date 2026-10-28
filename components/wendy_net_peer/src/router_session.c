@@ -43,6 +43,9 @@ extern bool wendy_net_app_ready(void);
 #ifndef CONFIG_WENDY_SERVER_PORT
 #define CONFIG_WENDY_SERVER_PORT 5054
 #endif
+#ifndef CONFIG_WENDY_NET_CATALOG_BYTES
+#define CONFIG_WENDY_NET_CATALOG_BYTES 32768
+#endif
 
 struct pending_manifest {
     struct pending_manifest *next;
@@ -51,12 +54,8 @@ struct pending_manifest {
     uint64_t supplier;
     int64_t deadline,asked;
     size_t size;
-#if ESP_PLATFORM
-    struct wncrypto_job *crypto;
-#endif
     uint8_t bytes[];
 };
-enum public_part_domain { PUBLIC_ROUTER, PUBLIC_CATALOG };
 struct certificate_upload {
     struct certificate_upload *next;
     uint64_t owner;
@@ -64,7 +63,6 @@ struct certificate_upload {
     void *part;
     size_t total;
     uint8_t hash[32];
-    enum public_part_domain domain;
 };
 struct wnrs_node
 {
@@ -76,11 +74,6 @@ struct wnrs_node
     struct wnrs_node **owner;
     bool own_cached;
     int64_t tick_us;
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-    /* Actor-owned wall counters, including time preempted by other tasks.
-     * Diagnostic builds only; storage follows the node's heap placement. */
-    struct {uint64_t us[9];int64_t next;unsigned calls;} tick_probe;
-#endif
     struct wg_id own_artifact;
     struct wncs_store certificates;
     struct certificate_upload *uploads;
@@ -90,18 +83,11 @@ struct wnrs_node
     struct pending_manifest *pending;
     size_t pending_bytes;
     unsigned pending_count;
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-    unsigned route_failures;
-    struct {unsigned received[5],completed,unsupported,admitted,deferred,unknown_key;int64_t next;} route_probe;
-#endif
     int64_t verification_retry;
 
     int64_t endpoint_request_retry;
     uint64_t endpoint_request_supplier;
     uint8_t endpoint_request_device[16];
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-
-#endif
 #if ESP_PLATFORM
     struct route_signature {struct wncrypto_job *job;struct wncrypto_signature completed;struct wn_origin origin;int64_t issued,expires;size_t size;char *body;uint64_t revision;} *signing;
 #endif
@@ -122,16 +108,19 @@ struct wnrs
     uint64_t selected_link;
     uint16_t selected_metric;
     bool attached, ready_logged,need_inventory,key_pinned;
+    bool inventory_own,inventory_again,inventory_has_after;
+    uint8_t inventory_after[16];
     unsigned routing_drops;
     struct wncf_fetch fetch;
     struct wncf_request certificate_reply;
-    bool certificate_reply_pending;
+    bool certificate_reply_pending,own_descriptor_pending;
     char descriptor_reply[106];
     uint8_t described_artifact[32];
     bool described;
 #if WN_ROUTE_ASYNC
     struct wncrypto_job *record_verification;
     bool verification_blocked;
+    int64_t signature_retry;
     signed char record_verdict; /*0none/pending,1verified,-1failed; existing64Bbinding below. */
     uint8_t verified_record[32],verified_record_key[32];
 #endif
@@ -139,14 +128,7 @@ struct wnrs
 static const char *TAG = "wendy_net_router";
 static void route_diagnostic(struct wnrs *s,const uint8_t hash[32],const char *stage,int result)
 {
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-    unsigned count=++s->node->route_failures;
-    if(count<=8 || !(count%32))
-        ESP_LOGW(TAG,"router artifact continuation: stage=%s result=%d count=%u link=%llu hash=%02x%02x%02x%02x",
-            stage,result,count,(unsigned long long)s->link,(unsigned)hash[0],(unsigned)hash[1],(unsigned)hash[2],(unsigned)hash[3]);
-#else
     (void)s;(void)hash;(void)stage;(void)result;
-#endif
 }
 #if WN_ROUTE_ASYNC
 static void reap_route_verification(struct wnrs *s)
@@ -154,7 +136,8 @@ static void reap_route_verification(struct wnrs *s)
     struct wncrypto_verdict result;
     if(wncrypto_take_verification(&s->record_verification,&result)){
         if(result.result)route_diagnostic(s,s->verified_record,"signature-result",result.result);
-        s->record_verdict=result.result ? -1:1;
+        s->record_verdict=result.result>0 ? 0:result.result<0 ? -1:1;
+        if(result.result>0)s->signature_retry=esp_timer_get_time()+INT64_C(250000);
         s->verification_blocked=false;
     }
 }
@@ -182,7 +165,7 @@ static int64_t node_unix(const struct wnrs_node *node)
            (esp_timer_get_time()-node->clock.verified_monotonic_us)/1000;
 }
 static int64_t unix_now(const struct wnrs *s){return node_unix(s->node);}
-/* Descriptor preparation can emit its own message. Keep the JSON buffer out
+/* Descriptor preparation can emit its own message. Keep the CBOR buffer out
  * of that nested path rather than reserving another2KiB in every emit frame. */
 static __attribute__((noinline)) int emit_message(struct wnrs *s,const struct wg_message *m)
 {
@@ -200,27 +183,46 @@ static int emit(void *ctx, const struct wg_message *m)
     }
     return emit_message(s,m);
 }
+static void queue_inventory(struct wnrs *s)
+{
+    if(s->need_inventory){s->inventory_again=true;return;}
+    s->need_inventory=true;s->inventory_own=false;s->inventory_has_after=false;
+    memset(s->inventory_after,0,sizeof s->inventory_after);
+}
 static int announce(struct wnrs *s,const struct wg_message *have)
 {
     int r=emit(s,have);
-    if(r>0){s->need_inventory=true;return 0;}
+    if(r>0){queue_inventory(s);return 0;}
     return r;
 }
+/* Resume by UUID rather than a pointer into mutable directory storage. A
+ * bounded output queue can admit one HAVE per pass without starving the tail.
+ * New blocked announcements request one additional sweep after this one. */
 static int inventory(struct wnrs *s)
 {
     if(!s->need_inventory)return 0;
     struct wnrs_node *node=s->node;
-    if(node->own_cached){
-        struct wg_message have={.id=node->own_artifact,.op=WG_HAVE};
-        int r=emit(s,&have);if(r)return r;
+    if(!s->inventory_own){
+        if(node->own_cached){
+            struct wg_message have={.id=node->own_artifact,.op=WG_HAVE};
+            int r=emit(s,&have);if(r)return r;
+        }
+        s->inventory_own=true;
     }
-    for(struct wnd_entry *e=node->core.directory.entries;e;e=e->next){
-        if(!e->gossip_cached)continue;
+    for(;;){
+        const struct wnd_entry *next=NULL;
+        for(const struct wnd_entry *e=node->core.directory.entries;e;e=e->next)
+            if(e->gossip_cached && (!s->inventory_has_after || memcmp(e->device,s->inventory_after,16)>0) &&
+               (!next || memcmp(e->device,next->device,16)<0))next=e;
+        if(!next)break;
         struct wg_message have={.id={.type=1},.op=WG_HAVE};
-        memcpy(have.id.hash,e->gossip_hash,32);
+        memcpy(have.id.hash,next->gossip_hash,32);
         int r=emit(s,&have);if(r)return r;
+        memcpy(s->inventory_after,next->device,16);s->inventory_has_after=true;
     }
-    s->need_inventory=false;return 0;
+    s->need_inventory=false;
+    if(s->inventory_again){s->inventory_again=false;queue_inventory(s);}
+    return 0;
 }
 static int publish(void *ctx, const struct wn_origin *origin, int64_t now,
                    int64_t monotonic)
@@ -324,11 +326,6 @@ static int publish(void *ctx, const struct wn_origin *origin, int64_t now,
     node->own_artifact = id;
     node->own_cached = true;
 #if ESP_PLATFORM
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-    ESP_LOGI(TAG,"manifest commit: revision=%llu body_bytes=%u issued_ms=%lld expires_ms=%lld",
-        (unsigned long long)node->signing->revision,(unsigned)node->signing->size,
-        (long long)node->signing->issued,(long long)node->signing->expires);
-#endif
     wnsc_manifest_committed(node->catalog,node->signing->revision,node->signing->issued,node->signing->expires);
     wncrypto_signature_clear(&node->signing->completed);wendy_net_free(node->signing->body);wendy_net_free(node->signing);node->signing=NULL;
 #endif
@@ -339,7 +336,6 @@ static int publish(void *ctx, const struct wn_origin *origin, int64_t now,
     }
     return 0;
 }
-#if CONFIG_WENDY_NET_TEST_BLOB_FIFO
 static bool own_route_artifact(void *context,const struct wg_id *id)
 {
     struct wnrs_node *node=context;
@@ -349,11 +345,10 @@ static bool protected_artifact(void *context,const struct wg_id *id)
 {
     return own_route_artifact(context,id);
 }
-#endif
 static bool known_artifact(void *context,const struct wg_id *id)
 {
     struct wnrs_node *node=context;
-    if(id->type==2)return false;
+    if(id->type!=1)return false;
     if(id->type==1 && node->core.config.endpoint_gateway)
         for(const struct wne_entry *e=node->core.endpoints.entries;e;e=e->next)
             if(e->deadline_us>esp_timer_get_time() && !memcmp(e->artifact_hash,id->hash,32))return true;
@@ -361,18 +356,16 @@ static bool known_artifact(void *context,const struct wg_id *id)
         if(e->gossip_retired && !memcmp(e->gossip_hash,id->hash,32))return true;
     return false;
 }
-#if CONFIG_WENDY_NET_TEST_BLOB_FIFO
 static void evicted_artifact(void *context,const struct wg_id *id,const void *bytes,size_t size)
 {
     struct wnrs_node *node=context;(void)size;(void)bytes;
-    if(id->type==2)return;
+    if(id->type!=1)return;
     for(struct wnd_entry *e=node->core.directory.entries;e;e=e->next)
         if(e->gossip_cached && !memcmp(e->gossip_hash,id->hash,32)){e->gossip_cached=false;e->gossip_retired=true;}
 }
-#endif
 static bool want_artifact(void *context,const struct wg_id *id,uint64_t now)
 {
-    (void)context;(void)now;return id->type!=2;
+    (void)context;(void)now;return id->type==1;
 }
 static int babel_send(void *ctx, uint64_t link, const void *packet, size_t size)
 {
@@ -403,7 +396,9 @@ static int describe(struct wnrs *s)
     wn_map(&w,2);wn_key(&w,"kind");wn_text(&w,"certificate");wn_key(&w,"certificate");
     wn_map(&w,1);wn_key(&w,"chain");if(w.failed)return -1;
     int n=wendy_pki_mesh_describe(s->connection,text+w.size,sizeof text-w.size);
-    return n<0 ? -1:s->send(s->context,text,w.size+(size_t)n,true);
+    if(n<0)return -1;
+    int sent=s->send(s->context,text,w.size+(size_t)n,true);
+    return sent==WNC_LIMIT || sent==WNC_NOMEM ? 1:sent;
 }
 static int certificate_request(struct wnrs *s, const struct wn_doc *d,
                                unsigned request)
@@ -418,8 +413,7 @@ static int send_control(struct wnrs *s,const char *text,size_t size)
     int r=s->send(s->context,text,size,true);
     return r==WNC_LIMIT || r==WNC_NOMEM ? 1:r;
 }
-/* One part per active control domain/session. There are at most three
- * bounded upload windows per admitted carrier, never one per idle mesh node. */
+/* One whole certificate part per active carrier, never per idle origin. */
 static void drop_uploads(struct wnrs_node *node,uint64_t owner)
 {
     for(struct certificate_upload **at=&node->uploads;*at;){
@@ -436,32 +430,32 @@ static void prune_uploads(struct wnrs_node *node,int64_t now)
         else at=&u->next;
     }
 }
-static int hold_upload(struct wnrs_node *node,uint64_t owner,enum public_part_domain domain,
+static int hold_upload(struct wnrs_node *node,uint64_t owner,
     const uint8_t hash[32],size_t total)
 {
     bool admitted=false;
     for(const struct wnrs *peer=node->sessions;peer;peer=peer->next)if(peer->link==owner)admitted=true;
-    if(!admitted || domain>PUBLIC_CATALOG)return -1;
+    if(!admitted)return -1;
     struct certificate_upload **at=&node->uploads;
-    while(*at && ((*at)->owner!=owner || (*at)->domain!=domain))at=&(*at)->next;
+    while(*at && (*at)->owner!=owner)at=&(*at)->next;
     if(*at && !memcmp((*at)->hash,hash,32)){
         (*at)->deadline=esp_timer_get_time()+INT64_C(60000000);return 0;
     }
     struct certificate_upload *u=wendy_net_calloc(1,sizeof *u);if(!u)return -2;
     u->part=wncs_retain(&node->certificates,hash);
     if(!u->part){wendy_net_free(u);return -2;}
-    u->owner=owner;u->domain=domain;u->total=total;
+    u->owner=owner;u->total=total;
     u->deadline=esp_timer_get_time()+INT64_C(60000000);memcpy(u->hash,hash,32);
     if(*at){struct certificate_upload *old=*at;u->next=old->next;wncs_release(old->part);wendy_net_free(old);}
     *at=u;return 0;
 }
 static void release_public_part(struct wnrs_node *node,uint64_t owner,
-    enum public_part_domain domain,const uint8_t hash[32],size_t offset)
+    const uint8_t hash[32],size_t offset)
 {
-    wncd_release(&node->certificate_read,owner,domain==PUBLIC_CATALOG,hash,offset);
+    wncd_release(&node->certificate_read,owner,hash,offset);
     for(struct certificate_upload **at=&node->uploads;*at;at=&(*at)->next){
         struct certificate_upload *u=*at;
-        if(u->owner==owner && u->domain==domain && !memcmp(u->hash,hash,32)){
+        if(u->owner==owner && !memcmp(u->hash,hash,32)){
             /* Only queue admission of the final chunk ends the whole-part
              * loan. Output pressure keeps it pinned for the retry. */
             if(offset>=u->total || u->total-offset<=WNCF_CHUNK){
@@ -471,19 +465,19 @@ static void release_public_part(struct wnrs_node *node,uint64_t owner,
         }
     }
 }
-static int read_public_part(struct wnrs_node *node,uint64_t owner,enum public_part_domain domain,
+static int read_public_part(struct wnrs_node *node,uint64_t owner,
     const uint8_t hash[32],size_t offset,uint8_t out[WNCF_CHUNK],size_t *total)
 {
     if(!node->certificates.opened)return -1;
     int r=wncs_read_resident(&node->certificates,hash,offset,out,total);
     if(r==1){
         if(offset>=*total)return -1;
-        int held=hold_upload(node,owner,domain,hash,*total);if(held)return held;
+        int held=hold_upload(node,owner,hash,*total);if(held)return held;
         size_t count=*total-offset;return (int)(count<WNCF_CHUNK ? count:WNCF_CHUNK);
     }
     if(r<0 || wncs_read(&node->certificates,hash,0,NULL,total)!=1)return -1;
     const struct wendy_pki_mesh_public_index *index=&node->certificates.baseline_index;
-    return wncd_read(&node->certificate_read,owner,domain==PUBLIC_CATALOG,index->config_generation,
+    return wncd_read(&node->certificate_read,owner,index->config_generation,
         index->certificate_epoch,hash,offset,*total,out,total);
 }
 static int serve_part(struct wnrs *s)
@@ -491,20 +485,20 @@ static int serve_part(struct wnrs *s)
     if(!s->certificate_reply_pending)return 0;
     struct wncf_request *q=&s->certificate_reply;
     uint8_t part[WNCF_CHUNK];size_t total=0;
-    int count=read_public_part(s->node,s->link,PUBLIC_ROUTER,q->hash,q->offset,part,&total);
+    int count=read_public_part(s->node,s->link,q->hash,q->offset,part,&total);
     if(count==-2)return 1;
     if(count<0){
         char wire[192];int n=wncf_missing_write(q,wire,sizeof wire);if(n<0)return -1;
         int sent=send_control(s,wire,(size_t)n);
         if(!sent){s->certificate_reply_pending=false;
-            release_public_part(s->node,s->link,PUBLIC_ROUTER,q->hash,q->offset);}
+            release_public_part(s->node,s->link,q->hash,q->offset);}
         return sent;
     }
     struct wncf_chunk chunk={.offset=q->offset,.total=total,.size=(size_t)count};
     memcpy(chunk.hash,q->hash,32);char text[WN_CONTROL_MAX+1];
     int n=wncf_chunk_write(&chunk,part,text,sizeof text);if(n<0)return -1;
     int r=send_control(s,text,(size_t)n);if(!r){s->certificate_reply_pending=false;
-        release_public_part(s->node,s->link,PUBLIC_ROUTER,q->hash,q->offset);}
+        release_public_part(s->node,s->link,q->hash,q->offset);}
     return r;
 }
 /* 2 means not cached; descriptions remain public hints, never authority. */
@@ -540,15 +534,15 @@ static int retain_manifest(struct wnrs *s,const struct wg_id *id,const void *byt
     struct wnrs_node *node=s->node;
     for(struct pending_manifest *p=node->pending;p;p=p->next)
         if(!memcmp(p->id.hash,id->hash,32))return 0;
-    if(node->pending_count>=4 || size>8192-node->pending_bytes)return 0;
+    size_t retained=size;
+#if WN_ROUTE_ASYNC
+    retained=0; /* The completed gossip download already owns immutable bytes. */
+#endif
+    if(node->pending_count>=4 || retained>8192-node->pending_bytes)return 0;
     struct wn_doc doc;char principal[106];uint8_t uuid[16];
     if(wn_doc_parse_array_view(&doc,bytes,size,WG_OBJECT_MAX,"s") ||
        wn_doc_string(&doc,wn_doc_member(&doc,0,"principal"),principal,sizeof principal)!=105 ||
        wn_principal_device(principal,s->identity.tenant,uuid))return -1;
-    size_t retained=size;
-#if ESP_PLATFORM
-    retained=0;
-#endif
     struct pending_manifest *p=wendy_net_calloc(1,sizeof *p+retained);if(!p)return WG_DEFER;
     p->id=*id;memcpy(p->principal,principal,106);p->supplier=s->link;
     p->size=retained;p->deadline=now+INT64_C(60000000);memcpy(p->bytes,bytes,retained);
@@ -565,10 +559,6 @@ static int admit_complete(void *ctx, const struct wg_id *id, const void *bytes,
         wnr_manifest_verified(&s->node->core,bytes,size,unix_now(s),now);
 #else
         wnr_manifest(&s->node->core, bytes, size, unix_now(s), now);
-#endif
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-    s->node->route_probe.admitted+=r==0;
-    s->node->route_probe.deferred+=r==4;
 #endif
     if(r==4)return WG_DEFER;
     if(r==2)return retain_manifest(s,id,bytes,size,now);
@@ -649,6 +639,8 @@ static int complete(void *ctx,const struct wg_id *id,const void *bytes,size_t si
 #if WN_ROUTE_ASYNC
     struct wnrs *s=ctx;struct wnrs_node *node=s->node;
     reap_route_verification(s);
+    if(esp_timer_get_time()<s->signature_retry)return WG_DEFER;
+    s->signature_retry=0;
     if(s->record_verification){s->verification_blocked=true;return WG_DEFER;}
     if(s->record_verdict && memcmp(s->verified_record,id->hash,32))return WG_DEFER;
     if(s->record_verdict<0){s->record_verdict=0;return -1;}
@@ -662,14 +654,8 @@ static int complete(void *ctx,const struct wg_id *id,const void *bytes,size_t si
     int sig=wn_doc_member(&w->doc,0,"signature");
     if(wn_doc_bytes(&w->doc,sig,&signature,&sig_size) || sig_size<8)goto done;
     if(sig_size>WN_ORIGIN_SIGNATURE_MAX){result=0;goto done;}
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-    node->route_probe.completed++;
-#endif
     stage="manifest-metadata";int metadata=wnd_manifest_read(&w->doc,(unsigned)body,&w->manifest);
     if(metadata==WND_UNSUPPORTED){
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-        node->route_probe.unsupported++;
-#endif
         result=0;goto done;
     }
     /* Service validation owns a temporary parser. Ordinary budget pressure
@@ -682,10 +668,6 @@ static int complete(void *ctx,const struct wg_id *id,const void *bytes,size_t si
     for(struct wnd_entry *e=node->core.directory.entries;e;e=e->next)
         if(!memcmp(e->device,w->uuid,16)){identity=e;break;}
     if(!identity || !identity->peer.spki_size){
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-        if(++node->route_probe.unknown_key<=4)
-            ESP_LOGI(TAG,"router origin awaits key: peer=%s supplier=%llu entry=%u",w->principal+69,(unsigned long long)s->link,identity!=NULL);
-#endif
         result=retain_manifest(s,id,bytes,size,esp_timer_get_time());
         if(!result)result=WG_DEFER;
         s->verification_blocked=false;goto done;
@@ -733,9 +715,6 @@ static void prune_pending(struct wnrs_node *node,int64_t now)
             for(struct wnrs *peer=node->sessions;peer;peer=peer->next)
                 if(peer->link==p->supplier){wg_discard(&peer->gossip,&p->id);break;}
             *at=p->next;node->pending_count--;node->pending_bytes-=p->size;
-#if ESP_PLATFORM
-            wncrypto_cancel(&p->crypto);
-#endif
             wendy_net_free(p);
         }else at=&p->next;
     }
@@ -788,7 +767,7 @@ static void finish_verification(struct wnrs *s,int64_t now)
                 if(node->fetch_owner==peer)node->fetch_owner=NULL;
                 wncf_stop(&peer->fetch);
             }
-#if !ESP_PLATFORM
+#if !WN_ROUTE_ASYNC
         struct pending_manifest *ready=NULL;
         for(struct pending_manifest **at=&node->pending;*at;){
             struct pending_manifest *p=*at;
@@ -804,7 +783,7 @@ static void finish_verification(struct wnrs *s,int64_t now)
             wendy_net_free(p);
         }
 #endif
-#if ESP_PLATFORM
+#if WN_ROUTE_ASYNC
         for(struct pending_manifest **at=&node->pending;*at;){
             struct pending_manifest *p=*at;
             if(!strcmp(p->principal,job->chain.principal)){
@@ -856,9 +835,6 @@ static void forget_pending_identity(struct wnrs *s,const char *principal)
         if(p->supplier==s->link && !strcmp(p->principal,principal)){
             *at=p->next;node->pending_count--;node->pending_bytes-=p->size;
             wg_discard(&s->gossip,&p->id);
-#if ESP_PLATFORM
-            wncrypto_cancel(&p->crypto);
-#endif
             wendy_net_free(p);
         }else at=&p->next;
     }
@@ -945,7 +921,6 @@ static void node_free(struct wnrs_node *node)
     wncd_close(&node->certificate_read);
 #if ESP_PLATFORM
     if(node->signing){wncrypto_cancel(&node->signing->job);wncrypto_signature_clear(&node->signing->completed);wendy_net_free(node->signing->body);wendy_net_free(node->signing);}
-    for(struct pending_manifest *p=node->pending;p;p=p->next)wncrypto_cancel(&p->crypto);
 #endif
     wncv_release(node->verification);
     wncs_close(&node->certificates);
@@ -1001,18 +976,14 @@ static int node_open(struct wnrs_node **owner,wendy_pki_connection *connection,
         .objects=32,.pending=external_ram ? 256:64,.bytes=64*1024,
         .downloads=external_ram ? 2:1,.uploads=external_ram ? 2:1,
         .route_download_reserve=external_ram ? 1:0};
-#if CONFIG_WENDY_NET_TEST_BLOB_FIFO
     gossip.context=node;gossip.fifo=true;
     gossip.objects=external_ram ? 1024:128;
     gossip.type_bytes[0]=external_ram ? 512*1024:8192;
-    gossip.type_bytes[1]=external_ram ? 512*1024:
-        (size_t)CONFIG_WENDY_NET_TEST_SRAM_SERVICE_CACHE_KIB*1024;
-    gossip.bytes=gossip.type_bytes[0]+gossip.type_bytes[1]+gossip.type_bytes[2];
+    gossip.bytes=gossip.type_bytes[0];
     gossip.reserve_objects=gossip.uploads+1;
     gossip.critical_object=own_route_artifact;
     gossip.known_object=known_artifact;
     gossip.protected_object=protected_artifact;gossip.evicted=evicted_artifact;
-#endif
 #if CONFIG_WENDY_NET_CONSTRAINED_PROFILE
     /* A hint is96 bytes on RV32, allocated only when observed. Retain a
      * normal startup burst without dropping the service a local app needs
@@ -1045,8 +1016,9 @@ int wnrs_open(struct wnrs **out,struct wnrs_node **owner,
               const struct wendy_pki_mesh_identity *identity,const char *peer,uint16_t cost,
               wnrs_send send,void *ctx)
 {
+    if(!out || !owner || !connection || !identity || !send)return -1;
     *out=NULL;
-    uint8_t uuid[16];bool existing=owner && *owner;
+    uint8_t uuid[16];bool existing=*owner!=NULL;
     if(!owner || wn_uuid_parse(peer,uuid) || node_open(owner,connection,identity))return -1;
     struct wnrs_node *node=*owner;
     if(strcmp(node->clock.tenant,identity->tenant) || strcmp(node->clock.device,identity->device) ||
@@ -1069,7 +1041,9 @@ int wnrs_open(struct wnrs **out,struct wnrs_node **owner,
         !strcmp(authenticated->device,peer) &&
         !wnr_identity(&node->core,authenticated,wall,now);
     wendy_net_free(authenticated);
-    if(!authenticated_ok || describe(s))goto fail;
+    if(!authenticated_ok)goto fail;
+    int described=describe(s);if(described<0)goto fail;
+    s->own_descriptor_pending=described>0;
     if(WENDY_NET_SMALL_RESOURCES || node->core.config.non_transit){
         if(wnd_key_pin(&node->core.directory,uuid,true))goto fail;
         s->key_pinned=true;
@@ -1081,13 +1055,8 @@ int wnrs_open(struct wnrs **out,struct wnrs_node **owner,
     if(wnr_attach(&node->core,peer,cost,wall,esp_timer_get_time(),&attached) || attached!=s->link)
         goto fail;
     s->attached=true;
-    /* Advertise already cached normal origins to a newly joined carrier. */
-    if(node->own_cached){struct wg_message have={.id=node->own_artifact,.op=WG_HAVE};if(announce(s,&have))goto fail;}
-    for(struct wnd_entry *e=node->core.directory.entries;e;e=e->next){
-        if(!e->gossip_cached)continue;
-        struct wg_message have={.id={.type=1},.op=WG_HAVE};
-        memcpy(have.id.hash,e->gossip_hash,32);if(announce(s,&have))goto fail;
-    }
+    /* Inventory owns its cursor through bounded output backpressure. */
+    queue_inventory(s);
 
     ESP_LOGI(TAG,"native Babel stream started: router=%llu link=%llu state=%u gossip=%u",
         (unsigned long long)node->core.babel.config.router,(unsigned long long)s->link,
@@ -1134,22 +1103,12 @@ void wnrs_refresh(struct wnrs *s,
 }
 int wnrs_tick(struct wnrs *s)
 {
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-    int64_t probe_at=esp_timer_get_time();
-    s->node->tick_probe.calls++;
-#define TICK_PROBE(phase) do {int64_t at=esp_timer_get_time(); \
-    s->node->tick_probe.us[phase]+=(uint64_t)(at-probe_at);probe_at=at;} while(0)
-#else
-#define TICK_PROBE(phase) ((void)0)
-#endif
     reap_node_crypto(s->node);
-    TICK_PROBE(0);
     int64_t now = esp_timer_get_time();
     int r=0;
     if(now>=wnrs_next_deadline(s)){
         r=wnr_tick(&s->node->core,unix_now(s),now);s->node->tick_us=now+1000000;
     }
-    TICK_PROBE(1);
     if (r)
     {
         ESP_LOGW(TAG, "router tick failed: result=%d stage=%s error=%d checkpoint=%u heap=%u largest=%u",
@@ -1169,19 +1128,18 @@ int wnrs_tick(struct wnrs *s)
     }
 #endif
     if(!owned)r=wg_resume(&s->gossip,complete,s);
-    TICK_PROBE(3);
     if(r<0){ESP_LOGW(TAG,"router continuation failed: stage=route-gossip result=%d",r);return -1;}
+    if(s->own_descriptor_pending){
+        int described=describe(s);if(described<0)return -1;
+        s->own_descriptor_pending=described>0;
+    }
     r=certificate_tick(s);
-    TICK_PROBE(4);
     if(r<0){ESP_LOGW(TAG,"router continuation failed: stage=certificate result=%d",r);return -1;}
     r=catalog_tick(s,now);
-    TICK_PROBE(5);
     if(r<0){ESP_LOGW(TAG,"router continuation failed: stage=service-catalog result=%d",r);return -1;}
     r=inventory(s);
-    TICK_PROBE(6);
     if(r<0)return -1;
     if(!r)r = wg_poll(&s->gossip, (uint64_t)now / 1000, emit, s);
-    TICK_PROBE(7);
     if (r<0)
     {
         ESP_LOGW(TAG, "gossip poll failed: %d", r);
@@ -1206,58 +1164,14 @@ int wnrs_tick(struct wnrs *s)
                      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
                  (unsigned)uxTaskGetStackHighWaterMark(NULL));
     }
-    TICK_PROBE(8);
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-    if(now>=s->node->route_probe.next){
-        const unsigned *rx=s->node->route_probe.received;
-        struct wg_progress progress;wg_progress(&s->node->pool,&progress);
-        ESP_LOGI(TAG,"gossip pending by type (hints/active/complete/bytes): route=%u/%u/%u/%u service=%u/%u/%u/%u operator=%u/%u/%u/%u",
-            (unsigned)progress.hints[0],(unsigned)progress.active[0],(unsigned)progress.complete[0],(unsigned)progress.bytes[0],
-            (unsigned)progress.hints[1],(unsigned)progress.active[1],(unsigned)progress.complete[1],(unsigned)progress.bytes[1],
-            (unsigned)progress.hints[2],(unsigned)progress.active[2],(unsigned)progress.complete[2],(unsigned)progress.bytes[2]);
-        ESP_LOGI(TAG,"route gossip totals: have=%u want=%u unavailable=%u data=%u gone=%u complete=%u unsupported=%u admitted=%u deferred=%u pending=%u objects=%u payload=%u own_cached=%u published=%u signing=%u",
-            rx[0],rx[1],rx[2],rx[3],rx[4],s->node->route_probe.completed,
-            s->node->route_probe.unsupported,s->node->route_probe.admitted,s->node->route_probe.deferred,
-            (unsigned)s->node->pool.pending_count,(unsigned)s->node->pool.object_count,
-            (unsigned)s->node->pool.payload_bytes,s->node->own_cached,s->node->core.published,s->node->signing!=NULL);
-        const struct wncd_reader *reader=&s->node->certificate_read;
-        ESP_LOGI(TAG,"public reader progress: phase=%u owner=%llu catalog=%u offset=%u total=%u result=%d crypto_idle=%u io_idle=%u",
-            (unsigned)reader->phase,(unsigned long long)reader->owner,reader->catalog,
-            (unsigned)reader->offset,(unsigned)reader->total,reader->result,
-            wendy_pki_work_idle(),wendy_pki_io_work_idle());
-        for(const struct pending_manifest *pending=s->node->pending;pending;pending=pending->next)
-            ESP_LOGI(TAG,"router identity progress: peer=%s supplier=%llu retry_ms=%lld remaining_ms=%lld",pending->principal+69,(unsigned long long)pending->supplier,(long long)((now-pending->asked)/1000),(long long)((pending->deadline-now)/1000));
-        for(const struct wnrs *peer=s->node->sessions;peer;peer=peer->next){
-            ESP_LOGI(TAG,"certificate fetch progress: link=%llu peer=%s index=%u waiting=%u owner=%u",(unsigned long long)peer->link,peer->fetch.chain ? peer->fetch.chain->principal+69:"none",(unsigned)peer->fetch.index,peer->fetch.waiting,s->node->fetch_owner==peer);
-            ESP_LOGI(TAG,"router input progress: link=%llu route_verify=%u verdict=%d route_cert_reply=%u catalog_paused=%u operator_paused=%u",
-                (unsigned long long)peer->link,peer->verification_blocked,peer->record_verdict,
-                peer->certificate_reply_pending,0,
-                0
-            );
-        }
-        s->node->route_probe.next=now+INT64_C(15000000);
-    }
-#endif
 #undef TICK_PROBE
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-    if(!s->node->tick_probe.next)s->node->tick_probe.next=now+INT64_C(15000000);
-    if(now>=s->node->tick_probe.next){
-        const uint64_t *p=s->node->tick_probe.us;
-        ESP_LOGI(TAG,"router tick wall_us interval: calls=%u reap=%llu babel=%llu operator=%llu route_gossip=%llu certificate=%llu service=%llu inventory=%llu gossip_poll=%llu lookup=%llu probe_bytes=%u",
-            s->node->tick_probe.calls,(unsigned long long)p[0],(unsigned long long)p[1],
-            (unsigned long long)p[2],(unsigned long long)p[3],(unsigned long long)p[4],
-            (unsigned long long)p[5],(unsigned long long)p[6],(unsigned long long)p[7],
-            (unsigned long long)p[8],(unsigned)sizeof s->node->tick_probe);
-        memset(&s->node->tick_probe,0,sizeof s->node->tick_probe);
-        s->node->tick_probe.next=now+INT64_C(15000000);
-    }
-#endif
     return 0;
 }
 static int control_parsed(struct wnrs *s,const void *data,size_t size,const struct wn_doc *d)
 {
     int kind = wn_doc_member(d, 0, "kind");
-    if(kind<0 || d->tokens[kind].type!='"' || d->tokens[kind].end<=d->tokens[kind].start+d->tokens[kind].header)return -1;
+    const struct wn_token *kind_token=wn_doc_token(d,kind);
+    if(!kind_token || kind_token->type!='"' || kind_token->end<=kind_token->start+kind_token->header)return -1;
     if (wn_doc_equal(d, kind, "gossip"))
     {
         struct wg_message m;
@@ -1273,9 +1187,6 @@ static int control_parsed(struct wnrs *s,const void *data,size_t size,const stru
         /* Endpoint gateways also verify router capabilities for outgoing VIPs.
          * Only their compact bounded projections survive admission; Babel
          * continues to ignore remote routing updates and use its sole gateway. */
-    #if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-        if((unsigned)m.op<5)s->node->route_probe.received[m.op]++;
-#endif
         int r = wg_receive(&s->gossip, &m, esp_timer_get_time() / 1000, emit,
                            complete, s);
         if (r < 0)
@@ -1338,6 +1249,9 @@ static int control_parsed(struct wnrs *s,const void *data,size_t size,const stru
             if(!s->node->certificates.opened || s->fetch.chain)return 0;
             char self[106];if(wn_principal(s->identity.tenant,s->identity.device,self)<0)return -1;
             if(!strcmp(self,description.principal))return 0;
+            /* A retained verification receipt prevents hints from refilling
+             * an exact path forgotten by the FIFO, including on PSRAM nodes. */
+            if(chain_verified(s->node,&description))return 0;
             if(s->node->core.config.non_transit){
                 /* A terminating peer needs only keys demanded by a pending
                  * claim. Its verified keys do not need duplicate relay DER. */
@@ -1352,7 +1266,6 @@ static int control_parsed(struct wnrs *s,const void *data,size_t size,const stru
                 /* A direct TLS key alone is insufficient for relaying its
                  * certificate path. Fetch its first descriptor normally, but
                  * do not refill an already verified/forgotten chain on hints. */
-                if(chain_verified(s->node,&description))return 0;
                 struct wnd_entry *identity=chain_identity(s->node,&description);
                 bool needed=false;
                 for(struct pending_manifest *p=s->node->pending;p;p=p->next)
@@ -1377,7 +1290,7 @@ static int control_parsed(struct wnrs *s,const void *data,size_t size,const stru
                 received.total,bytes,received.size,esp_timer_get_time()/1000);
             return result<0 ? -1:0;
         }
-        return -1;
+        return 0; /* A future certificate control variant is optional. */
     }
     if (wn_doc_equal(d, kind, "catalog"))
         return 0; /* Unknown obsolete control kind; no catalogue transport. */
@@ -1410,7 +1323,7 @@ int wnrs_control(struct wnrs *s,const void *data,size_t size)
             ESP_LOGW(TAG,"router control failed: kind=%s bytes=%u result=%d",kind,(unsigned)size,r);
         }
     }
-    else ESP_LOGW(TAG,"invalid router control JSON: bytes=%u",(unsigned)size);
+    else ESP_LOGW(TAG,"invalid router control CBOR: bytes=%u",(unsigned)size);
     wendy_net_free(d);return r;
 }
 
@@ -1451,55 +1364,10 @@ bool wnrs_agent_endpoint(struct wnrs *s, const uint8_t device[16], uint16_t *por
     return wnr_agent_endpoint(&s->node->core, device, esp_timer_get_time(), port);
 }
 uint64_t wnrs_link_id(const struct wnrs *s){return s->link;}
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-static void lookup_diagnostic(const struct wnr_core *c,const uint8_t address[16],int64_t now)
-{
-    struct wb_prefix prefix={.bits=128,.family=6};memcpy(prefix.bytes,address,16);
-    const struct wb_route *route=wb_lookup(&c->babel,&prefix);
-    const struct wnd_entry *entry=NULL;
-    for(const struct wnd_entry *e=c->directory.entries;e;e=e->next)
-        if(!memcmp(e->address,address,16)){entry=e;break;}
-    const struct wb_link_state *link=NULL;
-    if(route)for(size_t i=0;i<c->babel.links_capacity;i++)
-        if(c->babel.links[i].config.id==route->link){link=c->babel.links+i;break;}
-    uint64_t tick=(uint64_t)(now-c->epoch_us)/1000;
-    bool candidate_live=false;
-    if(route)for(size_t i=0;i<c->babel.candidates_capacity;i++){
-        const struct wb_candidate *candidate=c->babel.candidates+i;
-        if(candidate->used && candidate->expires>tick && candidate->advertised!=WB_INFINITY &&
-           candidate->route.link==route->link && candidate->route.router==route->router &&
-           candidate->route.seqno==route->seqno && wb_prefix_equal(&candidate->route.prefix,&prefix))candidate_live=true;
-    }
-    ESP_LOGW(TAG,"IP source lookup: ready=%u stopped=%u clock_delta_us=%lld raw=%u router=%llu seq=%u metric=%u unreachable=%u candidate_live=%u link_tx=%u ihu_live=%u hello_live=%u manifest=%u manifest_router=%llu manifest_seq=%u manifest_remaining_ms=%lld receipt_pending=%u authorized=%u",
-        (unsigned)c->ready,(unsigned)c->stopped,(long long)(now-c->now_us),route!=NULL,
-        (unsigned long long)(route ? route->router:0),(unsigned)(route ? route->seqno:0),
-        (unsigned)(route ? route->metric:0),(unsigned)(route ? route->unreachable:0),candidate_live,
-        (unsigned)(link ? link->tx:WB_INFINITY),link && link->ihu_expires>tick,
-        link && (link->hello_expires[0]>tick || link->hello_expires[1]>tick),entry!=NULL,
-        (unsigned long long)(entry ? entry->manifest.origin.router_id:0),
-        (unsigned)(entry ? entry->manifest.origin.seqno:0),
-        (long long)(entry ? (entry->deadline_us-now)/1000:0),entry && entry->pending_receipt,
-        route && wnd_authorizes(&c->directory,address,route->router,route->seqno,now));
-}
-#endif
 int wnrs_packet_route(struct wnrs *s,void *data,size_t size,bool incoming,uint64_t *outgoing)
 {
     int64_t now=esp_timer_get_time();
     int result=wnr_packet(&s->node->core,incoming ? s->link:0,data,size,now,outgoing);
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-    static int64_t rejection_logged_at;
-    if(result<0 && incoming && data && size>=40 && now-rejection_logged_at>=INT64_C(1000000)){
-        rejection_logged_at=now;
-        const uint8_t *packet=data;struct wb_route source={0},destination={0};
-        bool source_known=wnr_lookup(&s->node->core,packet+8,now,&source);
-        bool destination_known=wnr_lookup(&s->node->core,packet+24,now,&destination);
-        char from[48],to[48];wn_prefix(packet+8,from);wn_prefix(packet+24,to);
-        ESP_LOGW(TAG,"IP route rejected: result=%d in_link=%llu source=%s source_known=%u source_local=%u destination=%s destination_known=%u destination_local=%u bytes=%u",
-            result,(unsigned long long)s->link,from,(unsigned)source_known,(unsigned)source.local,
-            to,(unsigned)destination_known,(unsigned)destination.local,(unsigned)size);
-        if(!source_known)lookup_diagnostic(&s->node->core,packet+8,now);
-    }
-#endif
     return result;
 }
 int wnrs_packet(struct wnrs *s,void *data,size_t size,bool incoming)
@@ -1515,6 +1383,11 @@ int wnrs_service_action(struct wnrs *s,struct wnsc_registry **registry,unsigned 
     struct wnsc_node *node=s ? s->node->catalog:NULL;
     int64_t wall=s ? unix_now(s):0;uint64_t now=(uint64_t)esp_timer_get_time()/1000;
     if(!input || !size || memchr(input,0,size))return -1;
+    char selector[64];
+    if(operation==0 || operation==2 || operation==3){
+        if(size>=sizeof selector)return -1;
+        memcpy(selector,input,size);selector[size]=0;input=selector;
+    }
     if((operation==0 || operation==3) && node)wnsc_browse_demand(node,now);
     if(operation==0)return node ? wnsc_browse(node,input,wall,out,cap):-2;
     if(operation==3)return node ? wnsc_browse_endpoints(node,input,wall,out,cap):-2;
@@ -1546,8 +1419,11 @@ int64_t wnrs_next_deadline(const struct wnrs *s)
      * Its elapsed rate-limit deadline must not spin the higher-priority actor
      * and starve that worker: completion is the next relevant I/O event. */
     bool publishing=c->publication_pending;
-    if(!publishing && c->publication_dirty && c->published &&
+    if(!publishing && (c->publication_dirty || c->published_seqno!=c->babel.seqno) && c->published &&
        c->published_us+INT64_C(1000000)<deadline)deadline=c->published_us+INT64_C(1000000);
+#if WN_ROUTE_ASYNC
+    if(s->signature_retry && s->signature_retry<deadline)deadline=s->signature_retry;
+#endif
     if(wnr_busy(c))return deadline;
     if(next!=UINT64_MAX && next<(uint64_t)(INT64_MAX-c->epoch_us)/1000){
         int64_t babel=c->epoch_us+(int64_t)next*1000;

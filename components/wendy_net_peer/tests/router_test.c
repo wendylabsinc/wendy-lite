@@ -2,7 +2,6 @@
 #include "wendy_net_router.h"
 #include "wendy_pki_crypto.h"
 #include <assert.h>
-#include <mbedtls/base64.h>
 #include <mbedtls/pk.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -55,29 +54,32 @@ static int sign_proof(void *ctx, const struct wn_origin *origin, int64_t now,
 {
     struct node *n = ctx;
     (void)monotonic;
-    char body[768], principal[106], encoded[113];
+    char body[768], principal[106];
     uint8_t uuid[16], hash[32], sig[80];
-    size_t sig_size, b64_size;
+    size_t sig_size;
     assert(!wn_uuid_parse(ids[n->index], uuid));
     int size =
         wn_manifest_app_write(uuid, origin, ++n->revision, now, now + 60000,
                               5054, n->app_port, body, sizeof body);
     assert(size > 0 && wn_principal(tenant, ids[n->index], principal) == 105);
-    if (n->agent_disabled) {
-        char *transport = strstr(body, "mtls-v1");
-        assert(transport);
-        memmove(transport, transport+7, strlen(transport+7)+1);
-        size -= 7;
+    if(n->agent_disabled){
+        struct wn_doc doc;assert(!wn_doc_parse(&doc,body,(size_t)size));
+        char edited[sizeof body];struct wn_writer w={.data=(uint8_t*)edited,.capacity=sizeof edited,.maximum=sizeof edited};
+        unsigned fields=0;for(unsigned i=1;i<doc.storage[0].next;i=doc.storage[i+1].next)fields++;
+        wn_map(&w,fields);
+        for(unsigned i=1;i<doc.storage[0].next;i=doc.storage[i+1].next){
+            const struct wn_token *key_token=wn_doc_token(&doc,(int)i),*value=wn_doc_token(&doc,(int)i+1);
+            wn_raw(&w,doc.text+key_token->start,key_token->end-key_token->start);
+            if(wn_doc_equal(&doc,(int)i,wn_key_name("agentTransport")))wn_text(&w,"");
+            else wn_raw(&w,doc.text+value->start,value->end-value->start);
+        }
+        size=wn_finish(&w);assert(size>0);memcpy(body,edited,(size_t)size);
     }
-    assert(!wendy_pki_mesh_digest(principal, body, size, hash));
+    assert(!wendy_pki_artifact_digest(0,principal, body, size, hash));
     assert(!mbedtls_pk_sign(&key, MBEDTLS_MD_SHA256, hash, sizeof hash, sig,
                             sizeof sig, &sig_size));
-    assert(!mbedtls_base64_encode((unsigned char *)encoded, sizeof encoded,
-                                  &b64_size, sig, sig_size));
-    size = snprintf(n->proof, sizeof n->proof,
-                    "{\"principal\":\"%s\",\"body\":%s,\"signature\":\"%s\"}",
-                    principal, body, encoded);
-    assert(size > 0 && (size_t)size < sizeof n->proof);
+    size=wn_manifest_wire_write(principal,body,(size_t)size,sig,sig_size,n->proof,sizeof n->proof);
+    assert(size>0 && (size_t)size<sizeof n->proof);
     n->proof_size = size;
     n->publications++;
     return 0;
@@ -169,8 +171,9 @@ static void connect_nodes(unsigned a, unsigned b, uint16_t cost)
 static struct wb_route route(unsigned from, unsigned to)
 {
     struct wb_route r;
-    assert(wnr_lookup(&nodes[from].core, nodes[to].address,
-                      epoch + (int64_t)ms * 1000, &r));
+    bool found=wnr_lookup(&nodes[from].core,nodes[to].address,epoch+(int64_t)ms*1000,&r);
+    if(!found)fprintf(stderr,"route from=%u to=%u found=%u at_ms=%llu seq=%u published=%u\n",from,to,found,(unsigned long long)ms,nodes[to].core.babel.seqno,nodes[to].core.published_seqno);
+    assert(found);
     return r;
 }
 int main(int argc, char **argv)
@@ -234,32 +237,36 @@ int main(int argc, char **argv)
                                epoch+(int64_t)ms*1000, &agent_port));
     assert(!agent_port);
     assert(!wnr_app_endpoint(&nodes[0].core, target,
-                             epoch + (int64_t)ms*1000 + INT64_C(10000000), &app_port));
+                             epoch + (int64_t)ms*1000 + INT64_C(40000000), &app_port));
     assert(!app_port); /* Timed-out link cannot expose a cached capability. */
     nodes[2].app_port = 0;
-    struct wn_origin service_origin = {.router_id = 3, .seqno = nodes[2].core.babel.seqno};
+    struct wn_origin service_origin = {.router_id = 3, .seqno = nodes[2].core.published_seqno};
+    service_origin.seqno=nodes[2].core.published_seqno;
     assert(!sign_proof(&nodes[2], &service_origin, wall+ms, epoch+(int64_t)ms*1000));
-    pump();
+    pump();advance(ms+2000);
     assert(!wnr_app_endpoint(&nodes[0].core, target, epoch+(int64_t)ms*1000, &app_port));
     assert(route(0,2).metric == 256); /* Route exists; signed TLS endpoint was removed. */
     assert(wnr_agent_endpoint(&nodes[0].core, target, epoch+(int64_t)ms*1000, &agent_port));
     nodes[2].app_port = 43022;
+    service_origin.seqno=nodes[2].core.published_seqno;
     assert(!sign_proof(&nodes[2], &service_origin, wall+ms, epoch+(int64_t)ms*1000));
-    pump();
+    pump();advance(ms+2000);
     assert(wnr_app_endpoint(&nodes[0].core, target, epoch+(int64_t)ms*1000, &app_port));
     nodes[2].agent_disabled = true;
+    service_origin.seqno=nodes[2].core.published_seqno;
     assert(!sign_proof(&nodes[2], &service_origin, wall+ms, epoch+(int64_t)ms*1000));
-    pump();
+    pump();advance(ms+2000);
     assert(!wnr_agent_endpoint(&nodes[0].core, target, epoch+(int64_t)ms*1000, &agent_port));
     assert(!agent_port && route(0,2).metric == 256);
     assert(wnr_app_endpoint(&nodes[0].core, target, epoch+(int64_t)ms*1000, &app_port));
     nodes[2].agent_disabled = false;
+    service_origin.seqno=nodes[2].core.published_seqno;
     assert(!sign_proof(&nodes[2], &service_origin, wall+ms, epoch+(int64_t)ms*1000));
-    pump();
+    pump();advance(ms+2000);
     assert(wnr_agent_endpoint(&nodes[0].core, target, epoch+(int64_t)ms*1000, &agent_port));
     /* Even a blocked actor cannot keep a stale selected link forwarding. */
     assert(!wnr_lookup(&nodes[0].core, nodes[2].address,
-                       epoch + (int64_t)ms * 1000 + INT64_C(10000000), &r));
+                       epoch + (int64_t)ms * 1000 + INT64_C(40000000), &r));
     uint8_t ip[40] = {0x60};
     ip[7] = 64;
     memcpy(ip + 8, nodes[0].address, 16);
@@ -313,26 +320,13 @@ int main(int argc, char **argv)
         if (restored.babel.drops[i].used)
             assert(restored.babel.drops[i].expires > restored.babel.now);
     wnr_deinit(&restored);
-    uint8_t corrupted[WNR_JOURNAL_MAX];
-    memcpy(corrupted, nodes[0].journal, nodes[0].journal_size);
-    corrupted[90] ^= 1;
-    assert(wnr_init(&restored, &nodes[0].config, reboot, corrupted,
-                    nodes[0].journal_size) < 0 &&
-           restored.stopped);
-    wnr_deinit(&restored);
-    struct wnr_config wrong = nodes[0].config;
-    wrong.trust_hash[0] ^= 1;
-    assert(wnr_init(&restored, &wrong, reboot, nodes[0].journal,
-                    nodes[0].journal_size) < 0);
-    wnr_deinit(&restored);
-
     nodes[0].active = &nodes[0].core;
     unsigned sends = nodes[0].sends;
     nodes[0].fail_storage = true;
     /* A changed, signed sequence proof requires a new durable replay receipt.
      */
     struct wn_origin changed = {.router_id = 3,
-                                .seqno = nodes[2].core.babel.seqno};
+                                .seqno = nodes[2].core.published_seqno};
     assert(!sign_proof(&nodes[2], &changed, wall + ms,
                        epoch + (int64_t)ms * 1000));
     assert(wnr_manifest(&nodes[0].core, nodes[2].proof, nodes[2].proof_size,

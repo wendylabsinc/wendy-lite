@@ -51,9 +51,9 @@ int wn_router_hello_check(const void *data, size_t size, const char *self,
 int wn_gossip_write(const struct wg_message *m,char *out,size_t cap)
 {
     static const char *ops[]={"have","want","unavailable","data","gone"};
-    if(!out || wg_validate(m) || (m->id.type!=1 && m->id.type!=2 && m->id.type!=3))return -1;
+    if(!out || wg_validate(m) || m->id.type!=1)return -1;
     struct wn_writer w={.data=(uint8_t*)out,.capacity=cap,.maximum=WN_CONTROL_MAX};
-    wn_map(&w,2);wn_key(&w,"kind");wn_text(&w,m->id.type==3 ? "operator-gossip":"gossip");wn_key(&w,m->id.type==3 ? "operator":"gossip");
+    wn_map(&w,2);wn_key(&w,"kind");wn_text(&w,"gossip");wn_key(&w,"gossip");
     wn_map(&w,8);wn_key(&w,"v");wn_uint(&w,1);wn_key(&w,"op");wn_text(&w,ops[m->op]);
     wn_key(&w,"data");wn_bytes(&w,m->data,m->size);wn_key(&w,"type");wn_uint(&w,m->id.type);
     wn_key(&w,"total");wn_uint(&w,m->total);wn_key(&w,"digest");wn_bytes(&w,m->id.hash,32);
@@ -70,20 +70,21 @@ static int gossip_read(const void *data, size_t size, struct wg_message *out,
     uint64_t version, type, request = 0, offset = 0, total = 0;
     size_t n = 0;
     if (!out || wn_doc_parse(&d, data, size))return -1;
-    bool operator=wn_doc_equal(&d,wn_doc_member(&d,0,"kind"),"operator-gossip");
-    if(!operator && !wn_doc_equal(&d,wn_doc_member(&d,0,"kind"),"gossip"))return -1;
-    int g = wn_doc_member(&d, 0, operator ? "operator":"gossip");
-    if (g < 0 || d.tokens[g].type!='{')
+    if(!wn_doc_equal(&d,wn_doc_member(&d,0,"kind"),"gossip"))return 1;
+    int g = wn_doc_member(&d, 0, "gossip");
+    const struct wn_token *group=wn_doc_token(&d,g);
+    if (!group || group->type!='{')
         return -1;
     int op = wn_doc_member(&d, g, "op");
-    if(op<0 || d.tokens[op].type!='"' || d.tokens[op].end<=d.tokens[op].start+d.tokens[op].header)return -1;
+    const struct wn_token *operation=wn_doc_token(&d,op);
+    if(!operation || operation->type!='"' || operation->end<=operation->start+operation->header)return -1;
     unsigned i = 0;
     for (; i < sizeof ops/sizeof *ops; i++)
         if (wn_doc_equal(&d, op, ops[i]))
             break;
     if (i == sizeof ops/sizeof *ops)return 1;
     if(number(&d,g,"v",&version) || number(&d,g,"type",&type))return -1;
-    if(version!=1 || (operator ? type!=3:(type!=1 && type!=2)))return 1;
+    if(version!=1 || type!=1)return 1;
     /* Unknown additive transport fields are ignored. Signed object fields are
      * still validated independently by their exact existing parsers. */
     struct wg_message m = {.id.type = (uint8_t)type, .data = bytes};
@@ -121,7 +122,7 @@ int wn_gossip_identify(void *context, uint8_t type, const void *data,
     (void)context;
     static const uint8_t domain[] = "wendy-mesh-artifact/1";
     if (!data || !size || size > WG_OBJECT_MAX || !hash ||
-        (type != 1 && type != 2 && type != 3) || wendy_pki_crypto_init())
+        type != 1 || wendy_pki_crypto_init())
         return -1;
     uint8_t length[4];
     wn_put32(length, (uint32_t)size);
