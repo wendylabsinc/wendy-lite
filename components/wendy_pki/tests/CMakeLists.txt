@@ -327,3 +327,6 @@ foreach(profile p256 mldsa65)
     set_tests_properties(pki_owned_der_source_without_root_${profile} PROPERTIES TIMEOUT 90
         ENVIRONMENT "WENDY_TLS_OWNED_STREAM=1;WENDY_TLS_OWNED_ONLY=1;WENDY_TLS_SCOPED_OWNER=1;WENDY_TLS_SOURCE_ROOT_OMITTED=1")
 endforeach()
+# Standalone production-dispatcher lifecycle/ownership coverage, also usable
+# without configuring the certificate/crypto libraries.
+add_subdirectory(work)
