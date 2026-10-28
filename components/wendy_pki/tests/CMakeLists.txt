@@ -418,3 +418,13 @@ add_test(NAME pki_time_nonce_normal COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_LIST_DIR}/time_nonce_success.py" "${GO_EXECUTABLE}"
     "${CMAKE_CURRENT_LIST_DIR}/public_time_fixtures.go" "$<TARGET_FILE:time_nonce_success_test>")
 set_tests_properties(pki_time_nonce_normal PROPERTIES TIMEOUT 240)
+
+add_executable(operator_app_composed_test operator_app_composed_test.c ${PKI_TLS}
+    ../../wendy_net_common/src/runtime_memory.c
+    ../../wendy_net_peer/src/actor.c ../../wendy_net_peer/src/protocol.c ../../wendy_net_peer/src/binary.c
+    "${IDF_COMPONENTS}/http_parser/http_parser.c")
+target_include_directories(operator_app_composed_test BEFORE PRIVATE ../../wendy_net_peer/tests/app_stubs ../../wendy_net_peer/tests/io_stubs ../../wendy_net_peer/tests/router_stubs)
+target_include_directories(operator_app_composed_test PRIVATE ../src ../../wendy_net_peer/include ../../wendy_net_peer/src ../../wendy_net/include "${IDF_COMPONENTS}/http_parser")
+target_compile_definitions(operator_app_composed_test PRIVATE WENDY_MESH_TEST_LOG=1 WENDY_NET_MEMORY_HOST_BUDGET_TEST=1 CONFIG_WENDY_NET=1 CONFIG_WENDY_NET_TCP_RELAY_BUFFER_SIZE=256)
+target_compile_options(operator_app_composed_test PRIVATE -UNDEBUG -Wall -Wextra -Werror -Wno-unused-parameter -Wno-unused-function)
+target_link_libraries(operator_app_composed_test PRIVATE pki)
