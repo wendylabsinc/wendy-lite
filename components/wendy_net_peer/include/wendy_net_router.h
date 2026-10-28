@@ -5,6 +5,7 @@
 #pragma once
 #include "wendy_babel.h"
 #include "wendy_net_directory.h"
+#include "wendy_net_operator.h"
 
 #define WNR_JOURNAL_HEADER 84
 #define WNR_JOURNAL_MAX                                                        \
@@ -41,6 +42,7 @@ struct wnr_core
     struct wb_engine babel;
     struct wnd_directory directory;
     struct wne_cache endpoints;
+    struct wno_directory *operators; /* lazy, full routers only; no signed blobs */
     struct wnr_config config;
     uint8_t scope[76], saved_hash[32];
     int64_t epoch_us, now_us, unix_ms, published_us;
@@ -101,3 +103,9 @@ size_t wnr_memory(const struct wnr_core *);
 int wnr_manifest_verified(struct wnr_core *,const void *,size_t,int64_t,int64_t);
 
 bool wnr_busy(const struct wnr_core *);
+
+/* Actor continuation only: primary chain and this exact v4 signature completed
+ * on the crypto worker. Operator origins use ordinary manifest gossip. Gateway
+ * profiles deliberately do not learn/cache remote operator authorities. */
+int wnr_operator_manifest_verified(struct wnr_core *,const struct wno_manifest *,
+    const struct wendy_pki_operator_peer *,int64_t unix_ms,int64_t monotonic_us);
