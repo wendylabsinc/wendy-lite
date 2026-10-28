@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Bounded native port of WendyOS go/babel. Single-owner, sans-I/O engine.
- * The caller owns authentication, time, durable history and atomic forwarding.
+ * The caller owns authentication, time, optional history and atomic forwarding.
  */
 #pragma once
 #include <stdbool.h>
@@ -17,6 +17,10 @@
 #define WB_LINKS 4
 #endif
 #endif
+/* Prefixes (including suppression), alternate-carrier candidates and source
+ * history have independent ceilings. These do not reserve arrays at init.
+ * The integrating runtime selects the constrained profile; it is not implied
+ * by the chip family. */
 #ifndef WB_ROUTES
 #if defined(ESP_PLATFORM) && CONFIG_WENDY_NET_CONSTRAINED_PROFILE
 #define WB_ROUTES 32
@@ -49,8 +53,9 @@
 #if defined(ESP_PLATFORM) && CONFIG_WENDY_NET_CONSTRAINED_PROFILE
 #define WB_MESSAGES 96
 #else
-/* A64-origin dump across six carriers needs more than256 queued TLVs.
- * This is a growth ceiling, not an allocated array. SRAM keeps96 above. */
+/* A 64-origin dump across six carriers needs more than 256 queued TLVs.
+ * This is a growth ceiling, not an allocated array. The constrained profile
+ * keeps 96 above. */
 #define WB_MESSAGES 1024
 #endif
 #endif
@@ -161,7 +166,8 @@ struct wb_config
     uint16_t seqno;
     uint32_t hello_ms, update_ms, source_ms;
     bool ipv4_via_ipv6;
-    /* Endpoint mode advertises local prefixes and maintains adjacency only. */
+    /* Endpoint mode advertises local prefixes and maintains adjacency only.
+     * The caller selects this policy independently of storage ceilings. */
     bool local_only;
     bool (*allow)(void *context, uint64_t router, const struct wb_prefix *, uint16_t seqno);
     void *context;
@@ -230,12 +236,13 @@ int wb_set_cost(struct wb_engine *, uint64_t now_ms, uint64_t link, uint16_t cos
 int wb_originate(struct wb_engine *, uint64_t now_ms, const struct wb_prefix *, uint16_t metric);
 int wb_withdraw(struct wb_engine *, uint64_t now_ms, const struct wb_prefix *);
 int wb_receive(struct wb_engine *, uint64_t now_ms, uint64_t link, const void *, size_t size);
-/* Apply ALL routes, persist history, and then commit. A failed commit stops the
- * engine permanently. On WB_STOPPED the caller must withdraw all forwarding.
+/* Apply ALL routes, then commit. If using checkpoint storage, save history
+ * before commit and packet export. A failed commit stops the engine permanently.
+ * On WB_STOPPED the caller must withdraw all forwarding.
  * No event is accepted with pending forwarding or output. */
 int wb_commit(struct wb_engine *, uint64_t revision, bool success);
 /* Return one complete Babel payload; 0 when drained, negative on API misuse.
- * Persist history even when an event did not change the forwarding snapshot. */
+ * When using checkpoint storage, save even if forwarding did not change. */
 int wb_next_packet(struct wb_engine *, uint64_t *link, uint8_t *out, size_t capacity);
 uint64_t wb_next_deadline(const struct wb_engine *); /* UINT64_MAX if none */
 const struct wb_route *wb_lookup(const struct wb_engine *, const struct wb_prefix *host);

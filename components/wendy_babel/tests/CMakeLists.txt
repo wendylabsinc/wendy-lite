@@ -17,3 +17,24 @@ target_link_libraries(babel_memory_test PRIVATE wendy_babel)
 target_compile_options(babel_memory_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 add_test(NAME babel_sparse_memory COMMAND babel_memory_test)
 add_test(NAME babel_steady_workspace_success COMMAND babel_memory_test --normal)
+
+# Exercise the C5 resource policy with six carriers independently of firmware.
+add_library(wendy_babel_full ../src/wire.c ../src/engine.c ../src/history.c ../src/storage.c)
+target_include_directories(wendy_babel_full PUBLIC ../include PRIVATE ../../wendy_net_common/include)
+target_compile_definitions(wendy_babel_full PUBLIC WB_LINKS=6)
+target_compile_options(wendy_babel_full PRIVATE -Wall -Wextra -Werror -Wno-misleading-indentation)
+add_executable(babel_capacity_test capacity_test.c)
+target_link_libraries(babel_capacity_test PRIVATE wendy_babel_full)
+target_compile_options(babel_capacity_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME babel_full_multipath_capacity COMMAND babel_capacity_test)
+
+# Apply the small resource policy explicitly; chip family does not select it.
+add_library(wendy_babel_constrained ../src/wire.c ../src/engine.c ../src/history.c ../src/storage.c)
+target_include_directories(wendy_babel_constrained PUBLIC ../include PRIVATE ../../wendy_net_common/include)
+target_compile_definitions(wendy_babel_constrained PUBLIC
+    WB_ROUTES=32 WB_CANDIDATES=64 WB_SOURCES=64 WB_REQUESTS=8 WB_MESSAGES=96)
+target_compile_options(wendy_babel_constrained PRIVATE -Wall -Wextra -Werror -Wno-misleading-indentation)
+add_executable(babel_constrained_test babel_test.c)
+target_link_libraries(babel_constrained_test PRIVATE wendy_babel_constrained)
+target_compile_options(babel_constrained_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME babel_constrained_core COMMAND babel_constrained_test)

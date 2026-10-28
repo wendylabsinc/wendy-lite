@@ -169,6 +169,22 @@ static void test_policy(void)
     advance(24000);
     assert(route(0, 2) && !route(0, 2)->unreachable);
 }
+static void test_endpoint_policy(void)
+{
+    init();
+    struct wb_config c = engines[1].config;
+    c.local_only = true;
+    assert(wb_init(&engines[1], &c) == WB_OK);
+    struct wb_prefix own = host(2);
+    complete(1, wb_originate(&engines[1], now, &own, 0));
+    connect(0, 1, 128);
+    connect(1, 2, 128);
+    advance(12000);
+    assert(route(0, 1) && !route(0, 1)->unreachable);
+    assert(route(2, 1) && !route(2, 1)->unreachable);
+    assert(!route(0, 2) && !route(2, 0));
+    assert(engines[1].route_count == 1 && !engines[1].candidates);
+}
 static void test_history(void)
 {
     init();
@@ -263,6 +279,7 @@ int main(void)
     test_wire();
     test_transit();
     test_policy();
+    test_endpoint_policy();
     test_history();
     test_capacity_and_commit();
     for (unsigned i = 0; i < 3; i++)

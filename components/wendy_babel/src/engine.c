@@ -78,15 +78,54 @@ static struct wb_local *local_for(struct wb_engine *e, const struct wb_prefix *p
             return &e->local[i];
     return NULL;
 }
+/* The route bound counts distinct prefixes, including retained suppression.
+ * Alternate carriers have their own WB_CANDIDATES ceiling. */
+static bool prefix_admitted(const struct wb_engine *e, const struct wb_prefix *p)
+{
+    for (size_t i = 0; i < e->candidates_capacity; i++)
+        if (e->candidates[i].used && wb_prefix_equal(&e->candidates[i].route.prefix, p))
+            return true;
+    for (size_t i = 0; i < e->local_capacity; i++)
+        if (e->local[i].used && wb_prefix_equal(&e->local[i].prefix, p))
+            return true;
+    for (size_t i = 0; i < e->drops_capacity; i++)
+        if (e->drops[i].used && wb_prefix_equal(&e->drops[i].prefix, p))
+            return true;
+    return false;
+}
 static unsigned admission_count(const struct wb_engine *e)
 {
     unsigned n = 0;
     for (size_t i = 0; i < e->candidates_capacity; i++)
-        n += e->candidates[i].used;
+        if (e->candidates[i].used)
+        {
+            bool seen = false;
+            for (size_t j = 0; j < i; j++)
+                seen |= e->candidates[j].used &&
+                        wb_prefix_equal(&e->candidates[i].route.prefix, &e->candidates[j].route.prefix);
+            n += !seen;
+        }
     for (size_t i = 0; i < e->local_capacity; i++)
-        n += e->local[i].used;
+        if (e->local[i].used)
+        {
+            bool seen = false;
+            for (size_t j = 0; j < e->candidates_capacity; j++)
+                seen |= e->candidates[j].used &&
+                        wb_prefix_equal(&e->local[i].prefix, &e->candidates[j].route.prefix);
+            n += !seen;
+        }
     for (size_t i = 0; i < e->drops_capacity; i++)
-        n += e->drops[i].used;
+        if (e->drops[i].used)
+        {
+            bool seen = false;
+            for (size_t j = 0; j < e->candidates_capacity; j++)
+                seen |= e->candidates[j].used &&
+                        wb_prefix_equal(&e->drops[i].prefix, &e->candidates[j].route.prefix);
+            for (size_t j = 0; j < e->local_capacity; j++)
+                seen |= e->local[j].used &&
+                        wb_prefix_equal(&e->drops[i].prefix, &e->local[j].prefix);
+            n += !seen;
+        }
     return n;
 }
 static uint32_t hello_ms(const struct wb_engine *e, const struct wb_link_state *l)
@@ -515,7 +554,7 @@ static void update(struct wb_engine *e, struct wb_link_state *l, const struct wb
     }
     if (!r)
     {
-        if (admission_count(e) >= WB_ROUTES)
+        if (!prefix_admitted(e, &m->prefix) && admission_count(e) >= WB_ROUTES)
         {
             e->counters.rejected++;
             return;
@@ -897,7 +936,7 @@ int wb_originate(struct wb_engine *e, uint64_t now, const struct wb_prefix *p, u
     struct wb_local *local = local_for(e, p);
     if (!local)
     {
-        if (admission_count(e) >= WB_ROUTES)
+        if (!prefix_admitted(e, p) && admission_count(e) >= WB_ROUTES)
             return WB_LIMIT;
         for (size_t i = 0; i < e->local_capacity; i++)
             if (!e->local[i].used)
