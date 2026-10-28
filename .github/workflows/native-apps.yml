@@ -1,0 +1,76 @@
+name: Native Apps
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Compile the example native apps the way a project outside this repo does:
+  # wendy-lite's components come from GitHub through the IDF component
+  # manager, never from this checkout.
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - app: blink-rgb
+            target: esp32c6
+    container:
+      image: espressif/idf:v6.0.3
+    steps:
+      - uses: actions/checkout@v5
+
+      # Outside the checkout, no component of this repo can stand in for the
+      # ones fetched from GitHub.
+      - name: Copy app out of the checkout
+        shell: bash
+        env:
+          APP: ${{ matrix.app }}
+        run: cp -r "native_apps/$APP" "$RUNNER_TEMP/$APP"
+
+      # The committed manifest tracks wendy-lite's default branch. Pin it to
+      # the commit under test so a change that breaks the app fails before it
+      # lands on main. On a pull request that is the PR head: github.sha is a
+      # merge commit that GitHub recreates when main moves, after which it can
+      # no longer be fetched.
+      - name: Pin wendy-lite components to the commit under test
+        shell: bash
+        env:
+          APP: ${{ matrix.app }}
+          REF: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          . "$IDF_PATH/export.sh"
+          python - "$RUNNER_TEMP/$APP/main/idf_component.yml" "$REF" <<'PY'
+          import sys
+          import yaml
+
+          path, ref = sys.argv[1:]
+          with open(path) as f:
+              manifest = yaml.safe_load(f)
+          deps = manifest["dependencies"]
+          pinned = [name for name, dep in deps.items()
+                    if isinstance(dep, dict)
+                    and dep.get("git") == "https://github.com/wendylabsinc/wendy-lite.git"]
+          # Without a match the build would silently test main instead.
+          assert pinned, f"no wendy-lite git dependency in {path}"
+          for name in pinned:
+              deps[name]["version"] = ref
+          with open(path, "w") as f:
+              yaml.safe_dump(manifest, f, sort_keys=False)
+          print(f"pinned {', '.join(pinned)} to {ref}")
+          PY
+
+      # Same steps as `wendy run`: only the app binary, not a firmware image.
+      - name: Build
+        shell: bash
+        env:
+          APP: ${{ matrix.app }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          . "$IDF_PATH/export.sh"
+          cd "$RUNNER_TEMP/$APP"
+          idf.py set-target "$TARGET"
+          idf.py gen_project_binary
