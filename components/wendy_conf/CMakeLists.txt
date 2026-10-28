@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "src/wendy_conf.c"
+        "src/wendy_cert_bundle.c"
         "src/wendy_conf.pb.c"
     INCLUDE_DIRS
         "include"
@@ -10,4 +11,5 @@ idf_component_register(
     REQUIRES
         esp_partition log nvs_flash
         nanopb
+    PRIV_REQUIRES mbedtls
 )
