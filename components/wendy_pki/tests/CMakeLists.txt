@@ -371,3 +371,7 @@ add_test(NAME pki_time_nonce_normal COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_LIST_DIR}/time_nonce_success.py" "${GO_EXECUTABLE}"
     "${CMAKE_CURRENT_LIST_DIR}/public_time_fixtures.go" "$<TARGET_FILE:time_nonce_success_test>")
 set_tests_properties(pki_time_nonce_normal PROPERTIES TIMEOUT 240)
+
+# Standalone production-dispatcher lifecycle/ownership coverage, also usable
+# without configuring the certificate/crypto libraries.
+add_subdirectory(work)
