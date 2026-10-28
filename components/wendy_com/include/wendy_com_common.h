@@ -13,7 +13,10 @@ extern "C" {
 
 struct wcom_net_delegate {
     WendyComResult (*get)(WendyComNetStatus *);
-    WendyComResult (*set)(const WendyComNetConfig *,WendyComNetStatus *);
+    /* A changed configuration returns one nonzero receipt token. The delegate
+     * defers application until the response crosses its transport barrier. */
+    WendyComResult (*set)(const WendyComNetConfig *,WendyComNetStatus *,uint32_t *reply_token);
+    void (*reply_complete)(uint32_t reply_token);
 };
 
 struct wcom_app_delegate {

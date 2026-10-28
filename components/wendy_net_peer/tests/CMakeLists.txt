@@ -186,3 +186,6 @@ driver_test(wake_lifetime wake_lifetime_success_test.c)
 target_link_libraries(driver_wake_lifetime PRIVATE Threads::Threads)
 driver_test(actor_driver actor_driver_success_test.c)
 target_include_directories(driver_actor_driver BEFORE PRIVATE io_stubs)
+
+# Standalone management handoff/state checks do not require crypto dependencies.
+add_subdirectory(settings)

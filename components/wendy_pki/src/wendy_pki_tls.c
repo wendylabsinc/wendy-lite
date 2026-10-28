@@ -16,11 +16,6 @@
 #include "wendy_peer_identity.h"
 #include "wendy_operator_auth.h"
 #include "wendy_net_binary.h"
-#if CONFIG_WENDY_MESH_LEAF
-#define LEGACY_MESH_ALPN WENDY_PKI_MESH_ALPN
-#else
-#define LEGACY_MESH_ALPN "" /* Legacy constructors reject this disabled profile. */
-#endif
 #include <errno.h>
 #include <ctype.h>
 #include <fcntl.h>
@@ -31,9 +26,6 @@
 #include <stdatomic.h>
 #include <mbedtls/platform.h>
 #include <mbedtls/md.h>
-#if CONFIG_WENDY_MESH_LEAF
-#include <mbedtls/base64.h>
-#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1030,11 +1022,7 @@ done:
  * a physical interface retains the direct-path budget. Neither budget slides. */
 static int64_t network_budget_us(bool gateway, const char *interface)
 {
-#if CONFIG_WENDY_MESH_CLOUD_UPLINK
-    if (!interface) return INT64_C(60000000);
-#else
     (void)interface;
-#endif
     return gateway ? INT64_C(60000000) : INT64_C(15000000);
 }
 
@@ -1042,12 +1030,13 @@ static int finish_mesh(wendy_pki_connection *c,const char *tenant,const char *de
     const char *router,bool gateway,const char *protocol,time_t self_verified_until,
     struct wendy_conf_span roots,bool native_router)
 {
+    (void)gateway;
     {
         const char* alpn = mbedtls_ssl_get_alpn_protocol(&c->ssl);
         const mbedtls_x509_crt* peer = mbedtls_ssl_get_peer_cert(&c->ssl);
         char expected_prefix[70];
         snprintf(expected_prefix,sizeof expected_prefix,"spiffe://wendy.sh/tenant/%s/device/",tenant);
-        if (!alpn || strcmp(alpn, gateway ? "wendy-mesh-internet/1" : protocol ? protocol : LEGACY_MESH_ALPN) || !peer
+        if (!alpn || strcmp(alpn, protocol) || !peer
             || wendy_pki_certificate_policy(peer,false) ||
                wendy_peer_auth_role(peer,tenant)!=WENDY_PEER_ROLE_DEVICE)
             goto fail;
@@ -1092,8 +1081,7 @@ static int finish_mesh(wendy_pki_connection *c,const char *tenant,const char *de
         c->device_expires=self_verified_until;
         if (pki_limit_session(c,now,esp_timer_get_time())) goto fail;
         c->peer_role = WENDY_PEER_ROLE_DEVICE;
-        if (protocol && (!strcmp(protocol,"wendy-net-endpoint/2") ||
-                         !strcmp(protocol,"wendy-app-mesh-tls/1"))) {
+        if (protocol && !strcmp(protocol,"wendy-app-mesh-tls/1")) {
             release_verified_paths(c);
         } else if (native_router) {
             if(c->public_chain) {
@@ -1161,9 +1149,7 @@ static int open_tls(const char* host, unsigned port, const uint8_t* key, size_t 
     if (out)
         *out = NULL;
     bool mesh = tenant != NULL;
-#if !CONFIG_WENDY_MESH_LEAF
     if(mesh && !protocol)return -1;
-#endif
     bool native_stream=stream && owned && protocol && !strcmp(protocol,"wendy-local-mesh-ble/2");
     bool incoming = accepted_fd && *accepted_fd >= 0;
     if (!out || !roots.data || !roots.size
@@ -1199,8 +1185,7 @@ static int open_tls(const char* host, unsigned port, const uint8_t* key, size_t 
     if (mesh) snprintf(self_principal, sizeof self_principal,
         "spiffe://wendy.sh/tenant/%s/device/%s", tenant, device);
     time_t verify_at = owned ? owned->verify_at : 0;
-    bool compact=owned && protocol && (!strcmp(protocol,"wendy-net-endpoint/2") ||
-                                      !strcmp(protocol,"wendy-app-mesh-tls/1"));
+    bool compact=owned && protocol && !strcmp(protocol,"wendy-app-mesh-tls/1");
     bool native_router=owned && protocol && !strcmp(protocol,"wendy-local-mesh-ble/2");
     bool stream_identity=owned && owned->read_der &&
         (compact || (native_router && owned->public_chain));
@@ -1210,14 +1195,9 @@ static int open_tls(const char* host, unsigned port, const uint8_t* key, size_t 
     if (verify_at) self_verified_until = c->device_expires;
     if (mesh)
     {
-        static const char* const leaf_protocols[] = { LEGACY_MESH_ALPN, NULL };
-        static const char* const gateway_protocols[] = { "wendy-mesh-internet/1", NULL };
-        static const char* const endpoint_protocols[] = { "wendy-net-endpoint/2", NULL };
         static const char* const app_protocols[] = { "wendy-app-mesh-tls/1", NULL };
         static const char* const router_protocols[] = { "wendy-local-mesh-ble/2", NULL };
-        const char* const* protocols = gateway ? gateway_protocols : !protocol ? leaf_protocols
-            : !strcmp(protocol, "wendy-net-endpoint/2") ? endpoint_protocols
-            : !strcmp(protocol,"wendy-app-mesh-tls/1") ? app_protocols : router_protocols;
+        const char* const* protocols = !strcmp(protocol,"wendy-app-mesh-tls/1") ? app_protocols : router_protocols;
         if (configure_mesh_alpn(c, protocols))
             goto fail;
         /* Mesh identity is the exact SPIFFE principal, checked below after
@@ -1310,47 +1290,9 @@ static int open_tls(const char* host, unsigned port, const uint8_t* key, size_t 
         int no_delay=1;
         if (setsockopt(c->fd,IPPROTO_TCP,TCP_NODELAY,&no_delay,sizeof no_delay)) goto fail;
     }
-    if (mesh && !gateway && !protocol)
-    {
-        uint8_t preface[36] = { 'W', 'M', 'L', '3' };
-        const char* uuids[] = { tenant, server ? router : device };
-        for (unsigned u = 0; u < 2; u++)
-        {
-            unsigned offset = 4 + u * 16;
-            for (unsigned i = 0; i < 36;)
-            {
-                if (uuids[u][i] == '-')
-                {
-                    i++;
-                    continue;
-                }
-                unsigned value = 0;
-                for (unsigned j = 0; j < 2; j++)
-                {
-                    char x = uuids[u][i++];
-                    value = value * 16 + (x <= '9' ? x - '0' : x - 'a' + 10);
-                }
-                preface[offset++] = value;
-            }
-        }
-        uint8_t received[36];
-        size_t written = 0;
-        while (written < sizeof preface)
-        {
-            int sent = server ? io_recv(c, received + written, sizeof received - written)
-                              : io_send(c, preface + written, sizeof preface - written);
-            if (sent > 0)
-                written += sent;
-            else if (wait_socket(c, sent, deadline))
-                goto fail;
-        }
-        if (server && memcmp(received, preface, sizeof preface))
-            goto fail;
-    }
     stage = "TLS handshake";
     int r;
-    bool compact_server=owned && protocol && (!strcmp(protocol,"wendy-net-endpoint/2") ||
-        !strcmp(protocol,"wendy-app-mesh-tls/1"));
+    bool compact_server=owned && protocol && !strcmp(protocol,"wendy-app-mesh-tls/1");
     while (c->ssl.MBEDTLS_PRIVATE(state)!=MBEDTLS_SSL_HANDSHAKE_OVER)
     {
         r=handshake_step(c,compact_server);
@@ -1384,26 +1326,6 @@ int pki_tls_connect(const char* host, unsigned port, const uint8_t* key, size_t 
     struct wendy_conf_span cert, struct wendy_conf_span roots, wendy_pki_connection** out)
 {
     return open_tls(host, port, key, key_size, cert, roots, out, NULL, NULL, NULL, NULL, false, false, NULL, NULL, NULL, NULL, NULL);
-}
-int pki_tls_mesh_connect(const char* host, unsigned port, const char* tenant, const char* device,
-    const char* router, const uint8_t* key, size_t key_size, struct wendy_conf_span cert,
-    struct wendy_conf_span roots, wendy_pki_connection** out)
-{
-    return open_tls(host, port, key, key_size, cert, roots, out, tenant, device, router, NULL, false, false, NULL, NULL, NULL, NULL, NULL);
-}
-int pki_tls_mesh_stream(const struct wendy_pki_stream* stream, bool server,
-    const char* tenant, const char* device, const char* peer, const uint8_t* key,
-    size_t key_size, struct wendy_conf_span cert, struct wendy_conf_span roots, wendy_pki_connection** out)
-{
-    return open_tls("radio", 0, key, key_size, cert, roots, out,
-        tenant, device, peer, stream, server, false, NULL, NULL, NULL, NULL, NULL);
-}
-int pki_tls_gateway_connect(const char* host, unsigned port, const char* tenant, const char* device,
-    const char* router, const uint8_t* key, size_t key_size, struct wendy_conf_span cert,
-    struct wendy_conf_span roots, wendy_pki_connection** out)
-{
-    return open_tls(host, port, key, key_size, cert, roots, out,
-        tenant, device, router, NULL, false, true, NULL, NULL, NULL, NULL, NULL);
 }
 int pki_tls_bound_connect(const char* host, unsigned port, const char* interface, const char* resolver,
     const uint8_t* key, size_t key_size, struct wendy_conf_span cert,
@@ -1588,37 +1510,6 @@ static int own_hash(wendy_pki_connection *c, unsigned index, uint8_t hash[32])
 int wendy_pki_mesh_fingerprint(wendy_pki_connection *c,uint8_t hash[32])
 {
     return !c || !hash || !mesh_has_trust(c) ? -1:own_hash(c,0,hash);
-}
-int wendy_pki_mesh_bundle(wendy_pki_connection *c,char *out,size_t capacity)
-{
-    if(!mesh_has_trust(c))return -1;
-    unsigned count=own_count(c);if(!count)return -1;
-#if CONFIG_WENDY_MESH_LEAF
-    /* Preserve the existing leaf component's JSON array of DER/base64. Own
-     * issuer storage may already be streamed, so use its pinned DER reader. */
-    if(!out || capacity<3)return -1;
-    size_t pos=0;out[pos++]='[';
-    for(unsigned i=0;i<count;i++){
-        if(capacity-pos<4)return -1;
-        struct own_part part;if(own_part(c,i,&part)!=1)return -1;
-        if(i)out[pos++]=',';
-        out[pos++]='"';size_t encoded=0;
-        int result=mbedtls_base64_encode((unsigned char *)out+pos,capacity-pos-2,
-            &encoded,part.data,part.size);
-        pki_owned_free(part.owned);if(result)return -1;
-        pos+=encoded;out[pos++]='"';
-    }
-    if(capacity-pos<2)return -1;
-    out[pos++]=']';out[pos]=0;return (int)pos;
-#else
-    struct wn_writer w={.data=(uint8_t*)out,.capacity=capacity,.maximum=PKI_MAX_RESPONSE};
-    wn_array(&w,count);
-    for(unsigned i=0;i<count;i++){
-        struct own_part part;if(own_part(c,i,&part)!=1)return -1;
-        wn_bytes(&w,part.data,part.size);pki_owned_free(part.owned);
-    }
-    return wn_finish(&w);
-#endif
 }
 int wendy_pki_mesh_describe(wendy_pki_connection *c,char *out,size_t cap)
 {
@@ -2332,7 +2223,7 @@ int pki_tls_net_connect(const char* host, unsigned port, const char* tenant, con
     if (out) *out = NULL;
     int result = -1;
     if (owned && owned->key && (owned->certificate || owned->read_der) && protocol &&
-        (!strcmp(protocol,"wendy-net-endpoint/2") || !strcmp(protocol,"wendy-local-mesh-ble/2") ||
+        (!strcmp(protocol,"wendy-local-mesh-ble/2") ||
          !strcmp(protocol,"wendy-app-mesh-tls/1")))
         result = open_tls(host, port, owned->key, owned->key_size, (struct wendy_conf_span){owned->certificate,owned->certificate_size}, roots, out,
             tenant, device, peer, NULL, false, false, NULL, NULL, protocol, owned, NULL);
@@ -2347,7 +2238,7 @@ int pki_tls_net_accept(int *fd,const char *tenant,const char *device,
     if (out) *out=NULL;
     int result=-1;
     if (fd && *fd>=0 && owned && owned->key && (owned->certificate || owned->read_der) && protocol &&
-        (!strcmp(protocol,"wendy-net-endpoint/2") || !strcmp(protocol,"wendy-local-mesh-ble/2") ||
+        (!strcmp(protocol,"wendy-local-mesh-ble/2") ||
          !strcmp(protocol,"wendy-app-mesh-tls/1")))
         result=open_tls(NULL,0,owned->key,owned->key_size,(struct wendy_conf_span){owned->certificate,owned->certificate_size},roots,out,
             tenant,device,NULL,NULL,true,false,NULL,NULL,protocol,owned,fd);

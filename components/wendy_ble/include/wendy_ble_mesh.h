@@ -47,6 +47,10 @@ int64_t wble_mesh_retry_deadline(void);
 /* One owner per returned pipe. The caller closes TLS before release. */
 struct wble_mesh_pipe *wble_mesh_take(struct wble_mesh_peer *);
 struct wendy_pki_stream wble_mesh_stream(struct wble_mesh_pipe *);
+/* Actor-only local send fence for an owned pipe. False while host submission
+ * is pending/stalled, closing, unknown or contended. Never waits for a lock,
+ * controller completion or remote acknowledgement. Ownership pins its lifetime. */
+bool wble_mesh_output_drained(struct wble_mesh_pipe *);
 void wble_mesh_release(struct wble_mesh_pipe *);
 size_t wble_mesh_memory(void);
 /* Multiplex the existing legacy management advertisement with a native

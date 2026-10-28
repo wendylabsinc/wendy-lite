@@ -1,0 +1,10 @@
+menu "Wendy integration fixtures"
+    config WENDY_NET_TEST_SENSOR_SERVICE
+        bool "Expose real SoC temperature through SensorLink for integration tests"
+        default n
+        depends on SOC_TEMP_SENSOR_SUPPORTED
+        help
+            Registers a 1 Hz float32 Celsius channel 42 with an on-demand
+            producer. No producer task is created without a subscription.
+            This optional fixture does not simulate camera or microphone hardware.
+endmenu
