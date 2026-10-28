@@ -39,3 +39,5 @@ dependencies:
     override_path: "../wendy_wifi"
   wendy_ble:
     override_path: "../wendy_ble"
+  wendy_mesh:
+    override_path: "../wendy_mesh"

@@ -30,16 +30,8 @@ endif()
 idf_build_set_property(MINIMAL_BUILD ON)
 project(wendy_mcu)
 
+# wendy_pki's project_include.cmake patches the bundled esp-pqc Mbed TLS.
 include(cmake/dependency_patches.cmake)
-if(CONFIG_MBEDTLS_USE_BUNDLED_PQC)
-    if(CONFIG_MBEDTLS_DYNAMIC_BUFFER)
-        message(FATAL_ERROR
-            "The bundled esp-pqc Mbed TLS backend requires fixed receive buffers. "
-            "ESP-IDF dynamic buffers do not satisfy its handshake reassembly bounds. "
-            "Disable CONFIG_MBEDTLS_DYNAMIC_BUFFER or configure a fresh sdkconfig.")
-    endif()
-    wendy_patch_mbedtls("${CMAKE_CURRENT_LIST_DIR}/components/esp-pqc/components/mbedtls/mbedtls")
-endif()
 wendy_patch_wamr()
 
 # ESP32-P4 ships in several board layouts that differ in flash size and
