@@ -1756,6 +1756,9 @@ int wendy_pki_net_step(struct wendy_pki_net_setup *op)
     c->device_expires=op->identity.certificate_expires;
     c->mesh_deadline_us=op->application ? 0:op->identity.verified_monotonic_us+INT64_C(300000000);
     op->complete=true;
+    /* Certificate presentation has finished on this worker. Taking the ready
+     * TLS context on the actor must never close even a read-only NVS handle. */
+    if(op->source_open){nvs_close(op->source.handle);op->source_open=false;}
     return 0;
 }
 wendy_pki_connection *wendy_pki_net_take(struct wendy_pki_net_setup *op,struct wendy_pki_mesh_identity *identity)

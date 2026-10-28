@@ -11,10 +11,14 @@ menu "Wendy Networking (App-facing)"
         default 4
         range 1 256
         help
-            Each socket consumes RX + TX buffer space (see
-            WENDY_NET_BUFFER_SIZE) plus a small descriptor. Must
+            TCP sockets consume RX + TX stream buffer space (see
+            WENDY_NET_BUFFER_SIZE); UDP owns only pending packet bytes.
+            Unused slots reserve only a small
+            descriptor. Canonical mesh clients allocate payload storage
+            after TLS setup succeeds. Must
             also fit within CONFIG_LWIP_MAX_SOCKETS at the lwIP
-            layer.
+            layer. The raw BSD API has a separate descriptor pool of this
+            same size; it retains no packet buffers and closes on guest reset.
 
     config WENDY_NET_MAX_LISTENERS
         int "Max concurrent listeners"
@@ -33,27 +37,44 @@ menu "Wendy Networking (App-facing)"
             WENDY_NET_MAX_SOCKETS slot.
 
     config WENDY_NET_BUFFER_SIZE
-        int "Per-socket RX/TX buffer size (bytes)"
+        int "Per-socket TCP RX/TX stream buffer size (bytes)"
         depends on WENDY_NET
         default 256
-        range 256 16384
+        range 256 65507
         help
-            Each socket gets one RX and one TX buffer of this
-            size. Total per-socket cost is therefore 2x this
-            value. For UDP this is the maximum datagram size: each
-            datagram fills one whole slot. Inbound datagrams larger
+            TCP allocates one RX and one TX buffer of this size.
+            Stream reads and writes may complete partially. This does not
+            reserve maximum-sized UDP storage or limit UDP capacity.
+
+    config WENDY_NET_DATAGRAM_MAX
+        int "Maximum guest UDP datagram size (bytes)"
+        depends on WENDY_NET
+        default WENDY_NET_BUFFER_SIZE
+        range 256 65507
+        help
+            UDP allocates only actual pending packet bytes, released when
+            consumed or sent. This value is the maximum datagram size;
+            each datagram fills one whole slot. Inbound datagrams larger
             than this are truncated (excess discarded); outbound
             datagrams larger than this are rejected (send returns an
             error) rather than truncated. The WendyLite guest's recv
             buffer must be >= this value or it will truncate datagrams.
+            Full-size UDP requires a matching guest receive buffer and enough
+            RAM for the configured socket pool and relay. PSRAM profiles can
+            use 65507; constrained targets should measure a smaller capacity.
+            Listeners peek packet lengths without a receive scratch buffer.
+            Socket close and guest reset release all pending packet storage.
 
     config WENDY_NET_BUFFERS_IN_PSRAM
         bool "Place wendy_net buffers in PSRAM"
         depends on WENDY_NET && SPIRAM
+        select SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY
         default y if SPIRAM
         help
-            When enabled, the socket/listener arrays are placed in
-            external PSRAM via EXT_RAM_BSS_ATTR. Requires
+            When enabled, active socket buffers and UDP scratch are
+            allocated from PSRAM, without falling back to internal RAM.
+            The small socket/listener descriptor arrays use external BSS.
+            Requires
             CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y. Frees
             internal DRAM proportional to the configured pool
             size.
