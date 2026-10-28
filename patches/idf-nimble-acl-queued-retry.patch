@@ -81,17 +81,14 @@
      size_t event_buf_size = OS_MEMPOOL_SIZE(BLE_HS_HCI_EVT_COUNT, sizeof(struct ble_npl_event)) * sizeof(os_membuf_t);
 --- a/src/ble_hs_hci.c
 +++ b/src/ble_hs_hci.c
-@@ -927,85 +927,75 @@
- int
- ble_hs_hci_acl_tx_now(struct ble_hs_conn *conn, struct os_mbuf **om)
+@@ -929,4 +929,4 @@
  {
 -    struct os_mbuf *txom;
 -    struct os_mbuf *frag;
 +    struct os_mbuf *txom = *om, *frag;
 +    uint16_t len;
      uint8_t pb;
-     int rc;
- 
+@@ -935,32 +935,30 @@
      BLE_HS_DBG_ASSERT(ble_hs_locked_by_cur_task());
 -
 -    txom = *om;
@@ -143,25 +140,18 @@
          if (frag == NULL) {
 -            rc = BLE_HS_ENOMEM;
 -            goto err;
--        }
--
 +            goto retry;
-+        }
- #if !BLE_MONITOR && (MYNEWT_VAL(BLE_HS_LOG_LVL) == LOG_LEVEL_DEBUG)
--        BLE_HS_LOG(DEBUG, "ble_hs_hci_acl_tx(): ");
-         ble_hs_log_mbuf(frag);
--        BLE_HS_LOG(DEBUG, "\n");
--#endif
--
+         }
+@@ -973,7 +971,5 @@
+ 
 -        /* Account for the controller buf that will hold the txed fragment. */
-+#endif
          conn->bhc_outstanding_pkts++;
          ble_hs_hci_avail_pkts--;
 -
 -        rc = ble_hs_tx_data(frag);
 +        rc = ble_hs_tx_data(frag); /* Consumes frag on every result. */
          if (rc != 0) {
-             conn->bhc_outstanding_pkts--;
+@@ -981,14 +977,18 @@
              ble_hs_hci_avail_pkts++;
 -            goto err;
 -        }
@@ -189,7 +179,7 @@
      if (txom != NULL) {
 -        /* The controller couldn't accommodate some or all of the packet. */
          *om = txom;
-         return BLE_HS_EAGAIN;
+@@ -996,14 +996,8 @@
      }
 -
 -    /* The entire packet was transmitted. */
@@ -208,8 +198,6 @@
 +    ble_hs_sched_tx_retry();
 +    return BLE_HS_EAGAIN;
  }
- 
- /**
 --- a/src/ble_hs_priv.h
 +++ b/src/ble_hs_priv.h
 @@ -122,5 +122,7 @@
