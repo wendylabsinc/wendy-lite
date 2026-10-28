@@ -99,7 +99,7 @@ static int read_presented_der(void *context,unsigned index,size_t offset,
 {
     wendy_pki_connection *c=context;
     struct pki_presented_chain *source=c->presented_chain;
-    if (!source || index>=source->count) return output ? -1:0;
+    if (!source || index>=source->count || (c->issuers && c->issuers->omit && index)) return output ? -1:0;
     size_t expected=source->part[index].size;
     if (!output) return count ? -1:(int)expected;
     if (offset>expected || count>expected-offset) return -1;
@@ -159,8 +159,65 @@ static int pin_presented_chain(wendy_pki_connection *c,
 }
 
 /* This layer always presents the full verified issuer path. */
+static int issuer_identity(const mbedtls_x509_crt *leaf,uint8_t output[32])
+{
+    uint8_t parts[64];
+    if(!leaf || !leaf->raw.len ||
+       wendy_pki_sha256(leaf->issuer_raw.p,leaf->issuer_raw.len,parts) ||
+       wendy_pki_sha256(leaf->authority_key_id.keyIdentifier.p,
+                        leaf->authority_key_id.keyIdentifier.len,parts+32))return -1;
+    return wendy_pki_sha256(parts,sizeof parts,output);
+}
+
+static struct pki_issuer_state *prepare_issuer_hint(wendy_pki_connection *c)
+{
+    struct pki_presented_chain *source=c->presented_chain;
+    uint8_t hashes[7][32],identity[32];
+    if(!source || source->count<2 || source->count>8 ||
+       issuer_identity(&c->certificate,identity))return NULL;
+    for(unsigned i=1;i<source->count;i++){
+        bool pinned=false;
+        for(const mbedtls_x509_crt *root=&c->roots;root && root->raw.len;root=root->next){
+            uint8_t hash[32];
+            if(root->raw.len==source->part[i].size &&
+               !wendy_pki_sha256(root->raw.p,root->raw.len,hash) &&
+               !memcmp(hash,source->part[i].hash,32)){pinned=true;break;}
+        }
+        if(!pinned)return NULL;
+        memcpy(hashes[i-1],source->part[i].hash,32);
+    }
+    /* Optional optimization: admission failure preserves ordinary full-chain
+     * TLS, with no allocation or persistent global cache while mesh is off. */
+    struct pki_issuer_state *state=pki_owned_calloc(1,sizeof *state);
+    if(!state)return NULL;
+    if(pki_issuer_hint(hashes,source->count-1,state->hint)){pki_owned_free(state);return NULL;}
+    memcpy(state->own_issuer_identity,identity,32);return state;
+}
+
+static int select_server_issuers(mbedtls_ssl_context *ssl)
+{
+    wendy_pki_connection *c=ssl->MBEDTLS_PRIVATE(p_bio);
+    if(c && c->issuers)
+        c->issuers->omit=pki_client_hello_offers(ssl->MBEDTLS_PRIVATE(in_msg),
+            ssl->MBEDTLS_PRIVATE(in_hslen),c->issuers->hint);
+    return 0;
+}
+
 static int configure_mesh_alpn(wendy_pki_connection *c,const char *const *protocols)
-{return mbedtls_ssl_conf_alpn_protocols(&c->config,protocols);}
+{
+    wendy_net_memory_scope_t previous=connection_scope(c);
+    c->issuers=prepare_issuer_hint(c);
+    wendy_net_memory_scope_leave(previous);
+    if(c->issuers){
+        c->issuers->protocols[0]=protocols[0];
+        if(c->config.MBEDTLS_PRIVATE(endpoint)==MBEDTLS_SSL_IS_CLIENT){
+            c->issuers->protocols[1]=c->issuers->hint;
+            protocols=c->issuers->protocols;
+        }else mbedtls_ssl_conf_cert_cb(&c->config,select_server_issuers);
+    }
+    /* Auxiliary offer only: servers select the unchanged real service ALPN. */
+    return mbedtls_ssl_conf_alpn_protocols(&c->config,protocols);
+}
 
 
 static int io_recv(void *context, unsigned char *buf, size_t size)

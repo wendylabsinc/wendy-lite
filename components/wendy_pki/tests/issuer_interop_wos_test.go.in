@@ -1,0 +1,197 @@
+package bleprovider
+
+import (
+	"bytes"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+)
+
+func TestLiteIssuerInteropNormal(t *testing.T) {
+	binary := os.Getenv("WENDY_LITE_ISSUER_DRIVER")
+	if binary == "" {
+		t.Fatal("WENDY_LITE_ISSUER_DRIVER required")
+	}
+	for _, fixture := range []struct{ shared, pinned, legacy bool }{
+		{true, true, false}, {true, true, true}, {false, true, false}, {true, false, false},
+	} {
+		shared, pinned, legacy := fixture.shared, fixture.pinned, fixture.legacy
+		for _, nativeServer := range []bool{false, true} {
+			t.Run(fmt.Sprintf("shared=%v/pinned=%v/legacy=%v/nativeServer=%v", shared, pinned, legacy, nativeServer), func(t *testing.T) {
+				native, remote := liteIssuerCredentials(t, shared, liteIssuerECDSA)
+				known := shared && pinned && !legacy
+				dir := t.TempDir()
+				put := func(name string, bytes []byte) string {
+					p := filepath.Join(dir, name)
+					if err := os.WriteFile(p, bytes, 0600); err != nil {
+						t.Fatal(err)
+					}
+					return p
+				}
+				keyDER, err := x509.MarshalPKCS8PrivateKey(native.Certificate.PrivateKey)
+				if err != nil {
+					t.Fatal(err)
+				}
+				key := put("key.der", keyDER)
+				certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: native.Certificate.Certificate[0]})
+				certificate = append(certificate, []byte(liteIssuerRoots[native])...)
+				cert := put("certificate.pem", certificate)
+				trust := []byte(liteIssuerRoots[native])
+				if !pinned {
+					var last *pem.Block
+					for len(trust) > 0 {
+						var part *pem.Block
+						part, trust = pem.Decode(trust)
+						if part == nil {
+							t.Fatal("fixture CA bundle")
+						}
+						last = part
+					}
+					trust = pem.EncodeToMemory(last)
+				}
+				roots := put("trust.pem", trust)
+				listener, err := net.Listen("tcp4", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer listener.Close()
+				_ = listener.(*net.TCPListener).SetDeadline(time.Now().Add(10 * time.Second))
+				role := "client"
+				if nativeServer {
+					role = "server"
+				}
+				expected := "0"
+				if known {
+					expected = "1"
+				}
+				command := exec.Command(binary, key, cert, roots, role, fmt.Sprint(listener.Addr().(*net.TCPAddr).Port), expected,
+					native.Device.Tenant().String(), native.Device.UUID().String(), remote.Device.UUID().String(), func() string {
+						if pinned {
+							return issuerHintPrefix + native.IssuerDigest()
+						}
+						return "-"
+					}())
+				output := &synchronizedOutput{}
+				command.Stdout = output
+				command.Stderr = output
+				if err := command.Start(); err != nil {
+					t.Fatal(err)
+				}
+				done := make(chan error, 1)
+				go func() { done <- command.Wait() }()
+				defer func() { _ = command.Process.Kill() }()
+				raw, err := listener.Accept()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer raw.Close()
+				_ = raw.SetDeadline(time.Now().Add(20 * time.Second))
+				protocol := "wendy-local-mesh-ble/2"
+				config := &tls.Config{MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13, NextProtos: []string{protocol},
+					InsecureSkipVerify: true, ClientAuth: tls.RequireAnyClientCert, SessionTicketsDisabled: true}
+				var verifiedServer []*x509.Certificate
+				config.VerifyConnection = func(state tls.ConnectionState) error {
+					chain := make([][]byte, len(state.PeerCertificates))
+					for i, part := range state.PeerCertificates {
+						chain[i] = part.Raw
+					}
+					got, err := remote.Verify(chain, time.Now())
+					if err != nil {
+						return err
+					}
+					if got.Device != native.Device {
+						return fmt.Errorf("unexpected identity %v", got.Device)
+					}
+					verifiedServer = state.PeerCertificates
+					return nil
+				}
+				var connection *tls.Conn
+				if nativeServer {
+					if !legacy && remote.IssuerDigest() != "" {
+						config.NextProtos = append(config.NextProtos, issuerHintPrefix+remote.IssuerDigest())
+					}
+					config.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+						if legacy {
+							return &remote.Certificate, nil
+						}
+						return clientCertificate(remote, verifiedServer), nil
+					}
+					connection = tls.Client(raw, config)
+				} else {
+					config.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+						if legacy {
+							return &remote.Certificate, nil
+						}
+						selected := serverCertificate(remote, hello)
+						t.Logf("WOS server offered=%v digest=%s presents=%d", hello.SupportedProtos, remote.IssuerDigest(), len(selected.Certificate))
+						return selected, nil
+					}
+					connection = tls.Server(raw, config)
+				}
+				if err := connection.Handshake(); err != nil {
+					t.Fatalf("Go handshake: %v\n%s", err, output.String())
+				}
+				state := connection.ConnectionState()
+				want := len(native.Certificate.Certificate)
+				if known {
+					want = 1
+				}
+				if len(state.PeerCertificates) != want {
+					t.Fatalf("Go received %d certs want %d\n%s", len(state.PeerCertificates), want, output.String())
+				}
+				if state.NegotiatedProtocol != protocol || state.DidResume {
+					t.Fatal("unexpected protocol/resumption")
+				}
+				message := make([]byte, 6)
+				if _, err := io.ReadFull(connection, message); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := connection.Write(message); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Fatalf("native: %v\n%s", err, output.String())
+					}
+				case <-time.After(20 * time.Second):
+					t.Fatal("native did not finish")
+				}
+				full := 0
+				for _, der := range native.Certificate.Certificate {
+					full += len(der)
+				}
+				actual := 0
+				for _, cert := range state.PeerCertificates {
+					actual += len(cert.Raw)
+				}
+				t.Logf("normal native→Go DER %d→%d bytes; %s", full, actual, output.String())
+			})
+		}
+	}
+}
+
+type synchronizedOutput struct {
+	mu    sync.Mutex
+	bytes bytes.Buffer
+}
+
+func (b *synchronizedOutput) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.bytes.Write(p)
+}
+func (b *synchronizedOutput) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.bytes.String()
+}
