@@ -1,9 +1,10 @@
 # PKI interoperability tests
 
 The host tests build the pinned esp-pqc mbedTLS 4 and liboqs libraries with
-ML-DSA-65 identity signatures and ML-DSA-65/87 CA verification. Initialize nested dependencies with
-`git submodule update --init --recursive components/esp-pqc`, set `IDF_PATH` to
-ESP-IDF 6.0.3, and install Go 1.27 or newer before configuring:
+ML-DSA-65 identity signatures and ML-DSA-65/87 CA verification. The first
+configuration fetches esp-pqc and its nested submodules at the revision in
+`../idf_component.yml`. To use a local checkout, set `FETCHCONTENT_SOURCE_DIR_ESP_PQC`.
+Set `IDF_PATH` to ESP-IDF 6.0.3, and install Go 1.27 or newer before configuring:
 
 ```sh
 cmake -S components/wendy_pki/tests -B build-pki
