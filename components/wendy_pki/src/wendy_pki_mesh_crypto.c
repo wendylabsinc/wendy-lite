@@ -65,6 +65,8 @@ static int mesh_digest(const char* principal, const void* body, size_t size, uin
 }
 int wendy_pki_mesh_digest(const char *principal,const void *body,size_t size,uint8_t hash[32])
 {return mesh_digest(principal,body,size,hash,leaf_domain,sizeof leaf_domain);}
+int wendy_pki_artifact_digest(unsigned kind,const char *principal,const void *body,size_t size,uint8_t hash[32])
+{return kind ? -1:mesh_digest(principal,body,size,hash,domain,sizeof domain);}
 /* Pure ML-DSA verifies the complete preimage, not its SHA-256. This matches
  * the Linux router's crypto.Hash(0) signature and mldsa.Verify(..., nil). */
 static int verify_mldsa65(mbedtls_pk_context* key, const char* principal, const void* body,

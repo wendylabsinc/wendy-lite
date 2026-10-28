@@ -127,6 +127,9 @@ int wendy_pki_service_verify_key(const struct wendy_pki_mesh_key *,const void *,
 int wendy_pki_inventory_verify_key(const struct wendy_pki_mesh_key *,const void *,size_t,
     const uint8_t *,size_t);
 int wendy_pki_mesh_digest(const char* principal, const void* body, size_t size, uint8_t hash[32]);
+/* Explicit native artifact domain; never selects the staged legacy leaf ABI. */
+int wendy_pki_artifact_digest(unsigned kind,const char *principal,const void *body,
+    size_t size,uint8_t hash[32]);
 
 /* Signed service records use the WendyOS service-specific domain. The
  * catalogue must separately bind the record owner/fingerprint and lease to

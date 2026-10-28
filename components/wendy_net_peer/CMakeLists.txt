@@ -1,3 +1,3 @@
-idf_component_register(SRCS "src/protocol.c" "src/binary.c" "src/packet.c" "src/directory.c" "src/manifest_service.c" "src/service_protocol.c" "src/guest_json.c" "src/certificate_fetch.c" "src/certificate_store.c" "src/certificate_wire.c"
+idf_component_register(SRCS "src/router.c" "src/control.c" "src/router_session.c" "src/crypto_job.c" "src/certificate_worker.c" "src/certificate_read.c" "src/catalog_node.c" "src/manifest_catalog.c" "src/catalog_guest.c" "src/service_store.c" "src/native_staging.c" "src/protocol.c" "src/binary.c" "src/packet.c" "src/directory.c" "src/manifest_service.c" "src/service_protocol.c" "src/guest_json.c" "src/certificate_fetch.c" "src/certificate_store.c" "src/certificate_wire.c"
     INCLUDE_DIRS "include" PRIV_INCLUDE_DIRS "src"
-    REQUIRES wendy_net_common wendy_pki wendy_conf lwip espressif__cjson)
+    REQUIRES wendy_net_common wendy_pki wendy_conf wendy_com wendy_net_gossip wendy_babel esp_timer esp_hw_support lwip freertos pthread espressif__cjson)
