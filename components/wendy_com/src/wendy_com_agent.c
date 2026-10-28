@@ -1,4 +1,5 @@
 #include <stdbool.h>
+#include <stdlib.h>
 #include <assert.h>
 #include <limits.h>
 #include <string.h>
@@ -44,6 +45,7 @@ struct _agent_link {
     struct wcom_rx_chunk rx_chunk;
     struct wcom_tx_chunk tx_chunks[2];
     char static_buf[256];
+    struct wcom_link_buffer_allocator buffer_allocator;
     char *dynamic_buf;
     size_t dynamic_buf_size;
     struct _agent_channel channels[_CHANNELS_PER_LINK_COUNT];
@@ -123,22 +125,33 @@ static struct _agent_link *_get_tx_chunk_link(const struct wcom_tx_chunk *chunk)
     return NULL;
 }
 
+static void _free_dynamic_buffer(struct _agent_link *link)
+{
+    if (link->dynamic_buf) {
+        if (link->buffer_allocator.release)
+            link->buffer_allocator.release(link->buffer_allocator.context, link->dynamic_buf);
+        else
+            free(link->dynamic_buf);
+    }
+    link->dynamic_buf = NULL;
+    link->dynamic_buf_size = 0;
+}
+
 static void *_get_buffer(struct _agent_link *link, size_t size)
 {
-    if (size > sizeof(link->static_buf)) {
-        if (size > link->dynamic_buf_size) {
-            free(link->dynamic_buf);
-            link->dynamic_buf = malloc(size);
-            if (!link->dynamic_buf) {
-                ESP_LOGE(TAG, "malloc failed for dynamic rx buffer of size %zu", size);
-                return NULL;
-            }
-            link->dynamic_buf_size = size;
+    if (size <= sizeof(link->static_buf)) return link->static_buf;
+    if (size > link->dynamic_buf_size) {
+        /* Bound the resize peak to one protocol buffer on constrained boards. */
+        _free_dynamic_buffer(link);
+        link->dynamic_buf = link->buffer_allocator.allocate
+            ? link->buffer_allocator.allocate(link->buffer_allocator.context, size) : malloc(size);
+        if (!link->dynamic_buf) {
+            ESP_LOGE(TAG, "allocation failed for protocol buffer of size %zu", size);
+            return NULL;
         }
-        return link->dynamic_buf;
-    } else {
-        return link->static_buf;
+        link->dynamic_buf_size = size;
     }
+    return link->dynamic_buf;
 }
 
 static bool _capture_span(pb_istream_t *stream, const pb_field_t *field, void **arg)
@@ -211,6 +224,7 @@ static void _send_message(struct _agent_link *link, const WendyComMessage *out)
     }
 
     void *buf = _get_buffer(link, sizing.bytes_written);
+    if (!buf) { wcom_close(link->link_id); return; }
     pb_ostream_t out_stream = pb_ostream_from_buffer(buf, sizing.bytes_written);
     if (!pb_encode(&out_stream, WendyComMessage_fields, out)) {
         ESP_LOGE(TAG, "link %d pb_encode message: %s", link->link_id, PB_GET_ERROR(&out_stream));
@@ -393,6 +407,16 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
         return;
     }
     switch (cmd->which_params) {
+    case WendyComCommand_net_get_tag:
+        resp->which_data=WendyComResponse_net_status_tag;
+        resp->result=wcom_cmd_net_get(&resp->data.net_status);
+        break;
+    case WendyComCommand_net_set_tag:
+        resp->which_data=WendyComResponse_net_status_tag;
+        resp->result=cmd->params.net_set.has_config ?
+            wcom_cmd_net_set(&cmd->params.net_set.config,&resp->data.net_status):
+            WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+        break;
     case WendyComCommand_enrollment_challenge_tag:
         resp->which_data = WendyComResponse_enrollment_challenge_tag;
         resp->data.enrollment_challenge.usb_trust_supported = true;
@@ -664,6 +688,7 @@ static void _start_recv_body(struct _agent_link *link)
         return;
     }
     link->rx_chunk.data = _get_buffer(link, body_size);
+    if (!link->rx_chunk.data) { wcom_close(link->link_id); return; }
     link->rx_chunk.size = body_size;
     link->rx_chunk.done_handler = _done_recv_body;
     link->rx_chunk.next = NULL;
@@ -714,6 +739,7 @@ static void _on_link_state_changed(
             if (ch->link_id == 0) {
                 ch->link_id = link_id;
                 ch->permission = wcom_link_get_permission(link_id);
+                (void)wcom_link_get_buffer_allocator(link_id, &ch->buffer_allocator);
                 ch->handshake_done = false;
                 ch->rx_channel = 0;
                 for (int i = 0; i < _CHANNELS_PER_LINK_COUNT; i++) {
@@ -740,9 +766,8 @@ static void _on_link_state_changed(
                 link->handshake_done = false;
                 link->link_id = 0;
                 link->permission = WCOM_LINK_PERMISSION_NONE;
-                free(link->dynamic_buf);
-                link->dynamic_buf = NULL;
-                link->dynamic_buf_size = 0;
+                _free_dynamic_buffer(link);
+                link->buffer_allocator = (struct wcom_link_buffer_allocator){0};
                 return;
             }
         }

@@ -1,0 +1,10 @@
+# This opt-in contract must exist before component-manager evaluates the guest
+# network manifest. Native firmware can omit the optional guest component while
+# retaining a defined false value, without pulling in WAMR to discover the flag.
+config WENDY_NET
+    bool "Enable app-facing networking host functions"
+    default n
+    help
+        Wi-Fi control, BSD sockets, DNS and TLS from WASM apps. Leave disabled
+        when the firmware has no guest runtime. Native Wendy Net carrier and
+        management services are selected independently by WENDY_NET_PEER.
