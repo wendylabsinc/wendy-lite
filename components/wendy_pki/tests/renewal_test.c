@@ -940,3 +940,12 @@ int wendy_pki_mesh_chain(const uint8_t *const *der,const size_t *sizes,size_t co
     const uint8_t *roots,size_t roots_size,const char *tenant,time_t at,struct wendy_pki_mesh_peer *peer)
 {(void)der;(void)sizes;(void)count;(void)roots;(void)roots_size;(void)tenant;(void)at;(void)peer;
  assert(!"unexpected peer-chain verification");return -1;}
+
+int wendy_pki_operator_chain(const uint8_t *const *der, const size_t *sizes,
+    size_t count, const uint8_t *roots, size_t roots_size, const char *tenant,
+    time_t now, struct wendy_pki_operator_peer *peer)
+{
+    (void)der; (void)sizes; (void)count; (void)roots; (void)roots_size;
+    (void)tenant; (void)now; (void)peer;
+    abort();
+}
