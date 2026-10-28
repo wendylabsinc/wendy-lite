@@ -87,7 +87,8 @@ void wcom_core_exec(struct wcom_operation *operation)
 static void finish_com(void)
 {
     while(operations_first){struct wcom_operation *op=operations_first;operations_first=op->next;
-        if(!operations_first)operations_last=NULL;op->func(op);}
+        if(!operations_first)operations_last=NULL;
+        op->func(op);}
 }
 int wcom_add_routed_stream_link_with_permission(const struct wcom_stream_ops *ops,void *context,
     wcom_interruption_handler_t callback,enum wcom_link_permission permission)
@@ -133,7 +134,8 @@ static void stop(void)
     for(unsigned count=0;count<20;count++){
         bool done=wendy_net_agent_stop();
         if(done){assert(!gate_owner && !flows && !wnab_live() && !used());return;}
-        if(cpu_callback)finish_cpu();finish_com();
+        if(cpu_callback)finish_cpu();
+        finish_com();
     }
     assert(0);
 }
@@ -248,7 +250,8 @@ int main(void)
     /* A delayed com close ACK keeps the slot: repeated ordinary reconnects
      * cannot build orphan bridges while application work occupies com. */
     wendy_net_agent_poll();assert(flows && flows->disposing && wnab_live()==1);
-    if(cpu_callback)finish_cpu();wendy_net_agent_poll();
+    if(cpu_callback)finish_cpu();
+    wendy_net_agent_poll();
     size_t closing_used=used();
     for(unsigned i=0;i<8;i++){
         int rejected[2];socket_pair(rejected);wendy_net_agent_accept(rejected[0]);wendy_net_agent_poll();

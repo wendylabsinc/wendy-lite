@@ -80,6 +80,7 @@ typedef struct { struct { unsigned char ssid[32], password[64]; struct { int aut
 #define WIFI_AUTH_WPA2_PSK 1
 #define WIFI_MODE_STA 0
 #define WIFI_IF_STA 0
+#define WIFI_PS_NONE 0
 esp_err_t esp_wifi_init(const wifi_init_config_t *config);
 esp_err_t esp_wifi_connect(void);
 esp_err_t esp_wifi_disconnect(void);
@@ -87,6 +88,7 @@ esp_err_t esp_wifi_set_mode(int mode);
 esp_err_t esp_wifi_set_config(int interface, const wifi_config_t *config);
 esp_err_t esp_wifi_start(void);
 esp_err_t esp_wifi_stop(void);
+esp_err_t esp_wifi_set_ps(int mode);
 esp_err_t esp_wifi_deinit(void);
 typedef int nvs_handle_t;
 #define NVS_READONLY 0
