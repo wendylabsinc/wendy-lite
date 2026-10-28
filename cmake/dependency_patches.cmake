@@ -108,3 +108,21 @@ function(wendy_patch_wamr)
         "${project_dir}/patches/wamr-idf6-platform.patch")
     wendy_redirect_dependency_target(${target} "${source}" "${destination}")
 endfunction()
+
+# Keep ordinary crossed CoC disconnects from completing one channel twice.
+# Compile a build-local host copy; do not modify the workstation's SDK.
+function(wendy_patch_nimble)
+    if(NOT CONFIG_BT_NIMBLE_ENABLED)
+        return()
+    endif()
+    set(source "$ENV{IDF_PATH}/components/bt/host/nimble/nimble/nimble/host")
+    set(destination "${CMAKE_BINARY_DIR}/wendy_patched/nimble_host")
+    get_filename_component(project_dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
+    set(host_patches
+        "${project_dir}/patches/idf-nimble-coc-crossed-disconnect.patch"
+        "${project_dir}/patches/idf-nimble-coc-credit-retry.patch"
+        "${project_dir}/patches/idf-nimble-coc-backed-credit-window.patch"
+        "${project_dir}/patches/idf-nimble-acl-queued-retry.patch")
+    wendy_prepare_patched_tree("${source}" "${destination}" ${host_patches})
+    wendy_redirect_dependency_target(__idf_bt "${source}" "${destination}")
+endfunction()
