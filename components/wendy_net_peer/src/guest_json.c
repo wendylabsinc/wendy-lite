@@ -19,8 +19,8 @@ static void raw(struct output *w,const char *bytes,size_t n)
 static void literal(struct output *w,const char *s){raw(w,s,strlen(s));}
 static void number(struct output *w,uint64_t value)
 {char s[21];int n=snprintf(s,sizeof s,"%" PRIu64,value);raw(w,s,(size_t)n);}
-/* Match encoding/json's escaping, including HTML and JavaScript line breaks.
- * This keeps the signature valid when a Go peer forwards a RawMessage body. */
+/* Textual local guest ABI only; JSON output is never signed or forwarded
+ * as a mesh artifact. Escape HTML and JavaScript line breaks consistently. */
 static void string(struct output *w,const char *s)
 {
     static const char hex[]="0123456789abcdef";

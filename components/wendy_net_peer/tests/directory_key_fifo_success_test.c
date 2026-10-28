@@ -46,8 +46,8 @@ int main(int argc,char **argv)
     assert(entry(&d,2)->peer.spki_size && !entry(&d,3)->peer.spki_size);
     assert(entry(&d,2)->revision==42 && d.key_count==8);
     old->deadline_us=9000;
-    /* A constrained node lends one of its eight key slots to a typed operator.
-     * Pinned next hops and already-verified device projections survive. */
+    /* Runtime trims may lower the cache ceiling without dropping pinned next
+     * hops or already-verified device projections. */
     assert(!wnd_key_limit(&d,7));
     assert(d.key_count==7 && entry(&d,1)->peer.spki_size && old->revision==42);
     assert(wnd_authorizes(&d,old->address,22,3,100));

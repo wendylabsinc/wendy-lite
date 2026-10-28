@@ -12,4 +12,4 @@ int wncf_chunk_read(const struct wn_doc *,unsigned,struct wncf_chunk *,uint8_t d
 int wncf_chunk_read_view(const struct wn_doc *,unsigned,struct wncf_chunk *,const uint8_t **data);
 int wncf_chunk_write(const struct wncf_chunk *,const void *,char *,size_t);
 
-int wncf_missing_write(const struct wncf_request *,bool operator_domain,char *,size_t);
+int wncf_missing_write(const struct wncf_request *,char *,size_t);

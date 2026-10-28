@@ -36,7 +36,7 @@ struct wnd_entry
     uint8_t gossip_hash[32];
     bool gossip_cached;
     bool gossip_retired;
-    bool pending_receipt; /* New revision awaits its durable checkpoint. */
+    bool pending_receipt; /* Adapter-owned pending publication marker. */
     /* Adapter cache for an independently verified exact public chain in this
      * boot/trust epoch. Not persisted as identity or route authorization. */
     uint8_t certificate_chain_hash[32],certificate_leaf_hash[32];
@@ -88,15 +88,16 @@ int wnd_key_limit(struct wnd_directory *,unsigned limit);
 int wnd_key_pin(struct wnd_directory *,const uint8_t device[16],bool pinned);
 /* Expects SignedManifest itself, without a control envelope. Returns 0 for
  * accepted/idempotent;1 stale/expired;2 identity needed;-1 invalid;3 full.
- * Save accepted receipts durably before applying any route or export. */
+ * Device adapters retain receipts in bounded RAM; no flash operation occurs. */
 int wnd_accept(struct wnd_directory *, const void *, size_t, int64_t unix_ms,
                int64_t monotonic_us);
 bool wnd_authorizes(const struct wnd_directory *, const uint8_t address[16],
                     uint64_t router, uint16_t seqno, int64_t monotonic_us);
 bool wnd_address(const struct wnd_directory *, const uint8_t address[16],
                  int64_t monotonic_us);
-/* Restart restores replay receipts, never live identities or routes. The
- * enclosing durable journal binds tenant, device and the exact trust epoch. */
+/* Optional portable RAM snapshot helpers, never firmware persistence. Restore
+ * retains revision receipts only, never live identities or routes. The caller
+ * keeps the snapshot in the same tenant/device/trust epoch. */
 /* out=NULL queries exact required bytes without allocation or mutation. */
 int wnd_save(const struct wnd_directory *, void *, size_t);
 int wnd_restore(struct wnd_directory *, const void *, size_t);

@@ -41,8 +41,8 @@ struct wncf_request {uint8_t hash[32];size_t offset;};
  * validates the principal/tenant and performs ordinary full-path verification
  * on completion. No certificate payload memory is reserved while idle. */
 int wncf_start(struct wncf_fetch *,const struct wncf_chain *,int64_t now_ms);
-/* Typed operator artifacts already carry their exact principal separately.
- * This public-byte fetch accepts only hashes and creates no device identity. */
+/* Fetch exact public parts by hash without implying a device identity. The
+ * caller supplies and verifies the independently obtained chain descriptor. */
 int wncf_start_hashes(struct wncf_fetch *,const uint8_t hashes[][32],unsigned,
     int64_t now_ms);
 void wncf_stop(struct wncf_fetch *);

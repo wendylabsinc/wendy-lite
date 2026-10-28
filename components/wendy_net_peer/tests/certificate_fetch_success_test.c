@@ -107,10 +107,10 @@ int main(void)
     assert(!wncf_receive(&fetch,&empty,missing.hash,0,sizes[1],parts[1],WNCF_CHUNK,2006));
     assert(wncf_next(&fetch,&empty,2007,&missing)==1 && missing.offset==WNCF_CHUNK);
     wncf_sent(&fetch,2008);assert(fetch.bytes && wncf_memory(&fetch)>sizes[1]);
-    for(unsigned domain=0;domain<2;domain++){
-        length=wncf_missing_write(&missing,domain!=0,wire,sizeof wire);assert(length>0);
+    {
+        length=wncf_missing_write(&missing,wire,sizeof wire);assert(length>0);
         assert(!wn_doc_parse(&document,wire,(size_t)length));
-        envelope=wn_doc_member(&document,0,domain ? "operatorCertificate":"certificate");assert(envelope>=0);
+        envelope=wn_doc_member(&document,0,"certificate");assert(envelope>=0);
         value=wn_doc_member(&document,(unsigned)envelope,"missing");assert(value>=0);
         struct wncf_request decoded_missing;assert(!wncf_request_read(&document,(unsigned)value,&decoded_missing));
         assert(decoded_missing.offset==missing.offset && !memcmp(decoded_missing.hash,missing.hash,32));

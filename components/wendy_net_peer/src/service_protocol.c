@@ -9,23 +9,22 @@ static bool alnum(unsigned c)
 {return (c>='a'&&c<='z') || (c>='A'&&c<='Z') || (c>='0'&&c<='9');}
 bool wns_label_valid(const char *s)
 {
-    size_t n=strlen(s);if(!n || n>63 || !alnum((unsigned char)*s))return false;
-    for(size_t i=1;i<n;i++)if(!alnum((unsigned char)s[i]) && s[i]!='_' && s[i]!='-')return false;
+    size_t n=strlen(s);if(!n || n>63 || !((*s>='a' && *s<='z') || (*s>='0' && *s<='9')))return false;
+    for(size_t i=1;i<n;i++)if(!((s[i]>='a' && s[i]<='z') || (s[i]>='0' && s[i]<='9')) && !strchr("._-",s[i]))return false;
     return true;
 }
 bool wns_app_id_valid(const char *s)
 {
     size_t n=strlen(s);if(!n || n>253)return false;
     for(size_t i=0;i<n;i++)if(!alnum((unsigned char)s[i]) && !strchr("._-",s[i]))return false;
-    return true;
+    return strspn(s,".")!=n;
 }
-static bool service_type(const char *s)
+bool wns_type_valid(const char *s)
 {
     size_t n=strlen(s);if(n<7 || n>21 || s[0]!='_')return false;
     const char *dot=strchr(s,'.');if(!dot || dot-s<2 || dot-s>16 ||
         (strcmp(dot,"._tcp") && strcmp(dot,"._udp")))return false;
-    if(!alnum((unsigned char)s[1]))return false;
-    for(const char *p=s+2;p<dot;p++)if(!alnum((unsigned char)*p) && *p!='-')return false;
+    for(const char *p=s+1;p<dot;p++)if(!((*p>='a' && *p<='z') || (*p>='0' && *p<='9') || *p=='-'))return false;
     return true;
 }
 static int emit_utf8(uint32_t c,char *out,size_t cap,size_t *at)
@@ -90,7 +89,7 @@ int wns_spec_read(const void *data,size_t size,struct wns_record *r)
     if(wn_doc_parse_bounded(d,data,size,WNS_BODY_MAX) || !wn_doc_fields(d,0,fields) ||
        field(d,0,"serviceId",r->service,sizeof r->service)<0 || !wns_label_valid(r->service) ||
        !strcmp(r->service,"internet-gateway") ||
-       field(d,0,"type",r->type,sizeof r->type)<0 || !service_type(r->type) ||
+       field(d,0,"type",r->type,sizeof r->type)<0 || !wns_type_valid(r->type) ||
        field(d,0,"instance",r->instance,sizeof r->instance)<=0 || strpbrk(r->instance,"\r\n") ||
        number(d,0,"port",&port) || !port || port>65535)goto done;
     r->port=(uint16_t)port;r->body=data;r->body_size=size;

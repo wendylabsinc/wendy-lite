@@ -204,17 +204,17 @@ static int app_endpoints(const struct wn_doc *d, unsigned body,
                          struct wnd_manifest *m)
 {
     int endpoints = wn_doc_member(d, body, "appEndpoints");
-    if (endpoints < 0 || d->tokens[endpoints].type == 'n')
+    if (endpoints < 0 || d->storage[endpoints].type == 'n')
         return 0;
-    if (d->tokens[endpoints].type != '[')
+    if (d->storage[endpoints].type != '[')
         return -1;
     unsigned count = 0;
-    for (unsigned i = endpoints + 1; i < d->tokens[endpoints].next;
-         i = d->tokens[i].next)
+    for (unsigned i = endpoints + 1; i < d->storage[endpoints].next;
+         i = d->storage[i].next)
     {
         uint64_t port;
         uint16_t *slot;
-        if (++count > 2 || d->tokens[i].type!='{' ||
+        if (++count > 2 || d->storage[i].type!='{' ||
             number(d, i, "port", &port) || !port || port > 65535)
             return -1;
         int transport = wn_doc_member(d, i, "transport");
@@ -246,15 +246,16 @@ int wnd_manifest_read(const struct wn_doc *d, unsigned body,
     uint64_t version, issued, expires, port = 0, seq;
     char uuid[37], prefix[48];
     uint8_t actual[16], expected[16];
+    if(!d || !m || !wn_doc_token(d,(int)body))return -1;
     memset(m, 0, sizeof *m);
-    if(d->tokens[body].type!='{' || number(d,body,"version",&version))return -1;
+    if(d->storage[body].type!='{' || number(d,body,"version",&version))return -1;
     if(version!=4)return WND_UNSUPPORTED;
     int route = wn_doc_member(d, body, "route"),
         withdraw = wn_doc_member(d, body, "withdraw"),
         name = wn_doc_member(d, body, "name"),
         agent = wn_doc_member(d, body, "agentTransport"),
         port_token = wn_doc_member(d, body, "agentPort");
-    if (route < 0 || d->tokens[route].type!='{' ||
+    if (route < 0 || d->storage[route].type!='{' ||
         number(d, body, "revision", &m->revision) || !m->revision ||
         number(d, body, "Issued", &issued) || !issued || issued > INT64_MAX ||
         number(d, body, "Expires", &expires) || expires > INT64_MAX ||
@@ -278,12 +279,12 @@ int wnd_manifest_read(const struct wn_doc *d, unsigned body,
     if (inet_pton(AF_INET6, prefix, actual) != 1 ||
         memcmp(actual, expected, 16))
         return -1;
-    if (name >= 0 && (d->tokens[name].type != '"' ||
-                      d->tokens[name].end - d->tokens[name].start > 1532))
+    if (name >= 0 && (d->storage[name].type != '"' ||
+                      d->storage[name].end - d->storage[name].start > 1532))
         return -1;
     if (withdraw >= 0)
     {
-        char type = d->tokens[withdraw].type;
+        char type = d->storage[withdraw].type;
         if (type != 't' && type != 'f')
             return -1;
         m->withdraw = type == 't';
@@ -306,24 +307,24 @@ int wnd_manifest_read(const struct wn_doc *d, unsigned body,
     }
     int caps=wn_doc_member(d,body,"caps");
     if(caps>=0){
-        if(d->tokens[caps].type!='[')return -1;
+        if(d->storage[caps].type!='[')return -1;
         unsigned count=0;
-        for(unsigned i=(unsigned)caps+1;i<d->tokens[caps].next;i=d->tokens[i].next){
+        for(unsigned i=(unsigned)caps+1;i<d->storage[caps].next;i=d->storage[i].next){
             char value[65];
             if(++count>16 || wn_doc_string(d,(int)i,value,sizeof value)<=0 || !extension_name(value))return -1;
-            for(unsigned j=(unsigned)caps+1;j<i;j=d->tokens[j].next)
+            for(unsigned j=(unsigned)caps+1;j<i;j=d->storage[j].next)
                 if(wn_doc_equal(d,(int)j,value))return -1;
             if(!strcmp(value,"sensors"))m->sensors=true;
         }
     }
     int requires=wn_doc_member(d,body,"requires");
     if(requires>=0){
-        if(d->tokens[requires].type!='[')return -1;
+        if(d->storage[requires].type!='[')return -1;
         unsigned count=0;
-        for(unsigned i=(unsigned)requires+1;i<d->tokens[requires].next;i=d->tokens[i].next){
+        for(unsigned i=(unsigned)requires+1;i<d->storage[requires].next;i=d->storage[i].next){
             char value[65];
             if(++count>16 || wn_doc_string(d,(int)i,value,sizeof value)<=0 || !extension_name(value))return -1;
-            for(unsigned j=(unsigned)requires+1;j<i;j=d->tokens[j].next)
+            for(unsigned j=(unsigned)requires+1;j<i;j=d->storage[j].next)
                 if(wn_doc_equal(d,(int)j,value))return -1;
         }
         /* Baseline v4 defines the mechanism and no named required extensions. */
@@ -360,9 +361,12 @@ static int accept_manifest(struct wnd_directory *d, const void *data, size_t siz
         wn_principal_device(principal, d->tenant, uuid) ||
         memcmp(uuid, m.device, 16) ||
         wn_doc_bytes(&doc,wn_doc_member(&doc,0,"signature"),&signature,&signature_size) ||
-        signature_size<8 || signature_size>WN_ORIGIN_SIGNATURE_MAX ||
+        signature_size<8 ||
         m.issued > now + 5000)
         return -1;
+    /* An opaque larger signature is an unsupported origin artifact, not a
+     * malformed carrier frame. The session may continue other gossip. */
+    if(signature_size>WN_ORIGIN_SIGNATURE_MAX)return WND_UNSUPPORTED;
     if (m.expires <= now)
         return 1;
     struct wnd_entry *e = find(d, uuid);

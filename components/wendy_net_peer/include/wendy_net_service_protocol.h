@@ -29,6 +29,7 @@ int wns_spec_read(const void *,size_t,struct wns_record *);
 int wns_record_txt(const struct wns_record *,unsigned,char *,size_t);
 bool wns_label_valid(const char *);
 bool wns_app_id_valid(const char *);
+bool wns_type_valid(const char *);
 /* Local WASM JSON ABI adapters; these formats never enter a carrier. */
 int wns_spec_from_json(const void *,size_t,char **,size_t *);
 int wns_record_json(const struct wns_record *,char *,size_t);

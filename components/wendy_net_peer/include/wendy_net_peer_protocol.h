@@ -48,10 +48,10 @@ int wn_principal(const char *tenant, const char *device, char out[106]);
 int wn_principal_device(const char *principal, const char *tenant, uint8_t device[16]);
 int wn_doc_parse(struct wn_doc *doc, const void *data, size_t size);
 /* Router artifacts retain the same bounded token/depth parser with an
- * explicit byte bound. The endpoint wrapper keeps its original small limit. */
+ * explicit byte bound. Ordinary control frames use the smaller frame limit. */
 int wn_doc_parse_bounded(struct wn_doc *doc,const void *data,size_t size,size_t maximum);
 /* Operation-owned token storage for larger service envelopes. The ordinary
- * wrappers still populate doc->tokens and retain their original64token bound.
+ * wrappers still populate doc->tokens within WN_TOKENS.
  * Storage must outlive all queries on doc; no heap is reserved by the parser. */
 int wn_doc_parse_into(struct wn_doc *,const void *,size_t,size_t maximum,
     struct wn_token *storage,unsigned capacity);

@@ -13,8 +13,8 @@ int wncf_chain_read(const struct wn_doc *d,unsigned object,const char *tenant,
     if(wn_doc_string(d,wn_doc_member(d,object,"principal"),out->principal,sizeof out->principal)!=105 ||
        wn_principal_device(out->principal,tenant,device))return -1;
     int array=wn_doc_member(d,object,"hashes");
-    if(array<0 || d->tokens[array].type!='[')return -1;
-    for(unsigned i=(unsigned)array+1;i<d->tokens[array].next;i=d->tokens[i].next){
+    if(array<0 || d->storage[array].type!='[')return -1;
+    for(unsigned i=(unsigned)array+1;i<d->storage[array].next;i=d->storage[i].next){
         if(out->count==WNCF_CHAIN_MAX || read_hash(d,(int)i,out->hashes[out->count]))return -1;
         for(unsigned j=0;j<out->count;j++)if(!memcmp(out->hashes[j],out->hashes[out->count],32))return -1;
         out->count++;
@@ -89,12 +89,12 @@ int wncf_chunk_write(const struct wncf_chunk *chunk,const void *data,char *out,s
     return wn_finish(&w);
 }
 
-int wncf_missing_write(const struct wncf_request *q,bool operator_domain,char *out,size_t cap)
+int wncf_missing_write(const struct wncf_request *q,char *out,size_t cap)
 {
     if(!q || !out || q->offset>=WNCF_PART_MAX || q->offset%WNCF_CHUNK)return -1;
     struct wn_writer w={.data=(uint8_t*)out,.capacity=cap,.maximum=WN_CONTROL_MAX};
-    wn_map(&w,2);wn_key(&w,"kind");wn_text(&w,operator_domain ? "operator-certificate":"certificate");
-    wn_key(&w,operator_domain ? "operatorCertificate":"certificate");wn_map(&w,1);
+    wn_map(&w,2);wn_key(&w,"kind");wn_text(&w,"certificate");
+    wn_key(&w,"certificate");wn_map(&w,1);
     wn_key(&w,"missing");wn_map(&w,2);wn_key(&w,"hash");wn_bytes(&w,q->hash,32);
     wn_key(&w,"offset");wn_uint(&w,q->offset);return wn_finish(&w);
 }

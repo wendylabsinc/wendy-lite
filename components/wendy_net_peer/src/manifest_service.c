@@ -27,22 +27,44 @@ int wns_manifest_service_read(const struct wn_doc *d,struct wns_record *r)
     if(!strcmp(r->app,"wendy.mesh.system") || !strcmp(r->service,"internet-gateway")){
         if(!r->gateway || r->port || *r->type || *r->instance || r->txt_count)return -1;
     }else{
-        size_t n=strlen(r->type);
-        if(!r->port || !*r->instance || n<7 || r->type[0]!='_' || n>21 ||
-           (strcmp(r->type+n-5,"._tcp") && strcmp(r->type+n-5,"._udp")))return -1;
-        for(size_t i=1;i<n-5;i++)if(!((r->type[i]>='a' && r->type[i]<='z') ||
-            (r->type[i]>='0' && r->type[i]<='9') || r->type[i]=='-'))return -1;
+        if(!r->port || !*r->instance || !wns_type_valid(r->type))return -1;
     }
     r->body=d->text;r->body_size=d->size;return 0;
 }
 
 int wns_manifest_services_validate(const struct wn_doc *d,unsigned body)
 {
+    struct service_key {uint16_t start[3],size[3];};
     struct workspace {struct wn_doc child;struct wns_record record;};
     struct workspace *w=wendy_net_malloc(sizeof *w);if(!w)return 4;
+    struct service_key *keys=NULL;size_t capacity=0;
     int array=wn_doc_member(d,body,"s"),result=0;size_t cursor=0,count=0;
     if(array<0){wendy_net_free(w);return -1;}
-    for(;;){int n=wn_doc_array_next(d,array,&cursor,&w->child);if(!n)break;
-        if(n<0 || ++count>256 || wns_manifest_service_read(&w->child,&w->record)){result=-1;break;}}
-    wendy_net_free(w);return result;
+    for(;;){
+        int n=wn_doc_array_next(d,array,&cursor,&w->child);if(!n)break;
+        if(n<0 || count==256 || wns_manifest_service_read(&w->child,&w->record)){result=-1;break;}
+        struct service_key key={0};static const char *const names[]={"m","a","s"};
+        for(unsigned i=0;i<3;i++){
+            const struct wn_token *t=wn_doc_token(&w->child,wn_doc_member(&w->child,0,names[i]));
+            if(!t || t->start+t->header>UINT16_MAX || t->end-t->start-t->header>UINT16_MAX){result=-1;break;}
+            key.start[i]=(uint16_t)(t->start+t->header);key.size[i]=(uint16_t)(t->end-t->start-t->header);
+        }
+        if(result)break;
+        /* Exact identity equality, with borrowed spans instead of copied names
+         * or a hash whose collision could conflate two distinct services. */
+        for(size_t j=0;j<count;j++){
+            bool equal=true;
+            for(unsigned i=0;i<3;i++)if(key.size[i]!=keys[j].size[i] ||
+                memcmp(d->text+key.start[i],d->text+keys[j].start[i],key.size[i])){equal=false;break;}
+            if(equal){result=-1;break;}
+        }
+        if(result)break;
+        if(count==capacity){
+            size_t next=capacity ? capacity*2:4;
+            void *grown=wendy_net_realloc(keys,next*sizeof *keys);
+            if(!grown){result=4;break;}keys=grown;capacity=next;
+        }
+        keys[count++]=key;
+    }
+    wendy_net_free(keys);wendy_net_free(w);return result;
 }
