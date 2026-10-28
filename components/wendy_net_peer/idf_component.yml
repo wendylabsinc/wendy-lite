@@ -1,8 +1,14 @@
 dependencies:
   espressif/cjson:
     version: "^1.7.19"
+  wendy_net:
+    override_path: "../wendy_net"
+    rules:
+      - if: "target != esp32s31 && $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True && $CONFIG{WENDY_NET} == True"
   wendy_babel:
     override_path: "../wendy_babel"
+  wendy_ble:
+    override_path: "../wendy_ble"
   wendy_com:
     override_path: "../wendy_com"
   wendy_conf:
@@ -13,3 +19,7 @@ dependencies:
     override_path: "../wendy_net_gossip"
   wendy_pki:
     override_path: "../wendy_pki"
+  wendy_wifi:
+    override_path: "../wendy_wifi"
+  espressif/mdns:
+    version: "*"
