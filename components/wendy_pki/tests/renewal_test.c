@@ -1129,3 +1129,30 @@ int pki_tls_accept_stream(const struct wendy_pki_stream *stream, const uint8_t *
 int pki_relay_grant(wendy_pki_connection *c, const struct wendy_lite_trust *t, int64_t d) { (void)c; (void)t; (void)d; return -1; }
 
 void wendy_pki_close(wendy_pki_connection *c) { (void)c; }
+
+/* These outer-worker effects are outside renewal orchestration. Keep their
+ * link boundary explicit, and fail if this fixture unexpectedly calls one. */
+void wendy_conf_enrollment_identity(char tenant[37], char device[65])
+{
+    (void)tenant; (void)device;
+    abort();
+}
+int pki_der_cache_open(nvs_handle_t handle, struct pki_der_source *source)
+{
+    (void)handle; (void)source;
+    abort();
+}
+int pki_der_cache_part(struct pki_der_source *source, const uint8_t hash[32],
+    size_t offset, uint8_t out[1024], size_t *total)
+{
+    (void)source; (void)hash; (void)offset; (void)out; (void)total;
+    abort();
+}
+int wendy_pki_mesh_chain(const uint8_t *const *der, const size_t *sizes,
+    size_t count, const uint8_t *roots, size_t roots_size, const char *tenant,
+    time_t now, struct wendy_pki_mesh_peer *peer)
+{
+    (void)der; (void)sizes; (void)count; (void)roots; (void)roots_size;
+    (void)tenant; (void)now; (void)peer;
+    abort();
+}

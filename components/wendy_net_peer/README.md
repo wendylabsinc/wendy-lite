@@ -1,9 +1,9 @@
-# Native peer format foundations
+# Native peer formats and signed sessions
 
 This layer provides current-format CBOR, verified manifest/directory projections,
 packet framing and bounded RAM certificate fetch/store/wire primitives. It
-starts no radio or actor. Worker-backed certificate effects and signed routing
-sessions join in the next layer.
+starts no radio or actor. [Signed sessions](SIGNED_SESSIONS.md) add bounded
+routing, worker-backed certificate effects and complete-manifest projections.
 
 A complete device manifest carries services with one inherited lease. The
 service helpers validate and project those fields; they do not create separate
