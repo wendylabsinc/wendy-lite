@@ -32,9 +32,12 @@ applying OFF inline before its own reply has drained will discard the reply.
 ConfigureNet persists only the device's own desired policy, then returns a
 bounded receipt token internally. The command dispatcher finishes the complete
 response before handing that token to its transport. Direct TLS/UART transports
-have already accepted their output; native VIP streams defer the receipt until
-both their plaintext pipe and encrypted TLS BIO output drain. Context retirement
-also completes the handoff if the client has gone away.
+have already accepted their output. Physical BLE waits for its retained SDU to
+leave the stalled/backoff state; native VIP streams wait for their plaintext
+pipe and encrypted TLS BIO output. The actor also samples each native BLE
+mailbox so a positive stream write cannot hide a still-pending/stalled SDU.
+These are local host-queue fences, not controller or remote acknowledgements.
+Context retirement completes the handoff if the client has gone away.
 
 The actor then gives the outer IP/carrier driver at least 250 ms and waits for
 its bounded output queues to empty. Unrelated continuous traffic can defer this

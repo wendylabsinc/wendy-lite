@@ -1691,6 +1691,11 @@ static void router_run(struct peer_state *root)
                 output_drained=false;continue;
             }
             if(link->carrier.queued || (link->tls_channel && link->tls_channel->output.size))output_drained=false;
+#if CONFIG_WENDY_NET_BLE
+            /* A positive stream write may only have reached the BLE mailbox.
+             * Preserve the reply until the host accepts that retained SDU. */
+            if(link->ble_pipe && !wble_mesh_output_drained(link->ble_pipe))output_drained=false;
+#endif
         }
         wn_settings_poll(output_drained);
 #if CONFIG_WENDY_NET_BLE
