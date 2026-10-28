@@ -29,6 +29,7 @@
 #include <netdb.h>
 #endif
 #include "wendy_pki_verify.h"
+#include "wendy_pki_operator.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -1429,9 +1430,17 @@ int wendy_pki_mesh_local_part(const struct wendy_pki_mesh_identity *clock,
     pthread_mutex_unlock(&identity_lock);
     return result;
 }
+bool wendy_pki_operator_snapshot_current(const struct wendy_pki_mesh_identity *clock)
+{
+    if(!clock || !wendy_conf_is_current() || wendy_pki_reset_in_progress() ||
+       !wendy_conf_snapshot_current(clock->config_generation))return false;
+    int64_t now=esp_timer_get_time();
+    return now>=clock->verified_monotonic_us &&
+        now-clock->verified_monotonic_us<INT64_C(300000000);
+}
 static int public_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
     const uint8_t *const *der,const size_t *sizes,size_t count,
-    struct wendy_pki_mesh_peer *peer)
+    void *peer,bool operator)
 {
     if(!clock || !der || !sizes || !count || !peer ||
        !wendy_conf_is_current() || wendy_pki_reset_in_progress())return -1;
@@ -1450,7 +1459,9 @@ static int public_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
        memcmp(hash,clock->trust_hash,32))goto done;
     time_t now=clock->verified_seconds+
         (monotonic-clock->verified_monotonic_us)/INT64_C(1000000);
-    result=wendy_pki_mesh_chain(der,sizes,count,trust.device_roots.data,
+    result=operator ? wendy_pki_operator_chain(der,sizes,count,trust.device_roots.data,
+        trust.device_roots.size,clock->tenant,now,peer) :
+        wendy_pki_mesh_chain(der,sizes,count,trust.device_roots.data,
         trust.device_roots.size,clock->tenant,now,peer);
     if(!wendy_conf_snapshot_current(trust.generation) || wendy_pki_reset_in_progress())result=-1;
 done:
@@ -1458,7 +1469,10 @@ done:
 }
 int wendy_pki_mesh_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
     const uint8_t *const *der,const size_t *sizes,size_t count,struct wendy_pki_mesh_peer *peer)
-{return public_verify_snapshot(clock,der,sizes,count,peer);}
+{return public_verify_snapshot(clock,der,sizes,count,peer,false);}
+int wendy_pki_operator_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
+    const uint8_t *const *der,const size_t *sizes,size_t count,struct wendy_pki_operator_peer *peer)
+{return public_verify_snapshot(clock,der,sizes,count,peer,true);}
 
 #if CONFIG_WENDY_NET_PEER
 struct wendy_pki_net_setup {

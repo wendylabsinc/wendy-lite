@@ -1036,12 +1036,19 @@ static int finish_mesh(wendy_pki_connection *c,const char *tenant,const char *de
         const mbedtls_x509_crt* peer = mbedtls_ssl_get_peer_cert(&c->ssl);
         char expected_prefix[70];
         snprintf(expected_prefix,sizeof expected_prefix,"spiffe://wendy.sh/tenant/%s/device/",tenant);
-        if (!alpn || strcmp(alpn, protocol) || !peer
+        enum wendy_peer_role role=peer ? wendy_peer_auth_role(peer,tenant):WENDY_PEER_ROLE_NONE;
+        /* A primary operator terminates the ordinary incoming app protocol.
+         * It has no enrolled UUID: keep its typed role and never put its URI in
+         * mesh_peer. Carrier and outgoing device pins remain device-only. */
+        bool operator_app=role==WENDY_PEER_ROLE_OPERATOR && !gateway && !router &&
+            protocol && !strcmp(protocol,"wendy-app-mesh-tls/1") &&
+            c->config.MBEDTLS_PRIVATE(endpoint)==MBEDTLS_SSL_IS_SERVER;
+        if (!alpn || !protocol || strcmp(alpn,protocol) || !peer
             || wendy_pki_certificate_policy(peer,false) ||
-               wendy_peer_auth_role(peer,tenant)!=WENDY_PEER_ROLE_DEVICE)
+               (role!=WENDY_PEER_ROLE_DEVICE && !operator_app))
             goto fail;
         unsigned count = 0;
-        for (const mbedtls_x509_sequence* a = &peer->subject_alt_names; a && a->buf.p; a = a->next)
+        for (const mbedtls_x509_sequence* a = &peer->subject_alt_names; !operator_app && a && a->buf.p; a = a->next)
         {
             mbedtls_x509_subject_alternative_name san;
             if (mbedtls_x509_parse_subject_alt_name(&a->buf, &san)
@@ -1055,7 +1062,7 @@ static int finish_mesh(wendy_pki_connection *c,const char *tenant,const char *de
             if (!strcmp(c->mesh_peer,device) || (router && strcmp(c->mesh_peer,router))) goto fail;
             count++;
         }
-        if (count != 1)
+        if (!operator_app && count != 1)
             goto fail;
         time_t now = time(NULL);
         if (!c->operator_expires || c->operator_expires <= now) goto fail;
@@ -1080,7 +1087,7 @@ static int finish_mesh(wendy_pki_connection *c,const char *tenant,const char *de
         if (self_verified_until < c->operator_expires) c->operator_expires = self_verified_until;
         c->device_expires=self_verified_until;
         if (pki_limit_session(c,now,esp_timer_get_time())) goto fail;
-        c->peer_role = WENDY_PEER_ROLE_DEVICE;
+        c->peer_role = role;
         if (protocol && !strcmp(protocol,"wendy-app-mesh-tls/1")) {
             release_verified_paths(c);
         } else if (native_router) {

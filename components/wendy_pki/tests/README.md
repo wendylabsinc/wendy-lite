@@ -120,10 +120,12 @@ check after a required client-certificate handshake. Valid same-organization ope
 and intermediate chains can exchange application data. Missing, untrusted,
 expired, future, and tampered certificates cannot. Other rejection cases cover
 wrong organizations, roles, authorities, missing or duplicate URI identities,
-invalid subject segments, URI query/fragment/percent/NUL suffixes, missing or
-incorrect EKUs, and CA leaves. Safe operator names and nested subjects remain
-valid, matching the pki-core issuer grammar. The same signed fixtures also
-exercise the PKI operator verifier.
+empty or malformed operator URI text, query/fragment/NUL suffixes, missing or
+incorrect EKUs, and CA leaves. Operator subjects remain opaque URI text:
+email-like names, nested paths and valid percent escapes are accepted without
+normalization, matching the shared operator grammar. Device subjects retain
+their separate restricted path policy. The same signed fixtures also exercise
+the PKI operator verifier.
 The LAN policy additionally accepts same-tenant device certificates and records
 their restricted role. Tests exercise both policies against the same fixtures,
 reject role changes during later verification, and check the TLS adapters' peer
