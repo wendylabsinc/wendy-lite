@@ -80,7 +80,8 @@ int main(void)
     assert(!wendy_pki_handshake_busy() && wendy_net_runtime_memory_drained());
     assert(wendy_pki_handshake_claim(&mesh_owner));physical=(struct physical){0};
     assert(!pthread_create(&thread,NULL,physical_prepare,&physical));
-    while(!atomic_load(&physical.started))sched_yield();atomic_store(&resetting,true);
+    while(!atomic_load(&physical.started))sched_yield();
+    atomic_store(&resetting,true);
     assert(!pthread_join(thread,NULL));assert(!physical.admitted);
     assert(atomic_load(&input_allocations)==1 && atomic_load(&trust_snapshots)==1);
     assert(wendy_pki_handshake_busy());wendy_pki_handshake_release(&mesh_owner);atomic_store(&resetting,false);

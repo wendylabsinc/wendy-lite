@@ -927,19 +927,32 @@ int pki_relay_grant(wendy_pki_connection *c, const struct wendy_lite_trust *t, i
 
 void wendy_pki_close(wendy_pki_connection *c) { (void)c; }
 
-/* This orchestration fixture never runs peer fetch/verification. Fail loudly
- * if a future edit accidentally reaches those separately covered boundaries. */
-void wendy_conf_enrollment_identity(char tenant[37],char device[65])
-{(void)tenant;(void)device;assert(!"unexpected peer-cache identity lookup");}
-int pki_der_cache_open(nvs_handle_t h,struct pki_der_source *source)
-{(void)h;(void)source;assert(!"unexpected peer-cache open");return -1;}
-int pki_der_cache_part(struct pki_der_source *source,const uint8_t hash[32],size_t offset,
-    uint8_t out[1024],size_t *total)
-{(void)source;(void)hash;(void)offset;(void)out;(void)total;assert(!"unexpected peer-cache read");return -1;}
-int wendy_pki_mesh_chain(const uint8_t *const *der,const size_t *sizes,size_t count,
-    const uint8_t *roots,size_t roots_size,const char *tenant,time_t at,struct wendy_pki_mesh_peer *peer)
-{(void)der;(void)sizes;(void)count;(void)roots;(void)roots_size;(void)tenant;(void)at;(void)peer;
- assert(!"unexpected peer-chain verification");return -1;}
+/* These outer-worker effects are outside renewal orchestration. Keep their
+ * link boundary explicit, and fail if this fixture unexpectedly calls one. */
+void wendy_conf_enrollment_identity(char tenant[37], char device[65])
+{
+    (void)tenant; (void)device;
+    abort();
+}
+int pki_der_cache_open(nvs_handle_t handle, struct pki_der_source *source)
+{
+    (void)handle; (void)source;
+    abort();
+}
+int pki_der_cache_part(struct pki_der_source *source, const uint8_t hash[32],
+    size_t offset, uint8_t out[1024], size_t *total)
+{
+    (void)source; (void)hash; (void)offset; (void)out; (void)total;
+    abort();
+}
+int wendy_pki_mesh_chain(const uint8_t *const *der, const size_t *sizes,
+    size_t count, const uint8_t *roots, size_t roots_size, const char *tenant,
+    time_t now, struct wendy_pki_mesh_peer *peer)
+{
+    (void)der; (void)sizes; (void)count; (void)roots; (void)roots_size;
+    (void)tenant; (void)now; (void)peer;
+    abort();
+}
 
 int wendy_pki_operator_chain(const uint8_t *const *der, const size_t *sizes,
     size_t count, const uint8_t *roots, size_t roots_size, const char *tenant,
