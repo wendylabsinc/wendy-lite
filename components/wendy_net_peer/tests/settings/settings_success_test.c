@@ -17,6 +17,9 @@ size_t heap_caps_get_total_size(unsigned caps){assert(caps==MALLOC_CAP_SPIRAM);
 }
 void wn_peer_runtime_status(WendyComNetStatus *s){s->state=WendyComNetState_WENDY_COM_NET_OFF;}
 void wn_peer_configuration_changed(void){changes++;}
+WendyComResult wn_peer_topology(const WendyComNetTopologyParams *params,WendyComNetTopologyPage *page)
+{assert(!params->cursor);assert(page->has_status&&!page->status.desired.enabled);return WendyComResult_WENDY_COM_RESULT_OK;}
+void wnt_page_release(WendyComNetTopologyPage *page){(void)page;}
 void wcom_cmd_set_net_delegate(const struct wcom_net_delegate *d){delegate=d;}
 esp_err_t nvs_flash_init_partition(const char *name){assert(!strcmp(name,"wendy_pki"));return ESP_OK;}
 esp_err_t nvs_open_from_partition(const char *partition,const char *space,int mode,nvs_handle_t *h)
@@ -40,6 +43,9 @@ int main(void)
  WendyComNetStatus status;uint32_t token=999;
  assert(delegate->get(&status)==WendyComResult_WENDY_COM_RESULT_OK&&!status.desired.enabled);
  assert(status.ble_supported==!!CONFIG_WENDY_NET_BLE&&status.wifi_supported==!!CONFIG_WENDY_WIFI_ENABLED&&!status.nan_supported);
+ WendyComNetTopologyParams query=WendyComNetTopologyParams_init_zero;
+ WendyComNetTopologyPage page=WendyComNetTopologyPage_init_zero;
+ assert(delegate->topology(&query,&page)==WendyComResult_WENDY_COM_RESULT_OK&&!page.runtime_available&&!writes);
  WendyComNetConfig config=status.desired;
  config.enabled=true;
  if(!config.ble&&!config.infrastructure_wifi){config.ble=CONFIG_WENDY_NET_BLE;config.infrastructure_wifi=CONFIG_WENDY_WIFI_ENABLED;}

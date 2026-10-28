@@ -37,13 +37,22 @@ foreach(scenario parallel independent_links busy cancel cancel_deferred disconne
 endforeach()
 
 add_executable(routed_stream_success_test routed_stream_success_test.c
+    ../../wendy_net_peer/src/topology_record.c
     ../src/wendy_com_msg.pb.c ../src/sensorlink.pb.c
     ../../nanopb/pb_common.c ../../nanopb/pb_encode.c ../../nanopb/pb_decode.c)
 target_include_directories(routed_stream_success_test PRIVATE stubs ../../wendy_pki/tests/stubs
-    ../include ../../wendy_pki/include ../../wendy_conf/include ../../wendy_stdio/include ../../nanopb)
+    ../include ../../wendy_pki/include ../../wendy_conf/include ../../wendy_stdio/include ../../nanopb ../../wendy_net_common/include)
 target_compile_definitions(routed_stream_success_test PRIVATE CONFIG_WENDY_COM_TASK_PRIORITY=1
     CONFIG_WENDY_COM_TASK_CORE_AFFINITY=0)
 target_compile_options(routed_stream_success_test PRIVATE -UNDEBUG -Wall -Wextra -Werror
     -Wno-unused-parameter -Wno-unused-function)
 add_test(NAME routed_stream_success COMMAND routed_stream_success_test)
 set_tests_properties(routed_stream_success PROPERTIES TIMEOUT 10)
+
+add_executable(topology_codec_success_test topology_codec_success_test.c
+    ../../wendy_net_peer/src/topology_record.c
+    ../src/wendy_com_msg.pb.c ../src/sensorlink.pb.c
+    ../../nanopb/pb_common.c ../../nanopb/pb_encode.c ../../nanopb/pb_decode.c)
+target_include_directories(topology_codec_success_test PRIVATE ../include ../../nanopb ../../wendy_net_common/include)
+target_compile_options(topology_codec_success_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+add_test(NAME topology_codec_success COMMAND topology_codec_success_test "${CMAKE_CURRENT_LIST_DIR}/fixtures/topology_page.hex")
