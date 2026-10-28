@@ -36,6 +36,8 @@ void wcom_cmd_client_disconnected(int client_id);
 void wcom_cmd_set_app_delegate(const struct wcom_app_delegate *delegate);
 void wcom_cmd_set_net_delegate(const struct wcom_net_delegate *);
 WendyComResult wcom_cmd_net_get(WendyComNetStatus *);
+WendyComResult wcom_cmd_net_topology(const WendyComNetTopologyParams *,WendyComNetTopologyPage *);
+void wcom_cmd_net_topology_release(WendyComNetTopologyPage *);
 WendyComResult wcom_cmd_net_set(const WendyComNetConfig *,WendyComNetStatus *,uint32_t *reply_token);
 void wcom_cmd_net_reply_complete(uint32_t reply_token);
 void wcom_cmd_set_sensor_link_delegate(const struct wcom_sensor_link_delegate *delegate);
