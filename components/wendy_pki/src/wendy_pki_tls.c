@@ -99,7 +99,7 @@ static int read_presented_der(void *context,unsigned index,size_t offset,
 {
     wendy_pki_connection *c=context;
     struct pki_presented_chain *source=c->presented_chain;
-    if (!source || index>=source->count) return output ? -1:0;
+    if (!source || index>=source->count || (c->issuers && c->issuers->omit && index)) return output ? -1:0;
     size_t expected=source->part[index].size;
     if (!output) return count ? -1:(int)expected;
     if (offset>expected || count>expected-offset) return -1;
@@ -158,9 +158,67 @@ static int pin_presented_chain(wendy_pki_connection *c,
     return 0;
 }
 
-/* This layer always presents the full verified issuer path. */
+/* Only exact independently pinned issuers participate in this optional hint.
+ * Ordinary trust verification and the real service ALPN remain mandatory. */
+static int issuer_identity(const mbedtls_x509_crt *leaf,uint8_t output[32])
+{
+    uint8_t parts[64];
+    if(!leaf || !leaf->raw.len ||
+       wendy_pki_sha256(leaf->issuer_raw.p,leaf->issuer_raw.len,parts) ||
+       wendy_pki_sha256(leaf->authority_key_id.keyIdentifier.p,
+                        leaf->authority_key_id.keyIdentifier.len,parts+32))return -1;
+    return wendy_pki_sha256(parts,sizeof parts,output);
+}
+
+static struct pki_issuer_state *prepare_issuer_hint(wendy_pki_connection *c)
+{
+    struct pki_presented_chain *source=c->presented_chain;
+    uint8_t hashes[7][32],identity[32];
+    if(!source || source->count<2 || source->count>8 ||
+       issuer_identity(&c->certificate,identity))return NULL;
+    for(unsigned i=1;i<source->count;i++){
+        bool pinned=false;
+        for(const mbedtls_x509_crt *root=&c->roots;root && root->raw.len;root=root->next){
+            uint8_t hash[32];
+            if(root->raw.len==source->part[i].size &&
+               !wendy_pki_sha256(root->raw.p,root->raw.len,hash) &&
+               !memcmp(hash,source->part[i].hash,32)){pinned=true;break;}
+        }
+        if(!pinned)return NULL;
+        memcpy(hashes[i-1],source->part[i].hash,32);
+    }
+    /* Optional optimization: admission failure preserves ordinary full-chain
+     * TLS, with no allocation or persistent global cache while mesh is off. */
+    struct pki_issuer_state *state=pki_owned_calloc(1,sizeof *state);
+    if(!state)return NULL;
+    if(pki_issuer_hint(hashes,source->count-1,state->hint)){pki_owned_free(state);return NULL;}
+    memcpy(state->own_issuer_identity,identity,32);return state;
+}
+
+static int select_server_issuers(mbedtls_ssl_context *ssl)
+{
+    wendy_pki_connection *c=ssl->MBEDTLS_PRIVATE(p_bio);
+    if(c && c->issuers)
+        c->issuers->omit=pki_client_hello_offers(ssl->MBEDTLS_PRIVATE(in_msg),
+            ssl->MBEDTLS_PRIVATE(in_hslen),c->issuers->hint);
+    return 0;
+}
+
 static int configure_mesh_alpn(wendy_pki_connection *c,const char *const *protocols)
-{return mbedtls_ssl_conf_alpn_protocols(&c->config,protocols);}
+{
+    wendy_net_memory_scope_t previous=connection_scope(c);
+    c->issuers=prepare_issuer_hint(c);
+    wendy_net_memory_scope_leave(previous);
+    if(c->issuers){
+        c->issuers->protocols[0]=protocols[0];
+        if(c->config.MBEDTLS_PRIVATE(endpoint)==MBEDTLS_SSL_IS_CLIENT){
+            c->issuers->protocols[1]=c->issuers->hint;
+            protocols=c->issuers->protocols;
+        }else mbedtls_ssl_conf_cert_cb(&c->config,select_server_issuers);
+    }
+    /* Auxiliary offer only: servers select the unchanged real service ALPN. */
+    return mbedtls_ssl_conf_alpn_protocols(&c->config,protocols);
+}
 
 
 static int io_recv(void *context, unsigned char *buf, size_t size)
@@ -231,6 +289,7 @@ void wendy_pki_close(wendy_pki_connection *c)
     release_mesh_roots(c);
     pki_public_chain_free(c->public_chain);
     pki_owned_free(c->authenticated_peer);
+    pki_owned_free(c->issuers);
     if (c->fd >= 0) close(c->fd);
     pki_owned_free(c);
     wendy_pki_crypto_cleanup();
@@ -370,7 +429,31 @@ static int handshake_step_direct(wendy_pki_connection *c,bool compact_server)
             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 #endif
     }
+    int state=c->ssl.MBEDTLS_PRIVATE(state);
+    struct pki_issuer_state *issuers=c->issuers;
+    if(issuers && c->config.MBEDTLS_PRIVATE(endpoint)==MBEDTLS_SSL_IS_CLIENT &&
+       state==MBEDTLS_SSL_CLIENT_CERTIFICATE){
+        const char *selected=mbedtls_ssl_get_alpn_protocol(&c->ssl);
+        uint8_t peer_issuer[32];
+        /* The public getter exposes only the established session, which is
+         * installed after we write our certificate. Read this verified pending
+         * session while its exclusively loaned handshake context is still live. */
+        const mbedtls_ssl_session *pending=c->ssl.MBEDTLS_PRIVATE(session_negotiate);
+        const mbedtls_x509_crt *peer=pending ? pending->MBEDTLS_PRIVATE(peer_cert):NULL;
+        /* Server chain, CertificateVerify and Finished have passed. The wire
+         * count survives library compaction of the verified parsed chain. */
+        issuers->omit=issuers->peer_presented_certificates==1 && selected &&
+            !strcmp(selected,issuers->protocols[0]) &&
+            !mbedtls_ssl_get_verify_result(&c->ssl) &&
+            !issuer_identity(peer,peer_issuer) &&
+            !memcmp(peer_issuer,issuers->own_issuer_identity,32);
+    }
     int result=mbedtls_ssl_handshake_step(&c->ssl);
+    if(!result && issuers && state==MBEDTLS_SSL_SERVER_CERTIFICATE &&
+       c->config.MBEDTLS_PRIVATE(endpoint)==MBEDTLS_SSL_IS_CLIENT &&
+       c->ssl.MBEDTLS_PRIVATE(state)==MBEDTLS_SSL_CERTIFICATE_VERIFY)
+        issuers->peer_presented_certificates=pki_certificate_message_count(
+            c->ssl.MBEDTLS_PRIVATE(in_msg),c->ssl.MBEDTLS_PRIVATE(in_hslen));
     return result;
 }
 

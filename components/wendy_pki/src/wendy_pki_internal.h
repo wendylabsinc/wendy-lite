@@ -3,6 +3,7 @@
 #include "wendy_pki_alloc.h"
 #include "wendy_net_memory.h"
 #include "wendy_pki_tls_input.h"
+#include "wendy_pki_issuers.h"
 #include "wendy_pki_public_index.h"
 #include "wendy_conf.h"
 #include "wendy_pki_mesh.h"
@@ -51,6 +52,7 @@ struct wendy_pki_connection
     mbedtls_x509_crt roots, certificate;
     mbedtls_pk_context key;
     int fd;
+    struct pki_issuer_state *issuers;
     wendy_net_memory_scope_t allocation_scope;
     wendy_net_memory_reservation_t raw_roots_reservation;
     bool mesh_roots_prefixed;
