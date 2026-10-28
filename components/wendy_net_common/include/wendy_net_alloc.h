@@ -3,6 +3,9 @@
 #include "wendy_net_memory.h"
 #include <stdlib.h>
 #include <string.h>
+#ifdef ESP_PLATFORM
+#include "sdkconfig.h"
+#endif
 
 #ifdef __cplusplus
 extern "C" {
