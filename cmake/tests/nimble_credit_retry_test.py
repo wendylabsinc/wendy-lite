@@ -38,8 +38,19 @@ def copy_patched_host(project, idf, work):
     env.pop('GIT_DIR', None)
     env.pop('GIT_WORK_TREE', None)
     env['GIT_CEILING_DIRECTORIES'] = str(work)
+    variants = ('idf-nimble-coc-credit-refill.patch',
+                'idf-nimble-coc-credit-refill-idf61.patch')
+    for refill in variants:
+        check = subprocess.run(['git', 'apply', '--check', '--no-index',
+                                str(project / 'patches' / refill)],
+                               cwd=host, env=env, capture_output=True, timeout=30)
+        if check.returncode == 0:
+            break
+    else:
+        raise RuntimeError('No supported NimBLE credit refill source layout')
     for patch in ('idf-nimble-coc-crossed-disconnect.patch',
                   'idf-nimble-coc-credit-retry.patch',
+                  refill,
                   'idf-nimble-coc-backed-credit-window.patch',
                   'idf-nimble-acl-queued-retry.patch'):
         subprocess.run(['git', 'apply', '--no-index', str(project / 'patches' / patch)],

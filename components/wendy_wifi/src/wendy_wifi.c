@@ -244,6 +244,7 @@ static esp_err_t attempt_handoff(uint32_t request)
     ESP_LOGI(TAG,"lab station maximum protocol 11n: result=%s",esp_err_to_name(protocol_result));
 #endif
     if (err == ESP_OK) err = esp_wifi_start();
+    if (err == ESP_OK) {
 #if CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3
     // A SensorLink camera is a continuous source: modem sleep adds beacon/DTIM
     // waits between the TLS records that carry each frame.
@@ -252,9 +253,6 @@ static esp_err_t attempt_handoff(uint32_t request)
     esp_err_t ps_result=esp_wifi_set_ps(WIFI_PS_NONE);
     ESP_LOGI(TAG,"lab station power save disabled: result=%s",esp_err_to_name(ps_result));
 #endif
-
-
-    if (err == ESP_OK) {
         s_connect_requested = true;
         ESP_LOGI(TAG, "connecting to WiFi SSID '%s'...", (char *)s_handoff_config.sta.ssid);
         ESP_LOGI(TAG, "WiFi security: minimum authmode=%u SAE PWE=%u",
