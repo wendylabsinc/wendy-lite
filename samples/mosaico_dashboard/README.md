@@ -8,13 +8,10 @@ the current pose as the tilt reference. Device status continues updating while
 motion is paused. The indicator is not a calibrated orientation estimate.
 
 The dashboard opens on **Mesh**. Tap **Motion** to use the tilt indicator.
-The Mesh page refreshes once per second and shows the authenticated direct peer,
-its carrier, and live signed members with their remaining lease time. The link
-is amber during the cold-boot replay barrier and green when mesh IP is active.
-Disconnects, enrollment resets, and expired identity or route leases remove the
-link and members. Signed membership does not describe remote adjacency, so the
-page only draws the directly observed link. The scrollable roster holds up to
-32 members and excludes withdrawn or ambiguous address claims.
+The Mesh page refreshes once per second and shows whether mesh is off, joining,
+running or restarting, the number of authenticated links, and mesh memory use.
+The link indicator appears when there is an active connection. This page reports
+the local device's status; it does not draw the whole mesh or list remote members.
 
 Wendy owns Wi-Fi, BLE, USB-C management, and enrollment. The sample starts
 `wendy_core_init()` once and uses the board package for the display, touch, and
@@ -92,15 +89,21 @@ SDK's CPU-only restart stalling on this board.
 ## Join the mesh
 
 Enroll Mosaico in the same tenant as the other peers and configure Wi-Fi through
-Wendy USB or BLE management. Native Wendy Net support is compiled into this
-profile but remains off until enabled through WendyCom configuration.
+USB or BLE management. Wendy Net is included in this profile and starts off.
+For example, select its USB port and enable Wi-Fi mesh:
 
-Peers discover one another on mDNS and BLE, then authenticate with the enrolled
-identity. The signed binary protocol and Babel routing are the same as WendyOS.
-The dashboard shows runtime state, active carrier count, and managed RAM use;
-the Wendy topology UI supplies the complete verified graph. SensorLink remains
-available through the existing physical and native mesh management interfaces.
-See [native Wendy Net](../../docs/wendy-net.md) for profiles and constraints.
+```sh
+wendy --device wendy-lite:PORT device wendy-net configure \
+  --participate=true --infrastructure-wifi=true --nan=false
+wendy --device wendy-lite:PORT device wendy-net status
+```
+
+Omitted settings retain their previous values. Peers discover each other over
+mDNS or BLE and authenticate using their enrolled identities. SensorLink remains
+available through the existing management interfaces, including mesh. Use the
+Wendy Client's Networks view to combine available topology reports; a report can
+be partial or unavailable. See [Wendy Net configuration](../../docs/wendy-net.md)
+for carrier settings and resource limits.
 
 ## Install and connect
 
@@ -198,18 +201,11 @@ cannot open the same USB serial port. Existing builds must enable
 
 ## Validation
 
-The CI build checks that mesh, Wi-Fi/BLE fallback, and the custom IPv6 route hook
-are enabled alongside networking, enrollment, PSRAM, display, touch, and the IMU.
-The topology host test covers lease expiry, withdrawals, unsigned entries,
-address collisions, bounded output, and preservation of replay receipts.
-Discovery tests cover tenant and self filtering, malformed advertisements,
-address filtering, duplicate candidates, bounded output, and random ordering.
-
-On hardware, enroll and connect Wi-Fi with at least two discoverable routers. Check the
-replay countdown, green link after IP activation, and member lease updates.
-Disconnect the selected router and confirm that the link and roster clear,
-then verify that another authenticated router is selected. Switch between Mesh and Motion, scroll the member list, and
-check that Pause motion leaves mesh and device status updates running.
+The CI build checks that mesh, Wi-Fi/BLE, PSRAM, display, touch and IMU support
+remain enabled together. On hardware, enable mesh and check the joining/running
+state, link count and memory counters. Disconnect peers and verify that the link
+count changes and discovery can reconnect. Switch between Mesh and Motion and
+check that Pause motion leaves device and mesh status updates running.
 
 Validated on a USB-connected Mosaico revision 1.2 with ESP32-S31 revision 0.0.
 The flashed image passed hash verification, USB diagnostics reached

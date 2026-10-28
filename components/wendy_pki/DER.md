@@ -8,10 +8,10 @@ Certificate parsing and TLS call the explicit Mbed TLS DER APIs; DER is never
 converted back to PEM. A borrowed bundle remains alive until its parsed anchors
 are released. Root policy checks borrow one certificate at a time.
 
-Provisioned source bytes still identify the persistent route/service journal
-scope. This preserves the existing generation history when a previously enrolled
-board starts using DER snapshots. Live verification and TLS source memoization
-hash the exact DER bytes instead.
+Provisioned-source hashes identify configuration-derived router state across
+DER import. Live verification and TLS source memoization hash the exact DER
+bytes instead. Learned peer state stays in RAM; no persistent peer route or
+service journal is required.
 
 Existing configuration partitions can still contain PEM as their provisioning
 source; no flash configuration migration is performed by a firmware boot. Older
@@ -44,7 +44,8 @@ Firmware installs one Mbed TLS allocator pair in the system-init stage before
 ESP-IDF's PSA initialization. Both baseline and mesh allocations carry a common
 ownership prefix; task-local mesh charging is enabled at `app_main`, after
 compiler TLS becomes available. TLS contexts retain their initiating scope
-through setup, record I/O and teardown. Queued work remains inactive here.
+through setup, record I/O and teardown. The mesh runtime submits heavy work to
+its serialized crypto worker.
 Callbacks stay installed throughout mesh enable/disable cycles. Uncharged
 PKI/TLS baseline allocations use strict PSRAM when an external heap is registered,
 preserving the C5 profile; before PSRAM registration or on SRAM-only boards they
@@ -60,7 +61,7 @@ reserved until its matching destructor releases it.
 
 Certificate workspace borrowing matches the cache's original owner/placement.
 Baseline management TLS may borrow the idle mesh-owned input reserve without
-retagging it or allocating a second26 KiB block. On mesh shutdown caching stops;
+retagging it or allocating a second 26 KiB block. On mesh shutdown caching stops;
 the original mesh ledger remains draining until that finite TLS loan returns,
 then its matching destructor frees it, even if another service epoch has already
 started. A foreign scope cannot refill the owner's cache. Other management allocations remain
