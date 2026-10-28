@@ -48,11 +48,11 @@ no special delegated leaf protocol or ALPN.
 ## Component tests
 
 The standalone host suite reuses the real pinned PKI source and build-local
-vendor patches. Resolve the managed cJSON component and initialize esp-pqc first:
+vendor patches. Configuration fetches esp-pqc at the revision in the PKI
+component manifest. Resolve the managed cJSON component first:
 
 ```sh
 cmake -S components/wendy_net_peer/tests -B build/peer-formats \
-  -DESP_PQC_ROOT=/path/to/esp-pqc \
   -DIDF_COMPONENTS=/path/to/esp-idf/components \
   -DCJSON_ROOT=/path/to/espressif__cjson/cJSON
 cmake --build build/peer-formats --target \
@@ -63,6 +63,9 @@ cmake --build build/peer-formats --target \
 GOTOOLCHAIN=go1.27.3 ctest --test-dir build/peer-formats -R '^format_' \
   --output-on-failure
 ```
+
+To use an existing esp-pqc checkout instead of fetching it, add
+`-DFETCHCONTENT_SOURCE_DIR_ESP_PQC=/path/to/esp-pqc` when configuring.
 
 The independent Go oracle signs P-256 and ML-DSA-65 native manifests and compares
 C/Go encoded complete bodies exactly. ML-DSA-87 is checked only for unsupported
