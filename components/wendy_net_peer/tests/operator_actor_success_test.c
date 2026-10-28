@@ -49,6 +49,37 @@ int main(int argc,char **argv)
  /* Full manifest relay uses the ordinary pool and therefore its FIFO/GONE
   * accounting. Forgetting bytes keeps the signed-origin receipt. */
  assert(!known_artifact(node,&id));evicted_artifact(node,&id,wire,wire_size);assert(known_artifact(node,&id));
+ /* UI rows borrow the real typed identity during scans. Only the exported
+  * selected page owns a copy; it survives ordinary receipt expiry. */
+ struct wno_entry *entry=node->core.operators->entries;
+ wendy_net_memory_snapshot_t before,after;wendy_net_runtime_memory_snapshot(&before);
+ struct wnt_record_view view={.record=WendyComNetTopologyRecord_init_zero};
+ assert(wnrs_topology_operator_row(node,3,0,clock_us,&view)==1);
+ assert(view.principal==entry->principal && view.principal_size==proof.principal_size);
+ assert(view.record.owner_role==WNT_TOPOLOGY_OPERATOR && !view.record.device.size);
+ assert(view.record.owner_instance.size==16 && !memcmp(view.record.owner_instance.bytes,proof.instance,16));
+ assert(view.record.address.size==16 && !memcmp(view.record.address.bytes,proof.address,16));
+ assert(view.record.router_id==proof.origin.router_id && view.record.sequence==proof.origin.seqno && view.record.authorized);
+ struct wnt_record_view route={.record=WendyComNetTopologyRecord_init_zero};
+ route.record.address.size=16;memcpy(route.record.address.bytes,proof.address,16);
+ route.record.router_id=proof.origin.router_id;route.record.sequence=proof.origin.seqno;
+ assert(wnrs_topology_operator_row(node,2,0,clock_us,&route)==1 && route.record.authorized);
+ assert(route.principal==entry->principal && !route.record.device.size);
+ node->core.config.endpoint_gateway=true;
+ assert(!wnrs_topology_operator_row(node,3,0,clock_us,&route));
+ node->core.config.endpoint_gateway=false;
+ wendy_net_runtime_memory_snapshot(&after);assert(before.current_bytes==after.current_bytes);
+ WendyComNetTopologyPage page=WendyComNetTopologyPage_init_zero;
+ unsigned cursor=0;uint64_t generation=0;bool exported=false;
+ do{
+  assert(!wnrs_topology(node,cursor,generation,&page));generation=page.generation;cursor=page.next_cursor;
+  if(page.has_record && page.record.owner_role==WNT_TOPOLOGY_OPERATOR){exported=true;break;}
+ }while(cursor);
+ assert(exported && page.record.owner_principal.arg && page.record.owner_principal.arg!=entry->principal);
+ assert(!memcmp(page.record.owner_principal.arg,proof.principal,proof.principal_size));
+ wno_expire(node->core.operators,entry->retain_until_us+1);
+ assert(!node->core.operators->entries && !memcmp(page.record.owner_principal.arg,proof.principal,proof.principal_size));
+ wnt_page_release(&page);
  printf("Actual actor primary operator chain/signature worker admission and exact-hash repair PASS (%zu native core bytes)\n",wnr_memory(&node->core));
  wg_deinit(&node->pool);wncs_close(&node->certificates);wnr_deinit(&node->core);wendy_net_free(node);
  wendy_net_runtime_memory_close();assert(wendy_net_runtime_memory_drained());

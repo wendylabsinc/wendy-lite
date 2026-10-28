@@ -1554,11 +1554,38 @@ static int64_t topology_expiry(const struct wnrs_node *n,int64_t deadline,int64_
         (deadline-n->clock.verified_monotonic_us)/1000;
     return signed_expiry>0 && signed_expiry<bound ? signed_expiry:bound;
 }
-/* Typed operator state is added by the following authority delivery. This
- * generic hook deliberately creates neither a registry nor authority on C6. */
+/* Borrow only an already verified live receipt. No scan allocations, signer
+ * work or additional registry is needed; constrained gateways return empty. */
 int wnrs_topology_operator_row(struct wnrs_node *node,unsigned category,unsigned index,
     int64_t now,struct wnt_record_view *view)
-{(void)node;(void)category;(void)index;(void)now;(void)view;return 0;}
+{
+    if(!node || !view || !node->core.operators || node->core.config.endpoint_gateway)return 0;
+    if(category!=2 && category!=3)return 0;
+    const struct wno_entry *selected=NULL;
+    for(const struct wno_entry *e=node->core.operators->entries;e;e=e->next){
+        if(e->deadline_us<=now)continue;
+        if(category==2){
+            if(view->record.address.size!=16 || memcmp(e->address,view->record.address.bytes,16))continue;
+            /* A collision has no unique authenticated owner. */
+            if(selected)return 0;
+            selected=e;
+        }else if(!index--){selected=e;break;}
+    }
+    if(!selected || selected->principal_size>WNT_TOPOLOGY_PRINCIPAL_MAX)return 0;
+    WendyComNetTopologyRecord *out=&view->record;
+    out->owner_role=WNT_TOPOLOGY_OPERATOR;out->device.size=0;
+    out->owner_instance.size=16;memcpy(out->owner_instance.bytes,selected->instance,16);
+    view->principal=selected->principal;view->principal_size=selected->principal_size;
+    out->expires_at_unix_ms=topology_expiry(node,selected->deadline_us,0);
+    if(category==2){
+        out->authorized=wno_authorizes(node->core.operators,selected->address,out->router_id,(uint16_t)out->sequence,now);
+    }else{
+        out->kind=3;out->address.size=16;memcpy(out->address.bytes,selected->address,16);
+        out->router_id=selected->origin.router_id;out->sequence=selected->origin.seqno;
+        out->revision=selected->revision;out->authorized=true;
+    }
+    return 1;
+}
 static int topology_record(struct wnrs_node *n,unsigned wanted,int64_t now,
     struct wnt_record_view *view)
 {
