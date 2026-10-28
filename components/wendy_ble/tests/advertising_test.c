@@ -22,7 +22,8 @@ bool wble_l2cap_wait_session(TickType_t timeout) { return false; }
 void wble_l2cap_end_session(void) {}
 int wble_l2cap_wakeup_fd(void) { return -1; }
 bool wble_l2cap_can_read(void) { return false; }
-bool wble_l2cap_can_write(void) { return false; }
+static bool test_l2cap_writable;
+bool wble_l2cap_can_write(void) { return test_l2cap_writable; }
 static esp_err_t test_handshake_result;
 static unsigned test_handshake_calls;
 esp_err_t wble_tls_session_start(bool enrolled) {
@@ -307,8 +308,28 @@ static void test_demand_handshake(void)
     }
 }
 
+static unsigned test_receipts;
+static void test_reply_complete(uint32_t token){assert(token==42);test_receipts++;}
+static void test_reply_drain(void)
+{
+    test_receipts=0;test_l2cap_writable=false;
+    _stream_ops.reply_barrier(NULL,42,test_reply_complete);
+    assert(!test_receipts);(void)_stream_ops.can_read(NULL);assert(!test_receipts);
+    test_l2cap_writable=true;
+    (void)_stream_ops.can_read(NULL);assert(test_receipts==1);
+    (void)_stream_ops.can_write(NULL);assert(test_receipts==1);
+    test_l2cap_writable=false;
+    _stream_ops.reply_barrier(NULL,42,test_reply_complete);
+    _stream_ops.reply_barrier(NULL,42,test_reply_complete);
+    assert(test_receipts==2); /* Old generation retires without another slot. */
+    _link_closed=xSemaphoreCreateBinary();assert(_link_closed);
+    _on_link_interruption(1,WCOM_INTERRUPTION_CONNECTION_CLOSED);
+    assert(test_receipts==3&&!_reply_token);
+    vSemaphoreDelete(_link_closed);_link_closed=NULL;
+}
 int main(void)
 {
+    test_reply_drain();
     test_demand_handshake();
     test_pki_enrollment();
     test_unenrolled();

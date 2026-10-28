@@ -22,12 +22,13 @@ docker run --rm -v "$PWD:/project" -w /project espressif/idf:v6.0.3 \
 
 Use a fresh build directory and configuration when upgrading from ESP-IDF 5.
 
-[Signed mesh networking](docs/signed-mesh-leaf.md) is enabled by default in the
-XIAO ESP32S3, ESP32-S31 Korvo-1 and Mosaico native firmware profiles. Enrolled
-devices discover a same-tenant Wi-Fi mesh router, with incoming BLE mesh as a
-fallback. Routers need their Lite listener or BLE peer configuration enabled.
-Mesh traffic has a 125-second startup quarantine. Other
-profiles keep mesh disabled; support requires an ESP32-S3 or ESP32-S31 with PSRAM.
+[Native Wendy Net](docs/wendy-net.md) uses the same signed binary manifests,
+Babel routing and authenticated VIP services as WendyOS. Build support is
+optional and runtime configuration starts off. C5 devices with PSRAM can retain
+full records and route over several BLE and Wi-Fi carriers; constrained C6
+nodes select one carrier and use their authenticated neighbour as a gateway.
+The native XIAO ESP32S3, ESP32-S31 Korvo-1 and Mosaico profiles also compile this
+interface while retaining their physical sensors and management capabilities.
 
 ## Optional WASM support
 
@@ -762,3 +763,10 @@ The full list of host functions is defined in [`wasm_apps/include/wendy.h`](wasm
 See [real PKI enrollment](docs/cloud-enrollment.md) for the PKI-enabled ESP32-C6 build,
 USB setup with the Wendy CLI, and broker presence.
 Cloud connections use the [TLS handoff and reconnect loop](docs/cloud-relay.md).
+
+The release catalog also offers **esp32c5_net_psram** (8 MiB flash, 8 MiB quad
+PSRAM) and **esp32c6_net** (8 MiB flash) with Wendy Net and WASM compiled in.
+Mesh remains off until enabled over WendyCom. C5 permits a 5 MiB guest and up to
+three carriers per transport; C6 permits a 64 KiB guest and one selected BLE or
+Wi-Fi carrier. See [the native peer configuration guide](docs/wendy-net.md)
+for runtime settings, tested topology limits and the exact hardware requirements.

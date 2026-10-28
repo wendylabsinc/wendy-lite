@@ -20,9 +20,6 @@
 #include "wendy_com.h"
 #include "wendy_server.h"
 #include "wendy_conf.h"
-#if CONFIG_WENDY_MESH_LEAF
-
-#endif
 
 #if CONFIG_WENDY_CLOUD
 #include "wendy_cloud.h"
@@ -485,11 +482,7 @@ esp_err_t wendy_wifi_set_boot_radio_enabled(bool enabled)
 }
 bool wendy_wifi_radio_available(void)
 {
-#if WENDY_WIFI_RADIO_OMITTED
-    return false;
-#else
     return s_boot_radio_enabled;
-#endif
 }
 
 esp_err_t wendy_wifi_init(void)
@@ -527,10 +520,6 @@ esp_err_t wendy_wifi_init(void)
         s_server_started = true;
     }
     pthread_mutex_unlock(&s_services_lock);
-#if CONFIG_WENDY_NET_TEST_COLD_BLE
-    ESP_LOGI(TAG,"lab cold BLE boot: station connection skipped; saved credentials retained");
-    return ESP_OK;
-#endif
 #endif
 #if CONFIG_WENDY_NET_NAN
     /* NAN owns Wi-Fi in this explicit operating mode. The common native TLS
@@ -592,10 +581,6 @@ esp_err_t wendy_wifi_try_connect(const char *ssid, const char *password)
 {
     if (!ssid || strlen(ssid) == 0) return ESP_ERR_INVALID_ARG;
     if(!wendy_wifi_radio_available())return ESP_ERR_NOT_SUPPORTED;
-#if WENDY_WIFI_RADIO_OMITTED
-    (void)password;
-    return ESP_ERR_NOT_SUPPORTED;
-#endif
 #if CONFIG_WENDY_NET_NAN
     (void)password;
     return ESP_ERR_NOT_SUPPORTED;
@@ -621,9 +606,6 @@ bool wendy_wifi_is_connected(void)
 esp_err_t wendy_wifi_set_station_enabled(bool enabled)
 {
     if(!wendy_wifi_radio_available())return enabled ? ESP_ERR_NOT_SUPPORTED:ESP_OK;
-#if WENDY_WIFI_RADIO_OMITTED
-    return enabled ? ESP_ERR_NOT_SUPPORTED : ESP_OK;
-#endif
     s_connect_requested=enabled;
     s_retry_count=0;
     esp_err_t result=enabled ? esp_wifi_connect() : esp_wifi_disconnect();
@@ -634,10 +616,6 @@ esp_err_t wendy_wifi_set_station_enabled(bool enabled)
 void wendy_wifi_deinit(void)
 {
     if(!wendy_wifi_radio_available())return;
-#if WENDY_WIFI_RADIO_OMITTED
-    /* Shared lwIP/native listeners belong to the boot, not a radio lifetime. */
-    return;
-#endif
     s_connect_requested = false;
     s_reconnect_pending = false;
     s_connected = false;
@@ -657,19 +635,3 @@ void wendy_wifi_deinit(void)
     s_mdns_initialized = s_mdns_started = false;
     pthread_mutex_unlock(&s_services_lock);
 }
-
-#if CONFIG_WENDY_MESH_ESPNOW
-esp_err_t wendy_wifi_mesh_radio_start(uint8_t channel)
-{
-    if (!wendy_wifi_radio_available() || !channel || channel > 14 || !s_infra_initialized) return ESP_ERR_INVALID_STATE;
-    if (s_connect_requested) {
-        wifi_ap_record_t ap;
-        if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK || ap.primary != channel)
-            return ESP_ERR_INVALID_STATE;
-        return ESP_OK;
-    }
-    esp_err_t err = esp_wifi_start();
-    if (err != ESP_OK) return err;
-    return esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
-}
-#endif

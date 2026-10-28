@@ -565,6 +565,26 @@ static void _build_mfg_data(void)
 
 static SemaphoreHandle_t _link_closed;
 
+/* Com-owner-only receipt state for the one physical management session. A
+ * successful TLS write may leave its last SDU stalled inside NimBLE. */
+static uint32_t _reply_token;
+static void (*_reply_done)(uint32_t);
+static void _complete_reply(void)
+{
+    uint32_t token=_reply_token;_reply_token=0;
+    if(token)_reply_done(token);
+}
+static void _poll_reply(void)
+{
+    if(_reply_token && wble_l2cap_can_write())_complete_reply();
+}
+static void _stream_reply_barrier(void *context,uint32_t token,void (*done)(uint32_t))
+{
+    (void)context;
+    _complete_reply(); /* Superseded/timed-out configuration; one bounded slot. */
+    _reply_done=done;_reply_token=token;_poll_reply();
+}
+
 static ssize_t _stream_read(void *ctx, void *buf, size_t len)
 {
     (void)ctx;
@@ -598,6 +618,7 @@ static int _stream_wakeup_fd(void *ctx)
 static bool _stream_can_read(void *ctx)
 {
     (void)ctx;
+    _poll_reply();
     // Decrypted bytes already inside TLS count as readable: no transport
     // event is coming to announce them.
     return wble_tls_pending() || wble_l2cap_can_read();
@@ -606,6 +627,7 @@ static bool _stream_can_read(void *ctx)
 static bool _stream_can_write(void *ctx)
 {
     (void)ctx;
+    _poll_reply();
     return wble_l2cap_can_write();
 }
 
@@ -615,6 +637,7 @@ static const struct wcom_stream_ops _stream_ops = {
     .wakeup_fd = _stream_wakeup_fd,
     .can_read  = _stream_can_read,
     .can_write = _stream_can_write,
+    .reply_barrier = _stream_reply_barrier,
 };
 
 /// Runs on the wcom task.
@@ -622,6 +645,7 @@ static void _on_link_interruption(int link_id, enum wcom_interruption_reason rea
 {
     ESP_LOGI(TAG, "link %d closed (reason %d)", link_id, (int)reason);
     wcom_remove_link(link_id);
+    _complete_reply(); /* A retired link can no longer deliver pending output. */
     // Tearing down TLS and the channel is the session task's job: it owns
     // those contexts again from here.
     xSemaphoreGive(_link_closed);

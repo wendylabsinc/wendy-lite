@@ -211,6 +211,7 @@ struct wcom_stream_ops {
     int (*wakeup_fd)(void *);
     bool (*can_read)(void *);
     bool (*can_write)(void *);
+    void (*reply_barrier)(void *,uint32_t,void (*)(uint32_t));
 };
 #define WCOM_STREAM_ERR_UNKNOWN -1
 #define WCOM_STREAM_ERR_WANT_READ -2

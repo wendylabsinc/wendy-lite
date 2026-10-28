@@ -16,7 +16,8 @@ static bool current=true,prepare_busy,immediate_close,slots_full,transmit_blocke
 static uint64_t generation=1;
 static void (*cpu_callback)(void *);
 static void *cpu_argument,*gate_owner;
-static unsigned actor_wakes,com_wakes,removed,steps,closed;
+static unsigned actor_wakes,com_wakes,removed,steps,closed,reply_completed;
+static void reply_complete(uint32_t token){assert(token==41 || token==42);reply_completed++;}
 static struct wcom_operation *operations_first,*operations_last;
 static const struct wcom_stream_ops *com_ops;
 static void *com_context;
@@ -178,6 +179,15 @@ int main(void)
     wrap_ring(256);wrap_ring(768);wrap_ring(1024);concurrent_ring();
     int fds[2];socket_pair(fds);wendy_net_agent_accept(fds[0]);assert(fcntl(fds[0],F_GETFD)<0 && errno==EBADF);close(fds[1]);
     assert(wendy_net_runtime_memory_open());wendy_net_memory_scope_t previous=wendy_net_runtime_scope_enter();
+    struct wnab_bridge *fence=wnab_open(WCOM_LINK_PERMISSION_FULL,256);assert(fence);finish_com();
+    com_ops->reply_barrier(com_context,41,reply_complete);
+    uint32_t sampled=wnab_output_receipt(fence);
+    com_ops->reply_barrier(com_context,42,reply_complete);
+    assert(reply_completed==1); /* superseded receipt retired without a second slot */
+    wnab_output_drained(fence,sampled);assert(reply_completed==1);
+    wnab_output_drained(fence,wnab_output_receipt(fence));assert(reply_completed==2);
+    wnab_close(fence);finish_com();assert(wnab_retired(fence));wnab_release(fence);
+    reply_completed=0;
     int client=begin();
     assert(send(client,"loan",4,0)==4);wendy_net_agent_poll();
     assert(!flows->channel.input.size); /* main cannot touch a lent BIO */
@@ -237,6 +247,9 @@ int main(void)
     fd_set reading,writing;FD_ZERO(&reading);FD_ZERO(&writing);int maximum=-1;int64_t deadline=now+1000000;
     wendy_net_agent_watch(&reading,&writing,&maximum,&deadline);
     assert(deadline>now && FD_ISSET(flows->fd,&writing));
+    com_ops->reply_barrier(com_context,42,reply_complete);
+    for(unsigned i=0;i<5;i++)wendy_net_agent_poll();
+    assert(!reply_completed); /* ring and TLS BIO still contain the response */
     wcom_close(com_id);deadline=now+1000000;
     wendy_net_agent_watch(&reading,&writing,&maximum,&deadline);assert(deadline>now);
     transmit_blocked=false;size_t pressure_got=0;
@@ -245,6 +258,7 @@ int main(void)
         if(n>0)pressure_got+=(size_t)n;else assert(errno==EAGAIN || errno==EWOULDBLOCK);
     }
     assert(pressure_got==sizeof pressure && !memcmp(pressure,pressure_reply,sizeof pressure));
+    assert(reply_completed==1);
     /* A delayed com close ACK keeps the slot: repeated ordinary reconnects
      * cannot build orphan bridges while application work occupies com. */
     wendy_net_agent_poll();assert(flows && flows->disposing && wnab_live()==1);

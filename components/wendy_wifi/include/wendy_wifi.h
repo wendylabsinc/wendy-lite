@@ -38,13 +38,7 @@ esp_err_t wendy_wifi_init(void);
 /* Boot policy only: call before any WiFi/shared-listener initialization. */
 esp_err_t wendy_wifi_set_boot_radio_enabled(bool enabled);
 
-/* Both profiles retain shared IP/native listeners without station operations.
- * The normal BLE-only option persists settings; the lab option is boot-only. */
-#if CONFIG_WENDY_NET_BLE_ONLY_RADIO || CONFIG_WENDY_NET_TEST_NO_WIFI_RADIO
-#define WENDY_WIFI_RADIO_OMITTED 1
-#else
-#define WENDY_WIFI_RADIO_OMITTED 0
-#endif
+/* Actual boot policy, independently of compiled radio support. */
 bool wendy_wifi_radio_available(void);
 
 /**
@@ -74,7 +68,3 @@ void wendy_wifi_deinit(void);
 #ifdef __cplusplus
 }
 #endif
-
-/* Start a station radio without AP association, or verify the current AP is
- * on the requested channel. Never retunes a connected infrastructure link. */
-esp_err_t wendy_wifi_mesh_radio_start(uint8_t channel);

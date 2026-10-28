@@ -20,7 +20,9 @@
 #include "wendy_conf.h"
 #include "wendy_core.h"
 #include "wendy_sensor_link.h"
-#include "wendy_mesh_status.h"
+#include "wendy_net_peer.h"
+#include "wendy_com_msg.pb.h"
+#include "wendy_pki_crypto.h"
 #include "wendy_pki.h"
 #include "wendy_wifi.h"
 
@@ -208,7 +210,7 @@ static void create_mesh_view(lv_obj_t *parent)
     label(local, "This Mosaico", 12, 10, 124, &lv_font_montserrat_16, COLOR_TEXT);
     ui.mesh_local = label(local, "--", 12, 38, 124, &lv_font_montserrat_16, COLOR_MUTED);
     lv_obj_t *peer = box(panel, 284, 48, 148, 68, COLOR_BACKGROUND, 12);
-    label(peer, "Direct peer", 12, 10, 124, &lv_font_montserrat_16, COLOR_TEXT);
+    label(peer, "Mesh links", 12, 10, 124, &lv_font_montserrat_16, COLOR_TEXT);
     ui.mesh_peer = label(peer, "Not set", 12, 38, 124, &lv_font_montserrat_16, COLOR_MUTED);
     ui.mesh_link = box(panel, 164, 86, 120, 3, COLOR_ACCENT, 0);
     lv_obj_add_flag(ui.mesh_link, LV_OBJ_FLAG_HIDDEN);
@@ -222,51 +224,38 @@ static void create_mesh_view(lv_obj_t *parent)
     ui.mesh_members = label(roster, "No verified announcements yet.", 0, 0, 402,
                             &lv_font_montserrat_16, COLOR_MUTED);
     lv_label_set_long_mode(ui.mesh_members, LV_LABEL_LONG_WRAP);
-    label(panel, "Only the observed direct link is drawn.", 16, 248, 416,
+    label(panel, "Use Wendy topology for the verified mesh graph.", 16, 248, 416,
           &lv_font_montserrat_16, COLOR_MUTED);
 }
 
-static void render_mesh(const struct wendy_mesh_snapshot *snapshot)
+static void render_mesh(const WendyComNetStatus *snapshot)
 {
     const char *status = "Mesh unavailable";
-    switch (snapshot->phase) {
-    case WENDY_MESH_DISABLED: status = "Mesh disabled in this firmware"; break;
-    case WENDY_MESH_PEER_REQUIRED: status = "Configure a mesh peer"; break;
-    case WENDY_MESH_WAITING_ENROLLMENT: status = "Waiting for enrollment"; break;
-    case WENDY_MESH_WAITING_WIFI: status = "Waiting for Wi-Fi"; break;
-    case WENDY_MESH_DISCOVERING: status = "Discovering mesh routers"; break;
-    case WENDY_MESH_CONNECTING: status = "Connecting / authenticating"; break;
-    case WENDY_MESH_QUARANTINE: status = "Connected / waiting for IP"; break;
-    case WENDY_MESH_ONLINE: status = "Mesh online"; break;
-    case WENDY_MESH_RETRYING: status = "Peer offline / retrying"; break;
+    switch (snapshot->state) {
+    case WendyComNetState_WENDY_COM_NET_OFF: status = "Mesh off"; break;
+    case WendyComNetState_WENDY_COM_NET_STARTING: status = "Joining mesh"; break;
+    case WendyComNetState_WENDY_COM_NET_RUNNING: status = "Mesh running"; break;
+    case WendyComNetState_WENDY_COM_NET_STOPPING: status = "Stopping mesh"; break;
+    case WendyComNetState_WENDY_COM_NET_FAILED: status = "Mesh unavailable / retrying"; break;
     default: break;
     }
-    if (snapshot->peer_connected && snapshot->quarantine_seconds) {
-        lv_label_set_text_fmt(ui.mesh_state, "Connected / IP ready in %lu s",
-            (unsigned long)snapshot->quarantine_seconds);
-    } else lv_label_set_text(ui.mesh_state, status);
+    if(snapshot->restarting)status = "Settings saved / restarting";
+    lv_label_set_text(ui.mesh_state, status);
+    bool connected = snapshot->active_links != 0;
     lv_obj_set_style_text_color(ui.mesh_state,
-        lv_color_hex(snapshot->ip_active ? COLOR_ACCENT : COLOR_WARNING), 0);
-    lv_label_set_text_fmt(ui.mesh_local, "%.8s", snapshot->device[0] ?
-        snapshot->device : wendy_conf_get_device_id());
-    lv_label_set_text_fmt(ui.mesh_peer, "%.8s", snapshot->peer[0] ? snapshot->peer : "Not set");
-    lv_label_set_text(ui.mesh_carrier, snapshot->carrier);
-    if (snapshot->peer_connected) lv_obj_remove_flag(ui.mesh_link, LV_OBJ_FLAG_HIDDEN);
+        lv_color_hex(connected ? COLOR_ACCENT : COLOR_WARNING), 0);
+    lv_label_set_text_fmt(ui.mesh_local, "%.8s", wendy_conf_get_device_id());
+    lv_label_set_text_fmt(ui.mesh_peer, "%u links", (unsigned)snapshot->active_links);
+    lv_label_set_text(ui.mesh_carrier, "Authenticated");
+    if(connected)lv_obj_remove_flag(ui.mesh_link, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(ui.mesh_link, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_style_bg_color(ui.mesh_link,
-        lv_color_hex(snapshot->ip_active ? COLOR_ACCENT : COLOR_WARNING), 0);
-    lv_label_set_text_fmt(ui.mesh_count, "%u live signed members / scroll",
-                          snapshot->member_count);
-    /* Static storage keeps the bounded roster off the FreeRTOS task stack. */
-    static char members[WENDY_MESH_ORIGINS_MAX * 80];
-    size_t used = 0;
-    for (unsigned i = 0; i < snapshot->member_count && i < WENDY_MESH_ORIGINS_MAX; ++i) {
-        int n = snprintf(members + used, sizeof members - used, "%s\nLease %lu s\n",
-            snapshot->members[i].device, (unsigned long)snapshot->members[i].lease_seconds);
-        if (n < 0 || (size_t)n >= sizeof members - used) break;
-        used += (size_t)n;
-    }
-    lv_label_set_text(ui.mesh_members, used ? members : "No live signed members.");
+    lv_label_set_text(ui.mesh_count, "Native Wendy Net peer");
+    if(snapshot->has_allocated_bytes)
+        lv_label_set_text_fmt(ui.mesh_members, "Mesh RAM: %lu / %lu bytes\nInternal: %lu bytes",
+            (unsigned long)snapshot->allocated_bytes,
+            (unsigned long)snapshot->memory_limit_bytes,
+            (unsigned long)snapshot->internal_bytes);
+    else lv_label_set_text(ui.mesh_members, "Memory counters unavailable");
 }
 
 static void create_dashboard(lv_display_t *display)
@@ -479,7 +468,7 @@ static void dashboard_task(void *argument)
         ESP_LOGW(TAG, "IMU unavailable (%s); device status remains active", esp_err_to_name(result));
     }
 
-    static struct wendy_mesh_snapshot mesh;
+    static WendyComNetStatus mesh;
     int64_t next_status = 0;
     int64_t next_motion = 0;
     bool motion_valid = false;
@@ -504,7 +493,7 @@ static void dashboard_task(void *argument)
             resetting = wendy_pki_reset_in_progress();
             wifi = wendy_wifi_is_connected();
             cloud = wendy_cloud_get_state();
-            wendy_mesh_get_snapshot(&mesh);
+            (void)wendy_net_peer_get_status(&mesh);
             next_status = now + STATUS_PERIOD_US;
         }
         if (bsp_display_lock(100)) {
@@ -523,6 +512,8 @@ static void dashboard_task(void *argument)
 
 void app_main(void)
 {
+    ESP_ERROR_CHECK(wendy_pki_memory_init() ? ESP_FAIL : ESP_OK);
+    ESP_ERROR_CHECK(wendy_pki_crypto_init() ? ESP_FAIL : ESP_OK);
     mosaico_diagnostics_start();
     ESP_ERROR_CHECK(mosaico_usb_management_start());
     ESP_ERROR_CHECK(esp_register_shutdown_handler(restart_board));
@@ -553,6 +544,7 @@ void app_main(void)
         ESP_LOGE(TAG, "Wendy startup failed: %s", esp_err_to_name(result));
         return;
     }
+    ESP_ERROR_CHECK(wendy_net_peer_start());
     mosaico_diagnostics_stage("starting dashboard", ESP_OK);
     if (xTaskCreate(dashboard_task, "mosaico_dashboard", 6144, NULL, 3, NULL) != pdPASS) {
         mosaico_diagnostics_stage("dashboard task allocation failed", ESP_ERR_NO_MEM);

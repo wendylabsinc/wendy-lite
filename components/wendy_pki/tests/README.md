@@ -184,16 +184,6 @@ authenticated time under incorrect device clocks, including certificate date,
 CA, key usage, path length, identity, and signature failures. See
 `mldsa-fixtures/README.md` for provenance and regeneration commands.
 
-`mesh_mldsa_router_test` feeds Linux router `bundle` and `manifest` control
-messages, produced by the WendyOS router's own manifest signer, through the
-leaf's JSON parser, chain verifier and directory. An ML-DSA-65 router leaf under
-ML-DSA-87/65 CAs and its pure ML-DSA-65 manifest are accepted, as is a P-256
-router through the same signer. Signatures over the SHA-256 digest, with a
-non-empty context, without the principal, or by another key are rejected, along
-with damaged signatures, bodies and agent metadata, cross-algorithm signatures,
-wrong tenants, expiry and an unrelated root. See
-`../../wendy_mesh/tests/mldsa-router-fixtures/README.md`.
-
 The enrollment capability tests compile the production WendyCom capability
 helper with Cloud, Wi-Fi, and PKI individually disabled. They ensure unsupported
 profiles report an explicit false enrollment capability while retaining local
@@ -201,25 +191,9 @@ identity recovery wherever PKI is available. They also check that ML-DSA support
 is advertised only when both PKI and ML-DSA-65 verification are enabled and that false values
 survive protobuf encoding.
 
-`pki_time_nonce_normal` covers seven ordinary 256-bit nonce shapes: low/high
-leading bit, all-ones, leading zeroes before low/high bits, one, and zero.
-It compares firmware request bytes with independently marshalled Go ASN.1 and
-verifies a correctly signed disposable P-384 timestamp for each value. The
-imprint always hashes all 32 original bytes; only the INTEGER representation
-strips zeroes or adds a sign octet. Run this positive interoperability check with
-`ctest --test-dir <build> -R '^pki_time_nonce_normal$' --output-on-failure`.
 
-The C6 sustained BLE trial on 2026-10-28 exposed the former fixed-width encoder:
-control-channel renewals used arbitrary random bytes, unlike bootstrap callers
-which masked the high bit. A high-bit nonce was encoded as negative and rejected
-by the timestamp response verifier. Renewal retries sometimes succeeded by
-chance. Canonical positive encoding fixes the source rather than constraining
-the random input, and matching canonical INTEGER values also handles leading
-zeroes in otherwise valid random nonces.
-
-The direct DER/memory layer retains synchronous baseline PKI execution. Its
-worker API is inactive, creates no task, and provides no serialized admission;
-native actor activation is rejected until the later worker layer is present.
+The native actor uses the admitted serialized crypto worker for heavyweight
+operations. Ordinary physical management shares the same PKI implementation.
 The optional own ML-DSA private-key backend is off by default and is not qualified
 by this suite.
 
@@ -236,8 +210,8 @@ loans, shutdown, and overlapping service epochs. `psa_global_table_ownership`
 keeps a baseline key live while temporary scoped keys retire. Record tests cover
 preallocated input adoption, bounded reassembly, input recycling, and pending
 ciphertext surviving input compaction and repeated partial flushes.
-`native_artifact_domain_with_legacy_leaf` independently checks v4 native signing
-while the existing leaf flag retains its v3 manifest contract and JSON bundle.
+`native_artifact_domain` independently checks v4 native signing and its
+synchronous digest/signing helpers. No legacy leaf wire format is compiled.
 
 The SDK startup hook installs one allocation/free ABI before PSA initialization;
 app_main enables task ownership before networking. Host scope fixtures initialize
@@ -270,3 +244,18 @@ pinned locally, while the independent Go peer trusts only the common root.
 The complete intermediate path must remain present; local trust does not imply
 that a remote peer already holds that intermediate. These fixtures do not
 activate issuer negotiation or require the optional WendyOS checkout.
+`pki_time_nonce_normal` covers seven ordinary 256-bit nonce shapes: low/high
+leading bit, all-ones, leading zeroes before low/high bits, one, and zero.
+It compares firmware request bytes with independently marshalled Go ASN.1 and
+verifies a correctly signed disposable P-384 timestamp for each value. The
+imprint always hashes all 32 original bytes; only the INTEGER representation
+strips zeroes or adds a sign octet. Run this positive interoperability check with
+`ctest --test-dir <build> -R '^pki_time_nonce_normal$' --output-on-failure`.
+
+The C6 sustained BLE trial on 2026-10-28 exposed the former fixed-width encoder:
+control-channel renewals used arbitrary random bytes, unlike bootstrap callers
+which masked the high bit. A high-bit nonce was encoded as negative and rejected
+by the timestamp response verifier. Renewal retries sometimes succeeded by
+chance. Canonical positive encoding fixes the source rather than constraining
+the random input, and matching canonical INTEGER values also handles leading
+zeroes in otherwise valid random nonces.
