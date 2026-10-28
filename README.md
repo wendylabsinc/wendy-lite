@@ -22,13 +22,13 @@ docker run --rm -v "$PWD:/project" -w /project espressif/idf:v6.0.3 \
 
 Use a fresh build directory and configuration when upgrading from ESP-IDF 5.
 
-[Native Wendy Net](docs/wendy-net.md) uses the same signed binary manifests,
-Babel routing and authenticated VIP services as WendyOS. Build support is
-optional and runtime configuration starts off. C5 devices with PSRAM can retain
-full records and route over several BLE and Wi-Fi carriers; constrained C6
-nodes select one carrier and use their authenticated neighbour as a gateway.
-The native XIAO ESP32S3, ESP32-S31 Korvo-1 and Mosaico profiles also compile this
-interface while retaining their physical sensors and management capabilities.
+[Wendy Net](docs/wendy-net.md) connects enrolled Lite devices to other devices
+and services in the same tenant over Wi-Fi or BLE. It is off by default.
+C5 devices with PSRAM can route traffic between several peers; smaller C6 devices
+use one BLE or Wi-Fi connection through a neighbour. Applications can publish
+and browse mesh services, and existing management and SensorLink operations can
+use mesh connections. The XIAO ESP32S3, ESP32-S31 Korvo-1 and Mosaico profiles
+also include this interface alongside their physical sensors and management.
 
 ## Optional WASM support
 
@@ -46,11 +46,12 @@ up the new defaults, including disabled WASM callbacks and host API exports.
 ESP32-C61 and ESP32-S31 have no supported WASM runtime. Disabling
 WASM does not change partition layouts or reclaim existing WASM data partitions.
 
-The firmware catalog publishes only native OTA variants: generic ESP32-C5,
+The firmware catalog publishes native OTA variants: generic ESP32-C5,
 ESP32-C6, ESP32-C61, ESP32-S3 and preview ESP32-S31, plus Seeed XIAO ESP32S3,
 M5Stack StampS3 and ESP32-S31-Korvo-1 V1.1.
-Legacy WASM-layout images, including the ESP32-P4 images, are available only as
-manual builds.
+The `esp32c5_net_psram` and `esp32c6_net` catalog variants include Wendy Net
+and WASM support. Other legacy WASM-layout images, including ESP32-P4 images,
+are available only as manual builds.
 
 ## Optional Bluetooth support
 
@@ -768,5 +769,5 @@ The release catalog also offers **esp32c5_net_psram** (8 MiB flash, 8 MiB quad
 PSRAM) and **esp32c6_net** (8 MiB flash) with Wendy Net and WASM compiled in.
 Mesh remains off until enabled over WendyCom. C5 permits a 5 MiB guest and up to
 three carriers per transport; C6 permits a 64 KiB guest and one selected BLE or
-Wi-Fi carrier. See [the native peer configuration guide](docs/wendy-net.md)
-for runtime settings, tested topology limits and the exact hardware requirements.
+Wi-Fi carrier. See [Wendy Net configuration](docs/wendy-net.md) for enable/disable
+commands, connection limits and hardware requirements.

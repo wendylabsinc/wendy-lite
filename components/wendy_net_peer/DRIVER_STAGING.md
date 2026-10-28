@@ -1,18 +1,20 @@
-# Native actor and outer driver
+# Mesh task and I/O driver
 
-One preemptible actor owns carrier, Babel, gossip and established TLS state.
-The separate serialized crypto worker owns each lent heavy operation until
-completion. All I/O readiness, timer waits and work completions belong to the
-outer driver; the portable actor core performs no sockets/timers/tasks.
-No delegated endpoint implementation or diagnostic task is part of this
-runtime. Native/guest VIP adapters and persisted WendyCom settings use the same
-bounded actor. Runtime remains OFF by default; no managed mesh task or heap is
-retained while disabled.
+One preemptible task owns carrier connections, Babel, manifest exchange and
+established TLS state. A separate, lower-priority crypto task processes one
+heavy operation at a time. While a context is lent to that task, the mesh task
+must not touch it; established connections using other contexts can continue.
 
-The existing baseline server must register work_enable after it is ready and
-poll CPU and I/O work for its lifetime; no extra I/O task is required. The new
-driver must quiesce submissions, drain crypto, and wait actual task reaping
-before closing/reopening the ledger. Typed management definitions have matching
-nanopb/Go bindings. The public
-management delegate activates the runtime only after its response crosses the
-transport fence described in NATIVE_VIP.md.
+The portable state machine performs no socket, timer or task operations.
+Its outer driver supplies I/O readiness, timer deadlines and crypto completions.
+Native and guest service adapters and WendyCom settings use the same bounded
+runtime. It is off by default; disabling it releases its tasks and managed heap.
+
+The existing management server registers `wendy_pki_work_enable()` when ready
+and polls CPU and I/O work for its lifetime. Shutdown first quiesces submissions,
+drains crypto and waits for actual task reaping before reopening the memory
+owner. Settings that stop or restart the transport take effect after the
+management response is sent, as described in [NATIVE_VIP.md](NATIVE_VIP.md).
+
+For user configuration and resource limits, see
+[Wendy Net on Wendy Lite](../../docs/wendy-net.md).
