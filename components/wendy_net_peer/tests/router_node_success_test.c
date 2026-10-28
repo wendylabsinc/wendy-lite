@@ -418,6 +418,7 @@ static void large_manifest_repair_fixture(void)
 {
     struct wnrs_node node={0};struct wnrs session={.node=&node,.link=1};
     strcpy(node.clock.tenant,tenant);strcpy(node.clock.device,ids[0]);
+    strcpy(session.identity.tenant,tenant);
     assert(!wnd_init(&node.core.directory,tenant,ids[0]));
     const char remote[]="00000000-0000-4000-8000-000000000099";
     uint8_t device[16],signature[80];char principal[106],base[768];
@@ -475,7 +476,7 @@ int main(int argc,char **argv)
         if(!i){assert(peers[i].session->own_descriptor_pending);assert(!wnrs_tick(peers[i].session));assert(!peers[i].session->own_descriptor_pending);}
     }
     assert(node->core.directory.count==2);
-    const char exact_type[16]="_sensorlink._tcp";char empty_browse[8];
+    const char exact_type[16]={'_','s','e','n','s','o','r','l','i','n','k','.','_','t','c','p'};char empty_browse[8];
     assert(wnrs_service_action(peers[0].session,NULL,0,exact_type,sizeof exact_type,empty_browse,sizeof empty_browse,NULL,NULL)==2);
     assert(!strcmp(empty_browse,"[]"));
 #if CONFIG_WENDY_NET_TEST_C6_BLE_TRANSIT
