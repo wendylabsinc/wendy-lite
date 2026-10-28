@@ -16,7 +16,7 @@ The release catalog includes these profiles with Wendy Net and WASM support:
 
 | Profile | Required hardware | Guest linear-memory ceiling | Mesh memory ceiling | Mesh connections |
 | --- | --- | --- | --- | --- |
-| `esp32c5_net_psram` | ESP32-C5, 8 MiB flash and 8 MiB quad PSRAM | 5 MiB | 2 MiB in PSRAM | Up to 3 BLE and 3 Wi-Fi |
+| `esp32c5_net_psram` | ESP32-C5, 8 MiB flash and 8 MiB quad PSRAM | 5 MiB | 2 MiB total, PSRAM preferred | Up to 3 BLE and 3 Wi-Fi |
 | `esp32c6_net` | ESP32-C6, 8 MiB flash | 64 KiB | 160 KiB internal RAM | One BLE **or** one Wi-Fi |
 
 Memory ceilings bound allocations; they are not reserved when mesh is off or
