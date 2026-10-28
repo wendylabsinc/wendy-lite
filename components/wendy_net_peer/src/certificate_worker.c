@@ -49,13 +49,6 @@ static void verify(void *context)
     /* The actor pinned resident RAM entries before submission. Common local
      * issuers use the independently checked baseline reader and shared workspace;
      * no store/node/session address crosses this task boundary. */
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-    size_t bytes=0;for(unsigned i=0;i<job->chain.count;i++)bytes+=job->loan.sizes[i];
-    ESP_LOGI("net-cert-worker","public chain RAM: DER=%u cached=%u local=%u workspace=%u shared=%u free=%u largest=%u",
-        (unsigned)bytes,(unsigned)(bytes-missing),(unsigned)missing,(unsigned)(workspace ? capacity:0),
-        (unsigned)workspace_borrowed,(unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-#endif
     if(wn_principal_device(job->chain.principal,job->clock.tenant,device) ||
        wendy_pki_mesh_verify_snapshot(&job->clock,job->loan.parts,
            job->loan.sizes,job->chain.count,&job->peer) ||

@@ -88,10 +88,112 @@ refresh deadline and return the planned-renewal result. Early heartbeat timeout,
 EOF, invalid or partial headers, stalled writes, reset and socket errors retain
 the failure result even at that deadline. Successful handoff preserves the
 detached fd and its trust data for the caller.
+`relay_stream_wait_test` additionally checks the scoped DER/TLS read wrapper.
+Stream errors remain failures even when their callback reaches the deadline;
+successful retry hints preserve read versus write direction, partial frames and
+reset, including a readiness hint immediately before the loop crosses its deadline.
+A spurious hint cannot hide a subsequent EOF. The initiating TLS allocation
+scope is restored before the caller waits on its transport.
+The operator-only accept path rejects device clients, including relay clients.
+Callback stream cases exercise the PKI stream API used by BLE through fragmented reads and
+writes with forced retry responses. A valid operator exchanges application data;
+wrong tenants, device roles, missing or invalid certificates, TLS 1.2 and failed
+waits are rejected. The tests check buffered plaintext readiness, revocation
+during reset, refusal to detach a stream as a socket, and transport ownership
+after both accepted and rejected handshakes.
+The same cases run with ML-DSA-65 roots and P-256 device/operator keys.
+A separate case authenticates a P-256 device and an ML-DSA-65 operator through
+the complete enrollment chain: an ML-DSA-87 root and customer CA followed by
+ML-DSA-65 tenant and identity CAs. The operator chain crosses the 16 KiB TLS
+record boundary. Tampered signatures from either ML-DSA-87 CA are rejected.
+The server must advertise ML-DSA-65 CertificateVerify and must not advertise
+ML-DSA-44 or ML-DSA-87. Operator leaves using either unsupported parameter set
+fail authentication.
 
-The direct DER/memory layer retains synchronous baseline PKI execution. Its
-worker API is inactive, creates no task, and provides no serialized admission;
-native actor activation is rejected until the later worker layer is present.
+`operator_auth_test_driver.go` creates temporary signed certificates for the
+legacy LAN/BLE authentication helper. Unit checks cover device tenant extraction,
+strict operator identities, explicit clientAuth usage, CA rejection, and
+preservation of every pre-existing mbedTLS verification flag. Real TLS 1.2 and
+TLS 1.3 handshakes exercise the LAN/BLE verification callback and the identity
+check after a required client-certificate handshake. Valid same-organization operators
+and intermediate chains can exchange application data. Missing, untrusted,
+expired, future, and tampered certificates cannot. Other rejection cases cover
+wrong organizations, roles, authorities, missing or duplicate URI identities,
+invalid subject segments, URI query/fragment/percent/NUL suffixes, missing or
+incorrect EKUs, and CA leaves. Safe operator names and nested subjects remain
+valid, matching the pki-core issuer grammar. The same signed fixtures also
+exercise the PKI operator verifier.
+The LAN policy additionally accepts same-tenant device certificates and records
+their restricted role. Tests exercise both policies against the same fixtures,
+reject role changes during later verification, and check the TLS adapters' peer
+classifiers.
+These tests use the same mbedTLS backend as PKI, LAN, and BLE.
+The host adapter also checks anonymous TLS 1.2 and TLS 1.3 access in its
+unprovisioned configuration, with a self-signed server certificate containing no
+tenant identity. Provisioned configurations continue to reject missing client
+certificates. These cases check the TLS policy, not the firmware provisioning
+state machine.
+
+`wendycom_link_permissions` sends serialized protocol frames through the
+production link, agent, and command code. It permits SensorLink manifest,
+subscribe, and unsubscribe requests from device links while rejecting every
+management command and console input before calling delegates. It covers extra
+channels, stale client IDs, channel and link reuse, invalid permissions, reset
+revocation, and preserved operator/local access.
+
+`wendycom_tx_stall_*` compiles the production transport and SensorLink sender
+with a clock and a transport that can stop accepting bytes. It checks that
+`select()` wakes at the 15-second transmit deadline without a readiness event,
+including partial writes, no initial progress, and TLS-style WANT_READ retries.
+Timeout teardown returns the borrowed frame once, notifies disconnect once,
+and permits a new stream after the link slot is reused. Appending queued traffic
+does not extend the deadline. Successful writes do extend it, so a transfer
+lasting longer than the timeout and an idle connection remain connected.
+
+An outbound case exercises `pki_tls_connect` against Go's verifying TLS server.
+The device chain includes three intermediates and exceeds 16 KiB with ML-DSA-65
+issuers. A host-only send adapter limits writes to 512 bytes and alternates them
+with `EAGAIN`; the test requires both partial writes and retries during the
+handshake. It also verifies a P-384 server CA and exchanges application data in
+both directions after the server authenticates the complete device chain.
+The same chain is sent by the firmware's stream-server path, whose callbacks
+limit writes to 61 bytes and reads to 73 bytes and inject both retry directions.
+These cases exercise the tracked outgoing Certificate fragmentation patch in
+both TLS roles, including transcript integrity and record counters across retries.
+A negative case ends the connection after the first complete encrypted
+Certificate record; the Go peer must reject the incomplete handshake message.
+
+A second Mbed TLS client negotiates 512-byte TLS records and sends a valid
+ML-DSA-65-signed P-256 operator chain to the production stream server. This
+exercises incoming handshake reassembly across records, separately from the
+transport callbacks' short reads. Incoming Certificate handshakes remain bounded
+to 32 KiB while TLS records remain bounded to 16 KiB. A valid chain exceeding the
+handshake limit is rejected.
+Firmware disables IDF dynamic buffers because their allocation can follow the
+current record's size while the bundled library bounds reassembly against the
+configured input size. The host tests use variable-sized buffers from the patched fixed-record backend;
+they do not validate the disabled IDF dynamic-buffer wrappers on hardware.
+
+The outbound server uses Go's default session-ticket settings. Firmware performs
+a fresh certificate handshake. The outbound regression checks application data
+after the handshake and partial client-flight writes. Host socket tests do not
+establish ESP32 handshake latency or reproduce a sustained lwIP send-window stall.
+
+`mldsa_test` covers signed timestamps and mixed ML-DSA/P-256 identity chains at
+authenticated time under incorrect device clocks, including certificate date,
+CA, key usage, path length, identity, and signature failures. See
+`mldsa-fixtures/README.md` for provenance and regeneration commands.
+
+The enrollment capability tests compile the production WendyCom capability
+helper with Cloud, Wi-Fi, and PKI individually disabled. They ensure unsupported
+profiles report an explicit false enrollment capability while retaining local
+identity recovery wherever PKI is available. They also check that ML-DSA support
+is advertised only when both PKI and ML-DSA-65 verification are enabled and that false values
+survive protobuf encoding.
+
+
+The native actor uses the admitted serialized crypto worker for heavyweight
+operations. Ordinary physical management shares the same PKI implementation.
 The optional own ML-DSA private-key backend is off by default and is not qualified
 by this suite.
 
@@ -108,8 +210,8 @@ loans, shutdown, and overlapping service epochs. `psa_global_table_ownership`
 keeps a baseline key live while temporary scoped keys retire. Record tests cover
 preallocated input adoption, bounded reassembly, input recycling, and pending
 ciphertext surviving input compaction and repeated partial flushes.
-`native_artifact_domain_with_legacy_leaf` independently checks v4 native signing
-while the existing leaf flag retains its v3 manifest contract and JSON bundle.
+`native_artifact_domain` independently checks v4 native signing and its
+synchronous digest/signing helpers. No legacy leaf wire format is compiled.
 
 The SDK startup hook installs one allocation/free ABI before PSA initialization;
 app_main enables task ownership before networking. Host scope fixtures initialize
@@ -142,3 +244,18 @@ pinned locally, while the independent Go peer trusts only the common root.
 The complete intermediate path must remain present; local trust does not imply
 that a remote peer already holds that intermediate. These fixtures do not
 activate issuer negotiation or require the optional WendyOS checkout.
+`pki_time_nonce_normal` covers seven ordinary 256-bit nonce shapes: low/high
+leading bit, all-ones, leading zeroes before low/high bits, one, and zero.
+It compares firmware request bytes with independently marshalled Go ASN.1 and
+verifies a correctly signed disposable P-384 timestamp for each value. The
+imprint always hashes all 32 original bytes; only the INTEGER representation
+strips zeroes or adds a sign octet. Run this positive interoperability check with
+`ctest --test-dir <build> -R '^pki_time_nonce_normal$' --output-on-failure`.
+
+The C6 sustained BLE trial on 2026-10-28 exposed the former fixed-width encoder:
+control-channel renewals used arbitrary random bytes, unlike bootstrap callers
+which masked the high bit. A high-bit nonce was encoded as negative and rejected
+by the timestamp response verifier. Renewal retries sometimes succeeded by
+chance. Canonical positive encoding fixes the source rather than constraining
+the random input, and matching canonical INTEGER values also handles leading
+zeroes in otherwise valid random nonces.

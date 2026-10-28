@@ -64,11 +64,7 @@ int wncv_start(struct wncv_job **out,struct wncs_store *store,const struct wncf_
 void wncv_release(struct wncv_job *job){assert(!job);}
 #endif
 
-#if CONFIG_WENDY_NET_TEST_C6_BLE_TRANSIT
-#define FIRST_LINK_COST WNR_BLE_COST
-#else
 #define FIRST_LINK_COST WNR_LAN_COST
-#endif
 static const char tenant[]="2558fd76-afc7-466e-9613-6b715296a526";
 static const char *ids[]={"00000000-0000-4000-8000-000000000004",
                          "00000000-0000-4000-8000-000000000005",
@@ -461,7 +457,7 @@ int main(int argc,char **argv)
     uint8_t spki[128];int spki_size=mbedtls_pk_write_pubkey_der(&key,spki,sizeof spki);assert(spki_size>0);
     struct wendy_pki_mesh_identity identity={.verified_seconds=1800000000,
         .verified_monotonic_us=1000000,.certificate_expires=1800003600,
-        .revision_first=1,.revision_limit=1025,.config_generation=1};
+        .config_generation=1};
     strcpy(identity.tenant,tenant);strcpy(identity.device,ids[0]);
     struct wnrs_node *node=NULL;struct endpoint peers[2]={{.index=1,.control_backpressure=1},{.index=2}};
     wendy_pki_connection connections[2]={0};
@@ -469,7 +465,6 @@ int main(int argc,char **argv)
         strcpy(connections[i].peer.device,ids[i+1]);connections[i].peer.expires=1800003600;
         connections[i].peer.spki_size=(size_t)spki_size;
         memcpy(connections[i].peer.spki,spki+sizeof spki-spki_size,(size_t)spki_size);
-        identity.revision_first=1+i*1024;identity.revision_limit=1025+i*1024;
         index_available=i==0; /* A later context miss keeps the current copied index. */
         assert(!wnrs_open(&peers[i].session,&node,&connections[i],&identity,ids[i+1],
                           i ? WNR_BLE_COST:FIRST_LINK_COST,send_frame,&peers[i]));
@@ -479,14 +474,6 @@ int main(int argc,char **argv)
     const char exact_type[16]={'_','s','e','n','s','o','r','l','i','n','k','.','_','t','c','p'};char empty_browse[8];
     assert(wnrs_service_action(peers[0].session,NULL,0,exact_type,sizeof exact_type,empty_browse,sizeof empty_browse,NULL,NULL)==2);
     assert(!strcmp(empty_browse,"[]"));
-#if CONFIG_WENDY_NET_TEST_C6_BLE_TRANSIT
-    assert(!node->core.config.non_transit);
-    assert(node->core.directory.key_limit==8);
-    assert(node->pool.config.pending==8 && node->pool.config.route_pending_reserve==2);
-    assert(node->pool.config.downloads==1 && node->pool.config.uploads==1);
-    unsigned before_trim=certificate_trims;trim_certificates(node);
-    assert(certificate_trims==before_trim); /* transit retains its bounded relay FIFO */
-#endif
     assert(index_snapshots==2 && node->certificates.baseline_index_enabled && node->certificates.baseline_index.count==1);
     assert(node->certificates.baseline_current(node->certificates.baseline_context,&node->certificates.baseline_index));
     assert(wnd_memory(&node->core.directory)==sizeof node->core.directory+
@@ -542,21 +529,6 @@ int main(int argc,char **argv)
     assert(outgoing==wnrs_link_id(peers[0].session));
     origin(&peers[0],2);assert(gone_messages==2);
     node->core.config.non_transit=false;
-#if CONFIG_WENDY_NET_TEST_C6_BLE_TRANSIT
-    /* Extra ordinary learned identities cannot enlarge the retained key cache;
-     * both physical peers remain pinned while older unpinned keys rotate. */
-    for(unsigned extra=0;extra<10;extra++){
-        struct wendy_pki_mesh_peer peer=connections[0].peer;
-        snprintf(peer.device,sizeof peer.device,"00000000-0000-4000-8000-%012u",100+extra);
-        assert(!wnd_identity(&node->core.directory,&peer));
-        assert(node->core.directory.key_count<=8);
-    }
-    assert(node->core.directory.key_count==8);
-    unsigned pinned=0;
-    for(struct wnd_entry *entry=node->core.directory.entries;entry;entry=entry->next)
-        if(entry->key_pinned){assert(entry->peer.spki_size);pinned++;}
-    assert(pinned==2);
-#endif
     printf("shared two-carrier transit: core=%zu gossip=%zu journal=%zu writes=%u\n",
         wnr_memory(&node->core),wg_memory(&node->pool),journal_size,commits);
     wnrs_close(peers[0].session);peers[0].session=NULL;assert(node);

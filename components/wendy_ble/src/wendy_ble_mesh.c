@@ -1294,6 +1294,12 @@ struct wendy_pki_stream wble_mesh_stream(struct wble_mesh_pipe *p)
                                      .write = stream_write,
                                      .wait = stream_wait};
 }
+bool wble_mesh_output_drained(struct wble_mesh_pipe *p)
+{
+    if(!p || !atomic_load(&ready) || !mutex || !trylock())return false;
+    bool drained=p->owned && p->connected && !p->closing && !p->tx_pending && !p->stalled;
+    unlock();return drained;
+}
 void wble_mesh_release(struct wble_mesh_pipe *p)
 {
     if(!p || !atomic_load(&ready))return;

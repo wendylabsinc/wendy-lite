@@ -57,9 +57,8 @@ jobs:
           grep -q '^# CONFIG_WENDY_USJ is not set$' sdkconfig
           grep -q '^CONFIG_TINYUSB_CDC_COUNT=2$' sdkconfig
           grep -q '^CONFIG_WENDY_CLOUD=y$' sdkconfig
-          grep -q '^CONFIG_WENDY_MESH_LEAF=y$' sdkconfig
-          grep -q '^CONFIG_WENDY_MESH_WIFI_BLE=y$' sdkconfig
-          grep -q '^CONFIG_WENDY_MESH_AUTO_DISCOVER=y$' sdkconfig
+          grep -q '^CONFIG_WENDY_NET_PEER=y$' sdkconfig
+          grep -q '^CONFIG_WENDY_NET_BLE=y$' sdkconfig
           grep -q '^CONFIG_LWIP_HOOK_IP6_ROUTE_CUSTOM=y$' sdkconfig
           grep -q '^CONFIG_WENDY_SENSOR_LINK_MOSAICO=y$' sdkconfig
           grep -q '^CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=8$' sdkconfig

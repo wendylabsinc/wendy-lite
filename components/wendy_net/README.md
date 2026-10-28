@@ -42,8 +42,11 @@ getter allocates nothing. An enabled token does not promise that a route is
 ready; registration can still return temporary unavailability. All host mesh
 registration descriptions are released on OFF. A guest wishing to preserve
 publication intent must retain it in guest memory and replay it when the epoch
-changes. SDK replay helpers and management activation belong to the following
-cutover layer.
+changes. The C replay helper and Swift `Services` API retain declarations in guest
+memory and replay them when the epoch changes. Swift applications using the
+normal event pump are polled automatically; explicit loops can call
+`Services.poll()`. See [Wendy Net configuration](../../docs/wendy-net.md) for
+management commands and device limits.
 
 ## Raw sockets
 

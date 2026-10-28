@@ -8,10 +8,10 @@ Certificate parsing and TLS call the explicit Mbed TLS DER APIs; DER is never
 converted back to PEM. A borrowed bundle remains alive until its parsed anchors
 are released. Root policy checks borrow one certificate at a time.
 
-Provisioned source bytes still identify the persistent route/service journal
-scope. This preserves the existing generation history when a previously enrolled
-board starts using DER snapshots. Live verification and TLS source memoization
-hash the exact DER bytes instead.
+Provisioned-source hashes identify configuration-derived router state across
+DER import. Live verification and TLS source memoization hash the exact DER
+bytes instead. Learned peer state stays in RAM; no persistent peer route or
+service journal is required.
 
 Existing configuration partitions can still contain PEM as their provisioning
 source; no flash configuration migration is performed by a firmware boot. Older
@@ -44,7 +44,8 @@ Firmware installs one Mbed TLS allocator pair in the system-init stage before
 ESP-IDF's PSA initialization. Both baseline and mesh allocations carry a common
 ownership prefix; task-local mesh charging is enabled at `app_main`, after
 compiler TLS becomes available. TLS contexts retain their initiating scope
-through setup, record I/O and teardown. Queued work remains inactive here.
+through setup, record I/O and teardown. The mesh runtime submits heavy work to
+its serialized crypto worker.
 Callbacks stay installed throughout mesh enable/disable cycles. Uncharged
 PKI/TLS baseline allocations use strict PSRAM when an external heap is registered,
 preserving the C5 profile; before PSRAM registration or on SRAM-only boards they
@@ -60,7 +61,7 @@ reserved until its matching destructor releases it.
 
 Certificate workspace borrowing matches the cache's original owner/placement.
 Baseline management TLS may borrow the idle mesh-owned input reserve without
-retagging it or allocating a second26 KiB block. On mesh shutdown caching stops;
+retagging it or allocating a second 26 KiB block. On mesh shutdown caching stops;
 the original mesh ledger remains draining until that finite TLS loan returns,
 then its matching destructor frees it, even if another service epoch has already
 started. A foreign scope cannot refill the owner's cache. Other management allocations remain
@@ -72,24 +73,15 @@ extension use the initiating scope too. Polynomial/vector temporaries receive
 firmware still needs separate accounting for raw transient trust/HTTP inputs,
 heap bookkeeping, and SDK/radio memory before claiming a whole-system heap cap.
 
-## Layer activation and existing leaf
+## Native peer activation
 
-This layer streams the complete verified own issuer path. It does not offer or
-select an auxiliary issuer-hint ALPN, infer issuer omission from a peer, or install
-an issuer-negotiation callback. That negotiation belongs to the later sibling
-layer. Ordinary certificate/path/principal/time verification remains mandatory.
+Native peers use binary DER certificates and v4 binary manifests. The retired
+leaf JSON/base64 protocol is not compiled. Issuer omission is negotiated with
+the same auxiliary ALPN as WendyOS; a locally pinned issuer is not assumed to
+be present remotely without that negotiation.
 
-The existing `CONFIG_WENDY_MESH_LEAF` component retains its JSON/base64 DER bundle,
-v3 manifest signature domain and leaf/3 ALPN until final cutover. This preserves
-that already-enabled component's behavior. Native artifact signing and borrowed
-key verification use v4 independently; no old/new wire negotiation is introduced.
-
-The worker API is an inactive synchronous facade: baseline CPU callbacks execute
-inline, asynchronous submissions return false, and no task or serialized
-admission is created. Native actor activation is rejected at compile time until
-the serialized worker layer supplies actual admission and context loans.
-Public own-DER read helpers remain synchronous generic APIs; their future outer
-worker/actor integration is outside this layer.
-
-The optional own ML-DSA private-key backend remains off by default and is not
-qualified here. Normal TLS fixtures use P-256 own keys with P-256/ML-DSA issuers.
+The mesh actor borrows each heavyweight context exclusively to the serialized
+crypto worker. Stored own DER certificates are read directly into TLS; there
+is no DER-to-PEM conversion. Learned peer material stays in bounded RAM caches.
+The optional own ML-DSA private-key backend remains off by default; supported
+fixtures use P-256 own keys with P-256/ML-DSA issuer chains.

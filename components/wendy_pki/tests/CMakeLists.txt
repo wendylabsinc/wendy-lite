@@ -44,7 +44,7 @@ target_include_directories(net_common PUBLIC ../../wendy_net_common/include)
 target_link_libraries(net_common PUBLIC Threads::Threads)
 add_library(pki STATIC ../src/wendy_pki_issuers.c ../src/wendy_pki_work.c ../src/wendy_pki_tls_input.c ../src/wendy_pki_public_read.c ../src/wendy_pki_public_index.c ${PKI_VERIFIER} ../src/wendy_lite_grant.c ../src/wendy_lite_authority.c ../src/wendy_pki_crypto.c ../src/wendy_operator_auth.c ../src/wendy_pki_mesh_crypto.c)
 target_include_directories(pki PUBLIC ../include stubs ../../wendy_conf/include ../../nanopb)
-target_compile_definitions(pki PUBLIC CONFIG_WENDY_MESH_LEAF=1 WENDY_PKI_MEMORY_HOST_SCOPE_TEST=1)
+target_compile_definitions(pki PUBLIC WENDY_PKI_MEMORY_HOST_SCOPE_TEST=1)
 target_link_libraries(pki PUBLIC net_common cert_bundle mbedtls mbedx509 tfpsacrypto Threads::Threads)
 add_executable(crypto_test crypto_test.c)
 target_link_libraries(crypto_test PRIVATE pki)
@@ -64,22 +64,12 @@ target_link_libraries(renewal_test PRIVATE Threads::Threads)
 add_executable(mesh_identity_test renewal_test.c ../src/wendy_pki_crypto.c)
 target_include_directories(mesh_identity_test PRIVATE ../../wendy_net_common/include stubs ../include ../src
     ../../wendy_conf/include ../../nanopb)
-target_compile_definitions(mesh_identity_test PRIVATE CONFIG_WENDY_MESH_LEAF=1)
+target_compile_definitions(mesh_identity_test PRIVATE WENDY_PKI_BOOT_PERSISTENCE_HOST_TEST=1)
 target_link_libraries(mesh_identity_test PRIVATE mbedtls mbedx509 tfpsacrypto Threads::Threads)
 
 enable_testing()
 add_test(NAME dependency_patches_in_checkout COMMAND "${CMAKE_COMMAND}" -P
     "${CMAKE_CURRENT_LIST_DIR}/../../../cmake/tests/dependency_patches_test.cmake")
-add_test(NAME mesh_identity_persistence COMMAND mesh_identity_test "${CMAKE_CURRENT_LIST_DIR}/fixtures/device-key.der")
-add_library(mesh_protocol STATIC ../../wendy_mesh/src/wendy_mesh_uplink_protocol.c ../../wendy_mesh/src/wendy_mesh_protocol.c ../../wendy_mesh/src/wendy_mesh_directory.c)
-target_include_directories(mesh_protocol PUBLIC ../../wendy_mesh/include)
-target_link_libraries(mesh_protocol PUBLIC pki)
-target_compile_options(mesh_protocol PRIVATE -Wall -Wextra -Werror)
-add_executable(mesh_fixture ../../wendy_mesh/tests/mesh_fixture.c)
-target_link_libraries(mesh_fixture PRIVATE mesh_protocol)
-add_executable(mesh_protocol_test ../../wendy_mesh/tests/protocol_test.c)
-target_link_libraries(mesh_protocol_test PRIVATE mesh_protocol)
-add_test(NAME mesh_protocol_bounds COMMAND mesh_protocol_test)
 add_test(NAME pki_crypto_key_csr COMMAND crypto_test "${CMAKE_CURRENT_LIST_DIR}/fixtures/device-key.der")
 add_test(NAME pki_verification COMMAND verify_test "${CMAKE_CURRENT_LIST_DIR}/fixtures")
 add_test(NAME pki_verification_future_clock COMMAND verify_test "${CMAKE_CURRENT_LIST_DIR}/fixtures" 4102444800)
@@ -135,6 +125,91 @@ target_compile_options(relay_control_test PRIVATE -UNDEBUG)
 target_link_libraries(relay_control_test PRIVATE pki)
 add_test(NAME pki_relay_control_refresh COMMAND relay_control_test)
 set_tests_properties(pki_relay_control_refresh PROPERTIES TIMEOUT 5)
+add_executable(relay_stream_wait_test relay_stream_wait_test.c "${IDF_COMPONENTS}/http_parser/http_parser.c")
+target_include_directories(relay_stream_wait_test PRIVATE stubs ../src "${IDF_COMPONENTS}/http_parser")
+target_compile_options(relay_stream_wait_test PRIVATE -UNDEBUG)
+target_link_libraries(relay_stream_wait_test PRIVATE pki)
+add_test(NAME pki_relay_stream_deadlines COMMAND relay_stream_wait_test)
+set_tests_properties(pki_relay_stream_deadlines PROPERTIES TIMEOUT 5)
+find_program(GO_EXECUTABLE go REQUIRED)
+# Linux router vectors made by the WendyOS manifest signer: ML-DSA-65 and P-256.
+add_executable(lite_authority_test lite_authority_test.c)
+target_link_libraries(lite_authority_test PRIVATE pki)
+add_test(NAME lite_authority_policy COMMAND "${GO_EXECUTABLE}" run
+    "${CMAKE_CURRENT_LIST_DIR}/lite_authority_test_driver.go"
+    "$<TARGET_FILE:lite_authority_test>")
+set_tests_properties(lite_authority_policy PROPERTIES TIMEOUT 30)
+add_executable(operator_auth_test operator_auth_test.c)
+target_link_libraries(operator_auth_test PRIVATE pki)
+add_executable(operator_auth_tls_test operator_auth_tls_test.c)
+target_link_libraries(operator_auth_tls_test PRIVATE pki)
+add_test(NAME legacy_operator_authentication COMMAND "${GO_EXECUTABLE}" run
+    "${CMAKE_CURRENT_LIST_DIR}/operator_auth_test_driver.go"
+    "$<TARGET_FILE:operator_auth_test>" "$<TARGET_FILE:operator_auth_tls_test>")
+# Hundreds of child-process handshakes take longer under address sanitization.
+set_tests_properties(legacy_operator_authentication PROPERTIES TIMEOUT 240)
+add_test(NAME pki_tls_interoperability COMMAND "${GO_EXECUTABLE}" run "${CMAKE_CURRENT_LIST_DIR}/tls_test_driver.go" "$<TARGET_FILE:tls_test>")
+set_tests_properties(pki_tls_interoperability PROPERTIES TIMEOUT 90)
+add_test(NAME pki_tls_mldsa65 COMMAND "${GO_EXECUTABLE}" run "${CMAKE_CURRENT_LIST_DIR}/tls_test_driver.go" "$<TARGET_FILE:tls_test>" "mldsa65")
+set_tests_properties(pki_tls_mldsa65 PROPERTIES TIMEOUT 90)
+
+# Compile the production capability helper under supported and disabled profiles.
+add_library(capability_proto STATIC ../../wendy_com/src/wendy_com_msg.pb.c
+    ../../wendy_com/src/sensorlink.pb.c
+    ../../nanopb/pb_common.c ../../nanopb/pb_decode.c ../../nanopb/pb_encode.c)
+target_include_directories(capability_proto PUBLIC ../../wendy_com/include ../../nanopb)
+function(add_capabilities_test name pki cloud wifi mldsa65 reset_supported cloud_supported mldsa_supported)
+    add_executable(${name} capabilities_test.c)
+    target_link_libraries(${name} PRIVATE capability_proto)
+    target_compile_definitions(${name} PRIVATE CONFIG_WENDY_PKI=${pki}
+        CONFIG_WENDY_CLOUD=${cloud} CONFIG_WENDY_WIFI_ENABLED=${wifi}
+        CONFIG_MBEDTLS_SSL_TLS1_3_SIG_MLDSA65=${mldsa65}
+        EXPECT_RESET=${reset_supported} EXPECT_CLOUD=${cloud_supported}
+        EXPECT_MLDSA=${mldsa_supported})
+    add_test(NAME ${name} COMMAND ${name})
+endfunction()
+add_capabilities_test(enrollment_capabilities_enabled 1 1 1 0 1 1 0)
+add_capabilities_test(enrollment_capabilities_cloud_disabled 1 0 1 0 1 0 0)
+add_capabilities_test(enrollment_capabilities_wifi_disabled 1 1 0 0 1 0 0)
+add_capabilities_test(enrollment_capabilities_pki_disabled 0 1 1 0 0 0 0)
+add_capabilities_test(enrollment_capabilities_mldsa65 1 1 1 1 1 1 1)
+add_capabilities_test(enrollment_capabilities_mldsa65_pki_disabled 0 1 1 1 0 0 0)
+
+add_executable(link_permissions_test ../../wendy_com/tests/permissions_test.c)
+target_include_directories(link_permissions_test PRIVATE ../../wendy_com/tests/stubs stubs
+    ../include ../../wendy_conf/include ../../wendy_stdio/include)
+target_compile_definitions(link_permissions_test PRIVATE CONFIG_WENDY_COM_TASK_PRIORITY=1
+    CONFIG_WENDY_COM_TASK_CORE_AFFINITY=0)
+target_link_libraries(link_permissions_test PRIVATE capability_proto mbedtls)
+add_test(NAME wendycom_link_permissions COMMAND link_permissions_test)
+
+add_executable(tx_stall_test ../../wendy_com/tests/tx_stall_test.c)
+target_include_directories(tx_stall_test PRIVATE ../../wendy_com/tests/stubs stubs)
+target_compile_definitions(tx_stall_test PRIVATE CONFIG_WENDY_COM_TASK_PRIORITY=1
+    CONFIG_WENDY_COM_TASK_CORE_AFFINITY=0)
+target_compile_options(tx_stall_test PRIVATE -UNDEBUG)
+target_link_libraries(tx_stall_test PRIVATE capability_proto mbedtls)
+foreach(scenario socket stream want_read no_bytes progress uart_initial uart_full uart_cdc uart_want_read)
+    add_test(NAME wendycom_tx_stall_${scenario} COMMAND tx_stall_test ${scenario})
+    set_tests_properties(wendycom_tx_stall_${scenario} PROPERTIES TIMEOUT 5)
+endforeach()
+
+
+add_executable(dns_probe_test dns_probe_test.c)
+target_include_directories(dns_probe_test PRIVATE ../src)
+target_compile_options(dns_probe_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME uplink_direct_dns_bounds COMMAND dns_probe_test)
+
+
+
+
+add_executable(uart_cdc_test ../../wendy_com/tests/uart_cdc_test.c)
+target_include_directories(uart_cdc_test PRIVATE stubs ../../wendy_com/include)
+target_compile_options(uart_cdc_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+add_test(NAME wendycom_cdc_framing COMMAND uart_cdc_test)
+
+
+
 add_executable(tls_reassembly_test tls_reassembly_test.c)
 target_include_directories(tls_reassembly_test PRIVATE "${CMAKE_BINARY_DIR}/wendy_patched/mbedtls/library" "${CMAKE_BINARY_DIR}/wendy_patched/mbedtls/tf-psa-crypto/core" "${CMAKE_BINARY_DIR}/wendy_patched/mbedtls/tf-psa-crypto/drivers/builtin/src" "$<TARGET_PROPERTY:mbedtls,INCLUDE_DIRECTORIES>")
 target_link_libraries(tls_reassembly_test PRIVATE pki)
@@ -171,7 +246,7 @@ add_test(NAME tls_pending_output_compaction COMMAND tls_reassembly_test --pendin
 add_executable(artifact_domain_test artifact_domain_test.c)
 target_include_directories(artifact_domain_test PRIVATE ../src)
 target_link_libraries(artifact_domain_test PRIVATE pki)
-add_test(NAME native_artifact_domain_with_legacy_leaf COMMAND artifact_domain_test)
+add_test(NAME native_artifact_domain COMMAND artifact_domain_test)
 
 add_test(NAME pki_normal_der_roots COMMAND verify_test --normal-roots "${CMAKE_CURRENT_LIST_DIR}/fixtures")
 
@@ -334,3 +409,12 @@ set_tests_properties(carrier_signing_loan_success PROPERTIES TIMEOUT 15)
 add_test(NAME carrier_signing_with_tls_workspace COMMAND carrier_signing_loan_success_test
     "${CMAKE_CURRENT_LIST_DIR}/fixtures/device-key.der" tls-overlap)
 set_tests_properties(carrier_signing_with_tls_workspace PROPERTIES TIMEOUT 15)
+# Normal random RFC3161 nonce integer shapes, including sign/zero padding.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_executable(time_nonce_success_test time_nonce_success_test.c)
+target_link_libraries(time_nonce_success_test PRIVATE pki)
+target_compile_options(time_nonce_success_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME pki_time_nonce_normal COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_LIST_DIR}/time_nonce_success.py" "${GO_EXECUTABLE}"
+    "${CMAKE_CURRENT_LIST_DIR}/public_time_fixtures.go" "$<TARGET_FILE:time_nonce_success_test>")
+set_tests_properties(pki_time_nonce_normal PROPERTIES TIMEOUT 240)

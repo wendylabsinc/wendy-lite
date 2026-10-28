@@ -2,12 +2,9 @@
 #include "wendy_pki.h"
 #include <time.h>
 
-#if CONFIG_WENDY_MESH_LEAF
-#define WENDY_PKI_MESH_ALPN "wendy-local-mesh-leaf/3"
-#endif
 /* A remote origin's key is P-256 (91-byte SPKI) or, for Linux routers, pure
  * ML-DSA-65: a 1974-byte SPKI and 3309-byte signatures. Keep peers off task
- * stacks. This leaf's own mesh key remains P-256. */
+ * stacks. The enrolled own mesh key is P-256 by default. */
 #define WENDY_PKI_MESH_SPKI_MAX 1974
 #define WENDY_PKI_MESH_SIGNATURE_MAX 3309
 struct wendy_pki_mesh_peer
@@ -31,7 +28,6 @@ struct wendy_pki_mesh_identity
     char tenant[37], device[37], peer[37];
     time_t certificate_expires, verified_seconds;
     int64_t verified_monotonic_us;
-    uint64_t revision_first, revision_limit;
     uint64_t config_generation;
     uint8_t trust_hash[32];
     uint8_t journal_trust_hash[32];
@@ -60,11 +56,6 @@ bool wendy_pki_mesh_public_index_current(const struct wendy_pki_mesh_public_inde
  * bootstrapped, reset/configuration unavailable, or the boot range exhausted.
  * Reconnect, mesh off/on and certificate renewal never reserve another range. */
 esp_err_t wendy_pki_mesh_revision_next(uint64_t *out);
-/* Fresh nonce-bound signed time and an already enrolled UUID identity are
- * required. Never issues a new identity or changes enrollment configuration.
- * A durable revision block is reserved before any proof may be signed. */
-esp_err_t wendy_pki_mesh_connect(const char* host, unsigned port, const char* router,
-    wendy_pki_connection** connection, struct wendy_pki_mesh_identity* identity);
 /* Signs only while the authenticated session and fresh-time window are valid.
  * The key remains inside PKI. The v4 signature binds the full principal and body. */
 /* Scheme-sized artifact output. kind0 route,1 service,2 inventory. The query
@@ -73,14 +64,9 @@ esp_err_t wendy_pki_mesh_connect(const char* host, unsigned port, const char* ro
 size_t wendy_pki_artifact_signature_capacity(wendy_pki_connection *);
 int wendy_pki_artifact_sign(wendy_pki_connection *,unsigned kind,const char *principal,
     const void *,size_t,uint8_t *signature,size_t capacity,size_t *written);
-/* Existing leaf builds retain their v3 manifest domain under that flag.
- * Native artifact_sign and verify_key always use v4. P256/80B ABI below. */
+/* P-256 synchronous helper; all native route signatures use the v4 domain. */
 int wendy_pki_mesh_sign(wendy_pki_connection* connection, const char* principal, const void* body,
     size_t size, uint8_t signature[80], size_t* signature_size);
-/* Public leaf-first own certificates. The existing leaf build requires an
- * output buffer for its JSON/base64 DER array (including a trailing NUL).
- * Other builds expose native CBOR bytes; NULL queries their encoded size. */
-int wendy_pki_mesh_bundle(wendy_pki_connection* connection, char* out, size_t capacity);
 /* Bounded public certificate descriptor and1024-byte part access, avoiding a
  * contiguous base64 copy of the whole own chain on constrained full routers. */
 int wendy_pki_mesh_describe(wendy_pki_connection *,char *,size_t);
@@ -115,7 +101,7 @@ int wendy_pki_mesh_verify_snapshot(const struct wendy_pki_mesh_identity *,
 int wendy_pki_mesh_chain(const uint8_t* const* der, const size_t* sizes, size_t count,
     const uint8_t* roots, size_t roots_size, const char* tenant, time_t now,
     struct wendy_pki_mesh_peer* peer);
-/* The v3 preimage is domain || uint32_be(105) || principal || body. P-256
+/* The v4 preimage is domain || uint32_be(105) || principal || body. P-256
  * peers sign its SHA-256 (ECDSA); ML-DSA-65 peers sign it unhashed, as pure
  * ML-DSA with an empty context. The peer's certified key selects the scheme. */
 int wendy_pki_mesh_verify(const struct wendy_pki_mesh_peer* peer, const char* principal,
@@ -127,7 +113,7 @@ int wendy_pki_service_verify_key(const struct wendy_pki_mesh_key *,const void *,
 int wendy_pki_inventory_verify_key(const struct wendy_pki_mesh_key *,const void *,size_t,
     const uint8_t *,size_t);
 int wendy_pki_mesh_digest(const char* principal, const void* body, size_t size, uint8_t hash[32]);
-/* Explicit native artifact domain; never selects the staged legacy leaf ABI. */
+/* Explicit native artifact domain. */
 int wendy_pki_artifact_digest(unsigned kind,const char *principal,const void *body,
     size_t size,uint8_t hash[32]);
 
@@ -147,34 +133,11 @@ int wendy_pki_inventory_verify(const struct wendy_pki_mesh_peer *,const void *,s
 int wendy_pki_inventory_sign(wendy_pki_connection *,const char *principal,const void *,size_t,
     uint8_t signature[80],size_t *);
 
-/* Caller owns the carrier until after wendy_pki_close. The initiator obtains
- * nonce-bound signed time through the peer before TLS; a responder relays only
- * to its enrolled timestamp authority and needs Internet access. */
-esp_err_t wendy_pki_mesh_stream(const struct wendy_pki_stream* stream, bool server,
-    const char* peer, wendy_pki_connection** connection, struct wendy_pki_mesh_identity* identity);
-/* BLE fallback: authenticate any other device in the enrolled tenant. The
- * authenticated UUID is returned in identity->peer. TLS client streams only;
- * TCP, ESP-NOW and gateway APIs retain their explicit peer requirements. */
-esp_err_t wendy_pki_mesh_stream_same_tenant(const struct wendy_pki_stream* stream,
-    wendy_pki_connection** connection, struct wendy_pki_mesh_identity* identity);
 /* 1: wake/readiness hint, 0: timeout, -1: closed/error. */
 int wendy_pki_wait(wendy_pki_connection* connection, bool writing, int64_t deadline_us);
 
-/* Authenticated Internet lease control, pinned to the exact gateway UUID.
- * Uses recent signed time from mesh establishment, never unauthenticated time. */
-esp_err_t wendy_pki_gateway_connect(const char* host, const char* gateway,
-    wendy_pki_connection** connection, int64_t* deadline_us);
-bool wendy_pki_probe_direct(const char* interface, const char* resolver);
 
-/* Prototype native endpoint carrier. Standard TLS, no leaf protocol preface.
- * Uses the same enrolled device key, strict tenant pin and signed time. */
-esp_err_t wendy_pki_net_connect(const char* host, unsigned port, const char* peer,
-    wendy_pki_connection** connection, struct wendy_pki_mesh_identity* identity);
 
-/* Consumes an accepted TCP socket, validates a same-tenant device and returns
- * its authenticated UUID. The remote address/discovery hint grants no access. */
-esp_err_t wendy_pki_net_accept(int fd,wendy_pki_connection **connection,
-    struct wendy_pki_mesh_identity *identity,char peer[37]);
 /* Full Babel router role over the same standard TLS carrier, with the exact
  * WendyOS StreamALPN. Unlike compact endpoints, retains certificate material
  * required to authenticate and relay independently signed origin proofs. */

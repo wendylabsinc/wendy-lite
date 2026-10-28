@@ -6,7 +6,7 @@ idf_component_register(
         espressif__esp_tinyusb
         wendy_com
         wendy_stdio
-        wendy_mesh
+        wendy_net_peer
         wendy_core
         wendy_sensor_link
         wendy_conf

@@ -13,6 +13,8 @@ extern "C" {
 /// wendy_core_register_sensor_link_source() first if the board has sensor
 /// sources to expose. Called once from app_main(). */
 esp_err_t wendy_core_init(void);
+/* Before core_init only. Shared IP/native listeners remain with WiFi disabled. */
+esp_err_t wendy_core_set_boot_radios(bool ble, bool wifi);
 
 #ifdef __cplusplus
 }
