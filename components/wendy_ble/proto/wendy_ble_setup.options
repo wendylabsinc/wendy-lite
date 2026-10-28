@@ -1,0 +1,15 @@
+wendy.lite.setup.Status.principal_uri max_size:160
+wendy.lite.setup.Status.device_class max_size:2
+wendy.lite.setup.Status.nonce max_size:65
+wendy.lite.setup.Status.hardware_id max_size:13
+wendy.lite.setup.Enroll.lite_config type:FT_CALLBACK
+wendy.lite.setup.Enrolled.principal_uri max_size:160
+wendy.lite.setup.Hello.public_key max_size:32 fixed_length:true
+wendy.lite.setup.Sealed.data type:FT_CALLBACK
+wendy.lite.setup.WifiConnect.ssid max_size:33
+wendy.lite.setup.WifiConnect.password max_size:65
+wendy.lite.setup.WifiConnected.error_message max_size:80
+wendy.lite.setup.WifiStatus.ssid max_size:33
+wendy.lite.setup.WifiNetwork.ssid max_size:33
+wendy.lite.setup.WifiList.networks max_count:24
+wendy.lite.setup.Error.message max_size:80

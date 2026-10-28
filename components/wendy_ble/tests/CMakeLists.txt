@@ -13,22 +13,34 @@ target_include_directories(mesh_gap_effect_success_test PRIVATE ../src)
 target_compile_options(mesh_gap_effect_success_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 add_test(NAME mesh_gap_effect_success COMMAND mesh_gap_effect_success_test)
 
+add_executable(l2cap_session_test l2cap_session_test.c)
+target_include_directories(l2cap_session_test PRIVATE l2cap_stubs)
+target_compile_definitions(l2cap_session_test PRIVATE CONFIG_WENDY_BLE_MTU=512)
+target_compile_options(l2cap_session_test PRIVATE -UNDEBUG -Wall -Wextra -Werror -Wno-unused-parameter)
+add_test(NAME l2cap_session_cleanup COMMAND l2cap_session_test)
+
 # Each executable compiles the production transport with a different firmware
 # configuration. Hardware calls are stubbed; advertising and GATT logic are not.
 foreach(pki 0 1)
     foreach(require_mtls 0 1)
-        set(target advertising_pki_${pki}_mtls_${require_mtls})
+      foreach(setup 0 1)
+        if(setup AND NOT pki)
+            continue()
+        endif()
+        set(target advertising_pki_${pki}_mtls_${require_mtls}_setup_${setup})
         add_executable(${target} advertising_test.c)
         target_include_directories(${target} PRIVATE stubs ../include)
         target_compile_definitions(${target} PRIVATE
-            CONFIG_WENDY_BLE=1 CONFIG_WENDY_PKI=${pki}
+            CONFIG_WENDY_BLE=1 CONFIG_WENDY_PKI=${pki} CONFIG_WENDY_BLE_SETUP=${setup}
             CONFIG_WENDY_BLE_REQUIRE_MTLS=${require_mtls}
             CONFIG_WENDY_BLE_PSM=128 CONFIG_WENDY_BLE_TASK_PRIORITY=5
+            CONFIG_WENDY_NET_BLE=1 CONFIG_WENDY_NET_BLE_PSM=129
             CONFIG_WENDY_BLE_TASK_CORE_AFFINITY=0)
         target_compile_options(${target} PRIVATE -UNDEBUG -Wall -Wextra -Werror
             -Wno-unused-parameter)
         add_test(NAME ${target} COMMAND ${target})
         set_tests_properties(${target} PROPERTIES TIMEOUT 5)
+      endforeach()
     endforeach()
 endforeach()
 
@@ -70,3 +82,13 @@ add_test(NAME mesh_connection_claim COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURREN
 add_test(NAME physical_rx_rearm COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/physical_rx_rearm_success_test.py)
 
 add_test(NAME mesh_output_drain COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/mesh_output_drain_success_test.py)
+
+add_executable(setup_test setup_test.c ../src/wendy_ble_setup_dispatch.c
+    ../src/wendy_ble_setup_wire.c ../src/wendy_ble_setup.pb.c
+    ../../wendy_conf/src/wendy_conf.pb.c
+    ../../nanopb/pb_common.c ../../nanopb/pb_encode.c ../../nanopb/pb_decode.c)
+target_include_directories(setup_test PRIVATE setup_stubs ../src
+    ../../wendy_pki/tests/stubs ../../wendy_pki/include
+    ../../wendy_conf/include ../../wendy_wifi/include ../../nanopb)
+target_compile_options(setup_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+add_test(NAME setup_command_boundaries COMMAND setup_test)

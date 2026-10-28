@@ -19,7 +19,13 @@
 
 //--- literals ---//
 
+// First-enrollment preflight verifies CA bundles and RFC 3161 on this task,
+// serialized with USB reset/config writes. Match the PKI verifier's stack.
+#if CONFIG_WENDY_BLE_SETUP
+#define WCOM_TASK_STACK     24576
+#else
 #define WCOM_TASK_STACK     8192
+#endif
 
 // A vanished peer may leave its socket open until TCP's much longer retry
 // limit. Bound queued writes so their done handlers can return borrowed

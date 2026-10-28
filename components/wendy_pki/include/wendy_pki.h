@@ -8,7 +8,7 @@
 #include "wendy_peer_role.h"
 typedef struct wendy_pki_connection wendy_pki_connection;
 void wendy_pki_builtin_trust(bool *ready, bool *tsa_ready);
-/* A challenge discloses no key material. Only the USB command calls this. */
+/* A challenge discloses no key material. Call on the WendyCom dispatch task. */
 esp_err_t wendy_pki_challenge(bool status_only, char nonce_hex[65], bool *enrolled);
 /* Physical setup only; caller must enforce the USB transport boundary.
  * Clears enrollment configuration before identity keys, preserving signed time.
@@ -73,3 +73,10 @@ size_t wendy_pki_input_workspace_cached_bytes(void);
  * The caller owns it until release, including if the mesh stops meanwhile. */
 uint8_t *wendy_pki_input_workspace_borrow(size_t *capacity);
 void wendy_pki_input_workspace_release(uint8_t *);
+
+struct wendy_conf_enrollment_data;
+/* First-boot BLE preflight, on the WendyCom task. Checks configuration, roots,
+ * and the persisted nonce-bound signed time without writing keys or clock.
+ * The caller must still enforce first enrollment at the configuration write. */
+esp_err_t wendy_pki_validate_setup(const WendyConfEnrollment *,
+                                 const struct wendy_conf_enrollment_data *);

@@ -945,14 +945,14 @@ static int valid_config(const WendyConfEnrollment *c)
     return n > s && !strcmp(c->csr_url + n - s, suffix) && !strncmp(c->csr_url, "https://", 8) &&
            !strncmp(c->time_url, "https://", 8);
 }
-/* Device, timestamp and HTTPS roots come only from USB-authorized configuration
+/* Device, timestamp and HTTPS roots come only from physical setup configuration
  * or the build. The separate Lite operator pin never replaces these roots. */
 static int select_trust(const WendyConfEnrollment *cfg, struct wendy_conf_enrollment_data *data)
 {
     if (!cfg->provision_trust)
     {
         if (data->device_roots.size || data->tsa_roots.size || data->https_roots.size) {
-            ESP_LOGE(TAG, "Runtime CA bundles require USB trust provisioning");
+            ESP_LOGE(TAG, "Runtime CA bundles require explicit trust provisioning");
             return -1;
         }
         data->device_roots = (struct wendy_conf_span){wendy_pki_device_roots_start, ROOT_SIZE(device)};
@@ -999,6 +999,35 @@ static int select_time_trust(const WendyConfEnrollment *cfg,
         (https && wendy_pki_verify_roots(data->https_roots.data,data->https_roots.size)) ? -1:0;
 }
 #endif
+
+esp_err_t wendy_pki_validate_setup(const WendyConfEnrollment *cfg,
+                                 const struct wendy_conf_enrollment_data *input)
+{
+    char unused[65];
+    bool enrolled = true;
+    if (wendy_pki_reset_in_progress() || wendy_conf_has_enrollment() ||
+        wendy_pki_challenge(true, unused, &enrolled) != ESP_OK || enrolled ||
+        !cfg->token[0] || strchr(cfg->token, '\r') || strchr(cfg->token, '\n') ||
+        !input->signed_time.size)
+        return ESP_ERR_INVALID_STATE;
+    struct wendy_conf_enrollment_data data = *input;
+    if (validate_config_and_trust(cfg, &data)) return ESP_ERR_INVALID_ARG;
+    nvs_handle_t h;
+    if (open_identity(&h) != ESP_OK) return ESP_FAIL;
+    int64_t floor = 0;
+    uint8_t nonce[32];
+    size_t n = sizeof nonce;
+    time_t verified = 0;
+    esp_err_t e = nvs_get_i64(h, "floor", &floor);
+    bool valid = (e == ESP_OK || e == ESP_ERR_NVS_NOT_FOUND) &&
+        nvs_get_blob(h, "nonce", nonce, &n) == ESP_OK && n == sizeof nonce &&
+        !wendy_pki_verify_time(data.signed_time.data, data.signed_time.size, nonce,
+                              data.tsa_roots.data, data.tsa_roots.size, floor, &verified);
+    nvs_close(h);
+    erase(nonce, sizeof nonce);
+    return valid ? ESP_OK : ESP_ERR_INVALID_ARG;
+}
+
 static esp_err_t connect_identity(wendy_pki_connection **connection)
 {
     if (wendy_pki_crypto_init())

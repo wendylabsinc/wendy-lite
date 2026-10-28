@@ -42,6 +42,10 @@ ESP_EVENT_DEFINE_BASE(WENDY_WIFI_CONTROL_EVENT);
 static EventGroupHandle_t s_wifi_events;
 static bool s_infra_initialized = false;
 static bool s_boot_radio_enabled = true;
+
+// BLE can arrive while boot is loading Wi-Fi credentials. Serialize driver
+// initialization and scan/connect operations, without blocking the event task.
+static pthread_mutex_t s_operation_lock = PTHREAD_MUTEX_INITIALIZER;
 static atomic_bool s_connected;
 static TaskHandle_t s_services_task;
 static pthread_mutex_t s_services_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -256,7 +260,8 @@ static esp_err_t attempt_handoff(uint32_t request)
 
     if (err == ESP_OK) {
         s_connect_requested = true;
-        ESP_LOGI(TAG, "connecting to WiFi SSID '%s'...", (char *)s_handoff_config.sta.ssid);
+        ESP_LOGI(TAG, "connecting to WiFi SSID '%.*s'...",
+                 (int)sizeof(s_handoff_config.sta.ssid), (char *)s_handoff_config.sta.ssid);
         ESP_LOGI(TAG, "WiFi security: minimum authmode=%u SAE PWE=%u",
                  (unsigned)s_handoff_config.sta.threshold.authmode,
                  (unsigned)s_handoff_config.sta.sae_pwe_h2e);
@@ -272,14 +277,17 @@ static esp_err_t attempt_handoff(uint32_t request)
 
 static esp_err_t wifi_connect(const char *ssid, const char *password)
 {
+    // This also receives compile-time credentials, not just validated BLE input.
+    if (!ssid || !ssid[0] || strlen(ssid) > 32 || (password && strlen(password) > 64))
+        return ESP_ERR_INVALID_ARG;
     wifi_config_t wifi_config = {
         .sta = {
             .threshold.authmode = WIFI_AUTH_OPEN,
         },
     };
-    strlcpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
+    memcpy(wifi_config.sta.ssid, ssid, strlen(ssid));
     if (password && strlen(password) > 0) {
-        strlcpy((char *)wifi_config.sta.password, password, sizeof(wifi_config.sta.password));
+        memcpy(wifi_config.sta.password, password, strlen(password));
         wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
     }
 
@@ -485,7 +493,7 @@ bool wendy_wifi_radio_available(void)
     return s_boot_radio_enabled;
 }
 
-esp_err_t wendy_wifi_init(void)
+static esp_err_t wifi_init_locked(void)
 {
     if(!wendy_wifi_radio_available()){
         /* Radio-omitted profile: keep the shared IP core and VIP acceptor, without
@@ -577,9 +585,10 @@ esp_err_t wendy_wifi_init(void)
     return WENDY_WIFI_ERR_NO_CREDS;
 }
 
-esp_err_t wendy_wifi_try_connect(const char *ssid, const char *password)
+static esp_err_t wifi_try_connect_locked(const char *ssid, const char *password)
 {
-    if (!ssid || strlen(ssid) == 0) return ESP_ERR_INVALID_ARG;
+    if (!ssid || !ssid[0] || strlen(ssid) > 32 || (password && strlen(password) > 64))
+        return ESP_ERR_INVALID_ARG;
     if(!wendy_wifi_radio_available())return ESP_ERR_NOT_SUPPORTED;
 #if CONFIG_WENDY_NET_NAN
     (void)password;
@@ -634,4 +643,46 @@ void wendy_wifi_deinit(void)
     mdns_free();
     s_mdns_initialized = s_mdns_started = false;
     pthread_mutex_unlock(&s_services_lock);
+}
+
+static esp_err_t wifi_scan_locked(wifi_ap_record_t *records, uint16_t *count)
+{
+    if (!records || !count || !*count) return ESP_ERR_INVALID_ARG;
+    if (!wendy_wifi_radio_available()) return ESP_ERR_NOT_SUPPORTED;
+#if CONFIG_WENDY_NET_NAN
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+    esp_err_t err = wifi_infra_init();
+    if (err != ESP_OK) return err;
+    err = esp_wifi_start();
+    if (err != ESP_OK) return err;
+    wifi_scan_config_t config = {0};
+    err = esp_wifi_scan_start(&config, true);
+    if (err == ESP_OK) err = esp_wifi_scan_get_ap_records(count, records);
+    if (err != ESP_OK) esp_wifi_clear_ap_list();
+    return err;
+}
+
+esp_err_t wendy_wifi_init(void)
+{
+    pthread_mutex_lock(&s_operation_lock);
+    esp_err_t result = wifi_init_locked();
+    pthread_mutex_unlock(&s_operation_lock);
+    return result;
+}
+
+esp_err_t wendy_wifi_try_connect(const char *ssid, const char *password)
+{
+    pthread_mutex_lock(&s_operation_lock);
+    esp_err_t result = wifi_try_connect_locked(ssid, password);
+    pthread_mutex_unlock(&s_operation_lock);
+    return result;
+}
+
+esp_err_t wendy_wifi_scan(wifi_ap_record_t *records, uint16_t *count)
+{
+    pthread_mutex_lock(&s_operation_lock);
+    esp_err_t result = wifi_scan_locked(records, count);
+    pthread_mutex_unlock(&s_operation_lock);
+    return result;
 }

@@ -9,7 +9,7 @@ def function(name):
  while depth:
   depth+=(source[end]=='{')-(source[end]=='}');end+=1
  return source[start:end]+'\n'
-functions=['_tx_backoff_expired','_arm_recv','_rx_rearm_host','_ring_append','_l2cap_event','wble_l2cap_end_session','wble_l2cap_read']
+functions=['_tx_backoff_expired','_arm_recv','_rx_rearm_host','_ring_append','_l2cap_event','_end_session_on_host','wble_l2cap_end_session','wble_l2cap_read']
 head=r'''
 #include <assert.h>
 #include <stdbool.h>
@@ -30,6 +30,10 @@ head=r'''
 #define ESP_LOGD(tag,...) do{if(0)fprintf(stderr,__VA_ARGS__);}while(0)
 #define ESP_OK 0
 #define ESP_ERR_INVALID_STATE 1
+#define BLE_HS_CONN_HANDLE_NONE UINT16_MAX
+#define BLE_HS_ENOTCONN 7
+#define BLE_ERR_REM_USER_CONN_TERM 19
+#define portMAX_DELAY UINT32_MAX
 #define BLE_HS_ENOMEM 6
 #define BLE_HS_EBUSY 15
 #define BLE_L2CAP_EVENT_COC_ACCEPT 1
@@ -45,11 +49,19 @@ struct ble_l2cap_chan_info {uint16_t peer_coc_mtu,peer_l2cap_mtu;};
 struct ble_l2cap_event {
  int type;
  struct {struct ble_l2cap_chan *chan;} accept;
- struct {int status;struct ble_l2cap_chan *chan;} connect;
+ struct {int status;struct ble_l2cap_chan *chan;uint16_t conn_handle;} connect;
+ struct {struct ble_l2cap_chan *chan;} disconnect;
  struct {struct os_mbuf *sdu_rx;struct ble_l2cap_chan *chan;} receive;
 };
 struct ble_npl_event {void (*callback)(struct ble_npl_event *);};
-static struct ble_npl_event _rx_rearm_event;
+static struct ble_npl_event _rx_rearm_event, _end_event;
+static bool _session_active, _disconnect_peer;
+static uint16_t _session_peer;
+static int _end_sem;
+static void _end_session_on_host(struct ble_npl_event *);
+static int xSemaphoreGive(int sem){(void)sem;return 1;}
+static int xSemaphoreTake(int sem,unsigned timeout){(void)sem;(void)timeout;return 1;}
+static int ble_gap_terminate(uint16_t handle,int reason){(void)handle;(void)reason;assert(false);return 0;}
 static bool posted,timer_armed,allocation_pressure;
 static unsigned allocs,frees,rearms;
 static struct os_mbuf buffers[6];
@@ -67,7 +79,7 @@ static void _unlock(void){}
 static void _signal(int sem){(void)sem;}
 static size_t _ring_free(void){return RING_SIZE-_ring_len;}
 static void *nimble_port_get_dflt_eventq(void){return (void*)1;}
-static void ble_npl_eventq_put(void *q,struct ble_npl_event *e){assert(q==(void*)1 && e==&_rx_rearm_event);posted=true;}
+static void ble_npl_eventq_put(void *q,struct ble_npl_event *e){assert(q==(void*)1);if(e==&_end_event){_end_session_on_host(e);return;}assert(e==&_rx_rearm_event);posted=true;}
 static int esp_timer_start_once(int timer,int us){(void)timer;assert(us==10000);if(timer_armed)return ESP_ERR_INVALID_STATE;timer_armed=true;return ESP_OK;}
 static struct os_mbuf *os_mbuf_get_pkthdr(void *pool,int size){(void)pool;(void)size;if(allocation_pressure)return NULL;for(unsigned i=0;i<6;i++)if(!buffers[i].owned){buffers[i].owned=true;buffers[i].len=0;_sdu_mempool.mp_num_free--;allocs++;return &buffers[i];}return NULL;}
 static void os_mbuf_free_chain(struct os_mbuf *p){assert(p && p->owned);p->owned=false;_sdu_mempool.mp_num_free++;frees++;}
@@ -104,10 +116,10 @@ int main(void){
  /* A second request cannot leak the SDK-refused caller-owned buffer. */
  _recv_ready_owed=true;unsigned before=frees;_rx_rearm_host(NULL);assert(!_recv_ready_owed && frees==before+1 && c.rx);
  allocation_pressure=true;receive(&c,input,10);pump();assert(_rx_retry && timer_armed);
- wble_l2cap_end_session();assert(!_chan && !_recv_ready_owed && !_rx_retry);
+ wble_l2cap_end_session(false);assert(!_chan && !_recv_ready_owed && !_rx_retry);
  allocation_pressure=false;unsigned old=allocs;timer_fire();assert(allocs==old && !posted);
  struct ble_l2cap_chan next={0};connect_channel(&next);pump();assert(next.rx && _chan==&next);
- wble_l2cap_end_session();assert(allocs==frees && _sdu_mempool.mp_num_free==6);
+ wble_l2cap_end_session(false);assert(allocs==frees && _sdu_mempool.mp_num_free==6);
  assert(rearms>100);puts("Actual physical receive functions preserve25646 exact bytes across bounded pressure/release/backpressure/close and handle rearm ownership");return 0;
 }
 '''

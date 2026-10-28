@@ -28,7 +28,20 @@ static const char *TAG = "wendy_ble";
 #endif
 #include "wendy_ble_l2cap.h"
 #include "wendy_ble_tls.h"
+#include "wendy_ble_setup.h"
 #include "wendy_com_link.h"
+
+#if CONFIG_WENDY_BLE_SETUP
+_Static_assert(WBLE_SETUP_PSM != CONFIG_WENDY_BLE_PSM,
+               "setup and management must use different PSMs");
+#if CONFIG_WENDY_NET_BLE
+#include "wendy_ble_mesh.h"
+_Static_assert(WBLE_SETUP_PSM != WBLE_MESH_TIME_PSM,
+               "setup and timestamp transport must use different PSMs");
+_Static_assert(WBLE_SETUP_PSM != CONFIG_WENDY_NET_BLE_PSM,
+               "setup and mesh must use different PSMs");
+#endif
+#endif
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -111,6 +124,7 @@ static void _incoming_retire(void)
 #define ADV_ITVL_MAX_MS  150
 
 #define SESSION_TASK_STACK  4096
+#define SETUP_SESSION_TASK_STACK 8192
 // PKI identity verification uses the same stack budget as the LAN server.
 #define PKI_SESSION_TASK_STACK  24576
 
@@ -164,6 +178,13 @@ static const ble_uuid128_t _uuid_display_name = WENDY_BLE_UUID128(0x04);
 static const ble_uuid128_t _uuid_mtls         = WENDY_BLE_UUID128(0x05);
 static const ble_uuid128_t _uuid_principal    = WENDY_BLE_UUID128(0x06);
 
+#if CONFIG_WENDY_BLE_SETUP
+static const ble_uuid128_t _uuid_setup = BLE_UUID128_INIT(
+    0x32, 0xb6, 0x97, 0xb3, 0x08, 0xd7, 0x72, 0x92,
+    0x67, 0x4b, 0x20, 0x4c, 0xeb, 0xe9, 0x65, 0x75);
+#endif
+static bool _setup;
+static bool _setup_address_ready;
 static bool  _host_initialized;
 static bool  _started;
 static bool  _enrolled;
@@ -251,7 +272,7 @@ static int _info_access(uint16_t conn_handle, uint16_t attr_handle,
 #endif
     // Both are little-endian on the wire, which is also the native byte order
     // on every target this builds for.
-    uint16_t psm  = CONFIG_WENDY_BLE_PSM;
+    uint16_t psm  = _setup ? WBLE_SETUP_PSM : CONFIG_WENDY_BLE_PSM;
     uint8_t  mtls = _enrolled ? 1 : 0;
 
     const void *data;
@@ -310,6 +331,9 @@ static int _primary_advertisement(bool mesh)
     struct ble_hs_adv_fields adv={0};
     adv.flags=BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     adv.uuids128=&_uuid_svc;adv.num_uuids128=1;adv.uuids128_is_complete=1;
+#if CONFIG_WENDY_BLE_SETUP
+    if (_setup) adv.uuids128 = &_uuid_setup;
+#endif
     return ble_gap_adv_set_fields(&adv);
 }
 #if CONFIG_WENDY_NET_BLE
@@ -389,6 +413,23 @@ static void _start_advertising(bool quiet_capacity)
         (_enrolled && !wendy_conf_is_current()))
         return;
 
+    // A mesh peer may retain the public address after this board is reset.
+    // Setup has a fresh static random address for this boot, so stale mesh
+    // connections cannot occupy its single peripheral connection slot.
+    if (_setup) {
+        if (!_setup_address_ready) {
+            ble_addr_t address;
+            int rc = ble_hs_id_gen_rnd(0, &address);
+            if (rc == 0) rc = ble_hs_id_set_rnd(address.val);
+            if (rc != 0) {
+                ESP_LOGE(TAG, "setup address generation failed: %d", rc);
+                return;
+            }
+            _setup_address_ready = true;
+        }
+        _own_addr_type = BLE_OWN_ADDR_RANDOM;
+    }
+
     int rc = _primary_advertisement(false);
     if (rc != 0) {
         ESP_LOGE(TAG, "ble_gap_adv_set_fields failed: %d", rc);
@@ -457,6 +498,7 @@ static int _gap_event(struct ble_gap_event *event, void *arg)
 
         case BLE_GAP_EVENT_DISCONNECT:
             ESP_LOGI(TAG, "disconnect: reason=%d", event->disconnect.reason);
+            wble_l2cap_peer_disconnected(event->disconnect.conn.conn_handle);
 #if CONFIG_WENDY_NET_BLE
             _incoming_disconnect(event->disconnect.conn.conn_handle);
 #endif
@@ -719,6 +761,13 @@ static void _session_task(void *arg)
             continue;
 
         ESP_LOGI(TAG, "session started");
+#if CONFIG_WENDY_BLE_SETUP
+        if (_setup) {
+            wble_setup_session();
+            wble_l2cap_end_session(true);
+            continue;
+        }
+#endif
         if (_run_session_handshake() == ESP_OK) {
             // Drop a stale signal from a previous session before handing the
             // stream over, or the wait below would return immediately.
@@ -727,7 +776,7 @@ static void _session_task(void *arg)
             xSemaphoreTake(_link_closed, portMAX_DELAY);
         }
         wble_tls_session_end();
-        wble_l2cap_end_session();
+        wble_l2cap_end_session(false);
         ESP_LOGI(TAG, "session ended");
     }
 }
@@ -798,8 +847,21 @@ esp_err_t wendy_ble_start(void)
         return ESP_ERR_INVALID_STATE;
     }
 #endif
+#if CONFIG_WENDY_BLE_SETUP
+    _setup = !_enrolled;
+    if (_setup) {
+        char nonce[65];
+        bool installed = true;
+        if (wendy_pki_challenge(true, nonce, &installed) != ESP_OK || installed) {
+            ESP_LOGW(TAG, "stored identity unavailable for setup; use USB recovery");
+            return ESP_ERR_INVALID_STATE;
+        }
+    }
+#else
+    _setup = false;
+#endif
 #if CONFIG_WENDY_BLE_REQUIRE_MTLS
-    if (!_enrolled) {
+    if (!_enrolled && !_setup) {
         ESP_LOGW(TAG, "BLE requires enrollment; use USB for setup");
         return ESP_ERR_INVALID_STATE;
     }
@@ -846,7 +908,7 @@ esp_err_t wendy_ble_start(void)
     // NimBLE copies the name, so failure cleanup may still free our string.
     ble_svc_gap_device_name_set(_device_name);
 
-    err = wble_l2cap_init();
+    err = wble_l2cap_init(_setup ? WBLE_SETUP_PSM : CONFIG_WENDY_BLE_PSM);
     if (err != ESP_OK)
         goto fail;
 
@@ -859,7 +921,7 @@ esp_err_t wendy_ble_start(void)
 
     // A small coordinator remains idle; the certificate worker is allocated on demand.
     if (xTaskCreatePinnedToCore(_session_task, "wendy_ble",
-                                SESSION_TASK_STACK, NULL,
+                                _setup ? SETUP_SESSION_TASK_STACK : SESSION_TASK_STACK, NULL,
                                 CONFIG_WENDY_BLE_TASK_PRIORITY, NULL,
                                 CONFIG_WENDY_BLE_TASK_CORE_AFFINITY) != pdPASS) {
         ESP_LOGE(TAG, "session task creation failed");
@@ -871,6 +933,8 @@ esp_err_t wendy_ble_start(void)
 
     if (_enrolled)
         ESP_LOGI(TAG, "PKI mTLS enabled: same-tenant operator certificate required");
+    else if (_setup)
+        ESP_LOGI(TAG, "unenrolled: encrypted setup only on PSM %d", WBLE_SETUP_PSM);
     else
         ESP_LOGI(TAG, "unenrolled: clients may connect without a certificate");
 

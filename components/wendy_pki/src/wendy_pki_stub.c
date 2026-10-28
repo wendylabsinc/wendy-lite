@@ -41,3 +41,10 @@ bool wendy_pki_pending(wendy_pki_connection *connection)
     (void)connection;
     return false;
 }
+
+esp_err_t wendy_pki_validate_setup(const WendyConfEnrollment *cfg,
+                                 const struct wendy_conf_enrollment_data *data)
+{
+    (void)cfg; (void)data;
+    return ESP_ERR_NOT_SUPPORTED;
+}

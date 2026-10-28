@@ -133,6 +133,22 @@ struct ble_gatt_svc_def {
 #define BLE_GAP_ROLE_SLAVE 1
 #define BLE_ERR_MEM_CAPACITY 7
 #define BLE_HS_HCI_ERR(code) (0x200+(code))
+
+#define BLE_OWN_ADDR_RANDOM 1
+typedef struct { uint8_t type, val[6]; } ble_addr_t;
+extern unsigned test_random_addresses;
+extern bool test_fail_random_address;
+extern uint8_t test_adv_address_type;
+static inline int ble_hs_id_gen_rnd(int nrpa, ble_addr_t *addr) {
+    assert(nrpa == 0);
+    ++test_random_addresses;
+    memset(addr, 0, sizeof(*addr));
+    addr->val[5] = 0xc0;
+    return test_fail_random_address ? 1 : 0;
+}
+static inline int ble_hs_id_set_rnd(const uint8_t *addr) {
+    assert(addr[5] == 0xc0); return 0;
+}
 #define BLE_GAP_EVENT_CONNECT 1
 #define BLE_GAP_EVENT_DISCONNECT 2
 #define BLE_GAP_EVENT_ADV_COMPLETE 3
@@ -178,6 +194,7 @@ static inline int ble_gap_adv_rsp_set_fields(const struct ble_hs_adv_fields *fie
 static inline int ble_gap_adv_start(uint8_t type, const void *addr, int duration,
         const struct ble_gap_adv_params *params,
         int (*cb)(struct ble_gap_event *, void *), void *arg) {
+    test_adv_address_type = type;
     ++test_adv_starts; if(test_advertising_error)return test_advertising_error;test_advertising_active=true;return 0;
 }
 static inline int ble_hs_util_ensure_addr(int privacy) { return 0; }
@@ -221,4 +238,11 @@ static inline int wcom_add_stream_link(const struct wcom_stream_ops *ops, void *
         void (*cb)(int, enum wcom_interruption_reason)) { return 0; }
 static inline void wcom_core_exec(struct wcom_operation *op) {}
 
+
+extern bool test_installed, test_challenge_fails;
+static inline esp_err_t wendy_pki_challenge(bool status, char nonce[65], bool *enrolled) {
+    assert(status);
+    nonce[0] = 0; *enrolled = test_installed;
+    return test_challenge_fails ? ESP_FAIL : ESP_OK;
+}
 #endif

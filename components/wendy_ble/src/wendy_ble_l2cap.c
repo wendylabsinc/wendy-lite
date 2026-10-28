@@ -9,6 +9,7 @@
 #include "freertos/semphr.h"
 
 #include "host/ble_hs.h"
+#include "host/ble_gap.h"
 #include "host/ble_l2cap.h"
 #include "os/os_mbuf.h"
 #include "os/os_mempool.h"
@@ -68,11 +69,16 @@ static SemaphoreHandle_t _mutex;
 static SemaphoreHandle_t _session_sem;
 static SemaphoreHandle_t _rx_sem;
 static SemaphoreHandle_t _tx_sem;
+static SemaphoreHandle_t _end_sem;
+static struct ble_npl_event _end_event;
 static esp_timer_handle_t _tx_backoff_timer;
 static int _wakeup_fd = -1;
 
 /* Guarded by _mutex. */
 static struct ble_l2cap_chan *_chan;
+static bool _session_active;
+static uint16_t _session_peer = BLE_HS_CONN_HANDLE_NONE;
+static bool _disconnect_peer;
 static uint16_t _tx_mtu;
 static bool     _tx_stalled;
 static bool     _tx_backoff;        // out of host mbufs; holding transmits off
@@ -215,7 +221,7 @@ static int _l2cap_event(struct ble_l2cap_event *event, void *arg)
     switch (event->type) {
         case BLE_L2CAP_EVENT_COC_ACCEPT: {
             _lock();
-            bool busy = (_chan != NULL);
+            bool busy = _session_active;
             _unlock();
             if (busy) {
                 ESP_LOGW(TAG, "rejecting second L2CAP channel");
@@ -242,6 +248,8 @@ static int _l2cap_event(struct ble_l2cap_event *event, void *arg)
             }
             _lock();
             _chan = event->connect.chan;
+            _session_active = true;
+            _session_peer = event->connect.conn_handle;
             _tx_mtu = tx_mtu;
             _tx_stalled = false;
             _tx_backoff = false;
@@ -269,6 +277,10 @@ static int _l2cap_event(struct ble_l2cap_event *event, void *arg)
             ESP_LOGI(TAG, "L2CAP channel closed (msys %d/%d mbufs free)",
                      os_msys_num_free(), os_msys_count());
             _lock();
+            if (_chan != event->disconnect.chan) {
+                _unlock();
+                return 0;
+            }
             _chan = NULL;
             _recv_ready_owed = false;
             _rx_retry = false;
@@ -313,10 +325,45 @@ static int _l2cap_event(struct ble_l2cap_event *event, void *arg)
     }
 }
 
+// Run teardown on NimBLE's host queue, serialized with GAP disconnects and
+// handle reuse. The session task waits for completion before serving a new
+// channel; a peer cannot reopen L2CAP while the previous session cleans up.
+static void _end_session_on_host(struct ble_npl_event *event)
+{
+    (void)event;
+    _lock();
+    struct ble_l2cap_chan *chan = _chan;
+    uint16_t peer = _session_peer;
+    bool disconnect_peer = _disconnect_peer;
+    _chan = NULL;
+    _session_active = false;
+    _session_peer = BLE_HS_CONN_HANDLE_NONE;
+    _peer_gone = false;
+    _tx_stalled = false;
+    _tx_backoff = false;
+    _tx_backoff_count = 0;
+    _recv_ready_owed = false;
+    _rx_retry = false;
+    _ring_head = 0;
+    _ring_len = 0;
+    _unlock();
+
+    if (disconnect_peer && peer != BLE_HS_CONN_HANDLE_NONE) {
+        int rc = ble_gap_terminate(peer, BLE_ERR_REM_USER_CONN_TERM);
+        if (rc != 0 && rc != BLE_HS_ENOTCONN) {
+            ESP_LOGW(TAG, "setup peer disconnect failed: %d", rc);
+            if (chan) ble_l2cap_disconnect(chan);
+        }
+    } else if (chan) {
+        ble_l2cap_disconnect(chan);
+    }
+    xSemaphoreGive(_end_sem);
+}
+
 
 //--- public functions ---//
 
-esp_err_t wble_l2cap_init(void)
+esp_err_t wble_l2cap_init(uint16_t psm)
 {
     if (_wakeup_fd >= 0)
         return ESP_OK;
@@ -337,10 +384,12 @@ esp_err_t wble_l2cap_init(void)
     _session_sem = xSemaphoreCreateBinary();
     _rx_sem      = xSemaphoreCreateBinary();
     _tx_sem      = xSemaphoreCreateBinary();
-    if (!_mutex || !_session_sem || !_rx_sem || !_tx_sem) {
+    _end_sem     = xSemaphoreCreateBinary();
+    if (!_mutex || !_session_sem || !_rx_sem || !_tx_sem || !_end_sem) {
         ESP_LOGE(TAG, "semaphore allocation failed");
         return ESP_ERR_NO_MEM;
     }
+    ble_npl_event_init(&_end_event, _end_session_on_host, NULL);
 
     ble_npl_event_init(&_rx_rearm_event,_rx_rearm_host,NULL);
     const esp_timer_create_args_t backoff_args = {
@@ -363,23 +412,29 @@ esp_err_t wble_l2cap_init(void)
     // wcom's job, and wcom only reads it after select() has said it is
     // readable, which is what keeps a blocking read safe.
 
-    rc = ble_l2cap_create_server(CONFIG_WENDY_BLE_PSM, MTU, _l2cap_event, NULL);
+    rc = ble_l2cap_create_server(psm, MTU, _l2cap_event, NULL);
     if (rc != 0) {
         ESP_LOGE(TAG, "ble_l2cap_create_server failed: %d", rc);
         return ESP_FAIL;
     }
 
     ESP_LOGI(TAG, "L2CAP server listening on PSM %d (mtu %d)",
-             CONFIG_WENDY_BLE_PSM, MTU);
+             psm, MTU);
     return ESP_OK;
 }
 
 bool wble_l2cap_wait_session(TickType_t timeout)
 {
-    if (wble_l2cap_session_alive())
+    _lock();
+    bool active = _session_active;
+    _unlock();
+    if (active)
         return true;
     xSemaphoreTake(_session_sem, timeout);
-    return wble_l2cap_session_alive();
+    _lock();
+    active = _session_active;
+    _unlock();
+    return active;
 }
 
 bool wble_l2cap_session_alive(void)
@@ -390,23 +445,27 @@ bool wble_l2cap_session_alive(void)
     return alive;
 }
 
-void wble_l2cap_end_session(void)
+void wble_l2cap_peer_disconnected(uint16_t conn_handle)
+{
+    if (!_mutex) return;
+    _lock();
+    if (_session_peer == conn_handle) {
+        _session_peer = BLE_HS_CONN_HANDLE_NONE;
+        _chan = NULL;
+        _peer_gone = true;
+    }
+    _unlock();
+    _signal(_rx_sem);
+    _signal(_tx_sem);
+}
+
+void wble_l2cap_end_session(bool disconnect_peer)
 {
     _lock();
-    struct ble_l2cap_chan *chan = _chan;
-    _chan = NULL;
-    _peer_gone = false;
-    _tx_stalled = false;
-    _tx_backoff = false;
-    _tx_backoff_count = 0;
-    _recv_ready_owed = false;
-    _rx_retry = false;
-    _ring_head = 0;
-    _ring_len = 0;
+    _disconnect_peer = disconnect_peer;
     _unlock();
-
-    if (chan)
-        ble_l2cap_disconnect(chan);
+    ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &_end_event);
+    xSemaphoreTake(_end_sem, portMAX_DELAY);
 
     // A leftover count on the wakeup fd is deliberately left alone: reading it
     // here could block (see wble_l2cap_init), and all it can cause is one

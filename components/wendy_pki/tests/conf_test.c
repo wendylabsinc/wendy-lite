@@ -416,6 +416,38 @@ static void test_enrollment_policy_survives_writes(void)
     assert(!wendy_conf_has_enrollment());
 }
 
+static void test_first_enrollment_write(void)
+{
+    const uint8_t wifi[] = {0x12, 0};
+    const uint8_t enrollment[] = {0x22, 0};
+    const uint8_t duplicate[] = {0x22, 0, 0x22, 0};
+    const uint8_t injected_wifi[] = {0x22, 0, 0x12, 0};
+    const uint8_t unknown[] = {0x22, 0, 0x2a, 0};
+    load_stored_config(wifi, sizeof wifi);
+    unsigned before = erase_calls;
+    assert(wendy_conf_write(wifi, sizeof wifi, WENDY_CONF_WRITE_MODE_SETUP_ENROLLMENT) == ESP_ERR_INVALID_ARG);
+    assert(wendy_conf_write(duplicate, sizeof duplicate, WENDY_CONF_WRITE_MODE_SETUP_ENROLLMENT) == ESP_ERR_INVALID_ARG);
+    assert(wendy_conf_write(injected_wifi, sizeof injected_wifi, WENDY_CONF_WRITE_MODE_SETUP_ENROLLMENT) == ESP_ERR_INVALID_ARG);
+    assert(wendy_conf_write(unknown, sizeof unknown, WENDY_CONF_WRITE_MODE_SETUP_ENROLLMENT) == ESP_ERR_INVALID_ARG);
+    assert(erase_calls == before && !wendy_conf_has_enrollment());
+    assert(wendy_conf_write(enrollment, sizeof enrollment, WENDY_CONF_WRITE_MODE_SETUP_ENROLLMENT) == ESP_OK);
+    assert(wendy_conf_has_enrollment());
+    before = erase_calls;
+    assert(wendy_conf_write(enrollment, sizeof enrollment, WENDY_CONF_WRITE_MODE_SETUP_ENROLLMENT) == ESP_ERR_INVALID_STATE);
+    assert(erase_calls == before);
+    _load_conf();
+    assert(s_cache.conf.has_wifi); // Setup preserves the existing network config.
+    assert(wendy_conf_write(enrollment, sizeof enrollment, WENDY_CONF_WRITE_MODE_SETUP_ENROLLMENT) == ESP_ERR_INVALID_STATE);
+    load_stored_config(wifi, sizeof wifi);
+    fail_erase = true;
+    assert(wendy_conf_write(enrollment, sizeof enrollment, WENDY_CONF_WRITE_MODE_SETUP_ENROLLMENT) == ESP_FAIL);
+    fail_erase = false;
+    assert(wendy_conf_has_enrollment());
+    before = erase_calls;
+    assert(wendy_conf_write(enrollment, sizeof enrollment, WENDY_CONF_WRITE_MODE_SETUP_ENROLLMENT) == ESP_ERR_INVALID_STATE);
+    assert(erase_calls == before); // A failed write cannot reopen first setup.
+}
+
 static void assert_span(struct wendy_conf_span span, const void *bytes, size_t size)
 {
     assert(span.size == size);
@@ -626,5 +658,7 @@ int main(int argc, char **argv)
     test_retired_credentials();
     test_enrollment_policy_survives_writes();
     test_der_snapshots(argv[1]);
+
+    test_first_enrollment_write();
     puts("enrollment configuration persistence tests passed");
 }

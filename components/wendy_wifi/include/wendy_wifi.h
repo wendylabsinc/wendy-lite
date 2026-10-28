@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
+#include "esp_wifi.h"
 #ifdef ESP_PLATFORM
 #include "sdkconfig.h"
 #endif
@@ -64,6 +65,9 @@ esp_err_t wendy_wifi_set_station_enabled(bool enabled);
  * Deinitialize WiFi transport, stop listener tasks.
  */
 void wendy_wifi_deinit(void);
+
+/* Bounded scan, also on a blank board. Caller supplies *count slots. */
+esp_err_t wendy_wifi_scan(wifi_ap_record_t *records, uint16_t *count);
 
 #ifdef __cplusplus
 }

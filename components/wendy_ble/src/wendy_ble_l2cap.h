@@ -2,6 +2,7 @@
 #define WENDY_BLE_L2CAP_H
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
@@ -19,7 +20,7 @@
 
 /// Create the SDU pool and the L2CAP server. Call once, after the NimBLE host
 /// is running.
-esp_err_t wble_l2cap_init(void);
+esp_err_t wble_l2cap_init(uint16_t psm);
 
 /// Block until a peer opens the channel. Returns false on timeout.
 bool wble_l2cap_wait_session(TickType_t timeout);
@@ -33,7 +34,11 @@ bool wble_l2cap_uses_connection(uint16_t handle);
 
 /// Disconnect the channel (if any) and drop all buffered state, so the next
 /// wait_session() starts clean.
-void wble_l2cap_end_session(void);
+// Setup also releases the GAP connection so advertising resumes after timeout.
+void wble_l2cap_end_session(bool disconnect_peer);
+
+/// Called by the GAP disconnect callback on the NimBLE host task.
+void wble_l2cap_peer_disconnected(uint16_t conn_handle);
 
 /// Read buffered bytes. Returns the count, 0 at end of stream, or
 /// WBLE_ERR_WANT_READ when nothing has arrived yet.

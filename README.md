@@ -57,7 +57,10 @@ manual builds.
 Bluetooth is enabled by default. PKI-enrolled boards advertise their identity
 and accept same-tenant operators over TLS 1.3 on BLE L2CAP. Interactive
 `wendy discover` reads the GATT identity service to list these boards, including
-when Wi-Fi is unavailable. Enrollment itself still requires USB.
+when Wi-Fi is unavailable. Unenrolled boards with PKI, Cloud and Wi-Fi enabled
+also advertise a separate [nearby setup service](docs/ble-setup.md) for encrypted
+Wi-Fi configuration and first class-C enrollment. The phone must support the
+Lite setup protocol. Set `CONFIG_WENDY_BLE_SETUP=n` to require USB enrollment.
 
 To omit the BLE transport and its controller/host
 stack, append `boards/no-ble.defaults` last, after any board or WASM defaults:

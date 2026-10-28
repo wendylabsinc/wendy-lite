@@ -588,15 +588,16 @@ static void test_new_request_cancels_handoff_recovery(void)
     assert(!reconnect_waits && credential_saves == 1);
     assert(!strcmp((const char *)last_config.sta.ssid, "replacement-network"));
 
-    // Also supersede a request while its drain is still waiting.
+    // Supersede a worker's retry while its drain is still waiting. Public
+    // connection requests are serialized, but background handoffs can overlap.
     reset_test();
     driver_model = access_point_up = true;
-    control_ack_timeouts = 1;
+    control_ack_timeouts = 2;
+    assert(wendy_wifi_try_connect("obsolete-network", "obsolete-password") == ESP_ERR_TIMEOUT);
     replace_on_control_wait = true;
-    assert(wendy_wifi_try_connect("obsolete-network", "obsolete-password") == ESP_ERR_INVALID_STATE);
     run_worker_until_idle();
-    assert(wendy_wifi_is_connected() && control_posts == 2 && connect_calls == 1);
-    assert(!reconnect_waits && credential_saves == 1);
+    assert(wendy_wifi_is_connected() && control_posts == 3 && connect_calls == 1);
+    assert(reconnect_waits == 1 && credential_saves == 1);
     assert(!strcmp((const char *)last_config.sta.ssid, "replacement-network"));
 }
 
@@ -649,8 +650,48 @@ static void test_security_diagnostics_do_not_log_password(void)
     assert(strstr(log_output, "channel=11 authmode=6"));
 }
 
+static void test_connect_after_scan(void)
+{
+    reset_test();
+    driver_model = access_point_up = true;
+    wifi_ap_record_t ap[2];
+    uint16_t count = 2;
+    assert(wendy_wifi_scan(ap, &count) == ESP_OK);
+    assert(count == 1 && !strcmp((char *)ap[0].ssid, "lab"));
+    assert(driver_started && connect_calls == 0);
+    assert(wendy_wifi_try_connect("test-network", "test-only") == ESP_OK);
+    assert(connect_calls == 1 && wendy_wifi_is_connected());
+    assert(driver_starts == 2 && station_start_events == 2);
+}
+
+static void test_credential_validation(void)
+{
+    reset_test();
+    char oversized[66];
+    memset(oversized, 'x', sizeof oversized - 1);
+    oversized[65] = 0;
+    assert(wifi_connect(NULL, "") == ESP_ERR_INVALID_ARG);
+    assert(wifi_connect("", "") == ESP_ERR_INVALID_ARG);
+    assert(wifi_connect(oversized, "") == ESP_ERR_INVALID_ARG);
+    assert(wifi_connect("lab", oversized) == ESP_ERR_INVALID_ARG);
+    assert(wendy_wifi_try_connect("abcdefghijklmnopqrstuvwxyz1234567", "") == ESP_ERR_INVALID_ARG);
+    assert(!driver_starts && !connect_calls);
+
+    // Maximum-length credentials fill the driver arrays without terminators.
+    char ssid[33], password[65];
+    memset(ssid, 's', sizeof ssid - 1); ssid[32] = 0;
+    memset(password, 'p', sizeof password - 1); password[64] = 0;
+    driver_model = access_point_up = true;
+    assert(wendy_wifi_try_connect(ssid, password) == ESP_OK);
+    assert(!memcmp(last_config.sta.ssid, ssid, 32));
+    assert(!memcmp(last_config.sta.password, password, 64));
+    assert(!strstr(log_output, password));
+}
+
 int main(void)
 {
+    test_credential_validation();
+    test_connect_after_scan();
     test_late_ip();
     test_startup_retry();
     test_disconnect_during_retry();
@@ -671,3 +712,9 @@ int main(void)
     puts("WiFi startup, recovery, cancellation and security diagnostic tests passed");
     return 0;
 }
+
+esp_err_t esp_wifi_scan_start(const wifi_scan_config_t *c, bool block) { assert(block); return ESP_OK; }
+esp_err_t esp_wifi_scan_get_ap_records(uint16_t *n, wifi_ap_record_t *ap) {
+    assert(*n > 0); *n = 1; strcpy((char *)ap->ssid, "lab"); return ESP_OK;
+}
+esp_err_t esp_wifi_clear_ap_list(void) { return ESP_OK; }

@@ -25,6 +25,9 @@ int main(void)
     assert(!mdns_inits && !hostname_sets && !cloud_starts && !credential_opens);
     assert(!wendy_wifi_is_connected());
     assert(wendy_wifi_try_connect("unchanged-network","unchanged-password")==ESP_ERR_NOT_SUPPORTED);
+    wifi_ap_record_t records[1];
+    uint16_t count = 1;
+    assert(wendy_wifi_scan(records, &count)==ESP_ERR_NOT_SUPPORTED);
     assert(wendy_wifi_set_station_enabled(true)==ESP_ERR_NOT_SUPPORTED);
     assert(wendy_wifi_set_station_enabled(false)==ESP_OK);
     wendy_wifi_deinit();

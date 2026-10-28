@@ -11,8 +11,9 @@ configuration uploads from network connections.
 
 Enroll through the companion Wendy CLI's `wendy cloud enroll-device` command over
 USB/UART. Enrollment uses an operator-authorized Tier C credential from pki-core
-and a private key generated and retained by the device. It is the sole path for
-setting up the identity used by Cloud, LAN, and BLE. Firmware rejects the old
+and a private key generated and retained by the device. A compatible nearby setup
+client can also enroll an unenrolled board over the restricted BLE setup service.
+Both paths provision the identity used by Cloud, LAN, and BLE. Firmware rejects the old
 credential import field. See [the enrollment guide](../../docs/cloud-enrollment.md)
 for trust bundles, builds, and recovery of boards with imported credentials.
 
@@ -30,9 +31,15 @@ console <target>
 | `ble://<name>` | BLE, match the advertised name |
 | `ble://<address>` | BLE, a CoreBluetooth peripheral UUID |
 | `ble://<target>?psm=129` | BLE, override the L2CAP PSM instead of reading it over GATT |
+| `setup://<name-or-address>` | Read-only probe of the restricted BLE setup service on PSM 131 |
 | `cloud://host:port[/asset-uuid]` | Through a cloud tunnel broker (tinycloud or the cloud's dev tunnel); the asset defaults to tinycloud's `00000000-0000-0000-0000-000000000023` |
 
-BLE carries the same session as the other transports, WendyCom over TLS, with the
+The `setup://` probe performs the encrypted setup handshake, reads enrollment and
+Wi-Fi status, scans networks, prints a JSON result, and exits. It never requests an
+enrollment nonce or changes configuration. It requires exactly one matching setup
+advertisement. See [the BLE setup protocol](../../docs/ble-setup.md).
+
+The `ble://` transport carries the same session as the other transports, WendyCom over TLS, with the
 device as peripheral. It is the only one that works on a board with no Wi-Fi
 credentials and no cable. It is macOS-only: the client is CoreBluetooth through cgo,
 and an address is therefore a per-host CoreBluetooth peripheral UUID rather than a

@@ -1,0 +1,41 @@
+syntax = "proto3";
+package wendy.lite.setup;
+
+// Wire-compatible subset/extensions of WendyOS BluetoothCommand/Response.
+// The outer command/response tags are documented in docs/ble-setup.md.
+message StatusCommand { bool request_nonce = 1; }
+message Status {
+  bool enrolled = 1;
+  bool acme_supported = 2; // Always false on Lite. Do not mint class-B EABs.
+  string principal_uri = 3;
+  string device_class = 4; // "C"
+  string nonce = 5; // Fresh 32-byte nonce, hex, only on request.
+  string hardware_id = 6;
+  bool lite_supported = 7;
+  uint32 max_config_size = 8;
+}
+message Enroll {
+  // Fields 1..5 belong to WendyOS class-B enrollment, never accepted here.
+  reserved 1 to 5;
+  bytes lite_config = 6; // Serialized WendyConf, name and enrollment only.
+}
+message Enrolled {
+  string principal_uri = 1;
+  bool pending = 2; // Configuration accepted. NOT proof of issuance/presence.
+}
+message Hello { bytes public_key = 1; }
+message Sealed { bytes data = 1; }
+message WifiConnect { string ssid = 1; string password = 2; }
+message WifiConnected { bool success = 1; string error_message = 2; }
+message WifiStatus { bool connected = 1; string ssid = 2; }
+message WifiNetwork {
+  string ssid = 1;
+  int32 signal_strength = 2;
+  int32 security = 3;
+  bool is_known = 4;
+  bool is_connected = 5;
+  int32 priority = 6;
+  int32 rssi_dbm = 7;
+}
+message WifiList { repeated WifiNetwork networks = 1; }
+message Error { string message = 1; }

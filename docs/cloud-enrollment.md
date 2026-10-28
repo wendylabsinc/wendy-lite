@@ -165,8 +165,10 @@ The device persists the signed-time floor and rejects rollback, invalid
 certificates, and unverified timestamps. A delayed fresh-time exchange over
 30 seconds fails.
 
-Enrollment challenges and configuration replacement are restricted to the physical
-UART/USB link. Network management connections may submit UPDATE uploads containing
+Configuration replacement and enrollment recovery are restricted to the physical
+UART/USB link. With `CONFIG_WENDY_BLE_SETUP`, an unenrolled board also exposes
+[restricted nearby setup](ble-setup.md) for a challenge, Wi-Fi, and first enrollment.
+The BLE setup write cannot replace configured or installed enrollment. Network management connections may submit UPDATE uploads containing
 only the Wi-Fi field. The firmware validates the complete payload before writing
 flash and preserves the existing enrollment and trust settings.
 The enrolled identity is used for Cloud, LAN, and BLE connections. Once
@@ -181,9 +183,11 @@ advertise the BLE identity service with mTLS required and accept same-tenant
 operators over TLS 1.3 on L2CAP. BLE keeps advertising when Wi-Fi is unavailable;
 connections require a valid stored PKI identity. BLE retains its startup
 authentication policy and rejects sessions after an enrollment change until reboot.
-Unenrolled devices accept anonymous TLS connections over LAN
-and Bluetooth by default. `CONFIG_WENDY_BLE_REQUIRE_MTLS=y` disables anonymous
-Bluetooth access. Enrollment and other configuration changes still require USB/UART.
+Unenrolled devices accept anonymous TLS over LAN. When nearby BLE setup is enabled,
+Bluetooth advertises only its restricted setup service until enrollment. If setup
+is disabled, the legacy Bluetooth policy follows `CONFIG_WENDY_BLE_REQUIRE_MTLS`.
+Set `CONFIG_WENDY_BLE_SETUP=n` and `CONFIG_WENDY_BLE_REQUIRE_MTLS=y` to disable
+all unenrolled Bluetooth access. Enrolled identity changes still require USB/UART.
 
 BLE and Cloud relay access remain operator-only. Client certificates must have
 exactly one `spiffe://wendy.sh/tenant/<tenant UUID>/operator/<subject>` URI.

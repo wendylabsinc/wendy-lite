@@ -107,3 +107,9 @@ struct wendy_conf_span wendy_conf_get_network_ssid(void);
 struct wendy_conf_span wendy_conf_get_network_password(void);
 bool wendy_conf_has_enrollment(void);
 size_t strlcpy(char *dest, const char *source, size_t size);
+
+typedef struct { uint8_t ssid[33]; } wifi_ap_record_t;
+typedef struct { int unused; } wifi_scan_config_t;
+esp_err_t esp_wifi_scan_start(const wifi_scan_config_t *, bool);
+esp_err_t esp_wifi_scan_get_ap_records(uint16_t *, wifi_ap_record_t *);
+esp_err_t esp_wifi_clear_ap_list(void);

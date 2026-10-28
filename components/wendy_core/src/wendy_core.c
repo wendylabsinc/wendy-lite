@@ -1048,6 +1048,8 @@ esp_err_t wendy_core_init(void)
 #endif /* CONFIG_WENDY_WIFI_ENABLED */
 
 
+    ESP_LOGI(TAG, "boot reset reason: %d", (int)esp_reset_reason());
+
     /* ── App start gate: honor the reboot params ─────────────────────── */
 
     if (s_boot_app_auto_start && s_boot_app_auto_start_delay_ms > 0) {

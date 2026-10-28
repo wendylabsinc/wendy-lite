@@ -524,6 +524,13 @@ func parseCloudTarget(target string) (string, string, error) {
 }
 
 func main() {
+	if len(os.Args) == 2 && strings.HasPrefix(os.Args[1], "setup://") {
+		if err := setupProbe(strings.TrimPrefix(os.Args[1], "setup://")); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) != 2 {
 		fmt.Fprintf(os.Stderr, "usage: %s host:port | /dev/ttyXXX | ble://[name-or-address] | cloud://host:port[/asset-uuid]\n", os.Args[0])
 		os.Exit(1)

@@ -428,3 +428,19 @@ target_include_directories(operator_app_composed_test PRIVATE ../src ../../wendy
 target_compile_definitions(operator_app_composed_test PRIVATE WENDY_MESH_TEST_LOG=1 WENDY_NET_MEMORY_HOST_BUDGET_TEST=1 CONFIG_WENDY_NET=1 CONFIG_WENDY_NET_TCP_RELAY_BUFFER_SIZE=256)
 target_compile_options(operator_app_composed_test PRIVATE -UNDEBUG -Wall -Wextra -Werror -Wno-unused-parameter -Wno-unused-function)
 target_link_libraries(operator_app_composed_test PRIVATE pki)
+
+add_executable(ble_setup_crypto_test ../../wendy_ble/tests/setup_crypto_test.c
+    ../../wendy_ble/src/wendy_ble_setup_crypto.c)
+target_include_directories(ble_setup_crypto_test PRIVATE ../../wendy_ble/src)
+target_link_libraries(ble_setup_crypto_test PRIVATE pki)
+target_compile_options(ble_setup_crypto_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+add_test(NAME ble_setup_crypto_interoperability COMMAND ble_setup_crypto_test)
+
+add_executable(ble_setup_session_test ../../wendy_ble/tests/setup_session_test.c
+    ../../wendy_ble/src/wendy_ble_setup.c ../../wendy_ble/src/wendy_ble_setup_wire.c
+    ../../nanopb/pb_common.c ../../nanopb/pb_encode.c ../../nanopb/pb_decode.c)
+target_include_directories(ble_setup_session_test BEFORE PRIVATE
+    ../../wendy_ble/tests/session_stubs ../../wendy_ble/src)
+target_link_libraries(ble_setup_session_test PRIVATE pki)
+target_compile_options(ble_setup_session_test PRIVATE -UNDEBUG -Wall -Wextra -Werror -Wno-unused-parameter)
+add_test(NAME ble_setup_session_boundaries COMMAND ble_setup_session_test)

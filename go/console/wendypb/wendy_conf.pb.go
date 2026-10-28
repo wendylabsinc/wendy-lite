@@ -205,7 +205,8 @@ type WendyConfEnrollment struct {
 	BrokerHost string                 `protobuf:"bytes,6,opt,name=broker_host,json=brokerHost,proto3" json:"broker_host,omitempty"`
 	BrokerPort uint32                 `protobuf:"varint,7,opt,name=broker_port,json=brokerPort,proto3" json:"broker_port,omitempty"`
 	SignedTime []byte                 `protobuf:"bytes,8,opt,name=signed_time,json=signedTime,proto3" json:"signed_time,omitempty"` // nonce-bound RFC 3161 response, verified on-device
-	// Explicit operator trust provisioning over physical USB/UART only.
+	// Explicit first-setup trust provisioning over USB/UART or restricted BLE setup.
+	// Enrolled trust replacement still requires USB/UART.
 	// All three PEM CA bundles are required when provision_trust is true.
 	DeviceRoots    []byte `protobuf:"bytes,9,opt,name=device_roots,json=deviceRoots,proto3" json:"device_roots,omitempty"`
 	TsaRoots       []byte `protobuf:"bytes,10,opt,name=tsa_roots,json=tsaRoots,proto3" json:"tsa_roots,omitempty"`

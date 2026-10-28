@@ -40,6 +40,11 @@ RUNTIME_FILES = [
 # (proto path, output header, output source)  — all relative to repo root
 PROTO_TARGETS = [
     (
+        "components/wendy_ble/proto/wendy_ble_setup.proto",
+        "components/wendy_ble/src/wendy_ble_setup.pb.h",
+        "components/wendy_ble/src/wendy_ble_setup.pb.c",
+    ),
+    (
         "components/wendy_com/proto/wendy_com_msg.proto",
         "components/wendy_com/include/wendy_com_msg.pb.h",
         "components/wendy_com/src/wendy_com_msg.pb.c",

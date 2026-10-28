@@ -42,7 +42,8 @@ typedef struct _WendyConfEnrollment {
     char broker_host[254];
     uint32_t broker_port;
     pb_callback_t signed_time; /* nonce-bound RFC 3161 response, verified on-device */
-    /* Explicit operator trust provisioning over physical USB/UART only.
+    /* Explicit first-setup trust provisioning over USB/UART or restricted BLE setup.
+ Enrolled trust replacement still requires USB/UART.
  All three PEM CA bundles are required when provision_trust is true. */
     pb_callback_t device_roots;
     pb_callback_t tsa_roots;

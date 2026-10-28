@@ -59,6 +59,9 @@ static int stream_accepts;
 static wendy_pki_connection stream_connection;
 static bool have_key, have_binding, have_nonce, config_cleared, fail_clear;
 static uint64_t snapshot_generation;
+
+static bool setup_configured = true;
+bool wendy_conf_has_enrollment(void) { return setup_configured; }
 static int64_t reset_pending;
 static uint8_t stored_nonce[32], random_counter;
 static const char *fail_erase;
@@ -779,6 +782,36 @@ static void test_normal_boot_persistence(void)
     puts("normal carrier reconnect, certificate change, boot revision and clock persistence passed");
 }
 #endif
+static void test_setup_preflight(void)
+{
+    reset();
+    struct wendy_conf_enrollment_data data = {
+        .signed_time = {(const uint8_t *)"tsa", 3},
+    };
+    assert(wendy_pki_validate_setup(&config, &data) == ESP_ERR_INVALID_STATE);
+    setup_configured = false;
+    // A certificate without its config is still enrolled.
+    assert(wendy_pki_validate_setup(&config, &data) == ESP_ERR_INVALID_STATE);
+    have_certificate = false;
+    assert(wendy_pki_validate_setup(&config, &data) == ESP_ERR_INVALID_ARG);
+    char nonce[65]; bool enrolled;
+    assert(wendy_pki_challenge(false, nonce, &enrolled) == ESP_OK && !enrolled);
+    unsigned commits = commit_calls;
+    time_t before = clock_now;
+    assert(wendy_pki_validate_setup(&config, &data) == ESP_OK);
+    assert(have_nonce && commit_calls == (int)commits && clock_now == before);
+    reject_radio_time = true;
+    assert(wendy_pki_validate_setup(&config, &data) == ESP_ERR_INVALID_ARG);
+    reject_radio_time = false;
+    bad_roots = 1;
+    assert(wendy_pki_validate_setup(&config, &data) == ESP_ERR_INVALID_ARG);
+    bad_roots = 0;
+    identity_resetting = true;
+    assert(wendy_pki_validate_setup(&config, &data) == ESP_ERR_INVALID_STATE);
+    setup_configured = true;
+    reset();
+}
+
 int main(int argc, char **argv)
 {
 #if defined(WENDY_PKI_BOOT_PERSISTENCE_HOST_TEST)
@@ -796,6 +829,7 @@ int main(int argc, char **argv)
     fclose(f);
     assert(key_der_size > 0);
     wendy_pki_connection *connection = NULL;
+    test_setup_preflight();
 
     reset();
     assert(wendy_pki_connect(&connection) == ESP_OK);
@@ -934,3 +968,8 @@ int wendy_pki_mesh_chain(const uint8_t *const *der,const size_t *sizes,size_t co
     const uint8_t *roots,size_t roots_size,const char *tenant,time_t at,struct wendy_pki_mesh_peer *peer)
 {(void)der;(void)sizes;(void)count;(void)roots;(void)roots_size;(void)tenant;(void)at;(void)peer;
  assert(!"unexpected peer-chain verification");return -1;}
+
+int wendy_pki_operator_chain(const uint8_t *const *der,const size_t *sizes,size_t count,
+    const uint8_t *roots,size_t roots_size,const char *tenant,time_t at,struct wendy_pki_operator_peer *peer)
+{(void)der;(void)sizes;(void)count;(void)roots;(void)roots_size;(void)tenant;(void)at;(void)peer;
+ assert(!"unexpected operator-chain verification");return -1;}

@@ -8,6 +8,8 @@
 
 enum wendy_conf_write_mode {
     WENDY_CONF_WRITE_MODE_REPLACE = 0,
+    // First enrollment only: name/enrollment, never replace an existing identity.
+    WENDY_CONF_WRITE_MODE_SETUP_ENROLLMENT = 3,
     WENDY_CONF_WRITE_MODE_UPDATE = 1,
     WENDY_CONF_WRITE_MODE_WIFI_ONLY = 2, // UPDATE accepting only the wifi root field
 };

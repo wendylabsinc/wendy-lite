@@ -34,6 +34,23 @@ menu "Wendy BLE (WendyCom transport)"
             observer. Stores forty bytes per pipe, no payload or new task.
             Emits offsets/checksums on existing diagnostics and disconnect.
 
+    config WENDY_BLE_SETUP
+        bool "Enable nearby setup on unenrolled devices"
+        default y
+        depends on WENDY_BLE && WENDY_PKI && WENDY_CLOUD && WENDY_WIFI_ENABLED
+        depends on MBEDTLS_ECP_C && MBEDTLS_ECDH_C && MBEDTLS_GCM_C
+        select MBEDTLS_ECP_DP_CURVE25519_ENABLED
+        help
+            Advertise a separate setup service and listen on PSM 131 when no
+            enrollment is configured. Only status, WiFi and first enrollment
+            are allowed. X25519/HKDF-SHA256/AES-GCM protect against passive
+            listeners, but do not authenticate the nearby phone or device.
+            Physical proximity grants first-setup trust. Disable this option
+            when enrollment must require a USB connection.
+
+            This takes precedence over WENDY_BLE_REQUIRE_MTLS for setup only.
+            Enrolled management still requires same-tenant operator mTLS.
+
     config WENDY_BLE_PSM
         int "L2CAP PSM"
         default 128
@@ -55,12 +72,14 @@ menu "Wendy BLE (WendyCom transport)"
             this size, and the transmit side uses min(this, peer MTU).
 
     config WENDY_BLE_REQUIRE_MTLS
-        bool "Require mTLS (refuse to advertise when unenrolled)"
+        bool "Require mTLS for management"
         default n
         depends on WENDY_BLE
         help
             When set, the device neither advertises nor opens the L2CAP server
-            unless enrollment is configured. Connections need a valid stored
+            unless enrollment is configured or WENDY_BLE_SETUP is enabled.
+            Setup uses its own restricted service, never anonymous WendyCom.
+            Management connections need a valid stored
             device identity and a trusted operator certificate from the same
             tenant.
 

@@ -1,3 +1,6 @@
+#ifndef CONFIG_WENDY_BLE_SETUP
+#define CONFIG_WENDY_BLE_SETUP 0
+#endif
 // Compile the transport itself so startup, GATT and restart regressions exercise
 // the firmware code. No scheduler or radio runs in these host tests.
 #include "../src/wendy_ble.c"
@@ -5,8 +8,12 @@
 #include <stdio.h>
 
 bool test_enrolled, test_reset, test_current, test_nimble_initialized;
+bool test_installed, test_challenge_fails;
 char test_enrollment_device_id[65];
 unsigned test_adv_starts;
+unsigned test_random_addresses;
+bool test_fail_random_address;
+uint8_t test_adv_address_type;
 bool test_fail_semaphore, test_fail_task;
 unsigned test_semaphore_calls, test_semaphores_allocated, test_semaphores_deleted;
 unsigned test_task_calls, test_tasks_created, test_task_stack;
@@ -17,9 +24,12 @@ const struct ble_gatt_svc_def *test_services;
 static bool test_physical_claim, test_mesh_claim;
 bool wble_l2cap_connection_idle(uint16_t handle){(void)handle;return !test_physical_claim;}
 bool wble_mesh_uses_connection(uint16_t handle){(void)handle;return test_mesh_claim;}
-esp_err_t wble_l2cap_init(void) { return ESP_OK; }
+static uint16_t test_psm;
+esp_err_t wble_l2cap_init(uint16_t psm) { test_psm = psm; return ESP_OK; }
+void wble_setup_session(void) {}
 bool wble_l2cap_wait_session(TickType_t timeout) { return false; }
-void wble_l2cap_end_session(void) {}
+void wble_l2cap_end_session(bool disconnect_peer) {}
+void wble_l2cap_peer_disconnected(uint16_t handle) {}
 int wble_l2cap_wakeup_fd(void) { return -1; }
 bool wble_l2cap_can_read(void) { return false; }
 static bool test_l2cap_writable;
@@ -45,14 +55,18 @@ static void reset_fixture(void)
     free(_display_name);
     _device_id = _device_name = _display_name = NULL;
     _principal[0] = 0;
-    _host_initialized = _started = _enrolled = false;
+    _host_initialized = _started = _enrolled = _setup = false;
+    _setup_address_ready = false;
+    _own_addr_type = 0;
+    test_random_addresses = 0;
+    test_fail_random_address = false;
     test_nimble_initialized = false;
     if (_link_closed)
         vSemaphoreDelete(_link_closed);
     _link_closed = NULL;
     assert(test_semaphores_allocated == test_semaphores_deleted);
     _mfg_data_len = 0;
-    test_enrolled = test_reset = false;
+    test_enrolled = test_reset = test_installed = test_challenge_fails = false;
     test_current = true;
     strcpy(test_enrollment_device_id, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
     test_adv_starts = 0;
@@ -65,7 +79,7 @@ static void reset_fixture(void)
     test_services = NULL;
 }
 
-#if CONFIG_WENDY_PKI || !CONFIG_WENDY_BLE_REQUIRE_MTLS
+#if CONFIG_WENDY_PKI || !CONFIG_WENDY_BLE_REQUIRE_MTLS || CONFIG_WENDY_BLE_SETUP
 static struct os_mbuf read_info(enum info_field field)
 {
     assert(test_services);
@@ -91,10 +105,17 @@ static void assert_advertisement(uint8_t expected_mtls)
         0x02, 0x00, 0x59, 0x44, 0x4e, 0x45, 0x57, 0x4e,
     };
     assert(test_adv_starts == 1);
+    assert(test_random_addresses == (unsigned)_setup);
+    assert(test_adv_address_type == (_setup ? BLE_OWN_ADDR_RANDOM : 0));
     // Discovery filters on the service in the advertisement, not scan response.
     assert(test_adv.num_uuids128 == 1);
     assert(test_adv.uuids128_is_complete);
-    assert(memcmp(test_adv.uuids128->value, service_uuid, sizeof(service_uuid)) == 0);
+    const uint8_t setup_uuid[] = {
+        0x32, 0xb6, 0x97, 0xb3, 0x08, 0xd7, 0x72, 0x92,
+        0x67, 0x4b, 0x20, 0x4c, 0xeb, 0xe9, 0x65, 0x75,
+    };
+    bool setup = CONFIG_WENDY_BLE_SETUP && !expected_mtls;
+    assert(memcmp(test_adv.uuids128->value, setup ? setup_uuid : service_uuid, 16) == 0);
     assert(test_rsp.mfg_data_len == 2 + strlen("lite-123"));
     assert(test_rsp.mfg_data[0] == 0xff && test_rsp.mfg_data[1] == 0xff);
     assert(memcmp(test_rsp.mfg_data + 2, "lite-123", strlen("lite-123")) == 0);
@@ -109,7 +130,8 @@ static void assert_advertisement(uint8_t expected_mtls)
     assert(id.len == strlen(expected_id));
     assert(memcmp(id.data, expected_id, id.len) == 0);
     struct os_mbuf psm = read_info(INFO_PSM);
-    assert(psm.len == 2 && psm.data[0] == 128 && psm.data[1] == 0);
+    assert(psm.len == 2 && psm.data[0] == (setup ? 131 : 128) && psm.data[1] == 0);
+    assert(test_psm == (setup ? 131 : 128));
     // The enrolled principal carries the full device UUID; the hardware id
     // never stands in for it, and an unenrolled board publishes nothing.
     const char *principal = expected_mtls
@@ -145,14 +167,14 @@ static void test_unenrolled(void)
     reset_fixture();
     // A blank board has no readable configuration and can still allow setup.
     test_current = false;
-#if CONFIG_WENDY_BLE_REQUIRE_MTLS
+#if CONFIG_WENDY_BLE_REQUIRE_MTLS && !CONFIG_WENDY_BLE_SETUP
     assert(wendy_ble_start() == ESP_ERR_INVALID_STATE);
     assert(test_adv_starts == 0 && !_host_initialized);
 #else
     assert(wendy_ble_start() == ESP_OK);
     assert_advertisement(0);
     assert(test_task_calls == 1 && test_tasks_created == 1);
-    assert(test_task_stack == 4096);
+    assert(test_task_stack == (CONFIG_WENDY_BLE_SETUP ? 8192u : 4096u));
     assert(wendy_ble_start() == ESP_OK);
     assert(test_adv_starts == 1);
     assert(test_task_calls == 1 && test_tasks_created == 1);
@@ -179,7 +201,7 @@ static void test_reset_blocks_start_and_restart(void)
     assert(wendy_ble_start() == ESP_ERR_INVALID_STATE);
     assert(test_adv_starts == 0 && !_host_initialized);
 
-#if CONFIG_WENDY_PKI || !CONFIG_WENDY_BLE_REQUIRE_MTLS
+#if CONFIG_WENDY_PKI || !CONFIG_WENDY_BLE_REQUIRE_MTLS || CONFIG_WENDY_BLE_SETUP
     test_enrolled = CONFIG_WENDY_PKI;
     test_reset = false;
     assert(wendy_ble_start() == ESP_OK);
@@ -193,7 +215,7 @@ static void test_reset_blocks_start_and_restart(void)
 
 static void test_identity_change_blocks_restart(void)
 {
-#if !CONFIG_WENDY_BLE_REQUIRE_MTLS
+#if !CONFIG_WENDY_BLE_REQUIRE_MTLS || CONFIG_WENDY_BLE_SETUP
     reset_fixture();
     assert(wendy_ble_start() == ESP_OK);
     assert_advertisement(0);
@@ -223,9 +245,9 @@ static void test_identity_change_blocks_restart(void)
 
 static void test_allocation_failure_retry(void)
 {
-#if CONFIG_WENDY_PKI || !CONFIG_WENDY_BLE_REQUIRE_MTLS
+#if CONFIG_WENDY_PKI || !CONFIG_WENDY_BLE_REQUIRE_MTLS || CONFIG_WENDY_BLE_SETUP
     for (int enrolled = 0; enrolled <= CONFIG_WENDY_PKI; ++enrolled) {
-        if (!enrolled && CONFIG_WENDY_BLE_REQUIRE_MTLS)
+        if (!enrolled && CONFIG_WENDY_BLE_REQUIRE_MTLS && !CONFIG_WENDY_BLE_SETUP)
             continue;
         for (int fail_task = 0; fail_task <= 1; ++fail_task) {
             reset_fixture();
@@ -252,7 +274,7 @@ static void test_allocation_failure_retry(void)
             assert_advertisement(enrolled);
             assert(test_tasks_created == 1);
             assert(test_task_calls == (unsigned)fail_task + 1);
-            assert(test_task_stack == 4096);
+            assert(test_task_stack == (enrolled || !CONFIG_WENDY_BLE_SETUP ? 4096u : 8192u));
             assert(test_semaphore_calls == 2);
             assert(test_semaphores_allocated == test_semaphores_deleted + 1);
 
@@ -327,12 +349,53 @@ static void test_reply_drain(void)
     assert(test_receipts==3&&!_reply_token);
     vSemaphoreDelete(_link_closed);_link_closed=NULL;
 }
+
+static void test_leftover_identity_blocks_setup(void)
+{
+#if CONFIG_WENDY_BLE_SETUP
+    reset_fixture(); test_installed = true;
+    assert(wendy_ble_start() == ESP_ERR_INVALID_STATE);
+    assert(!test_adv_starts && !_host_initialized);
+    reset_fixture(); test_challenge_fails = true;
+    assert(wendy_ble_start() == ESP_ERR_INVALID_STATE);
+    assert(!test_adv_starts && !_host_initialized);
+#endif
+}
+
+static void test_setup_address_is_separate_and_stable(void)
+{
+#if CONFIG_WENDY_BLE_SETUP
+    reset_fixture();
+    assert(wendy_ble_start() == ESP_OK);
+    assert(test_adv_address_type == BLE_OWN_ADDR_RANDOM);
+    assert(test_random_addresses == 1);
+    struct ble_gap_event disconnect = { .type = BLE_GAP_EVENT_DISCONNECT };
+    _gap_event(&disconnect, NULL);
+    _on_sync();
+    assert(test_random_addresses == 1);
+    assert(test_adv_starts == 3);
+    assert(test_adv_address_type == BLE_OWN_ADDR_RANDOM);
+
+    reset_fixture();
+    test_fail_random_address = true;
+    assert(wendy_ble_start() == ESP_OK);
+    assert(!test_adv_starts && !_setup_address_ready);
+    // Never fall back to the mesh's cached public address on RNG failure.
+    test_fail_random_address = false;
+    _on_sync();
+    assert(test_adv_starts == 1 && _setup_address_ready);
+    assert(test_adv_address_type == BLE_OWN_ADDR_RANDOM);
+#endif
+}
+
 int main(void)
 {
     test_reply_drain();
     test_demand_handshake();
     test_pki_enrollment();
     test_unenrolled();
+    test_setup_address_is_separate_and_stable();
+    test_leftover_identity_blocks_setup();
     test_empty_enrollment_identity();
     test_reset_blocks_start_and_restart();
     test_identity_change_blocks_restart();
