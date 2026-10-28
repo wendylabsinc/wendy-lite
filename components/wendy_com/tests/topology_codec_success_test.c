@@ -51,13 +51,17 @@ int main(int argc,char **argv){
  uint8_t wire[1536];
  if(argc==2 && !strcmp(argv[1],"--emit-operator")){
   size_t size=operator_wire(wire,sizeof wire,false);
-  for(size_t i=0;i<size;i++)printf("%02x",wire[i]);puts("");return 0;
+  for(size_t i=0;i<size;i++)printf("%02x",wire[i]);
+  puts("");
+  return 0;
  }
 pb_ostream_t stream=pb_ostream_from_buffer(wire,sizeof wire);
  assert(pb_encode(&stream,WendyComMessage_fields,&message));
  assert(stream.bytes_written<sizeof wire && sizeof *page<=512);
  if(argc==2 && !strcmp(argv[1],"--emit")){
-  for(size_t i=0;i<stream.bytes_written;i++)printf("%02x",wire[i]);puts("");return 0;
+  for(size_t i=0;i<stream.bytes_written;i++)printf("%02x",wire[i]);
+  puts("");
+  return 0;
  }
  assert(argc==2);FILE *fixture=fopen(argv[1],"r");assert(fixture);
  for(size_t i=0;i<stream.bytes_written;i++){unsigned byte;assert(fscanf(fixture,"%2x",&byte)==1 && byte==wire[i]);}
