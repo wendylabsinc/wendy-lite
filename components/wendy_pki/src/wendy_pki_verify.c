@@ -547,12 +547,16 @@ int wendy_pki_verify_time(const uint8_t *input, size_t size, const uint8_t nonce
     if (tst.n && tst.p[0] == 1)
         REQUIRE(!take(&tst, 1, &tmp) && tmp.n == 1 && (tmp.p[0] == 0 || tmp.p[0] == 255));
     REQUIRE(!integer(&tst, &integer_value));
-    if (integer_value.n == 33 && integer_value.p[0] == 0)
-    {
+    /* RFC 3161 nonces are positive integers, not fixed-width octet strings.
+     * DER removes leading zeroes and adds a sign octet for a high bit. */
+    if (integer_value.n > 1 && integer_value.p[0] == 0) {
         integer_value.p++;
         integer_value.n--;
     }
-    REQUIRE(bytes(integer_value, nonce, 32));
+    REQUIRE(integer_value.n <= 32);
+    size_t nonce_padding = 32 - integer_value.n;
+    for (size_t i = 0; i < nonce_padding; i++) REQUIRE(nonce[i] == 0);
+    REQUIRE(bytes(integer_value, nonce + nonce_padding, integer_value.n));
     if (tst.n && tst.p[0] == 0xa0)
         REQUIRE(!take(&tst, 0xa0, &tmp));
     REQUIRE(!tst.n);
@@ -707,7 +711,8 @@ done:
 
 size_t wendy_pki_time_request(uint8_t out[128], const uint8_t nonce[32])
 {
-    /* DER RFC 3161, SHA-256(nonce), positive 32-byte nonce, certReq=true. */
+    /* DER RFC 3161, SHA-256 of all 32 nonce bytes, positive INTEGER,
+     * certReq=true. Preserve the nonce value with canonical sign padding. */
     static const uint8_t prefix[] = {0x30, 0x5b, 0x02, 0x01, 0x01, 0x30, 0x31, 0x30,
                                      0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65,
                                      0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20};
@@ -715,13 +720,19 @@ size_t wendy_pki_time_request(uint8_t out[128], const uint8_t nonce[32])
     if (wendy_pki_sha256(nonce, 32, out + sizeof prefix))
         return 0;
     size_t n = sizeof prefix + 32;
+    size_t first = 0;
+    while (first < 31 && nonce[first] == 0) first++;
+    size_t bytes = 32 - first;
+    bool sign_padding = (nonce[first] & 0x80) != 0;
     out[n++] = 2;
-    out[n++] = 32;
-    memcpy(out + n, nonce, 32);
-    n += 32;
+    out[n++] = (uint8_t)(bytes + sign_padding);
+    if (sign_padding) out[n++] = 0;
+    memcpy(out + n, nonce + first, bytes);
+    n += bytes;
     out[n++] = 1;
     out[n++] = 1;
     out[n++] = 0xff;
+    out[1] = (uint8_t)(n - 2);
     return n;
 }
 
