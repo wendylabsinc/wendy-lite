@@ -31,12 +31,50 @@ menu "Wendy WASM Runtime"
             Must fit linear memory + heap + stack + WAMR overhead.
             ESP32-C6: 176 KB (294 KB total, ~114 KB left for WiFi/BLE).
 
+    config WENDY_WASM_MAX_MEMORY_PAGES
+        int "Maximum guest linear memory (64 KiB pages; 0 keeps module limit)"
+        range 0 65536
+        default 0
+        help
+            Bound the active guest's linear memory, including memory.grow.
+            PSRAM mesh profiles default to 5 MiB, leaving room for the 2 MiB
+            Wendy Net budget and runtime/system state on an 8 MiB board.
+            Runtime metadata, code and execution stacks are additional memory.
+            The bounded profile supports one linear memory. Host-managed heap
+            insertion uses conservative headroom inside this same limit.
+            Zero preserves the existing policy for SRAM-only devices.
+
     config WENDY_WASM_USE_PSRAM
         bool "Allocate WASM heap from PSRAM"
         default y if SPIRAM
         help
             When PSRAM is available, allocate the WASM heap from
             external memory to preserve internal SRAM.
+
+    config WENDY_WASM_AOT_XIP
+        bool "Map compiled XIP modules directly from the app flash partition"
+        default n
+        depends on WAMR_ENABLE_AOT
+        help
+            AOT modules compiled for this exact target ABI with wamrc --xip
+            can retain their executable bytes in mapped flash. Interpreter
+            modules keep their ordinary writable loader allocation. Measure
+            real application compatibility and heap use on the target board.
+
+    config WENDY_WASM_PREFER_RTC_RAM
+        bool "Prefer non-DMA RTC RAM for runtime data allocations"
+        default n
+        depends on ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP && (!WAMR_ENABLE_AOT || WENDY_WASM_AOT_XIP)
+        help
+            Use the SDK RTC heap before ordinary memory for WAMR allocations
+            when a fixed WAMR pool is not configured. RTC RAM supports byte
+            access but not DMA. This can preserve main SRAM for Wi-Fi/BLE
+            during certificate flights on devices without PSRAM. Falls back
+            to the ordinary allocator when an allocation does not fit. This
+            is a placement experiment; measure throughput and peak memory.
+            With AOT XIP, executable bytes stay in mapped flash; runtime data
+            can still use RTC RAM. Executable allocations use the platform's
+            separate executable-memory allocator.
 
     endif
 endmenu

@@ -105,6 +105,7 @@ function(wendy_patch_wamr)
     set(destination "${CMAKE_BINARY_DIR}/wendy_patched/wamr")
     get_filename_component(project_dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
     wendy_prepare_patched_tree("${source}" "${destination}"
-        "${project_dir}/patches/wamr-idf6-platform.patch")
+        "${project_dir}/patches/wamr-idf6-platform.patch"
+        "${project_dir}/patches/wamr-linear-mapping-replacement.patch")
     wendy_redirect_dependency_target(${target} "${source}" "${destination}")
 endfunction()
