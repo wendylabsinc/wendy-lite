@@ -476,3 +476,12 @@ set_tests_properties(carrier_signing_loan_success PROPERTIES TIMEOUT 15)
 add_test(NAME carrier_signing_with_tls_workspace COMMAND carrier_signing_loan_success_test
     "${CMAKE_CURRENT_LIST_DIR}/fixtures/device-key.der" tls-overlap)
 set_tests_properties(carrier_signing_with_tls_workspace PROPERTIES TIMEOUT 15)
+# Normal random RFC3161 nonce integer shapes, including sign/zero padding.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_executable(time_nonce_success_test time_nonce_success_test.c)
+target_link_libraries(time_nonce_success_test PRIVATE pki)
+target_compile_options(time_nonce_success_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME pki_time_nonce_normal COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_LIST_DIR}/time_nonce_success.py" "${GO_EXECUTABLE}"
+    "${CMAKE_CURRENT_LIST_DIR}/public_time_fixtures.go" "$<TARGET_FILE:time_nonce_success_test>")
+set_tests_properties(pki_time_nonce_normal PROPERTIES TIMEOUT 240)
