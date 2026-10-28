@@ -738,7 +738,7 @@ done:
 esp_err_t wendy_conf_copy_enrollment(WendyConfEnrollment *config,
     struct wendy_conf_enrollment_data *data)
 {
-    return copy_enrollment(config, data, ENROLLMENT_ALL, false);
+    return copy_enrollment(config, data, ENROLLMENT_ALL, true);
 }
 
 esp_err_t wendy_conf_copy_enrollment_der(WendyConfEnrollment *config,

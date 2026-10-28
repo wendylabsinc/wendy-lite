@@ -1,0 +1,304 @@
+--- a/tf-psa-crypto/extras/mldsa65_oqs.c
++++ b/tf-psa-crypto/extras/mldsa65_oqs.c
+@@ -71,6 +71,89 @@
+     return (status == OQS_SUCCESS) ? 0 : MBEDTLS_ERR_PK_INVALID_ALG;
+ }
+ 
++
++#if defined(MBEDTLS_MLDSA65_PRIVATE_KEY)
++#include "mbedtls/platform_util.h"
++#include <oqs/rand.h>
++#include <oqs/sig_ml_dsa.h>
++
++/* Seed-form PKCS8 is interoperable with Go1.27. Keep the expanded secret only
++ * in this owned, zeroized allocation; do not expand on every TLS signature. */
++struct mldsa65_private { unsigned char seed[32], expanded[4032]; };
++extern int PQCP_MLDSA_NATIVE_MLDSA65_C_keypair_internal(
++    unsigned char *public_key, unsigned char *secret_key, const unsigned char *seed);
++
++int mbedtls_pk_mldsa65_import_seed(mbedtls_pk_context *pk,
++                                  const unsigned char seed[32])
++{
++    if (pk == NULL || seed == NULL || pk->pqc_private != NULL ||
++        pk->pub_raw_len != 0 || pk->pqc_raw != NULL ||
++        (pk->pk_info != NULL && mbedtls_pk_get_type(pk) != MBEDTLS_PK_MLDSA65))
++        return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
++    struct mldsa65_private *private_key = mbedtls_calloc(1, sizeof(*private_key));
++    unsigned char *public_key = mbedtls_calloc(1, MBEDTLS_MLDSA65_PUBLIC_KEY_LEN);
++    if (private_key == NULL || public_key == NULL) {
++        mbedtls_free(public_key);mbedtls_free(private_key);
++        return MBEDTLS_ERR_PK_ALLOC_FAILED;
++    }
++    memcpy(private_key->seed, seed, 32);
++    int ret = PQCP_MLDSA_NATIVE_MLDSA65_C_keypair_internal(
++        public_key, private_key->expanded, seed);
++    if (ret != 0) {
++        mbedtls_platform_zeroize(private_key, sizeof(*private_key));
++        mbedtls_free(private_key);mbedtls_free(public_key);
++        return ret == -2 ? MBEDTLS_ERR_PK_ALLOC_FAILED : MBEDTLS_ERR_PK_BAD_INPUT_DATA;
++    }
++    pk->pk_info = mbedtls_pk_info_from_type(MBEDTLS_PK_MLDSA65);
++    pk->pqc_private = private_key;pk->pqc_raw = public_key;
++    pk->pqc_raw_borrowed = 0;pk->pub_raw_len = MBEDTLS_MLDSA65_PUBLIC_KEY_LEN;
++    pk->bits = MBEDTLS_MLDSA65_PUBLIC_KEY_LEN * 8;
++    return 0;
++}
++int mbedtls_pk_mldsa65_generate(mbedtls_pk_context *pk)
++{
++    unsigned char seed[32];
++    OQS_randombytes(seed, sizeof seed);
++    int ret = mbedtls_pk_mldsa65_import_seed(pk, seed);
++    mbedtls_platform_zeroize(seed, sizeof seed);return ret;
++}
++void mbedtls_pk_mldsa65_free_private(mbedtls_pk_context *pk)
++{
++    if (pk == NULL || pk->pqc_private == NULL) return;
++    mbedtls_platform_zeroize(pk->pqc_private, sizeof(struct mldsa65_private));
++    mbedtls_free(pk->pqc_private);pk->pqc_private = NULL;
++}
++int mbedtls_pk_mldsa65_write_key_der(const mbedtls_pk_context *pk,
++                                    unsigned char *buffer, size_t size)
++{
++    /* Actual Go MarshalPKCS8PrivateKey output: SEQUENCE(version0, absent-
++     * parameter MLDSA65 AlgorithmIdentifier, OCTET STRING([0]seed32)). */
++    static const unsigned char prefix[] = {0x30,0x34,0x02,0x01,0x00,0x30,0x0b,
++        0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x03,0x12,0x04,0x22,0x80,0x20};
++    if (pk == NULL || pk->pk_info == NULL || mbedtls_pk_get_type(pk) != MBEDTLS_PK_MLDSA65 ||
++        pk->pqc_private == NULL || buffer == NULL) return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
++    const size_t written = sizeof prefix + 32;
++    if (size < written) return MBEDTLS_ERR_PK_BUFFER_TOO_SMALL;
++    unsigned char *out = buffer + size - written;
++    memcpy(out, prefix, sizeof prefix);
++    memcpy(out + sizeof prefix, ((struct mldsa65_private *)pk->pqc_private)->seed, 32);
++    return (int)written;
++}
++int mbedtls_pk_mldsa65_oqs_sign(mbedtls_pk_context *pk,
++                                const unsigned char *message, size_t message_len,
++                                unsigned char *signature, size_t capacity, size_t *written)
++{
++    if (written != NULL) *written = 0;
++    if (pk == NULL || pk->pk_info == NULL || mbedtls_pk_get_type(pk) != MBEDTLS_PK_MLDSA65 ||
++        pk->pqc_private == NULL || (message == NULL && message_len != 0) ||
++        signature == NULL || written == NULL) return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
++    if (capacity < MBEDTLS_MLDSA65_SIGNATURE_LEN) return MBEDTLS_ERR_PK_BUFFER_TOO_SMALL;
++    return OQS_SIG_ml_dsa_65_sign(signature, written, message, message_len,
++        ((struct mldsa65_private *)pk->pqc_private)->expanded) == OQS_SUCCESS ?
++        0 : MBEDTLS_ERR_PK_BAD_INPUT_DATA;
++}
++#endif /* MBEDTLS_MLDSA65_PRIVATE_KEY */
++
+ #else /* MBEDTLS_SSL_TLS1_3_SIG_MLDSA65 && (MBEDTLS_X509_USE_C || MBEDTLS_SSL_PROTO_TLS1_3) */
+ 
+ #include "mbedtls/pk.h"
+--- a/tf-psa-crypto/extras/pk.c
++++ b/tf-psa-crypto/extras/pk.c
+@@ -26,6 +26,7 @@
+ #include <stdint.h>
+ 
+ #include "mbedtls/platform.h" // for calloc/free
++#include "mbedtls/mldsa65_oqs.h"
+ 
+ 
+ /*
+@@ -43,6 +44,9 @@
+     memset(ctx->pub_raw, 0, sizeof(ctx->pub_raw));
+     ctx->pqc_raw = NULL;
+     ctx->pqc_raw_borrowed = 0;
++#if defined(MBEDTLS_MLDSA65_PRIVATE_KEY)
++    ctx->pqc_private = NULL;
++#endif
+     ctx->pub_raw_len = 0;
+     ctx->bits = 0;
+ #if defined(PSA_WANT_KEY_TYPE_ECC_PUBLIC_KEY)
+@@ -65,6 +69,9 @@
+         psa_destroy_key(ctx->priv_id);
+     }
+ 
++#if defined(MBEDTLS_MLDSA65_PRIVATE_KEY)
++    mbedtls_pk_mldsa65_free_private(ctx);
++#endif
+     if (!ctx->pqc_raw_borrowed) mbedtls_free(ctx->pqc_raw);
+     /* Leaves the context in the same state as mbedtls_pk_init(). */
+     mbedtls_platform_zeroize(ctx, sizeof(mbedtls_pk_context));
+@@ -1161,7 +1168,11 @@
+     }
+ 
+     if (ctx->pk_info == NULL ||
+-        pk_hashlen_helper(md_alg, &hash_len) != 0) {
++        (
++#if defined(MBEDTLS_MLDSA65_PRIVATE_KEY)
++         !(ctx->pk_info->type == MBEDTLS_PK_MLDSA65 && md_alg == MBEDTLS_MD_NONE) &&
++#endif
++         pk_hashlen_helper(md_alg, &hash_len) != 0)) {
+         return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+     }
+ 
+@@ -1313,7 +1324,11 @@
+         return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+     }
+ 
+-    if (ctx->pk_info == NULL || pk_hashlen_helper(md_alg, &hash_len) != 0) {
++    if (ctx->pk_info == NULL || (
++#if defined(MBEDTLS_MLDSA65_PRIVATE_KEY)
++         !(ctx->pk_info->type == MBEDTLS_PK_MLDSA65 && md_alg == MBEDTLS_MD_NONE) &&
++#endif
++         pk_hashlen_helper(md_alg, &hash_len) != 0)) {
+         return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+     }
+ 
+@@ -1433,6 +1448,17 @@
+         return PSA_ERROR_INVALID_ARGUMENT;
+     }
+ 
++#if defined(MBEDTLS_MLDSA65_PRIVATE_KEY)
++    if (pub->pk_info->type == MBEDTLS_PK_MLDSA65 &&
++        prv->pk_info->type == MBEDTLS_PK_MLDSA65) {
++        /* Private import derives this exact public key from its retained seed. */
++        return prv->pqc_private != NULL && pub->pqc_raw != NULL && prv->pqc_raw != NULL &&
++               pub->pub_raw_len == MBEDTLS_MLDSA65_PUBLIC_KEY_LEN &&
++               prv->pub_raw_len == pub->pub_raw_len &&
++               memcmp(prv->pqc_raw, pub->pqc_raw, pub->pub_raw_len) == 0 ?
++               0 : MBEDTLS_ERR_PK_TYPE_MISMATCH;
++    }
++#endif
+     /* Check types */
+     if (!PSA_KEY_TYPE_IS_KEY_PAIR(prv->psa_type) ||
+         pub->psa_type != PSA_KEY_TYPE_PUBLIC_KEY_OF_KEY_PAIR(prv->psa_type)) {
+--- a/tf-psa-crypto/extras/pk_wrap.c
++++ b/tf-psa-crypto/extras/pk_wrap.c
+@@ -680,14 +680,30 @@
+      * TLS 1.3 passes the full verify structure; X.509 passes the selected
+      * TBSCertificate/CRL verification input from the X.509 verify path. */
+     return mbedtls_pk_mldsa65_oqs_verify(pk, hash, hash_len, sig, sig_len);
++}
++
++#if defined(MBEDTLS_MLDSA65_PRIVATE_KEY)
++static int mldsa65_sign_wrap(mbedtls_pk_context *pk, mbedtls_md_type_t md_alg,
++                            const unsigned char *message, size_t message_len,
++                            unsigned char *signature, size_t capacity, size_t *written)
++{
++    /* Pure ML-DSA signs the complete preimage; never silently sign a digest. */
++    if (md_alg != MBEDTLS_MD_NONE) return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
++    return mbedtls_pk_mldsa65_oqs_sign(pk, message, message_len,
++                                      signature, capacity, written);
+ }
++#endif
+ 
+ const mbedtls_pk_info_t mbedtls_mldsa65_info = {
+     .type = MBEDTLS_PK_MLDSA65,
+     .name = "MLDSA65",
+     .can_do = mldsa65_can_do,
+     .verify_func = mldsa65_verify_wrap,
++#if defined(MBEDTLS_MLDSA65_PRIVATE_KEY)
++    .sign_func = mldsa65_sign_wrap,
++#else
+     .sign_func = NULL,
++#endif
+ #if defined(MBEDTLS_ECP_RESTARTABLE)
+     .verify_rs_func = NULL,
+     .sign_rs_func = NULL,
+--- a/tf-psa-crypto/extras/pkparse.c
++++ b/tf-psa-crypto/extras/pkparse.c
+@@ -866,6 +866,19 @@
+         }
+     } else
+ #endif /* PSA_WANT_KEY_TYPE_ECC_PUBLIC_KEY */
++#if defined(MBEDTLS_MLDSA65_PRIVATE_KEY)
++    if (pk_alg == MBEDTLS_PK_MLDSA65) {
++        /* Go1.27/RFC9881 seed-only ML-DSA-PrivateKey CHOICE: [0] IMPLICIT
++         * OCTET STRING, inside the PKCS8 privateKey OCTET STRING. */
++        if (len != 2 + MBEDTLS_MLDSA65_SEED_LEN || p[0] != 0x80 ||
++            p[1] != MBEDTLS_MLDSA65_SEED_LEN || p + len != end) {
++            mbedtls_pk_free(pk);
++            return MBEDTLS_ERR_PK_KEY_INVALID_FORMAT;
++        }
++        ret = mbedtls_pk_mldsa65_import_seed(pk, p + 2);
++        if (ret != 0) { mbedtls_pk_free(pk); return ret; }
++    } else
++#endif
+     return MBEDTLS_ERR_PK_UNKNOWN_PK_ALG;
+ 
+     end = p + len;
+--- a/tf-psa-crypto/extras/pkwrite.c
++++ b/tf-psa-crypto/extras/pkwrite.c
+@@ -22,6 +22,7 @@
+ #include <string.h>
+ 
+ #include "pkwrite.h"
++#include "mbedtls/mldsa65_oqs.h"
+ #if defined(MBEDTLS_PEM_WRITE_C)
+ #include "mbedtls/pem.h"
+ #endif
+@@ -348,6 +349,15 @@
+     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+     size_t len = 0;
+ 
++#if defined(MBEDTLS_MLDSA65_PRIVATE_KEY)
++    if (mbedtls_pk_get_type(key) == MBEDTLS_PK_MLDSA65) {
++        if (key->pqc_raw == NULL || key->pub_raw_len != MBEDTLS_MLDSA65_PUBLIC_KEY_LEN)
++            return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
++        if ((size_t)(*p - start) < key->pub_raw_len) return MBEDTLS_ERR_PK_BUFFER_TOO_SMALL;
++        *p -= key->pub_raw_len;memcpy(*p, key->pqc_raw, key->pub_raw_len);
++        return (int)key->pub_raw_len;
++    }
++#endif
+ #if defined(PSA_WANT_KEY_TYPE_RSA_PUBLIC_KEY)
+     if (mbedtls_pk_get_type(key) == MBEDTLS_PK_RSA) {
+         MBEDTLS_ASN1_CHK_ADD(len, pk_write_rsa_pubkey(p, start, key));
+@@ -400,6 +410,9 @@
+     MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(&c, buf, MBEDTLS_ASN1_BIT_STRING));
+ 
+     pk_type = pk_get_type_ext(key);
++#if defined(MBEDTLS_MLDSA65_PRIVATE_KEY)
++    if (pk_type == MBEDTLS_PK_MLDSA65) has_par = 0;
++#endif
+ 
+ #if defined(PSA_WANT_KEY_TYPE_ECC_PUBLIC_KEY)
+     if (pk_get_type_ext(key) == MBEDTLS_PK_ECKEY) {
+@@ -437,6 +450,10 @@
+ int mbedtls_pk_write_key_der(const mbedtls_pk_context *key, unsigned char *buf, size_t size)
+ {
+     unsigned char *c;
++#if defined(MBEDTLS_MLDSA65_PRIVATE_KEY)
++    if (mbedtls_pk_get_type(key) == MBEDTLS_PK_MLDSA65)
++        return mbedtls_pk_mldsa65_write_key_der(key, buf, size);
++#endif
+ 
+     if (size == 0) {
+         return MBEDTLS_ERR_ASN1_BUF_TOO_SMALL;
+--- a/tf-psa-crypto/include/mbedtls/mldsa65_oqs.h
++++ b/tf-psa-crypto/include/mbedtls/mldsa65_oqs.h
+@@ -35,4 +35,20 @@
+                                 const unsigned char *sig, size_t sig_len);
+ #endif
+ 
++#if defined(MBEDTLS_MLDSA65_PRIVATE_KEY)
++#define MBEDTLS_MLDSA65_SEED_LEN 32
++/* Opt-in own-key support. Import requires an empty context (or one just set up
++ * as MLDSA65 with no key material). Calls are whole, preemptible crypto jobs. */
++int mbedtls_pk_mldsa65_import_seed(mbedtls_pk_context *pk,
++                                  const unsigned char seed[MBEDTLS_MLDSA65_SEED_LEN]);
++int mbedtls_pk_mldsa65_generate(mbedtls_pk_context *pk);
++int mbedtls_pk_mldsa65_write_key_der(const mbedtls_pk_context *pk,
++                                    unsigned char *buffer, size_t size);
++int mbedtls_pk_mldsa65_oqs_sign(mbedtls_pk_context *pk,
++                                const unsigned char *message, size_t message_len,
++                                unsigned char *signature, size_t capacity,
++                                size_t *written);
++void mbedtls_pk_mldsa65_free_private(mbedtls_pk_context *pk);
++#endif
++
+ #endif /* MBEDTLS_MLDSA65_OQS_H */
+--- a/tf-psa-crypto/include/mbedtls/pk.h
++++ b/tf-psa-crypto/include/mbedtls/pk.h
+@@ -143,6 +143,10 @@
+     uint8_t MBEDTLS_PRIVATE(pub_raw)[MBEDTLS_PK_MAX_PUBKEY_RAW_LEN];
+     uint8_t *MBEDTLS_PRIVATE(pqc_raw);
+     unsigned char MBEDTLS_PRIVATE(pqc_raw_borrowed);
++#if defined(MBEDTLS_MLDSA65_PRIVATE_KEY)
++    /* Allocated only for an own ML-DSA key; never borrowed from certificate DER. */
++    void *MBEDTLS_PRIVATE(pqc_private);
++#endif
+ 
+     /* Lenght of the raw key above in bytes. */
+     size_t MBEDTLS_PRIVATE(pub_raw_len);

@@ -28,34 +28,33 @@ int main(int argc, char **argv)
     assert(expected || !strcmp(argv[3], "invalid"));
     int result;
     if (!strcmp(argv[1], "authority")) {
-        char *pem = NULL;
-        result = wendy_pki_lite_authority_from_header((const char *)data, &pem);
+        uint8_t *der=NULL;size_t der_size=0;
+        result = wendy_pki_lite_authority_from_header((const char *)data, &der,&der_size);
         if (!result) {
-            assert(pem && argc == 5);
+            assert(der && argc == 5);
             size_t expected_size;
             unsigned char *expected_der = load(argv[4], &expected_size);
             mbedtls_x509_crt certificate;
             mbedtls_x509_crt_init(&certificate);
-            assert(!mbedtls_x509_crt_parse(&certificate, (const unsigned char *)pem,
-                                         strlen(pem) + 1));
+            assert(!mbedtls_x509_crt_parse_der(&certificate,der,der_size));
             assert(certificate.next == NULL);
             assert(certificate.raw.len == expected_size);
             assert(!memcmp(certificate.raw.p, expected_der, expected_size));
             mbedtls_x509_crt_free(&certificate);
             free(expected_der);
         } else {
-            assert(pem == NULL);
+            assert(der==NULL);
         }
-        free(pem);
+        free(der);
     } else if (!strcmp(argv[1], "operator")) {
         assert(argc == 5);
         result = wendy_pki_verify_lite_operator(data, size, argv[4]);
     } else {
         assert(!strcmp(argv[1], "arguments") && argc == 5);
-        char *pem = NULL;
-        assert(wendy_pki_lite_authority_from_header(NULL, &pem));
-        assert(pem == NULL);
-        assert(wendy_pki_lite_authority_from_header("", NULL));
+        uint8_t *der=NULL;size_t der_size=0;
+        assert(wendy_pki_lite_authority_from_header(NULL, &der,&der_size));
+        assert(der==NULL);
+        assert(wendy_pki_lite_authority_from_header("",NULL,&der_size));
         assert(wendy_pki_verify_lite_operator(NULL, size, argv[4]));
         assert(wendy_pki_verify_lite_operator(data, 0, argv[4]));
         assert(wendy_pki_verify_lite_operator(data, size, NULL));

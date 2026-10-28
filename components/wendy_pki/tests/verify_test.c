@@ -1,4 +1,5 @@
 #include "wendy_pki_verify.h"
+#include "wendy_cert_bundle.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,6 +28,28 @@ static unsigned char *load(const char *dir, const char *name, size_t *n)
 }
 int main(int argc, char **argv)
 {
+    if (argc == 3 && !strcmp(argv[1], "--normal-roots")) {
+        size_t size;
+        unsigned char *root = load(argv[2], "root.pem", &size);
+        for (unsigned count = 1; count <= 8; count++) {
+            size_t bytes = size * count;
+            unsigned char *bundle = malloc(bytes);
+            assert(bundle);
+            for (unsigned i = 0; i < count; i++) memcpy(bundle + size*i, root, size);
+            assert(wendy_pki_verify_roots(bundle, bytes) == 0);
+            size_t der_size=0;
+            assert(!wendy_cert_bundle_measure(bundle,bytes,&der_size));
+            uint8_t *der=malloc(der_size);assert(der);
+            assert(!wendy_cert_bundle_import(bundle,bytes,der,der_size,&der_size));
+            assert(der_size<bytes && !wendy_pki_verify_roots(der,der_size));
+            free(der);
+            for (unsigned i = 0; i < count; i++) assert(!memcmp(bundle + size*i, root, size));
+            free(bundle);
+        }
+        free(root);
+        puts("PASS normal immutable CA bundles, one through eight anchors");
+        return 0;
+    }
     if (argc == 3 && !strcmp(argv[1], "--request"))
     {
         uint8_t nonce[32], request[128];

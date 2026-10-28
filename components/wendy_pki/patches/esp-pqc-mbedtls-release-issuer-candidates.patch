@@ -1,0 +1,85 @@
+--- a/library/ssl_tls13_generic.c
++++ b/library/ssl_tls13_generic.c
+@@ -512,22 +512,24 @@
+         if (root->ca_istrue && root->raw.len == length && root->raw.p != NULL &&
+             memcmp(root->raw.p, der, length) == 0) return 1;
+     }
+-#if defined(MBEDTLS_SSL_CLI_C)
+-    /* A client with one configured identity already owns its CA candidates.
++    /* Reuse only the exact CA objects actually present on the wire. */
++    /* Either endpoint with one configured identity owns its CA candidates.
+      * Exact DER reuse avoids a second decoded copy of those same issuers.
+      * Validation below still verifies the complete path to configured roots. */
+-    if (ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT && ssl->conf->key_cert &&
++    if (ssl->conf->key_cert &&
+         !ssl->conf->key_cert->next && ssl->conf->key_cert->cert) {
+         mbedtls_x509_crt *issuers = ssl->conf->key_cert->cert->next;
+-        for (const mbedtls_x509_crt *ca=issuers; ca; ca=ca->next) {
++        for (mbedtls_x509_crt *ca=issuers; ca; ca=ca->next) {
+             if (ca->ca_istrue && ca->raw.len==length && ca->raw.p &&
+                 memcmp(ca->raw.p,der,length)==0) {
+-                ssl->handshake->wendy_peer_issuers=issuers;
++                for (size_t i=0;i<ssl->handshake->wendy_peer_issuer_count;i++)
++                    if (ssl->handshake->wendy_peer_issuer_refs[i]==ca) return 1;
++                if (ssl->handshake->wendy_peer_issuer_count==8) return 0;
++                ssl->handshake->wendy_peer_issuer_refs[ssl->handshake->wendy_peer_issuer_count++]=ca;
+                 return 1;
+             }
+         }
+     }
+-#endif
+     return 0;
+ }
+ 
+@@ -777,16 +779,35 @@
+ #endif /* MBEDTLS_SSL_CLI_C */
+     }
+ 
++    /* The connection exclusively owns its local CA objects. Temporarily link
++     * only exact wire matches as untrusted candidates; never append omitted or
++     * modified intermediates from the rest of the configured local chain. */
+     mbedtls_x509_crt *tail=ssl->session_negotiate->peer_cert;
+-    if (tail && ssl->handshake->wendy_peer_issuers) {
++    mbedtls_x509_crt *saved[8];
++    size_t count=ssl->handshake->wendy_peer_issuer_count;
++    if (tail && count) {
+         while (tail->next) tail=tail->next;
+-        tail->next=ssl->handshake->wendy_peer_issuers;
++        for (size_t i=0;i<count;i++) {
++            mbedtls_x509_crt *ca=ssl->handshake->wendy_peer_issuer_refs[i];
++            saved[i]=ca->next;
++            ca->next=i+1<count ? ssl->handshake->wendy_peer_issuer_refs[i+1] : NULL;
++        }
++        tail->next=ssl->handshake->wendy_peer_issuer_refs[0];
+     }
+     int ret=mbedtls_ssl_verify_certificate(ssl, authmode,
+                                          ssl->session_negotiate->peer_cert,
+                                          NULL, NULL);
+-    /* Restore ownership even when validation fails or requests a restart. */
+-    if (tail && ssl->handshake->wendy_peer_issuers) tail->next=NULL;
++    /* Restore every owner link on success, failure and restartable validation. */
++    if (tail && count) {
++        tail->next=NULL;
++        for (size_t i=0;i<count;i++)
++            ssl->handshake->wendy_peer_issuer_refs[i]->next=saved[i];
++    }
++    if (ret==0) {
++        memset(ssl->handshake->wendy_peer_issuer_refs,0,
++               sizeof ssl->handshake->wendy_peer_issuer_refs);
++        ssl->handshake->wendy_peer_issuer_count=0;
++    }
+     return ret;
+ }
+ #else /* MBEDTLS_SSL_KEEP_PEER_CERTIFICATE */
+--- a/library/ssl_misc.h
++++ b/library/ssl_misc.h
+@@ -653,7 +653,8 @@
+     defined(MBEDTLS_SSL_KEEP_PEER_CERTIFICATE)
+     /* Borrowed untrusted CA candidates from the configured client identity.
+      * Never freed with the peer chain and never promoted to trust anchors. */
+-    mbedtls_x509_crt *wendy_peer_issuers;
++    mbedtls_x509_crt *wendy_peer_issuer_refs[8];
++    size_t wendy_peer_issuer_count;
+ #endif
+ 
+     /* Frequently-used boolean or byte fields (placed early to take
