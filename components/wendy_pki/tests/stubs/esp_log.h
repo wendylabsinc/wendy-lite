@@ -9,3 +9,5 @@
 #define ESP_LOGW(tag, ...) ((void)(tag))
 #define ESP_LOGI(tag, ...) ((void)(tag))
 #endif
+
+#define ESP_LOGD(tag, ...) ESP_LOGI(tag, __VA_ARGS__)

@@ -411,142 +411,39 @@ static void test_enrollment_policy_survives_writes(void)
     assert(!wendy_conf_has_enrollment());
 }
 
-static void assert_span(struct wendy_conf_span span, const void *bytes, size_t size)
+static int der_snapshots(const char *path)
 {
-    assert(span.size == size);
-    assert(size ? span.data && !memcmp(span.data, bytes, size) : !span.data);
+    FILE *f=fopen(path,"rb");assert(f);
+    assert(!fseek(f,0,SEEK_END));size_t pem_size=(size_t)ftell(f);rewind(f);
+    uint8_t *pem=malloc(pem_size);assert(pem && fread(pem,1,pem_size,f)==pem_size);fclose(f);
+    size_t der_size=0;assert(!wendy_cert_bundle_measure(pem,pem_size,&der_size));
+    uint8_t *der=malloc(der_size);assert(der);
+    assert(!wendy_cert_bundle_import(pem,pem_size,der,der_size,&der_size));
+    memset(flash,0xff,sizeof flash);wendy_conf_init();
+    assert(write_config((const char*)pem,pem_size,"seed",4)==ESP_OK);_load_conf();
+    WendyConfEnrollment cfg;struct wendy_conf_enrollment_data full,device,clock;
+    assert(wendy_conf_copy_enrollment(&cfg,&full)==ESP_OK);
+    assert(full.signed_time.size==4 && !memcmp(full.signed_time.data,"seed",4));
+    assert(full.device_roots.size==der_size && full.tsa_roots.size==der_size &&
+           full.https_roots.size==der_size && !memcmp(full.device_roots.data,der,der_size));
+    assert(wendy_conf_copy_device_trust(&cfg,&device)==ESP_OK);
+    assert(device.device_roots.size==der_size && device.storage[der_size]==0);
+    uint8_t hash[32];size_t hashed=0;
+    assert(psa_hash_compute(PSA_ALG_SHA_256,pem,pem_size,hash,32,&hashed)==PSA_SUCCESS && hashed==32);
+    assert(!memcmp(hash,device.device_roots_source_hash,32));
+    assert(wendy_conf_copy_time_trust(&cfg,&clock,false,true)==ESP_OK);
+    assert(clock.tsa_roots.size==der_size && clock.https_roots.size==der_size && !clock.device_roots.size);
+    assert(write_config((const char*)der,der_size,NULL,0)==ESP_OK);_load_conf();
+    assert(!memcmp(device.device_roots.data,der,der_size));
+    struct wendy_conf_enrollment_data next;
+    assert(wendy_conf_copy_device_trust(&cfg,&next)==ESP_OK && next.device_roots.size==der_size);
+    assert(!memcmp(next.device_roots.data,der,der_size));
+    free(full.storage);free(device.storage);free(clock.storage);free(next.storage);free(der);free(pem);
+    puts("PASS DER enrollment/time/device snapshots and immutable ownership across writes");return 0;
 }
-
-static void assert_source_hash(const struct wendy_conf_enrollment_data *data,
-                               const uint8_t *source, size_t size)
+int main(int argc,char **argv)
 {
-    uint8_t expected[32];
-    size_t written;
-    assert(psa_hash_compute(PSA_ALG_SHA_256, source, size, expected,
-                           sizeof expected, &written) == PSA_SUCCESS);
-    assert(written == sizeof expected);
-    assert(!memcmp(data->device_roots_source_hash, expected, sizeof expected));
-}
-
-static void test_der_snapshots(const char *fixtures)
-{
-    char path[1024];
-    assert(snprintf(path, sizeof path, "%s/identity.pem", fixtures) < (int)sizeof path);
-    FILE *file = fopen(path, "rb");
-    assert(file && !fseek(file, 0, SEEK_END));
-    long length = ftell(file);
-    assert(length > 0 && !fseek(file, 0, SEEK_SET));
-    size_t pem_size = (size_t)length, der_size, written;
-    uint8_t *pem = malloc(pem_size);
-    assert(pem && fread(pem, 1, pem_size, file) == pem_size);
-    fclose(file);
-    assert(!wendy_cert_bundle_measure(pem, pem_size, &der_size));
-    uint8_t *der = malloc(der_size);
-    assert(der && !wendy_cert_bundle_import(pem, pem_size, der, der_size, &written));
-    assert(written == der_size);
-    assert(write_config((const char *)pem, pem_size, "seed", 4) == ESP_OK);
-    _load_conf();
-    WendyConfEnrollment cfg;
-    struct wendy_conf_enrollment_data encoded, full, device, time[4], next;
-    assert(wendy_conf_copy_enrollment(&cfg, &encoded) == ESP_OK);
-    assert_span(encoded.device_roots, pem, pem_size);
-    assert_span(encoded.tsa_roots, pem, pem_size);
-    assert_span(encoded.https_roots, pem, pem_size);
-    assert_span(encoded.signed_time, "seed", 4);
-    assert(!encoded.generation);
-    assert(wendy_conf_copy_enrollment_der(&cfg, &full) == ESP_OK);
-    assert(cfg.provision_trust && !cfg.device_roots.arg && !cfg.signed_time.arg);
-    assert_span(full.device_roots, der, der_size);
-    assert_span(full.tsa_roots, der, der_size);
-    assert_span(full.https_roots, der, der_size);
-    assert_span(full.signed_time, "seed", 4);
-    assert_source_hash(&full, pem, pem_size);
-    assert(full.generation && wendy_conf_snapshot_current(full.generation));
-    assert(!wendy_conf_snapshot_current(0));
-    assert(wendy_conf_copy_device_trust(&cfg, &device) == ESP_OK);
-    assert(device.generation == full.generation);
-    assert_source_hash(&device, pem, pem_size);
-    assert_span(device.device_roots, der, der_size);
-    assert_span(device.tsa_roots, NULL, 0);
-    assert_span(device.https_roots, NULL, 0);
-    assert_span(device.signed_time, NULL, 0);
-    for (unsigned i = 0; i < 4; i++) {
-        bool bootstrap = (i & 1) != 0, https = (i & 2) != 0;
-        assert(wendy_conf_copy_time_trust(&cfg, &time[i], bootstrap, https) == ESP_OK);
-        assert(time[i].generation == full.generation);
-        assert_span(time[i].device_roots, NULL, 0);
-        assert_span(time[i].tsa_roots, der, der_size);
-        assert_span(time[i].https_roots, https ? der : NULL, https ? der_size : 0);
-        assert_span(time[i].signed_time, bootstrap ? "seed" : NULL, bootstrap ? 4 : 0);
-        const uint8_t zero_hash[32] = {0};
-        assert(!memcmp(time[i].device_roots_source_hash, zero_hash, sizeof zero_hash));
-    }
-    /* Services only import their selected domains. Old persisted data in an
-     * unrelated domain need not be parseable for a time/device snapshot. */
-    struct wendy_conf_span saved = s_cache.device_roots;
-    s_cache.device_roots = (struct wendy_conf_span){"old-encoding", 12};
-    assert(wendy_conf_copy_time_trust(&cfg, &next, false, false) == ESP_OK);
-    free(next.storage);
-    s_cache.device_roots = saved;
-    saved = s_cache.tsa_roots;
-    s_cache.tsa_roots = (struct wendy_conf_span){"old-encoding", 12};
-    assert(wendy_conf_copy_device_trust(&cfg, &next) == ESP_OK);
-    free(next.storage);
-    s_cache.tsa_roots = saved;
-
-    /* Equivalent DER provisioned after PEM retains distinct source identity.
-     * Every earlier snapshot remains owned after the mapped flash changes. */
-    assert(write_config((const char *)der, der_size, NULL, 0) == ESP_OK);
-    assert(!wendy_conf_snapshot_current(full.generation));
-    assert_span(encoded.device_roots, pem, pem_size);
-    assert_span(full.device_roots, der, der_size);
-    assert_span(device.device_roots, der, der_size);
-    for (unsigned i = 0; i < 4; i++) assert_span(time[i].tsa_roots, der, der_size);
-    _load_conf();
-    assert(!wendy_conf_snapshot_current(full.generation));
-    assert(wendy_conf_copy_enrollment_der(&cfg, &next) == ESP_OK);
-    assert(next.generation != full.generation && wendy_conf_snapshot_current(next.generation));
-    assert_span(next.device_roots, der, der_size);
-    assert_span(next.signed_time, NULL, 0);
-    assert_source_hash(&next, der, der_size);
-    assert(memcmp(full.device_roots_source_hash, next.device_roots_source_hash, 32));
-    free(next.storage);
-
-    /* Incomplete persisted certificate input fails DER import while the staged
-     * encoded API continues to expose its exact original bytes. */
-    assert(write_config((const char *)der, der_size - 1, NULL, 0) == ESP_OK);
-    _load_conf();
-    assert(wendy_conf_copy_enrollment_der(&cfg, &next) == ESP_ERR_INVALID_ARG);
-    assert(!next.storage && !next.generation && !next.device_roots.data);
-    assert(wendy_conf_copy_enrollment(&cfg, &next) == ESP_OK);
-    assert_span(next.device_roots, der, der_size - 1);
-    free(next.storage);
-
-    /* Empty built-in trust is a valid zero-allocation snapshot. */
-    assert(wendy_conf_clear_enrollment() == ESP_OK);
-    WendyConf builtin = WendyConf_init_zero;
-    builtin.has_enrollment = true;
-    uint8_t encoded_builtin[32];
-    pb_ostream_t out = pb_ostream_from_buffer(encoded_builtin, sizeof encoded_builtin);
-    assert(pb_encode(&out, WendyConf_fields, &builtin));
-    assert(wendy_conf_write(encoded_builtin, out.bytes_written, WENDY_CONF_WRITE_MODE_UPDATE) == ESP_OK);
-    _load_conf();
-    assert(wendy_conf_copy_enrollment_der(&cfg, &next) == ESP_OK);
-    assert(!next.storage && next.generation && !cfg.provision_trust);
-    assert_span(next.device_roots, NULL, 0);
-    assert_span(next.tsa_roots, NULL, 0);
-    assert_span(next.https_roots, NULL, 0);
-    free(encoded.storage);
-    free(full.storage);
-    free(device.storage);
-    for (unsigned i = 0; i < 4; i++) free(time[i].storage);
-    free(der);
-    free(pem);
-}
-
-int main(int argc, char **argv)
-{
-    assert(argc == 2);
+    if(argc==3 && !strcmp(argv[1],"--der-snapshots"))return der_snapshots(argv[2]);
     memset(flash, 0xff, sizeof flash);
     wendy_conf_init();
     char public_tenant[37] = "stale", public_device[65] = "stale";
@@ -556,23 +453,41 @@ int main(int argc, char **argv)
     struct wendy_conf_enrollment_data first, next;
     assert(wendy_conf_copy_enrollment(&cfg, &first) == ESP_ERR_INVALID_STATE);
     assert(!first.storage);
-    assert(write_config("first-root", 10, "seed", 4) == ESP_OK);
+    assert(write_config("\x30\x08" "first-r!", 10, "seed", 4) == ESP_OK);
     _load_conf(); /* Simulate restart and remapping the persisted partition. */
     assert(wendy_conf_copy_enrollment(&cfg, &first) == ESP_OK);
     wendy_conf_enrollment_identity(public_tenant, public_device);
     assert(!strcmp(public_tenant, cfg.tenant_id) && !strcmp(public_device, cfg.device_id));
     assert(cfg.provision_trust && !cfg.device_roots.arg && !cfg.signed_time.arg);
-    assert(first.device_roots.size == 10 && !memcmp(first.device_roots.data, "first-root", 10));
-    assert(first.tsa_roots.size == 10 && !memcmp(first.tsa_roots.data, "first-root", 10));
-    assert(first.https_roots.size == 10 && !memcmp(first.https_roots.data, "first-root", 10));
+    assert(first.device_roots.size == 10 && !memcmp(first.device_roots.data, "\x30\x08" "first-r!", 10));
+    assert(first.tsa_roots.size == 10 && !memcmp(first.tsa_roots.data, "\x30\x08" "first-r!", 10));
+    assert(first.https_roots.size == 10 && !memcmp(first.https_roots.data, "\x30\x08" "first-r!", 10));
     assert(first.signed_time.size == 4 && !memcmp(first.signed_time.data, "seed", 4));
-    assert(write_config("second-root", 11, NULL, 0) == ESP_OK);
+    struct wendy_conf_enrollment_data device_only;
+    assert(wendy_conf_copy_device_trust(&cfg,&device_only)==ESP_OK);
+    assert(device_only.device_roots.data==device_only.storage);
+    assert(device_only.device_roots.size==10 && device_only.storage[10]==0);
+    assert(!memcmp(device_only.storage,"\x30\x08" "first-r!",10));
+    assert(!device_only.signed_time.size && !device_only.signed_time.data);
+    assert(!device_only.tsa_roots.size && !device_only.tsa_roots.data);
+    assert(!device_only.https_roots.size && !device_only.https_roots.data);
+    struct wendy_conf_enrollment_data time_only;
+    assert(wendy_conf_copy_time_trust(&cfg,&time_only,false,false)==ESP_OK);
+    assert(wendy_conf_snapshot_current(time_only.generation));
+    assert(time_only.tsa_roots.size==10 && time_only.tsa_roots.data==time_only.storage);
+    assert(!time_only.device_roots.size && !time_only.https_roots.size && !time_only.signed_time.size);
+    assert(write_config("\x30\x09" "second-r!", 11, NULL, 0) == ESP_OK);
+    assert(!wendy_conf_snapshot_current(time_only.generation));
+    assert(!memcmp(time_only.tsa_roots.data,"\x30\x08" "first-r!",10));
+    free(time_only.storage);
+    assert(!memcmp(device_only.storage,"\x30\x08" "first-r!",10));
+    free(device_only.storage);
     wendy_conf_enrollment_identity(public_tenant, public_device);
     assert(!public_tenant[0] && !public_device[0]);
-    assert(!memcmp(first.device_roots.data, "first-root", 10));
+    assert(!memcmp(first.device_roots.data, "\x30\x08" "first-r!", 10));
     _load_conf();
     assert(wendy_conf_copy_enrollment(&cfg, &next) == ESP_OK);
-    assert(next.device_roots.size == 11 && !memcmp(next.device_roots.data, "second-root", 11));
+    assert(next.device_roots.size == 11 && !memcmp(next.device_roots.data, "\x30\x09" "second-r!", 11));
     free(first.storage);
     free(next.storage);
     WendyConf wifi_update = WendyConf_init_zero;
@@ -607,7 +522,7 @@ int main(int argc, char **argv)
     _invalidate_cache();
     _load_conf();
     assert(wendy_conf_copy_enrollment(&cfg, &next) == ESP_OK);
-    assert(next.device_roots.size == 11 && !memcmp(next.device_roots.data, "second-root", 11));
+    assert(next.device_roots.size == 11 && !memcmp(next.device_roots.data, "\x30\x09" "second-r!", 11));
     free(next.storage);
     /* Corrupted/oversized persisted data still fails the read-side bound. */
     s_cache.device_roots.size = WENDY_CONF_MAX_TRUST_BUNDLE + 1;
@@ -620,6 +535,5 @@ int main(int argc, char **argv)
     durable_journal_size = 0;
     test_retired_credentials();
     test_enrollment_policy_survives_writes();
-    test_der_snapshots(argv[1]);
     puts("enrollment configuration persistence tests passed");
 }

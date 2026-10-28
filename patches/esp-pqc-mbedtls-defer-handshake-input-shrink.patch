@@ -1,0 +1,43 @@
+--- a/include/mbedtls/ssl.h
++++ b/include/mbedtls/ssl.h
+@@ -1362,6 +1362,11 @@
+     /* Opt-in native endpoint mode: borrow wire issuer DER only during full
+      * path verification, then retain an independently owned peer leaf. */
+     uint8_t MBEDTLS_PRIVATE(wendy_compact_peer_chain);
++#if defined(MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH)
++    /* Opt-in: retain the handshake input until an explicit safe idle compact.
++     * Output resizing and all accepted record/reassembly limits are unchanged. */
++    uint8_t MBEDTLS_PRIVATE(wendy_defer_handshake_input_shrink);
++#endif
+     /* Optional owner for zeroized input allocations after resize/free.
+      * Return nonzero only when taking ownership; output buffers are unaffected. */
+     int (*MBEDTLS_PRIVATE(wendy_input_recycle))(void *, unsigned char *, size_t);
+--- a/library/ssl_tls.c
++++ b/library/ssl_tls.c
+@@ -423,10 +423,16 @@
+ /* TLS 1.3 retains handshake state for optional post-handshake messages;
+  * unlike TLS 1.2, wrapup does not run handshake_free. Release its temporary
+  * record headroom explicitly while preserving any buffered next record. */
++static size_t handshake_input_target(const mbedtls_ssl_context *ssl)
++{
++    return ssl->conf->wendy_defer_handshake_input_shrink ? ssl->in_buf_len :
++           mbedtls_ssl_get_input_buflen(ssl);
++}
++
+ void mbedtls_ssl_release_handshake_buffer(mbedtls_ssl_context *ssl)
+ {
+     if (ssl->in_hsfraglen == 0) {
+-        handle_buffer_resizing(ssl, 1, mbedtls_ssl_get_input_buflen(ssl),
++        handle_buffer_resizing(ssl, 1, handshake_input_target(ssl),
+                                mbedtls_ssl_get_output_buflen(ssl));
+     }
+ }
+@@ -4713,7 +4719,7 @@
+      * processes datagrams and the fact that a datagram is allowed to have
+      * several records in it, it is possible that the I/O buffers are not
+      * empty at this stage */
+-    handle_buffer_resizing(ssl, 1, mbedtls_ssl_get_input_buflen(ssl),
++    handle_buffer_resizing(ssl, 1, handshake_input_target(ssl),
+                            mbedtls_ssl_get_output_buflen(ssl));
+ #endif
+ 

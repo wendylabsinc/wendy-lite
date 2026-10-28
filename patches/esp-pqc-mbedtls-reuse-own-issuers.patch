@@ -1,0 +1,62 @@
+--- a/library/ssl_misc.h
++++ b/library/ssl_misc.h
+@@ -649,6 +649,13 @@
+  * This structure contains the parameters only needed during handshake.
+  */
+ struct mbedtls_ssl_handshake_params {
++#if defined(MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED) && \
++    defined(MBEDTLS_SSL_KEEP_PEER_CERTIFICATE)
++    /* Borrowed untrusted CA candidates from the configured client identity.
++     * Never freed with the peer chain and never promoted to trust anchors. */
++    mbedtls_x509_crt *wendy_peer_issuers;
++#endif
++
+     /* Frequently-used boolean or byte fields (placed early to take
+      * advantage of smaller code size for indirect access on Arm Thumb) */
+     uint8_t resume;                     /*!<  session resume indicator*/
+--- a/library/ssl_tls13_generic.c
++++ b/library/ssl_tls13_generic.c
+@@ -512,6 +512,22 @@
+         if (root->ca_istrue && root->raw.len == length && root->raw.p != NULL &&
+             memcmp(root->raw.p, der, length) == 0) return 1;
+     }
++#if defined(MBEDTLS_SSL_CLI_C)
++    /* A client with one configured identity already owns its CA candidates.
++     * Exact DER reuse avoids a second decoded copy of those same issuers.
++     * Validation below still verifies the complete path to configured roots. */
++    if (ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT && ssl->conf->key_cert &&
++        !ssl->conf->key_cert->next && ssl->conf->key_cert->cert) {
++        mbedtls_x509_crt *issuers = ssl->conf->key_cert->cert->next;
++        for (const mbedtls_x509_crt *ca=issuers; ca; ca=ca->next) {
++            if (ca->ca_istrue && ca->raw.len==length && ca->raw.p &&
++                memcmp(ca->raw.p,der,length)==0) {
++                ssl->handshake->wendy_peer_issuers=issuers;
++                return 1;
++            }
++        }
++    }
++#endif
+     return 0;
+ }
+ 
+@@ -761,9 +777,17 @@
+ #endif /* MBEDTLS_SSL_CLI_C */
+     }
+ 
+-    return mbedtls_ssl_verify_certificate(ssl, authmode,
+-                                          ssl->session_negotiate->peer_cert,
+-                                          NULL, NULL);
++    mbedtls_x509_crt *tail=ssl->session_negotiate->peer_cert;
++    if (tail && ssl->handshake->wendy_peer_issuers) {
++        while (tail->next) tail=tail->next;
++        tail->next=ssl->handshake->wendy_peer_issuers;
++    }
++    int ret=mbedtls_ssl_verify_certificate(ssl, authmode,
++                                         ssl->session_negotiate->peer_cert,
++                                         NULL, NULL);
++    /* Restore ownership even when validation fails or requests a restart. */
++    if (tail && ssl->handshake->wendy_peer_issuers) tail->next=NULL;
++    return ret;
+ }
+ #else /* MBEDTLS_SSL_KEEP_PEER_CERTIFICATE */
+ MBEDTLS_CHECK_RETURN_CRITICAL

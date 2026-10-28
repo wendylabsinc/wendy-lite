@@ -1,0 +1,61 @@
+diff --git a/library/ssl_msg.c b/library/ssl_msg.c
+--- a/library/ssl_msg.c
++++ b/library/ssl_msg.c
+@@ -1869,9 +1869,24 @@
+         return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
+     }
+ 
+-    if (nb_want > in_buf_len - (size_t) (ssl->in_hdr - ssl->in_buf)) {
+-        MBEDTLS_SSL_DEBUG_MSG(1, ("requesting more data than fits"));
+-        return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
++    size_t header_offset = (size_t) (ssl->in_hdr - ssl->in_buf);
++    if (header_offset > in_buf_len) return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
++    if (nb_want > in_buf_len - header_offset) {
++#if defined(MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH)
++        /* Only a bounded TLS handshake fragment may extend the record buffer.
++         * The record parser checks each record's independent size limit. */
++        if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_STREAM &&
++            ssl->in_hsfraglen != 0 && header_offset <= MBEDTLS_SSL_IN_BUFFER_LEN &&
++            nb_want <= MBEDTLS_SSL_IN_BUFFER_LEN - header_offset) {
++            int grow = mbedtls_ssl_grow_input_buffer(ssl, header_offset + nb_want);
++            if (grow != 0) return grow;
++            in_buf_len = ssl->in_buf_len;
++        } else
++#endif
++        {
++            MBEDTLS_SSL_DEBUG_MSG(1, ("requesting more data than fits"));
++            return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
++        }
+     }
+ 
+ #if defined(MBEDTLS_SSL_PROTO_DTLS)
+@@ -2953,11 +2968,13 @@
+ #if defined(MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH)
+     if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_STREAM &&
+         (ssl->in_hsfraglen != 0 || ssl->in_msglen < ssl->in_hslen)) {
+-        /* Leave room for a complete next record, including any next handshake
+-         * message coalesced with the final fragment. The peer-controlled length
+-         * was checked against MAX_HANDSHAKE_LEN above. */
+-        size_t required = MBEDTLS_SSL_IN_BUFFER_LEN - MBEDTLS_SSL_HANDSHAKE_HEADROOM
+-                          + ssl->in_hslen;
++        /* Reserve the declared message, not an extra maximum-sized record.
++         * fetch_input grows to the actual record end if a final fragment also
++         * carries another message. The declared handshake bound stays intact. */
++        size_t required = MBEDTLS_SSL_SEQUENCE_NUMBER_LEN + mbedtls_ssl_in_hdr_len(ssl)
++                          + ssl->in_hslen + MBEDTLS_SSL_PAYLOAD_OVERHEAD;
++        size_t normal = MBEDTLS_SSL_IN_BUFFER_LEN - MBEDTLS_SSL_HANDSHAKE_HEADROOM;
++        if (required < normal) required = normal;
+         if (required > MBEDTLS_SSL_IN_BUFFER_LEN) {
+             required = MBEDTLS_SSL_IN_BUFFER_LEN;
+         }
+@@ -4849,7 +4866,9 @@
+             MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_fetch_input", ret);
+             return ret;
+         }
+-
++        /* fetch_input may have grown the TLS fragment buffer. The record
++         * descriptor is local and must follow the context's relocated header. */
++        rec.buf = ssl->in_hdr;
+         ssl->in_left = 0;
+     }
+ 

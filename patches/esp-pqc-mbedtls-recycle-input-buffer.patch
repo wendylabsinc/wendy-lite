@@ -1,0 +1,84 @@
+--- a/include/mbedtls/ssl.h
++++ b/include/mbedtls/ssl.h
+@@ -1362,6 +1362,10 @@
+     /* Opt-in native endpoint mode: borrow wire issuer DER only during full
+      * path verification, then retain an independently owned peer leaf. */
+     uint8_t MBEDTLS_PRIVATE(wendy_compact_peer_chain);
++    /* Optional owner for zeroized input allocations after resize/free.
++     * Return nonzero only when taking ownership; output buffers are unaffected. */
++    int (*MBEDTLS_PRIVATE(wendy_input_recycle))(void *, unsigned char *, size_t);
++    void *MBEDTLS_PRIVATE(wendy_input_recycle_context);
+     /* Optional already-verified own chain. NULL destination queries one
+      * part's length (zero ends the chain); range reads return exact bytes.
+      * Callback storage must survive the handshake, not just ssl_setup. */
+--- a/library/ssl_tls.c
++++ b/library/ssl_tls.c
+@@ -310,9 +310,21 @@
+     return 0;
+ }
+ 
++/* Input bytes are no longer referenced when the caller reaches this helper.
++ * Zero them before an optional owner can retain storage for another context. */
++static void release_input_buffer(mbedtls_ssl_context *ssl,unsigned char *p,size_t size)
++{
++    if(p==NULL)return;
++    mbedtls_platform_zeroize(p,size);
++    if(ssl->conf==NULL || ssl->conf->wendy_input_recycle==NULL ||
++       !ssl->conf->wendy_input_recycle(ssl->conf->wendy_input_recycle_context,p,size))
++        mbedtls_free(p);
++}
++
+ #if defined(MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH)
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int resize_buffer(unsigned char **buffer, size_t len_new, size_t *len_old)
++static int resize_buffer(unsigned char **buffer, size_t len_new, size_t *len_old,
++                         mbedtls_ssl_context *input_owner)
+ {
+     unsigned char *resized_buffer = mbedtls_calloc(1, len_new);
+     if (resized_buffer == NULL) {
+@@ -325,7 +337,8 @@
+      * lost, are done outside of this function. */
+     memcpy(resized_buffer, *buffer,
+            (len_new < *len_old) ? len_new : *len_old);
+-    mbedtls_zeroize_and_free(*buffer, *len_old);
++    if(input_owner)release_input_buffer(input_owner,*buffer,*len_old);
++    else mbedtls_zeroize_and_free(*buffer, *len_old);
+ 
+     *buffer = resized_buffer;
+     *len_old = len_new;
+@@ -348,7 +361,7 @@
+         if (downsizing ?
+             ssl->in_buf_len > in_buf_new_len && ssl->in_left < in_buf_new_len :
+             ssl->in_buf_len < in_buf_new_len) {
+-            if (resize_buffer(&ssl->in_buf, in_buf_new_len, &ssl->in_buf_len) != 0) {
++            if (resize_buffer(&ssl->in_buf, in_buf_new_len, &ssl->in_buf_len,ssl) != 0) {
+                 MBEDTLS_SSL_DEBUG_MSG(1, ("input buffer resizing failed - out of memory"));
+             } else {
+                 MBEDTLS_SSL_DEBUG_MSG(2, ("Reallocating in_buf to %" MBEDTLS_PRINTF_SIZET,
+@@ -368,7 +381,7 @@
+         if (ssl->out_left == 0 && (downsizing ?
+             ssl->out_buf_len > out_buf_new_len :
+             ssl->out_buf_len < out_buf_new_len)) {
+-            if (resize_buffer(&ssl->out_buf, out_buf_new_len, &ssl->out_buf_len) != 0) {
++            if (resize_buffer(&ssl->out_buf, out_buf_new_len, &ssl->out_buf_len,NULL) != 0) {
+                 MBEDTLS_SSL_DEBUG_MSG(1, ("output buffer resizing failed - out of memory"));
+             } else {
+                 MBEDTLS_SSL_DEBUG_MSG(2, ("Reallocating out_buf to %" MBEDTLS_PRINTF_SIZET,
+@@ -1321,7 +1334,7 @@
+     return 0;
+ 
+ error:
+-    mbedtls_free(ssl->in_buf);
++    release_input_buffer(ssl,ssl->in_buf,in_buf_len);
+     mbedtls_free(ssl->out_buf);
+ 
+     ssl->conf = NULL;
+@@ -5340,7 +5353,7 @@
+         size_t in_buf_len = MBEDTLS_SSL_IN_BUFFER_LEN;
+ #endif
+ 
+-        mbedtls_zeroize_and_free(ssl->in_buf, in_buf_len);
++        release_input_buffer(ssl,ssl->in_buf,in_buf_len);
+         ssl->in_buf = NULL;
+     }
+ 

@@ -1,0 +1,116 @@
+diff --git a/library/ssl_tls.c b/library/ssl_tls.c
+--- a/library/ssl_tls.c
++++ b/library/ssl_tls.c
+@@ -1015,8 +1015,9 @@
+ }
+ 
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_handshake_init(mbedtls_ssl_context *ssl)
+-{
++static int ssl_handshake_init(mbedtls_ssl_context *ssl, int small_initial)
++{
++    (void)small_initial; /* Fixed-buffer builds never request the small path. */
+     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+ 
+     /* Clear old handshake information if present */
+@@ -1053,6 +1054,7 @@
+     /* If the buffers are too small - reallocate */
+ 
+     handle_buffer_resizing(ssl, 0,
++        small_initial ? ssl->in_buf_len :
+         ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_STREAM ?
+         MBEDTLS_SSL_IN_BUFFER_LEN - MBEDTLS_SSL_HANDSHAKE_HEADROOM : MBEDTLS_SSL_IN_BUFFER_LEN,
+         MBEDTLS_SSL_OUT_BUFFER_LEN);
+@@ -1231,9 +1233,9 @@
+     return mbedtls_ssl_setup_with_input_reserve(ssl, conf, 0);
+ }
+ 
+-int mbedtls_ssl_setup_with_input_reserve(mbedtls_ssl_context *ssl,
+-                                       const mbedtls_ssl_config *conf,
+-                                       size_t minimum_input)
++static int ssl_setup_input(mbedtls_ssl_context *ssl,
++                           const mbedtls_ssl_config *conf,
++                           size_t minimum_input, int small_initial)
+ {
+     if (minimum_input > MBEDTLS_SSL_IN_BUFFER_LEN ||
+         (minimum_input && conf->transport != MBEDTLS_SSL_TRANSPORT_STREAM))
+@@ -1248,6 +1250,18 @@
+ #endif
+ 
+     if (minimum_input > in_buf_len) in_buf_len = minimum_input;
++    if (small_initial) {
++#if defined(MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH)
++        if (conf->transport != MBEDTLS_SSL_TRANSPORT_STREAM ||
++            conf->endpoint != MBEDTLS_SSL_IS_CLIENT)
++            return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
++        /* Start before any record/BIO activity. Bounded stream fetch grows
++         * for each actual record, including early handshake records. */
++        in_buf_len = 2048;
++#else
++        return MBEDTLS_ERR_SSL_FEATURE_UNAVAILABLE;
++#endif
++    }
+ 
+     ssl->conf = conf;
+ 
+@@ -1290,7 +1304,7 @@
+     memset(&ssl->dtls_srtp_info, 0, sizeof(ssl->dtls_srtp_info));
+ #endif
+ 
+-    if ((ret = ssl_handshake_init(ssl)) != 0) {
++    if ((ret = ssl_handshake_init(ssl,small_initial)) != 0) {
+         goto error;
+     }
+ 
+@@ -1322,6 +1336,19 @@
+     ssl->out_msg = NULL;
+ 
+     return ret;
++}
++
++int mbedtls_ssl_setup_with_input_reserve(mbedtls_ssl_context *ssl,
++                                       const mbedtls_ssl_config *conf,
++                                       size_t minimum_input)
++{
++    return ssl_setup_input(ssl, conf, minimum_input, 0);
++}
++
++int mbedtls_ssl_setup_small_input(mbedtls_ssl_context *ssl,
++                                  const mbedtls_ssl_config *conf)
++{
++    return ssl_setup_input(ssl, conf, 0, 1);
+ }
+ 
+ /*
+@@ -1476,7 +1503,7 @@
+     }
+ #endif
+ 
+-    if ((ret = ssl_handshake_init(ssl)) != 0) {
++    if ((ret = ssl_handshake_init(ssl,0)) != 0) {
+         return ret;
+     }
+ 
+@@ -4436,7 +4463,7 @@
+ 
+     MBEDTLS_SSL_DEBUG_MSG(2, ("=> renegotiate"));
+ 
+-    if ((ret = ssl_handshake_init(ssl)) != 0) {
++    if ((ret = ssl_handshake_init(ssl,0)) != 0) {
+         return ret;
+     }
+ 
+diff --git a/library/ssl_misc.h b/library/ssl_misc.h
+--- a/library/ssl_misc.h
++++ b/library/ssl_misc.h
+@@ -466,6 +466,10 @@
+ void mbedtls_ssl_release_handshake_buffer(mbedtls_ssl_context *ssl);
+ void mbedtls_ssl_compact_input_buffer(mbedtls_ssl_context *ssl);
+ void mbedtls_ssl_prepare_small_input_buffer(mbedtls_ssl_context *ssl);
++/* Credentialless stream clients can allocate their small buffer directly,
++ * avoiding a transient ordinary-record allocation before shrinking it. */
++int mbedtls_ssl_setup_small_input(mbedtls_ssl_context *ssl,
++                                  const mbedtls_ssl_config *conf);
+ 
+ static inline size_t mbedtls_ssl_get_output_buflen(const mbedtls_ssl_context *ctx)
+ {

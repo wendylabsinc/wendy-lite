@@ -1,11 +1,11 @@
 #include "wendy_pki_verify.h"
+#include "wendy_pki_alloc.h"
 #include "wendy_operator_auth.h"
 #include <stdlib.h>
 #include <string.h>
 #include <mbedtls/asn1.h>
 #include <mbedtls/base64.h>
 #include <mbedtls/oid.h>
-#include <mbedtls/pem.h>
 #include <mbedtls/pk.h>
 #include "wendy_pki_crypto.h"
 #include <mbedtls/x509_crt.h>
@@ -16,20 +16,19 @@ static int p256(const mbedtls_x509_crt *cert)
            mbedtls_pk_get_bitlen(&cert->pk) == 256;
 }
 
-int wendy_pki_lite_authority_from_header(const char *header, char **pem)
+int wendy_pki_lite_authority_from_header(const char *header,uint8_t **out,size_t *out_size)
 {
-    if (!pem) return -1;
-    *pem = NULL;
+    if(!out || !out_size)return -1;
+    *out=NULL;*out_size=0;
     if (!header || wendy_pki_crypto_init()) return -1;
     size_t size = strnlen(header, WENDY_LITE_AUTHORITY_HEADER_MAX + 1);
     if (!size || size > WENDY_LITE_AUTHORITY_HEADER_MAX) return -1;
-    uint8_t *der = malloc(size);
-    unsigned char *encoded = malloc(size + 1);
-    unsigned char *output = NULL;
+    uint8_t *der = pki_owned_malloc(size);
+    unsigned char *encoded = pki_owned_malloc(size + 1);
     mbedtls_x509_crt cert;
     mbedtls_x509_crt_init(&cert);
     int result = -1;
-    size_t der_size = 0, encoded_size = 0, output_size = 0;
+    size_t der_size = 0, encoded_size = 0;
     uint8_t hash[32];
     if (!der || !encoded ||
         mbedtls_base64_decode(der, size, &der_size, (const unsigned char *)header, size) ||
@@ -51,18 +50,11 @@ int wendy_pki_lite_authority_from_header(const char *header, char **pem)
         goto done;
     /* Trust bootstrap does not depend on the device's initial wall clock.
      * Normal TLS validation still checks this CA's lifetime when it is used. */
-    size_t capacity = size + size / 64 + 128;
-    output = malloc(capacity);
-    if (!output || mbedtls_pem_write_buffer("-----BEGIN CERTIFICATE-----\n",
-        "-----END CERTIFICATE-----\n", der, der_size, output, capacity, &output_size))
-        goto done;
-    *pem = (char *)output;
-    output = NULL;
+    *out=der;*out_size=der_size;der=NULL;
     result = 0;
 done:
-    free(output);
-    free(encoded);
-    free(der);
+    pki_owned_free(encoded);
+    pki_owned_free(der);
     mbedtls_x509_crt_free(&cert);
     return result;
 }

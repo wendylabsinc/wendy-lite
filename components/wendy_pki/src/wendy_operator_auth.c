@@ -1,6 +1,7 @@
 #include "wendy_operator_auth.h"
 #include "wendy_pki_crypto.h"
 #include "wendy_peer_identity.h"
+#include "wendy_pki_operator.h"
 #include "mbedtls/oid.h"
 #include "mbedtls/platform.h"
 
@@ -44,6 +45,20 @@ int wendy_operator_auth_init(struct wendy_operator_auth *auth,
     return result;
 }
 
+static bool operator_certificate(const mbedtls_x509_crt *crt,const char *tenant)
+{
+    if(!crt || crt->MBEDTLS_PRIVATE(ca_istrue))return false;
+    unsigned count=0;
+    for(const mbedtls_x509_sequence *a=&crt->subject_alt_names;a && a->buf.p;a=a->next){
+        mbedtls_x509_subject_alternative_name san;
+        if(mbedtls_x509_parse_subject_alt_name(&a->buf,&san) ||
+           san.type!=MBEDTLS_X509_SAN_UNIFORM_RESOURCE_IDENTIFIER)continue;
+        const mbedtls_x509_buf *uri=&san.san.unstructured_name;
+        if(wendy_pki_operator_principal((const char *)uri->p,uri->len,tenant))return false;
+        count++;
+    }
+    return count==1;
+}
 enum wendy_peer_role wendy_peer_auth_role(const mbedtls_x509_crt *crt,
                                           const char *tenant)
 {
@@ -51,13 +66,13 @@ enum wendy_peer_role wendy_peer_auth_role(const mbedtls_x509_crt *crt,
     if (!tenant || !wendy_identity_uuid((const unsigned char *)tenant, strlen(tenant)))
         return WENDY_PEER_ROLE_NONE;
     enum wendy_peer_role role;
-    if (!certificate_tenant(crt, "operator", peer_tenant))
+    if (operator_certificate(crt,tenant))
         role = WENDY_PEER_ROLE_OPERATOR;
     else if (!certificate_tenant(crt, "device", peer_tenant))
         role = WENDY_PEER_ROLE_DEVICE;
     else
         return WENDY_PEER_ROLE_NONE;
-    if (memcmp(peer_tenant, tenant, sizeof peer_tenant)) return WENDY_PEER_ROLE_NONE;
+    if (role==WENDY_PEER_ROLE_DEVICE && memcmp(peer_tenant,tenant,sizeof peer_tenant)) return WENDY_PEER_ROLE_NONE;
     for (const mbedtls_x509_sequence *eku = &crt->ext_key_usage;
          eku && eku->buf.p; eku = eku->next) {
         if (MBEDTLS_OID_CMP(MBEDTLS_OID_CLIENT_AUTH, &eku->buf) == 0) return role;

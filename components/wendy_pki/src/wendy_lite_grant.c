@@ -1,4 +1,5 @@
 #include "wendy_lite_grant.h"
+#include "wendy_pki_parsed_identity.h"
 #include <stdlib.h>
 #include <string.h>
 #include "wendy_pki_crypto.h"
@@ -68,14 +69,11 @@ int wendy_lite_verify_grant(const uint8_t *r, size_t n,
     return result;
 }
 
-int wendy_lite_peer_expiry(const uint8_t *der, size_t n, time_t *expires)
+int pki_parsed_peer_expiry(const mbedtls_x509_crt *cert,time_t *expires)
 {
-    if (!der || !n || n > 65536 || !expires || wendy_pki_crypto_init()) return -1;
-    mbedtls_x509_crt cert;
-    mbedtls_x509_crt_init(&cert);
-    int result = -1;
-    if (!mbedtls_x509_crt_parse_der(&cert, der, n) && cert.raw.len == n) {
-        const mbedtls_x509_time *t = &cert.valid_to;
+    if (!cert || !expires || !cert->raw.len) return -1;
+    int result=-1;
+        const mbedtls_x509_time *t = &cert->valid_to;
         if (t->year >= 1970 && t->year <= 9999) {
             /* Gregorian civil date to UTC seconds, independent of process TZ. */
             int year = t->year - (t->mon <= 2);
@@ -89,9 +87,15 @@ int wendy_lite_peer_expiry(const uint8_t *der, size_t n, time_t *expires)
                 result = 0;
             }
         }
-    }
-    mbedtls_x509_crt_free(&cert);
     return result;
+}
+int wendy_lite_peer_expiry(const uint8_t *der,size_t n,time_t *expires)
+{
+    if (!der || !n || n>65536 || !expires || wendy_pki_crypto_init()) return -1;
+    mbedtls_x509_crt cert;mbedtls_x509_crt_init(&cert);
+    int result=mbedtls_x509_crt_parse_der(&cert,der,n) || cert.raw.len!=n ? -1 :
+        pki_parsed_peer_expiry(&cert,expires);
+    mbedtls_x509_crt_free(&cert);return result;
 }
 
 int wendy_lite_peer_spki_hash(const uint8_t *der, size_t n, uint8_t hash[32])
