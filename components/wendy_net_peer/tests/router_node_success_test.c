@@ -498,6 +498,37 @@ int main(int argc,char **argv)
         }
         drain();
     }
+    /* The live actor projection remains bounded, allocation-free and stable
+     * across ordinary timer work; structural edits invalidate old cursors. */
+    size_t topology_before=wnr_memory(&node->core)+wg_memory(&node->pool);
+    WendyComNetTopologyPage page=WendyComNetTopologyPage_init_zero;
+    assert(!wnrs_topology(node,0,0,&page));
+    assert(page.runtime_available && page.has_record && page.record.kind==1 && page.next_cursor);
+    assert(sizeof page<=384);
+    uint64_t generation=page.generation;unsigned cursor=page.next_cursor,rows=1;
+    unsigned kinds[4]={0};kinds[page.record.kind]++;
+    node->core.babel.revision++; /* Maintenance counters are not structural. */
+    clock_us+=1000;
+    while(cursor){
+        page=(WendyComNetTopologyPage)WendyComNetTopologyPage_init_zero;
+        assert(!wnrs_topology(node,cursor,generation,&page));
+        assert(page.has_record && page.generation==generation && page.record.kind<=3);
+        rows++;kinds[page.record.kind]++;cursor=page.next_cursor;assert(rows<1024);
+    }
+    assert(kinds[1]==2 && kinds[2]>=3 && kinds[3]>=2);
+    assert(wnr_memory(&node->core)+wg_memory(&node->pool)==topology_before);
+    uint32_t old_metric=node->core.babel.routes[0].metric;
+    node->core.babel.routes[0].metric++;
+    assert(wnrs_topology(node,1,generation,&page)==1);
+    node->core.babel.routes[0].metric=(uint16_t)old_metric;
+    assert(!wnrs_topology(node,1,generation,&page));
+    bool gateway=node->core.config.endpoint_gateway;node->core.config.endpoint_gateway=true;
+    assert(!wnrs_topology(node,0,0,&page) && page.partial);
+    node->core.config.endpoint_gateway=gateway;
+    node->core.stopped=true;
+    assert(!wnrs_topology(node,0,0,&page) && !page.runtime_available && !page.has_record && !page.next_cursor);
+    node->core.stopped=false;
+    printf("topology pages: records=%u dto=%zu heap_delta=0\n",rows,sizeof page);
     uint8_t uuid[2][16],address[2][16];uint16_t port;
     for(unsigned i=0;i<2;i++){
         assert(!wn_uuid_parse(ids[i+1],uuid[i]));wn_address(uuid[i],address[i]);

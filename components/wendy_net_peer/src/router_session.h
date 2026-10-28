@@ -39,3 +39,8 @@ bool wnrs_receive_paused(const struct wnrs *);
 bool wnrs_node_busy(const struct wnrs_node *);
 /* Outer actor driver: collect/read effects on the existing PKI worker. */
 int wnrs_poll_effects(struct wnrs_node *);
+
+struct _WendyComNetTopologyPage;
+/* Actor-only, bounded metadata projection; no crypto, I/O or allocations. */
+int wnrs_topology(struct wnrs_node *,uint32_t cursor,uint64_t generation,
+    struct _WendyComNetTopologyPage *);

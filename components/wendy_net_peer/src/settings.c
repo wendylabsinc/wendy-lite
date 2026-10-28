@@ -1,4 +1,5 @@
 #include "settings.h"
+#include "topology_record.h"
 #include "settings_apply.h"
 #include "wendy_net_profile.h"
 #include "wendy_com_cmd.h"
@@ -68,6 +69,11 @@ static WendyComResult get(WendyComNetStatus *status)
 }
 esp_err_t wendy_net_peer_get_status(WendyComNetStatus *status)
 {if(!status)return ESP_ERR_INVALID_ARG;return get(status)==WendyComResult_WENDY_COM_RESULT_OK ? ESP_OK:ESP_FAIL;}
+static WendyComResult topology(const WendyComNetTopologyParams *params,WendyComNetTopologyPage *page)
+{
+    page->has_status=true;get(&page->status);
+    return wn_peer_topology(params,page);
+}
 static void reply_complete(uint32_t token)
 {
     unsigned expected=token<<1;
@@ -147,7 +153,7 @@ esp_err_t wn_settings_init(void)
         loaded=true;
     }
     pthread_mutex_unlock(&lock);
-    static const struct wcom_net_delegate delegate={.get=get,.set=set,.reply_complete=reply_complete};
+    static const struct wcom_net_delegate delegate={.get=get,.set=set,.reply_complete=reply_complete,.topology=topology,.topology_release=wnt_page_release};
     wcom_cmd_set_net_delegate(&delegate);return ESP_OK;
 }
 esp_err_t wendy_net_peer_boot_radios(bool *ble,bool *wifi)

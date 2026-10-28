@@ -65,10 +65,11 @@ target_link_libraries(session_babel PUBLIC net_common)
 add_library(session_gossip STATIC ../../wendy_net_gossip/src/gossip.c)
 target_include_directories(session_gossip PUBLIC ../../wendy_net_gossip/include)
 target_link_libraries(session_gossip PUBLIC net_common)
-set(session_sources ../src/router.c ../src/control.c ../src/crypto_job.c ../src/certificate_read.c ../src/catalog_node.c ../src/manifest_catalog.c ../src/catalog_guest.c ../src/service_store.c)
+set(session_sources ../src/topology_record.c ../src/router.c ../src/control.c ../src/crypto_job.c ../src/certificate_read.c ../src/catalog_node.c ../src/manifest_catalog.c ../src/catalog_guest.c ../src/service_store.c)
 add_library(peer_session STATIC ${session_sources})
-target_include_directories(peer_session PUBLIC ../src ../include router_stubs)
+target_include_directories(peer_session PUBLIC ../src ../include router_stubs ../../wendy_com/include ../../nanopb)
 target_link_libraries(peer_session PUBLIC peer_format session_babel session_gossip)
+target_sources(peer_session PRIVATE ../../nanopb/pb_common.c ../../nanopb/pb_encode.c)
 target_compile_definitions(peer_session PUBLIC WENDY_NET_ROUTE_CRYPTO_HOST_TEST=1)
 target_compile_options(peer_session PRIVATE -Wall -Wextra -Werror -Wno-misleading-indentation)
 function(session_test name source)
@@ -89,11 +90,12 @@ session_test(crypto_retry crypto_retry_success_test.c "${session_key}")
 
 # All translation units use the same charged-pointer ABI in pressure fixtures.
 add_library(peer_session_budget STATIC ${format_sources} ${session_sources}
+    ../../nanopb/pb_common.c ../../nanopb/pb_encode.c
     ../../wendy_net_common/src/runtime_memory.c
     ../../wendy_net_gossip/src/gossip.c
     ../../wendy_babel/src/engine.c ../../wendy_babel/src/wire.c ../../wendy_babel/src/storage.c ../../wendy_babel/src/history.c)
 target_include_directories(peer_session_budget BEFORE PUBLIC "${CJSON_ROOT}")
-target_include_directories(peer_session_budget PUBLIC ../include ../src router_stubs ../../wendy_net_gossip/include ../../wendy_babel/include)
+target_include_directories(peer_session_budget PUBLIC ../../wendy_com/include ../../nanopb ../include ../src router_stubs ../../wendy_net_gossip/include ../../wendy_babel/include)
 target_compile_definitions(peer_session_budget PUBLIC WENDY_NET_MEMORY_HOST_BUDGET_TEST=1 WENDY_NET_ROUTE_CRYPTO_HOST_TEST=1)
 target_compile_options(peer_session_budget PRIVATE -Wall -Wextra -Werror -Wno-misleading-indentation)
 target_link_libraries(peer_session_budget PUBLIC pki format_cjson)
@@ -189,3 +191,23 @@ target_include_directories(driver_actor_driver BEFORE PRIVATE io_stubs)
 
 # Standalone management handoff/state checks do not require crypto dependencies.
 add_subdirectory(settings)
+
+add_executable(topology_query_success_test topology_query_success_test.c ../src/topology_record.c
+    ../../nanopb/pb_common.c ../../nanopb/pb_encode.c)
+target_include_directories(topology_query_success_test PRIVATE ../src ../include ../../wendy_com/include ../../nanopb ../../wendy_net_common/include)
+target_compile_options(topology_query_success_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME topology_query_success COMMAND topology_query_success_test)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/../src/peer.c")
+execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/extract_topology_fixture.py"
+    "${CMAKE_CURRENT_LIST_DIR}/../src/peer.c" "${CMAKE_CURRENT_BINARY_DIR}/topology_driver.inc" COMMAND_ERROR_IS_FATAL ANY)
+add_executable(topology_driver_success_test topology_driver_success_test.c ../src/topology_record.c
+    ../../wendy_net_common/src/memory.c ../../wendy_net_common/src/runtime_memory.c
+    ../../nanopb/pb_common.c ../../nanopb/pb_encode.c)
+target_include_directories(topology_driver_success_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" ../src
+    ../../wendy_com/include ../../nanopb ../../wendy_net_common/include)
+target_compile_definitions(topology_driver_success_test PRIVATE WENDY_NET_MEMORY_HOST_BUDGET_TEST=1)
+target_compile_options(topology_driver_success_test PRIVATE -Wall -Wextra -Werror -UNDEBUG -Wno-misleading-indentation)
+target_link_libraries(topology_driver_success_test PRIVATE Threads::Threads)
+add_test(NAME topology_driver_success COMMAND topology_driver_success_test)
+set_tests_properties(topology_driver_success PROPERTIES TIMEOUT 20)
