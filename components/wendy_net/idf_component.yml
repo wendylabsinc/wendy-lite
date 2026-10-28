@@ -7,3 +7,5 @@ dependencies:
     override_path: "../wendy_safety"
   wendy_callback:
     override_path: "../wendy_callback"
+  wendy_net_common:
+    override_path: "../wendy_net_common"
