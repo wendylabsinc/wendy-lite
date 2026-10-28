@@ -115,6 +115,13 @@ add_executable(tls_test tls_test.c ${PKI_TLS} "${IDF_COMPONENTS}/http_parser/htt
 set_source_files_properties(${PKI_TLS} PROPERTIES COMPILE_DEFINITIONS "send=wendy_test_send")
 target_include_directories(tls_test PRIVATE stubs ../src ../../wendy_conf/include ../../nanopb "${IDF_COMPONENTS}/http_parser")
 target_link_libraries(tls_test PRIVATE pki)
+# Simulate control traffic and deadlines through the production relay loop.
+add_executable(relay_control_test relay_control_test.c "${IDF_COMPONENTS}/http_parser/http_parser.c")
+target_include_directories(relay_control_test PRIVATE stubs ../src "${IDF_COMPONENTS}/http_parser")
+target_compile_options(relay_control_test PRIVATE -UNDEBUG)
+target_link_libraries(relay_control_test PRIVATE pki)
+add_test(NAME pki_relay_control_refresh COMMAND relay_control_test)
+set_tests_properties(pki_relay_control_refresh PROPERTIES TIMEOUT 5)
 add_executable(tls_uplink_test tls_test.c ${PKI_TLS} "${IDF_COMPONENTS}/http_parser/http_parser.c")
 target_include_directories(tls_uplink_test PRIVATE stubs ../src ../../wendy_conf/include ../../nanopb "${IDF_COMPONENTS}/http_parser")
 target_link_libraries(tls_uplink_test PRIVATE pki)

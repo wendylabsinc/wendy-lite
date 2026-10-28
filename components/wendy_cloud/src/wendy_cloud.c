@@ -40,6 +40,7 @@ static void cloud_task(void *unused)
         wendy_pki_connection *outer = NULL;
         struct wendy_lite_trust *trust = calloc(1, sizeof *trust);
         int fd = -1;
+        bool planned_renewal = false;
         if (trust && wendy_pki_connect(&outer) == ESP_OK) {
             s_state = WENDY_CLOUD_STATE_CONNECTED;
             atomic_store(&s_failures, 0);
@@ -47,6 +48,7 @@ static void cloud_task(void *unused)
             s_outer_fd = wendy_pki_fd(outer);
             pthread_mutex_unlock(&s_connection_lock);
             fd = wendy_pki_relay_upgrade(outer, trust);
+            planned_renewal = fd == WENDY_PKI_RELAY_RENEW;
             pthread_mutex_lock(&s_connection_lock);
             s_outer_fd = -1;
             pthread_mutex_unlock(&s_connection_lock);
@@ -62,7 +64,10 @@ static void cloud_task(void *unused)
         s_state = WENDY_CLOUD_STATE_DISCONNECTED;
         // The handed-off stream belongs to the server. Open its replacement
         // immediately; shared broker caps prevent claiming it a second time.
-        if (fd < 0 && !s_stop) xSemaphoreTake(s_wake, pdMS_TO_TICKS(CONFIG_WENDY_CLOUD_RECONNECT_DELAY_MS));
+        // Planned refresh already retired a healthy waiter. Reopen it promptly;
+        // the normal transport/connect failure path retains its retry backoff.
+        if (fd < 0 && !s_stop && !planned_renewal)
+            xSemaphoreTake(s_wake, pdMS_TO_TICKS(CONFIG_WENDY_CLOUD_RECONNECT_DELAY_MS));
     }
     s_state = WENDY_CLOUD_STATE_IDLE;
     s_task = NULL;
