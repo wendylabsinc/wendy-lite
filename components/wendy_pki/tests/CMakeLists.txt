@@ -319,3 +319,11 @@ add_test(NAME pki_normal_der_roots COMMAND verify_test --normal-roots "${CMAKE_C
 
 add_test(NAME pki_own_boot_persistence COMMAND mesh_identity_test
     "${CMAKE_CURRENT_LIST_DIR}/fixtures/device-key.der" --normal-boot-persistence)
+
+# Already-trimmed own DER sources must retain pinned non-root intermediates.
+foreach(profile p256 mldsa65)
+    add_test(NAME pki_owned_der_source_without_root_${profile} COMMAND "${GO_EXECUTABLE}" run
+        "${CMAKE_CURRENT_LIST_DIR}/tls_test_driver.go" "$<TARGET_FILE:tls_test>" ${profile})
+    set_tests_properties(pki_owned_der_source_without_root_${profile} PROPERTIES TIMEOUT 90
+        ENVIRONMENT "WENDY_TLS_OWNED_STREAM=1;WENDY_TLS_OWNED_ONLY=1;WENDY_TLS_SCOPED_OWNER=1;WENDY_TLS_SOURCE_ROOT_OMITTED=1")
+endforeach()

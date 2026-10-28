@@ -30,6 +30,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <mbedtls/platform.h>
+#include <mbedtls/md.h>
 #if CONFIG_WENDY_MESH_LEAF
 #include <mbedtls/base64.h>
 #endif
@@ -399,14 +400,35 @@ static void release_identity_input(struct pki_tls_owned_identity *owned)
     pki_public_chain_free(owned->public_chain);
     memset(owned, 0, sizeof *owned);
 }
-/* A trust anchor is already pinned by the peer and need not be sent in TLS.
- * Only remove a CA at the tail whose DER exactly matches our pinned bundle. */
+/* Only a self-signed CA is an implicit common root. A locally pinned
+ * intermediate may be absent from the remote peer's trust store; keep it in
+ * the presentation unless the exact-issuer optimization separately agrees. */
+static bool presented_self_signed_root(mbedtls_x509_crt *cert)
+{
+    if(!cert || !cert->MBEDTLS_PRIVATE(ca_istrue) ||
+       cert->issuer_raw.len!=cert->subject_raw.len ||
+       memcmp(cert->issuer_raw.p,cert->subject_raw.p,cert->issuer_raw.len))return false;
+    const uint8_t *input=cert->tbs.p;size_t size=cert->tbs.len;
+    uint8_t digest[MBEDTLS_MD_MAX_SIZE];
+    bool pure=cert->MBEDTLS_PRIVATE(sig_pk)==MBEDTLS_PK_SIGALG_MLDSA65;
+#if defined(MBEDTLS_X509_MLDSA87)
+    pure=pure || cert->MBEDTLS_PRIVATE(sig_pk)==MBEDTLS_PK_SIGALG_MLDSA87;
+#endif
+    if(!pure){
+        const mbedtls_md_info_t *md=mbedtls_md_info_from_type(cert->MBEDTLS_PRIVATE(sig_md));
+        if(!md || mbedtls_md(md,input,size,digest))return false;
+        input=digest;size=mbedtls_md_get_size(md);
+    }
+    return !mbedtls_pk_verify_ext(cert->MBEDTLS_PRIVATE(sig_pk),&cert->pk,
+        cert->MBEDTLS_PRIVATE(sig_md),input,size,cert->MBEDTLS_PRIVATE(sig).p,cert->MBEDTLS_PRIVATE(sig).len);
+}
+/* Omit only a provable self-signed root exactly present in local trust. */
 static void trim_presented_anchor(wendy_pki_connection *c)
 {
     mbedtls_x509_crt *previous = &c->certificate;
     while (previous->next && previous->next->next) previous = previous->next;
     mbedtls_x509_crt *tail = previous->next;
-    if (!tail || !tail->MBEDTLS_PRIVATE(ca_istrue)) return;
+    if (!presented_self_signed_root(tail)) return;
     for (mbedtls_x509_crt *root = &c->roots; root; root = root->next) {
         if (root->raw.len && root->raw.len == tail->raw.len &&
             !memcmp(root->raw.p, tail->raw.p, tail->raw.len)) {

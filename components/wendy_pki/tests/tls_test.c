@@ -375,6 +375,16 @@ int main(int argc, char **argv) {
             assert(source.count<8);source.part[source.count]=part;source.size[source.count++]=bytes;
         }
         assert(offset==cn && source.count>1);
+        if(getenv("WENDY_TLS_SOURCE_ROOT_OMITTED")){
+            /* Ordinary already-trimmed local chain. Pin its intermediates
+             * locally, while the independent Go peer still trusts only root.
+             * Removing a second tail CA would make that peer unable to build
+             * the complete path, despite successful local verification. */
+            source.count--;
+            unsigned i=source.count-1;
+            uint8_t *more=realloc(root,rn+source.size[i]+1);assert(more);root=more;
+            memcpy(root+rn,source.part[i],source.size[i]);rn+=source.size[i];root[rn]=0;
+        }
         struct pki_tls_owned_identity owned={.key=key,.key_size=kn,
             .read_der=fixture_read,.read_der_range=fixture_range,.der_context=&source,
             .verify_at=time(NULL)};
