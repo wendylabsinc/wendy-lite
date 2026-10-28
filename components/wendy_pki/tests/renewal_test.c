@@ -279,6 +279,12 @@ int wendy_pki_verify_identity(const uint8_t *pem, size_t size, const uint8_t *ro
     *expires = stored_expiry;
     return invalid_certificate || now >= stored_expiry ? -1 : 0;
 }
+static bool certificate_is(struct wendy_conf_span certificate, const char *marker)
+{
+    size_t size = strlen(marker);
+    return certificate.data && certificate.size == size &&
+        !memcmp(certificate.data, marker, size);
+}
 int pki_http_post(const char *url, const char *type, const char *token, const void *body,
                   size_t body_size, const uint8_t *key, size_t key_size, struct wendy_conf_span cert,
                   struct wendy_conf_span roots, uint8_t **response, size_t *response_size)
@@ -294,7 +300,7 @@ int pki_http_post(const char *url, const char *type, const char *token, const vo
     renewal_calls++;
     if (have_certificate)
     {
-        assert(cert.data && (!strcmp((const char*)cert.data, "stored") || !strcmp((const char*)cert.data, "issued")) && key && !token);
+        assert((certificate_is(cert, "stored") || certificate_is(cert, "issued")) && key && !token);
     }
     else
     {
@@ -341,8 +347,8 @@ int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t 
 {
     broker_calls++;
     assert(roots.data == (config.provision_trust ? usb_roots : wendy_pki_https_roots_start));
-    assert(cert.data && (!strcmp((const char*)cert.data, "stored") || !strcmp((const char*)cert.data, "issued")));
-    assert(clock_now < (!strcmp((const char*)cert.data, "issued") ? issued_expiry : stored_expiry) && !invalid_certificate);
+    assert((certificate_is(cert, "stored") || certificate_is(cert, "issued")));
+    assert(clock_now < (certificate_is(cert, "issued") ? issued_expiry : stored_expiry) && !invalid_certificate);
     return 0;
 }
 cJSON *cJSON_CreateObject(void) { return calloc(1, sizeof(cJSON)); }
@@ -1113,7 +1119,7 @@ int pki_tls_accept_stream(const struct wendy_pki_stream *stream, const uint8_t *
     stream_accepts++;
     assert(stream->context == &stream_connection && stream->read && stream->write && stream->wait);
     assert(key && key_size == key_der_size && !memcmp(key, key_der, key_size));
-    assert(!strcmp((const char*)cert.data, "stored") && !strcmp(tenant, config.tenant_id));
+    assert(certificate_is(cert, "stored") && !strcmp(tenant, config.tenant_id));
     assert(roots.data == wendy_pki_device_roots_start && roots.size == build_roots_size);
     assert(deadline > esp_timer_get_time());
     *out = &stream_connection;
