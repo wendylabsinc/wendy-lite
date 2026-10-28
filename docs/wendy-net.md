@@ -14,14 +14,17 @@ protocol and does not support it.
 
 The release catalog includes these profiles with Wendy Net and WASM support:
 
-| Profile | Required hardware | Maximum guest memory | Mesh memory ceiling | Mesh connections |
+| Profile | Required hardware | Guest linear-memory ceiling | Mesh memory ceiling | Mesh connections |
 | --- | --- | --- | --- | --- |
 | `esp32c5_net_psram` | ESP32-C5, 8 MiB flash and 8 MiB quad PSRAM | 5 MiB | 2 MiB in PSRAM | Up to 3 BLE and 3 Wi-Fi |
 | `esp32c6_net` | ESP32-C6, 8 MiB flash | 64 KiB | 160 KiB internal RAM | One BLE **or** one Wi-Fi |
 
 Memory ceilings bound allocations; they are not reserved when mesh is off or
 preallocated in full when it starts. Radio and internal-memory availability can
-limit the number of connections below the configured maximum. Both profiles
+limit the number of connections below the configured maximum. C5 stores mesh
+state in PSRAM, but task stacks and radio allocations still need internal RAM.
+Guest runtime metadata and networking also need RAM beyond the linear-memory
+ceiling. Both profiles
 support bytecode and target AOT/XIP guests. Generic native-only catalog profiles
 do not gain WASM support by enabling mesh at runtime.
 
@@ -122,7 +125,7 @@ C6 instead keeps small verified endpoint summaries, up to 64 allocated on demand
 and a limited key cache. It scans and connects out to an authenticated neighbour,
 which supplies its next hop. Large manifests, busy handshakes or cache pressure
 can make remote browsing and outgoing service connections temporarily unavailable.
-Incoming management and SensorLink share one client slot, alongside one guest
+Incoming mesh management and SensorLink share one client slot, alongside one guest
 flow in each direction. Applications should close idle connections and retry
 resource-unavailable results.
 

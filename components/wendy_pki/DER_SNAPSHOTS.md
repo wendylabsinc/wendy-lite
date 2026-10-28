@@ -1,11 +1,10 @@
-# DER snapshot foundation
+# DER configuration snapshots
 
-This additive layer supplies `wendy_conf_copy_enrollment_der`, device-only and
+Configuration supplies `wendy_conf_copy_enrollment_der`, device-only and
 time-only DER trust snapshots, configuration generation checks, bundle import,
-and `pki_parse_certificate_bundle`. Existing PKI and TLS consumers continue to
-use `wendy_conf_copy_enrollment` with the exact provisioned encoded span contract
-until the next TLS layer adopts DER throughout. There is no DER-to-PEM adapter
-and no new wire protocol in this layer.
+and `pki_parse_certificate_bundle`. Native PKI and TLS consumers use DER directly.
+The encoded `wendy_conf_copy_enrollment` API remains available for callers that
+need the exact provisioned bytes. It does not require TLS to convert DER to PEM.
 
 Every snapshot owns one allocation, freed by the caller with `free(storage)`.
 Empty snapshots need no allocation. Selected trust bundles contain at most eight
@@ -21,7 +20,7 @@ DER generations identify the configuration cached during the copy in this boot. 
 invalidation, including an intervening configuration write, makes earlier
 snapshots stale; their owned bytes remain valid. `wendy_conf_snapshot_current`
 is a point-in-time check, not a lease against later writes. Callers coordinate
-publication with configuration changes in the later consumer layer. All copy
+publication with configuration changes. All copy
 outputs must be non-NULL and a prior snapshot must be freed before reusing its
 output structure. Failed copies return empty data.
 
@@ -31,12 +30,13 @@ DER must remain immutable and alive until that chain is freed. Copied DER and
 PEM parsing retain their own certificate bytes; a PEM borrow request still copies
 because its temporary DER import buffer is freed before return. The caller frees
 the chain even after a partial parse failure and performs trust/usage checks.
-Baseline `malloc`/`free` remain in this foundation. The next TLS layer installs
-scoped allocator hooks before replacing these allocations.
+Snapshot storage retains its `malloc`/`free` ownership contract. Parsed TLS and
+crypto objects use the installed scoped allocator hooks; these are separate
+allocation lifetimes.
 
-The next TLS layer owns native identity conversion, issuance, own-certificate
-DER caching, and full TLS adoption. The signed-session integration owns the
-once-per-boot publication allocator. No learned peer material is persisted here.
+PKI performs identity conversion, issuance and own-certificate DER caching.
+Signed sessions use the once-per-boot publication allocator. Learned peer
+material remains in bounded RAM; snapshots do not persist it.
 
 Host integration lives in `tests/CMakeLists.txt`: `pki_configuration_persistence`
 checks legacy/DER snapshots and `pki_der_bundle_import` checks direct parse and
