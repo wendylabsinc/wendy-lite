@@ -47,6 +47,9 @@ int wno_manifest_read(const void *wire,size_t size,const char *tenant,struct wno
        wendy_pki_operator_principal(p.principal,p.principal_size,tenant) ||
        wn_doc_bytes(&d,wn_doc_member(&d,0,"signature"),&p.signature,&p.signature_size) ||
        !p.signature_size || p.signature_size>8192)return -1;
+    /* Match ordinary device origins: a larger supported-by-WendyOS scheme is
+     * outside this verifier's current bound, not a reason to drop a carrier. */
+    if(p.signature_size>WENDY_PKI_MESH_SIGNATURE_MAX)return WNO_UNSUPPORTED;
     int body=wn_doc_member(&d,0,"body");
     if(body<0 || d.tokens[body].type!='{')return -1;
     p.body=(const uint8_t*)d.text+d.tokens[body].start;p.body_size=d.tokens[body].end-d.tokens[body].start;

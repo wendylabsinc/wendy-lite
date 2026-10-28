@@ -5,6 +5,8 @@
 #include "router_node_success_test.c"
 #undef main
 #include "wendy_pki_operator.h"
+#include <mbedtls/platform.h>
+#include <psa/crypto_extra.h>
 static uint8_t *operator_roots;static size_t operator_roots_size;
 int wncv_start(struct wncv_job **out,struct wncs_store *store,const struct wncf_chain *chain,const struct wendy_pki_mesh_identity *clock)
 {(void)out;(void)store;(void)chain;(void)clock;return 1;}
@@ -21,13 +23,33 @@ static int operator_discard(void *context,uint64_t link,const void *data,size_t 
 {(void)context;(void)link;(void)data;(void)size;return 0;}
 static int operator_send(void *context,const void *data,size_t size,bool control)
 {(void)context;(void)data;(void)size;(void)control;return 0;}
+static void deliver_normal(struct wnrs *session,const uint8_t *wire,size_t size)
+{
+ struct wg_id id={.type=1};assert(!wn_gossip_identify(NULL,1,wire,size,id.hash));
+ assert(complete(session,&id,wire,size)==WG_DEFER && session->operator_verification);
+ assert(wendy_pki_work_poll());
+ assert(!complete(session,&id,wire,size) && !session->operator_verification && !wnrs_receive_paused(session));
+}
 int main(int argc,char **argv)
 {
- assert(argc==4 && !wendy_pki_crypto_init());size_t leaf_size,wire_size;
+ assert(argc==4 || argc==5 || argc==8);
+ assert(!mbedtls_platform_set_calloc_free(wendy_net_memory_scoped_calloc,wendy_net_memory_scoped_free));
+ assert(mbedtls_psa_set_key_slot_table_allocator(wendy_pki_crypto_shared_calloc)==PSA_SUCCESS);
+ assert(!wendy_pki_crypto_init());size_t leaf_size,wire_size;
  uint8_t *leaf=load_operator(argv[1],&leaf_size),*wire=load_operator(argv[3],&wire_size);
  operator_roots=load_operator(argv[2],&operator_roots_size);
- struct wno_manifest proof;assert(!wno_manifest_read(wire,wire_size,"11111111-1111-4111-8111-111111111111",&proof));
+ struct wno_manifest proof;
+ int parsed=wno_manifest_read(wire,wire_size,"11111111-1111-4111-8111-111111111111",&proof);
+ if(argc==5){
+  assert(!strcmp(argv[4],"unsupported") && parsed==WNO_UNSUPPORTED);
+  struct wnrs_node ignored={0};strcpy(ignored.clock.tenant,"11111111-1111-4111-8111-111111111111");
+  struct wnrs session={.node=&ignored};struct wg_id id={.type=1};
+  assert(!complete_operator(&session,&id,wire,wire_size) && !session.operator_verification && !ignored.core.operators);
+  free(leaf);free(wire);free(operator_roots);puts("larger valid operator signature is unsupported without carrier teardown PASS");return 0;
+ }
+ assert(!parsed);
  wendy_pki_work_enable();assert(wendy_net_runtime_memory_open());
+ wendy_net_memory_scope_t prior=wendy_net_runtime_scope_enter();
  struct wnrs_node *node=wendy_net_calloc(1,sizeof *node);assert(node);
  struct wnr_config cfg={.tenant="11111111-1111-4111-8111-111111111111",.device="55555555-5555-4555-8555-555555555555",.router=55,.seed=1,.publish=operator_publish,.send=operator_discard};
  assert(!wnr_init(&node->core,&cfg,clock_us,NULL,0) && !wnr_start(&node->core,proof.issued,clock_us));
@@ -42,9 +64,18 @@ int main(int argc,char **argv)
  assert(!wncs_put(&node->certificates,proof.hashes[0],leaf,leaf_size));
  assert(!certificate_tick(&session) && !session.fetch.chain);
  assert(complete(&session,&id,wire,wire_size)==WG_DEFER && session.operator_verification && wnrs_receive_paused(&session));
- assert(wendy_pki_work_poll());
- assert(atomic_load(&session.operator_verification->done));
- assert(!complete(&session,&id,wire,wire_size) && !session.operator_verification && !wnrs_receive_paused(&session));
+ /* Temporary ordinary budget pressure is a retry, not a bad signature. */
+ wendy_net_memory_snapshot_t held;wendy_net_runtime_memory_snapshot(&held);
+ wendy_net_memory_reservation_t pressure={0};
+ assert(wendy_net_memory_reserve(wendy_net_runtime_memory_ledger(),&pressure,
+     held.limit_bytes-held.current_bytes,WENDY_NET_MEMORY_INTERNAL));
+ assert(wendy_pki_work_poll() && atomic_load(&session.operator_verification->done));
+ assert(session.operator_verification->result==1);
+ wendy_net_memory_release(&pressure);
+ assert(complete(&session,&id,wire,wire_size)==WG_DEFER && !session.operator_verification);
+ assert(complete(&session,&id,wire,wire_size)==WG_DEFER && !session.operator_verification);
+ clock_us+=250001;
+ deliver_normal(&session,wire,wire_size);
  assert(node->core.operators && node->core.operators->count==1 && node->core.operators->entries->gossip_cached);
  /* Full manifest relay uses the ordinary pool and therefore its FIFO/GONE
   * accounting. Forgetting bytes keeps the signed-origin receipt. */
@@ -80,8 +111,39 @@ int main(int argc,char **argv)
  wno_expire(node->core.operators,entry->retain_until_us+1);
  assert(!node->core.operators->entries && !memcmp(page.record.owner_principal.arg,proof.principal,proof.principal_size));
  wnt_page_release(&page);
+ if(argc==8){
+  /* The existing page lifetime case reaped its receipt. Re-admit a valid live
+   * origin, then exercise ordinary refresh/stale/capacity/withdrawal traffic. */
+  deliver_normal(&session,wire,wire_size);
+  size_t refresh_size,stale_size,withdraw_size,other_size;
+  uint8_t *refresh=load_operator(argv[4],&refresh_size),*stale=load_operator(argv[5],&stale_size);
+  uint8_t *withdraw=load_operator(argv[6],&withdraw_size),*other=load_operator(argv[7],&other_size);
+  deliver_normal(&session,refresh,refresh_size);
+  assert(node->core.operators->entries->revision==43);
+  deliver_normal(&session,stale,stale_size);
+  assert(node->core.operators->entries->revision==43);
+  node->core.operators->limit=1;
+  deliver_normal(&session,other,other_size);
+  assert(node->core.operators->count==1);
+  deliver_normal(&session,withdraw,withdraw_size);
+  entry=node->core.operators->entries;
+  assert(entry->revision==44 && !entry->deadline_us && entry->gossip_cached);
+  assert(!wno_live_address(node->core.operators,entry->address,clock_us));
+  wg_prune(&node->pool,(uint64_t)clock_us/1000+1);
+  assert(node->pool.object_count==1); /* The signed withdrawal is relayable. */
+  free(refresh);free(stale);free(withdraw);free(other);
+ }
  printf("Actual actor primary operator chain/signature worker admission and exact-hash repair PASS (%zu native core bytes)\n",wnr_memory(&node->core));
+ /* An owner may close while a queued proof still owns its immutable input
+  * and DER loan. The worker must finish without borrowing the dead node. */
+ struct wnop_job *closing=NULL;
+ assert(!wnop_job_start(&closing,&node->certificates,wire,wire_size,&node->clock,NULL));
+ wnop_job_release(closing);
  wg_deinit(&node->pool);wncs_close(&node->certificates);wnr_deinit(&node->core);wendy_net_free(node);
- wendy_net_runtime_memory_close();assert(wendy_net_runtime_memory_drained());
+ assert(wendy_pki_work_poll());
+ wendy_pki_crypto_cleanup();
+ wendy_net_memory_scope_leave(prior);
+ wendy_net_runtime_memory_close();
+ assert(wendy_net_runtime_memory_drained());
  free(leaf);free(wire);free(operator_roots);return 0;
 }

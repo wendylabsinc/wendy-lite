@@ -667,10 +667,18 @@ static int complete_operator(struct wnrs *s,const struct wg_id *id,const void *b
         s->operator_verification=NULL;s->verification_blocked=false;
         bool current=job->clock.config_generation==node->clock.config_generation &&
             !memcmp(job->clock.trust_hash,node->clock.trust_hash,32);
-        int result=job->result;
-        if(!result && current)result=wnr_operator_manifest_verified(&node->core,&proof,job->peer,unix_now(s),esp_timer_get_time());
+        int verified=job->result;
+        int result=verified;
+        if(!verified && current)result=wnr_operator_manifest_verified(&node->core,&proof,job->peer,unix_now(s),esp_timer_get_time());
         wnop_job_release(job);
-        if(!current || result>0)return WG_DEFER;
+        if(!current || verified>0){
+            s->signature_retry=esp_timer_get_time()+INT64_C(250000);
+            return WG_DEFER;
+        }
+        /* Stale/expired records and a full bounded directory are ordinary
+         * terminal outcomes, as for device origins. Do not verify them in a
+         * loop while retaining the carrier's completed download slot. */
+        if(result==1 || result==3)return 0;
         if(result)return -1;
         struct wno_entry *entry=NULL;
         for(struct wno_entry *e=node->core.operators->entries;e;e=e->next)
@@ -679,8 +687,13 @@ static int complete_operator(struct wnrs *s,const struct wg_id *id,const void *b
         if(entry->gossip_cached && memcmp(entry->gossip_hash,id->hash,32)){
             struct wg_id old={.type=1};memcpy(old.hash,entry->gossip_hash,32);wg_forget(&node->pool,&old);entry->gossip_cached=false;
         }
+        int64_t now=esp_timer_get_time(),until=entry->deadline_us;
+        /* Withdrawal revokes the route immediately, but its signed notice
+         * remains useful to other peers for the rest of its verified lease. */
+        if(proof.withdraw)until=now+(proof.expires-unix_now(s))*1000;
+        if(until<=now)return 0;
         struct wg_id accepted;int offered=wg_offer(&node->pool,1,bytes,size,
-            (uint64_t)entry->deadline_us/1000,(uint64_t)esp_timer_get_time()/1000,&accepted);
+            (uint64_t)until/1000,(uint64_t)now/1000,&accepted);
         memcpy(entry->gossip_hash,id->hash,32);entry->gossip_cached=!offered;entry->gossip_retired=offered>0;
         if(!offered){struct wg_message have={.id=*id,.op=WG_HAVE};for(struct wnrs *p=node->sessions;p;p=p->next)if(p!=s && announce(p,&have))return -1;}
         return offered<0 ? -1:0;

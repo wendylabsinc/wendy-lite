@@ -217,3 +217,13 @@ set_tests_properties(topology_driver_success PROPERTIES TIMEOUT 20)
 add_executable(session_operator_actor operator_actor_success_test.c ../src/operator_worker.c)
 target_link_libraries(session_operator_actor PRIVATE peer_session_budget)
 target_compile_options(session_operator_actor PRIVATE -Wall -Wextra -Werror -UNDEBUG -Wno-misleading-indentation)
+
+# Optional exact production WendyOS signer/encoder, with no source overlays of
+# application code or module changes. The C target also supports the old driver.
+if(WENDYOS_GO_ROOT)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME session_operator_lifecycle_normal COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_LIST_DIR}/operator_lifecycle_interop.py" --go "${GO_EXECUTABLE}"
+        --wendyos-root "${WENDYOS_GO_ROOT}" --driver "$<TARGET_FILE:session_operator_actor>")
+    set_tests_properties(session_operator_lifecycle_normal PROPERTIES TIMEOUT 90)
+endif()

@@ -16,6 +16,9 @@ static void execute(void *context)
 {
     struct wnop_job *job=context;job->result=-1;
     uint8_t *workspace=NULL;size_t capacity=0;bool borrowed=false;
+    wendy_net_memory_t *owner=wendy_net_memory_scope_current().owner;
+    wendy_net_memory_snapshot_t before={0},after={0};
+    if(owner)wendy_net_memory_snapshot(owner,&before);
     struct wno_manifest proof;
     if(!wendy_pki_operator_snapshot_current(&job->clock) ||
        wno_manifest_read(job->wire,job->size,job->clock.tenant,&proof))goto done;
@@ -48,6 +51,12 @@ static void execute(void *context)
     job->result=wendy_pki_operator_manifest_verify(job->peer,proof.body,proof.body_size,proof.signature,proof.signature_size);
     if(!wendy_pki_operator_snapshot_current(&job->clock))job->result=-1;
 done:
+    /* PKI may report budget pressure as a generic verification error. Keep
+     * the already completed download and retry, matching device proofs. */
+    if(owner && job->result<0){
+        wendy_net_memory_snapshot(owner,&after);
+        if(after.failed_admissions!=before.failed_admissions)job->result=1;
+    }
     if(borrowed)wendy_pki_input_workspace_release(workspace);else wendy_net_free(workspace);
     /* Release heavy inputs before publishing completion. The owner's cookie
      * stays alive until the actor observes it; no context/store crosses tasks. */
