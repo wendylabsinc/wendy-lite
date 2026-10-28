@@ -43,11 +43,19 @@ dependencies:
     - esp32s31
     version: 5f88b91e1be055d1d3674364123b2779a1758377
   esp-pqc:
-    dependencies: []
+    component_hash: 576a44a6dcb8d05e3598b01771ca7ca3178bcb8377c7cb7ce84857ac19f6c237
+    dependencies:
+    - name: idf
+      version: '>=6.0'
+    - git: https://github.com/espressif/esp-pqc.git
+      name: mbedtls
+      path: components/mbedtls
+      version: 37953195672cbc7502b06fc845fc9219627f31fd
     source:
-      path: ../../components/esp-pqc
-      type: local
-    version: 0.1.0
+      git: https://github.com/espressif/esp-pqc.git
+      path: .
+      type: git
+    version: 37953195672cbc7502b06fc845fc9219627f31fd
   espressif/bmi270_sensor:
     component_hash: 1df6b8702743f56ca265928d1ead6a2ae8867a0b313ecd5f9ddde08ba8980c1b
     dependencies:
@@ -575,11 +583,13 @@ dependencies:
       type: service
     version: 9.5.0
   mbedtls:
+    component_hash: 91964642379f2a9a6774faa8bc3965d86e73169d10428bda0b125ee489a961a5
     dependencies: []
     source:
-      path: ../../components/esp-pqc/components/mbedtls
-      type: local
-    version: '*'
+      git: https://github.com/espressif/esp-pqc.git
+      path: components/mbedtls
+      type: git
+    version: 37953195672cbc7502b06fc845fc9219627f31fd
   mosaico_module_camera:
     component_hash: f5b04562b9100f21456c4a575b75467effa73f7bece4d6e915bc5e5e09e06624
     dependencies:
@@ -659,12 +669,19 @@ dependencies:
       path: ../../components/wendy_conf
       type: local
     version: '*'
+  wendy_mesh:
+    dependencies: []
+    source:
+      path: ../../components/wendy_mesh
+      type: local
+    version: '*'
   wendy_pki:
     dependencies:
     - name: idf
       version: '>=6.0.3'
-    - name: esp-pqc
-      override_path: ../esp-pqc
+    - git: https://github.com/espressif/esp-pqc.git
+      name: esp-pqc
+      version: 37953195672cbc7502b06fc845fc9219627f31fd
     - name: espressif/cjson
       version: ^1.7.19
     source:
@@ -729,18 +746,18 @@ direct_dependencies:
 - espressif/esp_video
 - espressif/mdns
 - idf
-- mbedtls
 - mosaico_module_camera
 - nanopb
 - wendy_ble
 - wendy_cloud
 - wendy_com
 - wendy_conf
+- wendy_mesh
 - wendy_pki
 - wendy_server
 - wendy_stdio
 - wendy_usj
 - wendy_wifi
-manifest_hash: 7ef2ec644689826d3199f3e6b4f9c06a364b411d1fdbd8bc9d3d07f60a21c8cf
+manifest_hash: c86414dafd31b1e98e1ed4b6f38f1647394af5caf62d980a6aa0cdd20825d992
 target: esp32s31
 version: 3.0.0
