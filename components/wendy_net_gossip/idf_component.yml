@@ -1,0 +1,3 @@
+dependencies:
+  wendy_net_common:
+    override_path: "../wendy_net_common"
