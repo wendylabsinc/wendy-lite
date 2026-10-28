@@ -836,7 +836,7 @@ int wendy_pki_relay_upgrade(wendy_pki_connection *c, struct wendy_lite_trust *tr
         if (read_all(c, header, 4, deadline) || memcmp(header, "WR\x03", 3)) {
             if (esp_timer_get_time() >= renew) {
                 ESP_LOGI("wendy_pki", "refreshing broker control connection");
-                return -1;
+                return WENDY_PKI_RELAY_RENEW;
             }
             goto fail;
         }
