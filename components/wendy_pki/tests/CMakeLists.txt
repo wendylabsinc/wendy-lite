@@ -1,11 +1,23 @@
 cmake_minimum_required(VERSION 3.20)
 project(wendy_pki_test C)
-set(ESP_PQC_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../esp-pqc" CACHE PATH "Pinned esp-pqc component")
-set(MBEDTLS_ROOT "${ESP_PQC_ROOT}/components/mbedtls/mbedtls" CACHE PATH "Bundled PQC Mbed TLS 4 source directory")
-set(OQS_ROOT "${ESP_PQC_ROOT}/components/liboqs/liboqs")
-if(NOT EXISTS "${MBEDTLS_ROOT}/tf-psa-crypto/CMakeLists.txt" OR NOT EXISTS "${OQS_ROOT}/CMakeLists.txt")
-    message(FATAL_ERROR "Initialize esp-pqc and its nested submodules: git submodule update --init --recursive components/esp-pqc")
+# Test the esp-pqc revision that the firmware gets through wendy_pki's manifest.
+file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/../idf_component.yml" esp_pqc_version
+    REGEX "^ +version: \"[0-9a-f]+\"$")
+string(REGEX REPLACE "^ +version: \"([0-9a-f]+)\"$" "\\1" esp_pqc_version "${esp_pqc_version}")
+if(NOT esp_pqc_version MATCHES "^[0-9a-f]+$")
+    message(FATAL_ERROR "Cannot read the esp-pqc revision from wendy_pki/idf_component.yml")
 endif()
+include(FetchContent)
+# esp-pqc is an ESP-IDF component. A SOURCE_SUBDIR without CMakeLists.txt
+# fetches it with its nested submodules, but does not add it to this project.
+# Set FETCHCONTENT_SOURCE_DIR_ESP_PQC to use a local checkout instead.
+FetchContent_Declare(esp_pqc
+    GIT_REPOSITORY https://github.com/espressif/esp-pqc.git
+    GIT_TAG "${esp_pqc_version}"
+    SOURCE_SUBDIR fetch-only)
+FetchContent_MakeAvailable(esp_pqc)
+set(MBEDTLS_ROOT "${esp_pqc_SOURCE_DIR}/components/mbedtls/mbedtls")
+set(OQS_ROOT "${esp_pqc_SOURCE_DIR}/components/liboqs/liboqs")
 find_package(Threads REQUIRED)
 set(OQS_BUILD_ONLY_LIB ON CACHE BOOL "" FORCE)
 set(OQS_USE_OPENSSL OFF CACHE BOOL "" FORCE)

@@ -1,0 +1,8 @@
+dependencies:
+  idf:
+    version: ">=6.0.3"
+  espressif/led_strip:
+    version: "^3.0.0"
+  wendy_core:
+    git: "https://github.com/wendylabsinc/wendy-lite.git"
+    path: "components/wendy_core"
