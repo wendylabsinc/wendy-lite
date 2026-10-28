@@ -32,8 +32,6 @@ jobs:
       image: espressif/idf@sha256:30b42a38415e918b1b14825ccf0e4c40e7910c5132618dcd12e3c45361be0943
     steps:
       - uses: actions/checkout@v5
-        with:
-          submodules: recursive
       - name: Build the native dashboard
         shell: bash
         working-directory: samples/mosaico_dashboard

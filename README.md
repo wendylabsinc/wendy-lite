@@ -7,8 +7,7 @@ The Wendy host firmware exposes a comprehensive set of hardware APIs through WAS
 Wendy Lite also supports native applications, written in C and C++ and built using the ESP-IDF tools and API.
 
 Build with ESP-IDF 6.0.3, or ESP-IDF 6.1 for the ESP32-S31 preview target.
-Initialize nested dependencies with
-`git submodule update --init --recursive`. The pinned esp-pqc component supplies
+The component manager fetches the pinned esp-pqc component, which supplies
 mbedTLS 4, ML-DSA-65 operator identities, and ML-DSA-65/87 CA verification;
 P-256 device keys remain supported.
 CI uses `espressif/idf:v6.0.3` for existing targets and `espressif/idf:v6.1`
