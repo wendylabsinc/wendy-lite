@@ -29,3 +29,11 @@ target_compile_definitions(ble_only_radio_success_test PRIVATE CONFIG_WENDY_NET_
 target_link_libraries(ble_only_radio_success_test PRIVATE Threads::Threads)
 target_compile_options(ble_only_radio_success_test PRIVATE -Wall -Wextra -Wno-unused-parameter)
 add_test(NAME wifi_ble_only_profile COMMAND ble_only_radio_success_test)
+
+add_executable(camera_services_test services_test.c)
+target_include_directories(camera_services_test PRIVATE stubs ../include)
+target_link_libraries(camera_services_test PRIVATE Threads::Threads)
+target_compile_options(camera_services_test PRIVATE -Wall -Wextra -Wno-unused-parameter)
+target_compile_definitions(camera_services_test PRIVATE CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3=1)
+add_test(NAME wifi_camera_services_and_reconnection COMMAND camera_services_test)
+set_tests_properties(wifi_camera_services_and_reconnection PROPERTIES TIMEOUT 10)

@@ -126,39 +126,6 @@
      }
  
      BLE_HS_LOG(DEBUG,
-@@ -736,31 +811,7 @@
-      * to be able to send complete SDU.
-      */
-     if (chan->disable_auto_credit_update == false && chan->coc_rx.credits < c->initial_credits) {
--        uint16_t credits_to_send = c->initial_credits - chan->coc_rx.credits;
--        uint16_t cached_conn_handle = chan->conn_handle;
--        uint16_t cached_scid = chan->scid;
--
--        /* Updating state before unlocking. */
--        chan->coc_rx.credits = c->initial_credits;
--
--        ble_hs_unlock();
--        ble_l2cap_sig_le_credits(cached_conn_handle, cached_scid,
--                                 credits_to_send);
--        ble_hs_lock();
--        /* Re-validate connection and channel after relock — they could have
--         * been freed while the lock was released. coc_rx.credits was already
--         * updated before unlocking; no further update needed here. */
--        conn = ble_hs_conn_find(cached_conn_handle);
--        if (conn != NULL) {
--            c = ble_hs_conn_chan_find_by_scid(conn, cached_scid);
--        } else {
--            c = NULL;
--        }
--
--        if (c == NULL) {
--            ble_hs_unlock();
--            return 0;
--        }
-+        ble_l2cap_coc_credit_request(c, BLE_L2CAP_COC_RX_CREDITS_INITIAL);
-     }
- 
-     ble_hs_unlock();
 --- a/src/ble_l2cap_sig.c
 +++ b/src/ble_l2cap_sig.c
 @@ -2021,23 +2021,44 @@

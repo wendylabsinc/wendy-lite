@@ -42,7 +42,13 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           idf.py --preview build
           grep -q '^CONFIG_MBEDTLS_USE_BUNDLED_PQC=y$' sdkconfig
-          grep -q '^# CONFIG_MBEDTLS_DYNAMIC_BUFFER is not set$' sdkconfig
+          # PKI variable buffers hide IDF's separate dynamic allocator option.
+          # Hidden disabled options can be absent from the generated config.
+          grep -q '^CONFIG_MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH=y$' sdkconfig
+          if grep -q '^CONFIG_MBEDTLS_DYNAMIC_BUFFER=y$' sdkconfig; then
+            echo 'ESP-IDF dynamic TLS buffers must remain disabled' >&2
+            exit 1
+          fi
           grep -q '^CONFIG_SPIRAM=y$' sdkconfig
           grep -q '^CONFIG_LV_OS_FREERTOS=y$' sdkconfig
           grep -q '^CONFIG_LV_USE_CLIB_MALLOC=y$' sdkconfig
