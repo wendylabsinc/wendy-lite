@@ -252,6 +252,7 @@ target_compile_options(mesh_connect_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 add_test(NAME mesh_transport_fallback COMMAND mesh_connect_test)
 
 # Normal random RFC3161 nonce integer shapes, including sign/zero padding.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_executable(time_nonce_success_test time_nonce_success_test.c)
 target_link_libraries(time_nonce_success_test PRIVATE pki)
 target_compile_options(time_nonce_success_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
