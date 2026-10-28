@@ -12,20 +12,6 @@
 /* Sparse FIFO classes share one existing allocation ceiling. */
 enum {WNC_ROUTE,WNC_METADATA,WNC_IP,WNC_CLASSES};
 #define WNC_CLASS_RESERVE 1536U
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-#include <stdatomic.h>
-struct wnc_probe {
-    atomic_uint tx_bytes,rx_bytes,tx_frames,rx_frames;
-    atomic_uint queued_bytes[WNC_CLASSES],queued_frames[WNC_CLASSES];
-    atomic_uint oldest_us[WNC_CLASSES],wait_max_us[WNC_CLASSES];
-    unsigned now_us; /* Outer driver monotonic clock, actor owned. */
-};
-struct wnc_probe_snapshot {
-    unsigned tx_bytes,rx_bytes,tx_frames,rx_frames;
-    unsigned queued_bytes[WNC_CLASSES],queued_frames[WNC_CLASSES];
-    unsigned oldest_age_us[WNC_CLASSES],wait_max_us[WNC_CLASSES];
-};
-#endif
 
 enum
 {
@@ -59,15 +45,7 @@ struct wnc_carrier
     bool rx_paused;
     int64_t rx_started, rx_progress;
     int64_t stall_timeout_us, frame_timeout_us;
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-    struct wnc_probe probe;
-#endif
 };
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-/* No clock access in the core: outer drivers timestamp queue admission. */
-void wnc_probe_clock(struct wnc_carrier *,int64_t monotonic_us);
-void wnc_probe_take(struct wnc_carrier *,int64_t monotonic_us,struct wnc_probe_snapshot *);
-#endif
 struct wnc_timeout {bool writing;size_t offset,size;int64_t idle_us,age_us;};
 /* Describe an expired partial frame without allocating or changing state. */
 bool wnc_timeout_snapshot(const struct wnc_carrier *,int64_t,struct wnc_timeout *);
