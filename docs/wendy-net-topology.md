@@ -41,7 +41,8 @@ stale when a refresh fails, rather than treating them as a healthy empty mesh.
 `net_topology` is command 24, response 9. Replies use binary protobuf and contain
 at most one metadata record plus a generation and opaque next cursor. Begin with
 cursor and generation zero, then echo the returned generation and next cursor
-until the next cursor is zero. A terminal reply has no record. A structural change
+until the next cursor is zero; that reply may contain the final record. A request
+at the end of the bounded view returns no record. A structural change
 returns `BUSY`; discard collected rows and retry at most once. Ordinary counters
 and timer updates do not invalidate a collection. Clients bound collection to
 1,024 rows, 512 KiB and 60 seconds and preserve the `partial` indication.
