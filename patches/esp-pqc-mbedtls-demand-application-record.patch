@@ -1,0 +1,52 @@
+--- a/library/ssl_tls.c
++++ b/library/ssl_tls.c
+@@ -411,6 +411,21 @@
+     if (ssl->in_hsfraglen == 0) {
+         handle_buffer_resizing(ssl, 1, mbedtls_ssl_get_input_buflen(ssl),
+                                mbedtls_ssl_get_output_buflen(ssl));
++    }
++}
++
++
++/* Application streams retain one small record and grow on demand. Never move
++ * a live application pointer or partial/fragmented record. A failed shrink is
++ * harmless; the existing larger allocation remains owned by the context. */
++void mbedtls_ssl_compact_input_buffer(mbedtls_ssl_context *ssl)
++{
++    if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_STREAM &&
++        ssl->state == MBEDTLS_SSL_HANDSHAKE_OVER && ssl->in_offt == NULL &&
++        ssl->in_left == 0 && ssl->in_msglen == 0 && ssl->in_hsfraglen == 0 &&
++        ssl->in_hslen == 0 && (size_t)(ssl->in_msg-ssl->in_buf)<2048 &&
++        (size_t)(ssl->in_hdr-ssl->in_buf)<2048) {
++        handle_buffer_resizing(ssl,1,2048,ssl->out_buf_len);
+     }
+ }
+ 
+--- a/library/ssl_msg.c
++++ b/library/ssl_msg.c
+@@ -1873,10 +1873,12 @@
+     if (header_offset > in_buf_len) return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
+     if (nb_want > in_buf_len - header_offset) {
+ #if defined(MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH)
+-        /* Only a bounded TLS handshake fragment may extend the record buffer.
+-         * The record parser checks each record's independent size limit. */
++        /* A bounded handshake fragment or authenticated application stream
++         * may grow the allocation. The record parser independently checks
++         * the configured TLS record limit before requesting its payload. */
+         if (ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_STREAM &&
+-            ssl->in_hsfraglen != 0 && header_offset <= MBEDTLS_SSL_IN_BUFFER_LEN &&
++            (ssl->in_hsfraglen != 0 || ssl->state == MBEDTLS_SSL_HANDSHAKE_OVER) &&
++            header_offset <= MBEDTLS_SSL_IN_BUFFER_LEN &&
+             nb_want <= MBEDTLS_SSL_IN_BUFFER_LEN - header_offset) {
+             int grow = mbedtls_ssl_grow_input_buffer(ssl, header_offset + nb_want);
+             if (grow != 0) return grow;
+--- a/library/ssl_misc.h
++++ b/library/ssl_misc.h
+@@ -464,6 +464,7 @@
+ /* Grow with all record pointers preserved, or fail without changing the buffer. */
+ int mbedtls_ssl_grow_input_buffer(mbedtls_ssl_context *ssl, size_t length);
+ void mbedtls_ssl_release_handshake_buffer(mbedtls_ssl_context *ssl);
++void mbedtls_ssl_compact_input_buffer(mbedtls_ssl_context *ssl);
+ 
+ static inline size_t mbedtls_ssl_get_output_buflen(const mbedtls_ssl_context *ctx)
+ {

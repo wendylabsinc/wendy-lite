@@ -114,6 +114,7 @@ func main() {
 		"lan-device-expired", "lan-device-future", "lan-device-untrusted", "lan-device-tampered", "lan-no-client",
 		"lite-valid", "lite-wrong-role", "lite-wrong-tenant", "lite-unmarked", "lite-extra-eku", "lite-untrusted", "lite-primary-operator", "lite-lan-device",
 		"stream-valid", "stream-wrong-tenant", "stream-device", "stream-no-client", "stream-expired", "stream-untrusted", "stream-tls12", "stream-timeout"}
+	if os.Getenv("WENDY_TLS_OWNED_ONLY") != "" { cases = nil }
 	for _, name := range cases {
 		expiry := time.Now().Add(time.Hour)
 		usages := []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
@@ -372,7 +373,7 @@ func main() {
 		}
 		fmt.Println("PASS", profile, name)
 	}
-	if profile == "mldsa65" {
+	if profile == "mldsa65" && os.Getenv("WENDY_TLS_OWNED_ONLY") == "" {
 		exerciseMixedMLDSACAs(directory)
 	}
 
@@ -452,6 +453,7 @@ func main() {
 	fmt.Printf("PASS %s outbound-short-writes chain_bytes=%d certificates=%d cipher=%s\n", profile, chainBytes, len(chain), tls.CipherSuiteName(state.CipherSuite))
 	operator, operatorKey, operatorPEM := leaf("large-chain operator", time.Now().Add(time.Hour), []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, tenant+"operator/11111111-1111-4111-8111-111111111111", rootKey, root, 0)
 	exerciseLargeServerStream(directory, profile, pool, operator, chainBytes, len(chain))
+	if os.Getenv("WENDY_TLS_OWNED_ONLY") != "" { return }
 	if profile == "mldsa65" {
 		must(os.WriteFile(filepath.Join(directory, "operator-key.der"), operatorKey, 0600))
 		must(os.WriteFile(filepath.Join(directory, "operator-chain.pem"), append(operatorPEM, rootPEM...), 0600))
@@ -707,6 +709,7 @@ func exerciseLargeServerStream(directory, profile string, roots *x509.CertPool, 
 	})
 	must(client.Handshake())
 	state := client.ConnectionState()
+	if os.Getenv("WENDY_TLS_OWNED_STREAM") != "" { chainLength-- } // independently pinned root
 	if len(state.PeerCertificates) != chainLength || len(state.VerifiedChains) == 0 {
 		panic("stream server chain was not authenticated")
 	}

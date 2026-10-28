@@ -1,0 +1,38 @@
+--- a/library/ssl_tls.c
++++ b/library/ssl_tls.c
+@@ -339,7 +339,7 @@
+ {
+     int modified = 0;
+     size_t written_in = 0, iv_offset_in = 0, len_offset_in = 0, hdr_in = 0;
+-    size_t written_out = 0, iv_offset_out = 0, len_offset_out = 0;
++    size_t written_out = 0, iv_offset_out = 0, len_offset_out = 0, hdr_out = 0;
+     if (ssl->in_buf != NULL) {
+         written_in = ssl->in_msg - ssl->in_buf;
+         iv_offset_in = ssl->in_iv - ssl->in_buf;
+@@ -359,12 +359,15 @@
+     }
+ 
+     if (ssl->out_buf != NULL) {
++        hdr_out = ssl->out_hdr - ssl->out_buf;
+         written_out = ssl->out_msg - ssl->out_buf;
+         iv_offset_out = ssl->out_iv - ssl->out_buf;
+         len_offset_out = ssl->out_len - ssl->out_buf;
+-        if (downsizing ?
+-            ssl->out_buf_len > out_buf_new_len && ssl->out_left < out_buf_new_len :
+-            ssl->out_buf_len < out_buf_new_len) {
++        /* A pending record owns its complete ciphertext and end pointer.
++         * Defer output resizing until the transport has flushed it. */
++        if (ssl->out_left == 0 && (downsizing ?
++            ssl->out_buf_len > out_buf_new_len :
++            ssl->out_buf_len < out_buf_new_len)) {
+             if (resize_buffer(&ssl->out_buf, out_buf_new_len, &ssl->out_buf_len) != 0) {
+                 MBEDTLS_SSL_DEBUG_MSG(1, ("output buffer resizing failed - out of memory"));
+             } else {
+@@ -379,6 +382,7 @@
+         ssl->in_hdr = ssl->in_buf + hdr_in;
+         mbedtls_ssl_update_in_pointers(ssl);
+         mbedtls_ssl_reset_out_pointers(ssl);
++        ssl->out_hdr = ssl->out_buf + hdr_out;
+ 
+         /* Fields below might not be properly updated with record
+          * splitting or with CID, so they are manually updated here. */
