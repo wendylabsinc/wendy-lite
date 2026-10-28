@@ -11,6 +11,7 @@ struct wg_object {
   uint64_t expires, born, withdrawal;
   uint8_t *data;
   size_t size, refs;
+  bool critical;
   void (*release)(const void *);
 };
 struct supplier {
@@ -21,6 +22,7 @@ struct wg_fetch {
   struct wg_fetch *next;
   struct wg_id id;
   struct supplier *suppliers;
+  struct wg_object *accepted; /* Pins an adopted callback body until return. */
   uint64_t owner, request, progress, avoid;
   uint8_t *data;
   size_t size, total;
@@ -183,8 +185,22 @@ void wg_discard(struct wg_session *s,const struct wg_id *id) {
   for(struct wg_fetch *f=s->pool->pending;f;f=f->next)
     if(same(&f->id,id) && f->owner==s->owner){drop_supplier(s->pool,f,s->owner);return;}
 }
+static bool known_op(enum wg_op op) {
+  switch (op) {
+  case WG_HAVE: case WG_WANT: case WG_UNAVAILABLE: case WG_DATA: case WG_GONE:
+    return true;
+  default:
+    return false;
+  }
+}
 int wg_validate(const struct wg_message *m) {
-  if (!m || (m->id.type != 1 && m->id.type != 2 && m->id.type != 3))
+  if (!m)
+    return -1;
+  /* Future operations have their own fields and semantics. Do not interpret
+   * their envelopes as one of today's DATA/control messages. */
+  if (!known_op(m->op))
+    return 0;
+  if (m->id.type != 1 && m->id.type != 2 && m->id.type != 3)
     return -1;
   if (m->op == WG_HAVE || m->op == WG_GONE)
     return m->request || m->offset || m->total || m->size ? -1 : 0;
@@ -214,16 +230,18 @@ void wg_prune(struct wg_pool *p, uint64_t now) {
   }
   for (struct wg_fetch **at = &p->pending; *at;) {
     struct wg_fetch *f = *at;
+    if (f->owner && now >= f->progress && now - f->progress >= WG_IDLE_MS)
+      reset_fetch(p, f);
     for (struct supplier **q = &f->suppliers; *q;) {
-      if ((*q)->until <= now) {
+      /* A recent WANT/DATA owns this supplier independently of its old HAVE
+       * lease. Only idle transfers revert to expiring hint metadata. */
+      if ((*q)->until <= now && (*q)->owner != f->owner) {
         struct supplier *gone = *q;
         *q = gone->next;
         unmeta(p, gone, sizeof *gone);
       } else
         q = &(*q)->next;
     }
-    if (f->owner && now >= f->progress && now - f->progress >= WG_IDLE_MS)
-      reset_fetch(p, f);
     if (!f->suppliers)
       drop_fetch(p, at);
     else
@@ -275,6 +293,17 @@ static int room(struct wg_pool *p,uint8_t type,size_t size,uint64_t now) {
   }
   return 0;
 }
+static bool object_full(struct wg_pool *p, bool critical) {
+  if (p->object_count >= p->config.objects)
+    return true;
+  if (!critical && p->config.reserve_objects) {
+    size_t ordinary = 0;
+    for (struct wg_object *o = p->objects; o; o = o->next)
+      ordinary += !o->critical;
+    return ordinary >= p->config.objects - p->config.reserve_objects;
+  }
+  return false;
+}
 static int offer(struct wg_pool *p, uint8_t type, const void *bytes, size_t size,
                  uint64_t expires, uint64_t now, struct wg_id *id,
                  void (*retain)(const void *), void (*release)(const void *)) {
@@ -298,14 +327,23 @@ static int offer(struct wg_pool *p, uint8_t type, const void *bytes, size_t size
     return 0;
   }
   bool critical=p->config.critical_object && p->config.critical_object(p->config.context,id);
-  size_t objects=p->config.objects-(critical ? 0:p->config.reserve_objects);
-  if (p->object_count >= objects || p->next_object==UINT64_MAX ||
-      room(p,type,size,now))
+  struct wg_fetch *received = p->delivering;
+  bool adopt = !retain && received && received->data == bytes &&
+      received->size == size && same(&received->id, id);
+  if (object_full(p, critical) || p->next_object==UINT64_MAX ||
+      (!adopt && room(p,type,size,now)))
     return 1;
   o = meta(p, sizeof *o);
   if (!o)
     return 1;
-  if (retain) {
+  if (adopt) {
+    /* Verification accepted this exact receive allocation. Move its existing
+     * byte charge, and pin it until the callback's borrowed view ends. */
+    o->data = received->data;
+    received->data = NULL;
+    received->accepted = o;
+    o->refs++;
+  } else if (retain) {
     retain(bytes);
     o->data = (uint8_t *)bytes;
     o->release = release;
@@ -318,14 +356,17 @@ static int offer(struct wg_pool *p, uint8_t type, const void *bytes, size_t size
     memcpy(o->data, bytes, size);
   }
   o->id = *id;
+  o->critical = critical;
   o->size = size;
   o->expires = expires;
   o->born=++p->next_object;
   o->next = p->objects;
   p->objects = o;
   p->object_count++;
-  p->payload_bytes += size;
-  p->type_payload[type-1] += size;
+  if (!adopt) {
+    p->payload_bytes += size;
+    p->type_payload[type-1] += size;
+  }
   /* Resolve an in-flight download only after the adapter verified it. */
   for (struct wg_fetch **at = &p->pending; *at; at = &(*at)->next)
     if (same(&(*at)->id, id)) {
@@ -362,7 +403,9 @@ static int claim(struct wg_session *s, struct wg_fetch *f, uint64_t now,
     return 0;
   if(p->config.want_object && !p->config.want_object(p->config.context,&f->id,now))
     return 0;
-  if(p->config.fifo && p->object_count>=p->config.objects-p->config.reserve_objects)
+  bool critical = p->config.critical_object &&
+      p->config.critical_object(p->config.context, &f->id);
+  if (p->config.fifo && object_full(p, critical))
     return 0;
   unsigned active = 0, all = 0, nonroute = 0;
   for (struct wg_fetch *q = p->pending; q; q = q->next){
@@ -383,6 +426,14 @@ static int claim(struct wg_session *s, struct wg_fetch *f, uint64_t now,
   f->progress = now;
   return 0;
 }
+static int claim_pending(struct wg_session *s, uint64_t now, wg_emit emit, void *ctx) {
+  for (struct wg_fetch *f = s->pool->pending; f; f = f->next) {
+    int r = claim(s, f, now, emit, ctx);
+    if (r)
+      return r;
+  }
+  return 0;
+}
 /* Temporarily unlink the complete fetch: an accepting callback may offer
  * the same digest. Keep its byte/download accounting until actual admission. */
 static int deliver(struct wg_session *s,struct wg_fetch *f,wg_complete complete,void *ctx)
@@ -391,15 +442,23 @@ static int deliver(struct wg_session *s,struct wg_fetch *f,wg_complete complete,
     struct wg_fetch **at=&p->pending;while(*at && *at!=f)at=&(*at)->next;
     if(!*at)return -1;
     *at=f->next;f->next=NULL;
+    p->delivering=f;
     int r=complete(ctx,&f->id,f->data,f->size);
+    p->delivering=NULL;
     f->next=p->pending;p->pending=f;
-    if(r==WG_DEFER)return WG_DEFER;
+    if(f->accepted) {
+      f->accepted->refs--;
+      if(r==WG_DEFER)r=0; /* Already admitted; no unverified body remains. */
+    } else if(r==WG_DEFER)return WG_DEFER;
     drop_fetch(p,&p->pending);return r;
 }
 int wg_receive(struct wg_session *s, const struct wg_message *m, uint64_t now,
                wg_emit emit, wg_complete complete, void *ctx) {
-  if (!s || !s->pool || !emit || !complete || wg_validate(m) ||
-      m->id.type != s->type || now > UINT64_MAX - WG_HINT_MS)
+  if (!s || !s->pool || !emit || !complete || wg_validate(m))
+    return -1;
+  if (!known_op(m->op))
+    return 0;
+  if (m->id.type != s->type || now > UINT64_MAX - WG_HINT_MS)
     return -1;
   struct wg_pool *p = s->pool;
   wg_prune(p, now);
@@ -468,7 +527,7 @@ int wg_receive(struct wg_session *s, const struct wg_message *m, uint64_t now,
       f->suppliers = q;
     }
     q->until = now + WG_HINT_MS;
-    return claim(s, f, now, emit, ctx);
+    return claim_pending(s, now, emit, ctx);
   }
   if (m->op == WG_WANT) {
     for (struct wg_transfer *t = s->out; t; t = t->next)
@@ -497,14 +556,7 @@ int wg_receive(struct wg_session *s, const struct wg_message *m, uint64_t now,
   if (!f || f->owner != s->owner || f->request != m->request)
     return 0;
   if (m->op == WG_UNAVAILABLE) {
-    reset_fetch(p, f);
-    for (struct supplier **at = &f->suppliers; *at; at = &(*at)->next)
-      if ((*at)->owner == s->owner) {
-        struct supplier *q = *at;
-        *at = q->next;
-        unmeta(p, q, sizeof *q);
-        break;
-      }
+    drop_supplier(p, f, s->owner);
     return 0;
   }
   if (m->offset != f->size || (f->total && f->total != m->total))
@@ -555,10 +607,9 @@ int wg_poll(struct wg_session *s, uint64_t now, wg_emit emit, void *ctx) {
     s->withdrawal=gone->withdrawal;
     return 0;
   }
-  for (struct wg_fetch *f = p->pending; f; f = f->next) {
-    int r=claim(s,f,now,emit,ctx);
-    if(r)return r;
-  }
+  int claimed = claim_pending(s, now, emit, ctx);
+  if (claimed)
+    return claimed;
   struct wg_transfer *t = s->out;
   if (!t)
     return 0;

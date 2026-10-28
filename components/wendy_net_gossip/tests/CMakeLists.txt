@@ -53,3 +53,8 @@ add_executable(gossip_discard_success_test discard_success_test.c)
 target_link_libraries(gossip_discard_success_test PRIVATE net_gossip OpenSSL::Crypto)
 target_compile_options(gossip_discard_success_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 add_test(NAME gossip_discard_success COMMAND gossip_discard_success_test)
+
+add_executable(gossip_lifecycle_success_test lifecycle_success_test.c)
+target_link_libraries(gossip_lifecycle_success_test PRIVATE net_gossip OpenSSL::Crypto)
+target_compile_options(gossip_lifecycle_success_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME gossip_lifecycle_success COMMAND gossip_lifecycle_success_test)

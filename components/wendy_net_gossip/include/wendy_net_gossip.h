@@ -68,7 +68,7 @@ struct wg_transfer;
 struct wg_pool {
   struct wg_config config;
   struct wg_object *objects;
-  struct wg_fetch *pending;
+  struct wg_fetch *pending, *delivering;
   uint64_t next_owner, next_request;
   size_t object_count, pending_count, payload_bytes, metadata_bytes, serving;
   size_t type_payload[3];
@@ -89,8 +89,10 @@ typedef int (*wg_emit)(void *, const struct wg_message *);
  * Call wg_offer ONLY after independent signature/tenant/lifetime verification.
  * Bytes remain valid only for the duration of this callback. Return WG_DEFER
  * to retain the existing receive allocation and download admission slot;
- * poll retries completion without another WANT/DATA transfer. Other positive
- * returns retain their historical meaning. */
+ * resume retries completion without another WANT/DATA transfer. wg_offer of
+ * these exact bytes adopts the receive allocation after verification; a later
+ * WG_DEFER cannot undo that admission. Other positive returns retain their
+ * historical meaning. Only wg_offer/wg_offer_shared may reenter the pool here. */
 typedef int (*wg_complete)(void *, const struct wg_id *, const void *, size_t);
 int wg_init(struct wg_pool *, const struct wg_config *);
 void wg_deinit(struct wg_pool *);
@@ -98,6 +100,8 @@ int wg_open(struct wg_pool *, struct wg_session *, uint8_t type);
 void wg_close(struct wg_session *);
 /* Drop an owned unverified body without a receipt; alternate suppliers remain. */
 void wg_discard(struct wg_session *,const struct wg_id *);
+/* Unknown operation envelopes validate and are ignored by receive, without
+ * applying today's field/type rules to future protocol extensions. */
 int wg_validate(const struct wg_message *);
 int wg_offer(struct wg_pool *, uint8_t type, const void *, size_t,
              uint64_t expires_ms, uint64_t now_ms, struct wg_id *);
