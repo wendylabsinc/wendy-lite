@@ -23,12 +23,10 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 idf_build_set_property(MINIMAL_BUILD ON)
 project(mosaico_dashboard)
 
-# Apply the same reviewed TLS fixes as the main firmware.
-include("${WENDY_LITE_ROOT}/cmake/dependency_patches.cmake")
+# wendy_pki applies the same reviewed TLS fixes as the main firmware.
 if(NOT CONFIG_MBEDTLS_USE_BUNDLED_PQC OR CONFIG_MBEDTLS_DYNAMIC_BUFFER)
     message(FATAL_ERROR "The dashboard requires esp-pqc with fixed TLS receive buffers. Configure a fresh sdkconfig.")
 endif()
-wendy_patch_mbedtls("${WENDY_LITE_ROOT}/components/esp-pqc/components/mbedtls/mbedtls")
 
 if(CONFIG_WENDY_SENSOR_LINK_MOSAICO)
     include("${CMAKE_CURRENT_LIST_DIR}/camera_patches.cmake")

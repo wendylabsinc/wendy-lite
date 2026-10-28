@@ -161,7 +161,7 @@ CONFIG_WENDY_MESH_ROUTER_PORT=43024
 The example address is a documentation address. The custom IPv6 route hook is
 a prerequisite, selected under the lwIP hooks menu before enabling the mesh
 option. Use a fresh sdkconfig so previous choices cannot mask these defaults.
-After initializing the repository's nested submodules, build without flashing:
+Build without flashing:
 
 ```sh
 idf.py -B build-mesh-s3 -D SDKCONFIG=sdkconfig.mesh-s3 \

@@ -1,3 +1,0 @@
-[submodule "components/esp-pqc"]
-	path = components/esp-pqc
-	url = https://github.com/espressif/esp-pqc.git
