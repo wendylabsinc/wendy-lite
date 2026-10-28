@@ -41,6 +41,7 @@ if(CONFIG_MBEDTLS_USE_BUNDLED_PQC)
     wendy_patch_mbedtls("${CMAKE_CURRENT_LIST_DIR}/components/esp-pqc/components/mbedtls/mbedtls")
 endif()
 wendy_patch_wamr()
+wendy_patch_nimble()
 
 # ESP32-P4 ships in several board layouts that differ in flash size and
 # partition table, so a board overlay must be selected explicitly:

@@ -1,0 +1,48 @@
+--- a/src/ble_l2cap_coc.c
++++ b/src/ble_l2cap_coc.c
+@@ -67,6 +67,32 @@
+ #define max(a, b) ((a) > (b) ? (a) : (b))
+ #endif
+ 
++#if BLE_L2CAP_SDU_BUFF_CNT > 1
++/* Remote short SDUs can consume one parked buffer per PDU. Bound a deferred
++ * initial refill by the ACTUAL contiguous buffers still armed now, not the
++ * target remembered before old credits/partial bytes were received. */
++static uint16_t
++ble_l2cap_coc_credit_target(struct ble_l2cap_chan *chan)
++{
++    struct ble_l2cap_coc_endpoint *rx = &chan->coc_rx;
++    uint16_t armed = 0, target = 0;
++    for (unsigned i = 0; i < BLE_L2CAP_SDU_BUFF_CNT; i++) {
++        unsigned index = (rx->current_sdu_idx + i) % BLE_L2CAP_SDU_BUFF_CNT;
++        if (rx->sdus[index] == NULL) {
++            break;
++        }
++        armed++;
++    }
++    if (rx->flags & BLE_L2CAP_COC_RX_CREDITS_INITIAL) {
++        target = chan->initial_credits;
++    } else if ((rx->flags & BLE_L2CAP_COC_RX_CREDITS_PARTIAL) && armed &&
++               rx->data_offset > OS_MBUF_PKTLEN(rx->sdus[rx->current_sdu_idx])) {
++        target = 1;
++    }
++    return target < armed ? target : armed;
++}
++#endif
++
+ /* Credit notifications share the ordinary signaling pool. Keep only intent
+  * when that pool is busy; accepting an RX SDU still transfers ownership once.
+  * All callers hold the host lock, including the existing host timer driver. */
+@@ -84,8 +110,12 @@
+         rx->flags &= ~BLE_L2CAP_COC_RX_CREDITS_PENDING;
+         return;
+     }
++#if BLE_L2CAP_SDU_BUFF_CNT > 1
++    target = ble_l2cap_coc_credit_target(chan);
++#else
+     target = (rx->flags & BLE_L2CAP_COC_RX_CREDITS_INITIAL) ?
+         chan->initial_credits : 1;
++#endif
+     if (rx->credits >= target) {
+         rx->flags &= ~BLE_L2CAP_COC_RX_CREDITS_PENDING;
+         return;
