@@ -1,7 +1,10 @@
 dependencies:
   idf:
     version: ">=6.0.3"
+  # The firmware, the samples and apps that fetch Wendy components over git
+  # all use this revision. The PKI host tests read it from this file.
   esp-pqc:
-    override_path: "../esp-pqc"
+    git: "https://github.com/espressif/esp-pqc.git"
+    version: "37953195672cbc7502b06fc845fc9219627f31fd"
   espressif/cjson:
     version: "^1.7.19"

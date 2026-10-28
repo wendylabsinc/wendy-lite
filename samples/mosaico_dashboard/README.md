@@ -46,7 +46,7 @@ The BSP requires ESP-IDF 6.2 development code. The build pins these dependencies
 | ESP-Mosaico BSP | `5f88b91e1be055d1d3674364123b2779a1758377` |
 | Other managed components | `dependencies.lock` |
 
-The sample reuses this checkout's esp-pqc dependency and reviewed TLS patches.
+The sample gets esp-pqc and the reviewed TLS patches through `wendy_pki`.
 It enables ML-DSA-65 with fixed 16 KiB TLS receive buffers, as the main firmware
 does. Generic ESP32-S31 firmware continues to use ESP-IDF 6.1.
 
@@ -55,7 +55,6 @@ does. Generic ESP32-S31 firmware continues to use ESP-IDF 6.1.
 From the repository root:
 
 ```sh
-git submodule update --init --recursive
 docker run --rm -v "$PWD:/project" -w /project/samples/mosaico_dashboard \
   espressif/idf@sha256:30b42a38415e918b1b14825ccf0e4c40e7910c5132618dcd12e3c45361be0943 \
   idf.py --preview build
