@@ -522,8 +522,12 @@ int main(int argc,char **argv)
     assert(wnrs_topology(node,1,generation,&page)==1);
     node->core.babel.routes[0].metric=(uint16_t)old_metric;
     assert(!wnrs_topology(node,1,generation,&page));
+    /* Partial/full is part of the view, even if its current rows coincide. */
     bool gateway=node->core.config.endpoint_gateway;node->core.config.endpoint_gateway=true;
+    assert(wnrs_topology(node,1,generation,&page)==1);
     assert(!wnrs_topology(node,0,0,&page) && page.partial);
+    assert(page.generation!=generation);
+    assert(!wnrs_topology(node,rows,page.generation,&page) && !page.has_record && !page.next_cursor);
     node->core.config.endpoint_gateway=gateway;
     node->core.stopped=true;
     assert(!wnrs_topology(node,0,0,&page) && !page.runtime_available && !page.has_record && !page.next_cursor);

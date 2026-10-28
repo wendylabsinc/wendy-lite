@@ -1548,6 +1548,7 @@ int wnrs_topology(struct wnrs_node *n,uint32_t cursor,uint64_t generation,WendyC
     uint64_t hash=UINT64_C(1469598103934665603);
     /* Hash only semantic fields, never struct padding, timers or counters. */
     hash=topology_hash(hash,&n->core.config.router,sizeof n->core.config.router);
+    hash=topology_hash(hash,&n->core.config.endpoint_gateway,sizeof n->core.config.endpoint_gateway);
     unsigned count=0;
     struct wnt_record_view view={.record=WendyComNetTopologyRecord_init_zero};
     int found=0;
@@ -1575,6 +1576,9 @@ int wnrs_topology(struct wnrs_node *n,uint32_t cursor,uint64_t generation,WendyC
     if((generation && generation!=hash) || cursor>count)return 1;
     page->generation=hash;
     page->truncated=count==1024;
+    /* A terminal cursor is empty even when more rows exist beyond the bounded
+     * scan; never return a row that was not covered by this generation. */
+    if(cursor==count)return 0;
     view=(struct wnt_record_view){.record=WendyComNetTopologyRecord_init_zero};
     found=topology_record(n,cursor,now,&view);
     if(found<0 || (found>0 && wnt_record_copy(page,&view)))return -1;
