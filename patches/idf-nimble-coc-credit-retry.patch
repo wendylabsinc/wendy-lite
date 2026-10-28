@@ -1,0 +1,195 @@
+--- a/src/ble_l2cap_coc_priv.h
++++ b/src/ble_l2cap_coc_priv.h
+@@ -39,6 +39,10 @@
+ struct ble_l2cap_chan;
+ 
+ #define BLE_L2CAP_COC_FLAG_STALLED              0x01
++/* RX-only intent bits; no credit is outstanding until its PDU is accepted. */
++#define BLE_L2CAP_COC_RX_CREDITS_INITIAL        0x02
++#define BLE_L2CAP_COC_RX_CREDITS_PARTIAL        0x04
++#define BLE_L2CAP_COC_RX_CREDITS_PENDING        0x06
+ 
+ #define BLE_L2CAP_SDU_BUFF_CNT        (MYNEWT_VAL(BLE_L2CAP_COC_SDU_BUFF_COUNT))
+ 
+@@ -77,6 +81,7 @@
+ void ble_l2cap_coc_cleanup_chan(struct ble_hs_conn *conn, struct ble_l2cap_chan *chan);
+ void ble_l2cap_coc_le_credits_update(uint16_t conn_handle, uint16_t dcid,
+                                     uint16_t credits);
++int32_t ble_l2cap_coc_credit_timer(void);
+ int ble_l2cap_coc_recv_ready(struct ble_l2cap_chan *chan,
+                              struct os_mbuf *sdu_rx);
+ int ble_l2cap_coc_send(struct ble_l2cap_chan *chan, struct os_mbuf *sdu_tx);
+--- a/src/ble_l2cap_sig_priv.h
++++ b/src/ble_l2cap_sig_priv.h
+@@ -132,6 +132,9 @@
+ int ble_l2cap_sig_disconnect(struct ble_l2cap_chan *chan);
+ int ble_l2cap_sig_le_credits(uint16_t conn_handle, uint16_t scid,
+                              uint16_t credits);
++/* Caller holds the host lock; consumes the signaling mbuf on every result. */
++int ble_l2cap_sig_le_credits_locked(uint16_t conn_handle, uint16_t scid,
++                                   uint16_t credits);
+ #else
+ static inline int
+ ble_l2cap_sig_coc_connect(uint16_t conn_handle, uint16_t psm, uint16_t mtu,
+--- a/src/ble_l2cap_coc.c
++++ b/src/ble_l2cap_coc.c
+@@ -67,6 +67,80 @@
+ #define max(a, b) ((a) > (b) ? (a) : (b))
+ #endif
+ 
++/* Credit notifications share the ordinary signaling pool. Keep only intent
++ * when that pool is busy; accepting an RX SDU still transfers ownership once.
++ * All callers hold the host lock, including the existing host timer driver. */
++static void
++ble_l2cap_coc_credit_flush(struct ble_l2cap_chan *chan)
++{
++    struct ble_l2cap_coc_endpoint *rx = &chan->coc_rx;
++    uint16_t target;
++    int rc;
++
++    BLE_HS_DBG_ASSERT(ble_hs_locked_by_cur_task());
++    if (chan->disable_auto_credit_update ||
++        (chan->flags & BLE_L2CAP_CHAN_F_DISCONNECTING) ||
++        rx->sdus[rx->current_sdu_idx] == NULL) {
++        rx->flags &= ~BLE_L2CAP_COC_RX_CREDITS_PENDING;
++        return;
++    }
++    target = (rx->flags & BLE_L2CAP_COC_RX_CREDITS_INITIAL) ?
++        chan->initial_credits : 1;
++    if (rx->credits >= target) {
++        rx->flags &= ~BLE_L2CAP_COC_RX_CREDITS_PENDING;
++        return;
++    }
++    rc = ble_l2cap_sig_le_credits_locked(chan->conn_handle, chan->scid,
++                                         target - rx->credits);
++    if (rc == 0) {
++        /* Accepted by HCI or its existing connection TX queue. */
++        rx->credits = target;
++        rx->flags &= ~BLE_L2CAP_COC_RX_CREDITS_PENDING;
++    }
++}
++
++static void
++ble_l2cap_coc_credit_request(struct ble_l2cap_chan *chan, uint8_t intent)
++{
++    bool already_pending;
++
++    BLE_HS_DBG_ASSERT(ble_hs_locked_by_cur_task());
++    already_pending = (chan->coc_rx.flags &
++                       BLE_L2CAP_COC_RX_CREDITS_PENDING) != 0;
++    chan->coc_rx.flags |= intent;
++    ble_l2cap_coc_credit_flush(chan);
++    if (!already_pending &&
++        (chan->coc_rx.flags & BLE_L2CAP_COC_RX_CREDITS_PENDING)) {
++        /* One immediate reschedule arms the shared host timer. Repeated
++         * resource pressure is paced by credit_timer, never a zero-delay loop. */
++        ble_hs_timer_resched();
++    }
++}
++
++int32_t
++ble_l2cap_coc_credit_timer(void)
++{
++    struct ble_hs_conn *conn;
++    struct ble_l2cap_chan *chan;
++    int32_t ticks = BLE_HS_FOREVER;
++
++    ble_hs_lock();
++    for (conn = ble_hs_conn_first(); conn != NULL;
++         conn = SLIST_NEXT(conn, bhc_next)) {
++        SLIST_FOREACH(chan, &conn->bhc_channels, next) {
++            if (chan->psm != 0 &&
++                (chan->coc_rx.flags & BLE_L2CAP_COC_RX_CREDITS_PENDING)) {
++                ble_l2cap_coc_credit_flush(chan);
++                if (chan->coc_rx.flags & BLE_L2CAP_COC_RX_CREDITS_PENDING) {
++                    ticks = max(1, ble_npl_time_ms_to_ticks32(10));
++                }
++            }
++        }
++    }
++    ble_hs_unlock();
++    return ticks;
++}
++
+ static void
+ ble_l2cap_coc_dbg_assert_srv_not_inserted(struct ble_l2cap_coc_srv *srv)
+ {
+@@ -373,8 +447,9 @@
+         /* Remote did not send full SDU. Lets give him one more credits to do
+          * so since we have still buffer to handle it
+          */
+-        rx->credits = 1;
+-        ble_l2cap_sig_le_credits(chan->conn_handle, chan->scid, rx->credits);
++        ble_hs_lock();
++        ble_l2cap_coc_credit_request(chan, BLE_L2CAP_COC_RX_CREDITS_PARTIAL);
++        ble_hs_unlock();
+     }
+ 
+     BLE_HS_LOG(DEBUG,
+--- a/src/ble_l2cap_sig.c
++++ b/src/ble_l2cap_sig.c
+@@ -2021,23 +2021,44 @@
+ }
+ 
+ int
+-ble_l2cap_sig_le_credits(uint16_t conn_handle, uint16_t scid, uint16_t credits)
++ble_l2cap_sig_le_credits_locked(uint16_t conn_handle, uint16_t scid,
++                                uint16_t credits)
+ {
+     struct ble_l2cap_sig_le_credits *cmd;
++    struct ble_l2cap_chan *chan;
++    struct ble_hs_conn *conn;
+     struct os_mbuf *txom;
+-
++    int rc;
++
++    BLE_HS_DBG_ASSERT(ble_hs_locked_by_cur_task());
+     cmd = ble_l2cap_sig_cmd_get(BLE_L2CAP_SIG_OP_FLOW_CTRL_CREDIT,
+                                 ble_l2cap_sig_next_id(), sizeof(*cmd), &txom);
+-
+-    if (!cmd) {
+-        BLE_HS_LOG(ERROR, "%s rc=%d\n", __func__, BLE_HS_ENOMEM);
++    if (cmd == NULL) {
+         return BLE_HS_ENOMEM;
+     }
+ 
+     cmd->scid = htole16(scid);
+     cmd->credits = htole16(credits);
+-
+-    return ble_l2cap_sig_tx(conn_handle, txom);
++    /* Same locked TX path as ble_l2cap_sig_tx, without recursively locking. */
++    rc = ble_hs_misc_conn_chan_find_reqd(conn_handle, BLE_L2CAP_CID_SIG,
++                                        &conn, &chan);
++    if (rc == 0) {
++        rc = ble_l2cap_tx(conn, chan, txom);
++    } else {
++        os_mbuf_free_chain(txom);
++    }
++    return rc;
++}
++
++int
++ble_l2cap_sig_le_credits(uint16_t conn_handle, uint16_t scid, uint16_t credits)
++{
++    int rc;
++
++    ble_hs_lock();
++    rc = ble_l2cap_sig_le_credits_locked(conn_handle, scid, credits);
++    ble_hs_unlock();
++    return rc;
+ }
+ #endif
+ 
+@@ -2291,5 +2312,12 @@
+         ble_l2cap_sig_proc_free(proc);
+     }
+ 
++#if MYNEWT_VAL(BLE_L2CAP_COC_MAX_NUM) != 0
++    /* Retry only retained intent; preserve earlier signaling deadlines. */
++    int32_t credit_ticks = ble_l2cap_coc_credit_timer();
++    if (credit_ticks < ticks_until_exp) {
++        ticks_until_exp = credit_ticks;
++    }
++#endif
+     return ticks_until_exp;
+ }

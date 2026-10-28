@@ -1,0 +1,210 @@
+--- a/src/ble_hs.c
++++ b/src/ble_hs.c
+@@ -77,6 +77,12 @@
+ static void ble_hs_event_start_stage1(struct ble_npl_event *ev);
+ static void ble_hs_event_start_stage2(struct ble_npl_event *ev);
+ static void ble_hs_timer_sched(int32_t ticks_from_now);
++#if NIMBLE_BLE_CONNECT
++static bool ble_hs_tx_retry_pending;
++static ble_npl_time_t ble_hs_tx_retry_due;
++static int32_t ble_hs_tx_retry_timer(void);
++#endif
++
+ 
+ #if !MYNEWT_VAL(BLE_STATIC_TO_DYNAMIC)
+ struct os_mempool ble_hs_hci_ev_pool;
+@@ -407,6 +413,44 @@
+     return 0;
+ }
+ 
++/* Existing host timer, active only while ordinary memory pressure has left
++ * accepted ACL data queued. No extra queue, callout, task or per-link member. */
++void
++ble_hs_sched_tx_retry(void)
++{
++    BLE_HS_DBG_ASSERT(ble_hs_locked_by_cur_task());
++    if (!ble_hs_tx_retry_pending) {
++        ble_hs_tx_retry_due = ble_npl_time_get() + ble_npl_time_ms_to_ticks32(10);
++        ble_hs_tx_retry_pending = true;
++    }
++    int32_t left = (ble_npl_stime_t)(ble_hs_tx_retry_due - ble_npl_time_get());
++    ble_hs_timer_sched(left > 0 ? left : 0);
++}
++
++static int32_t
++ble_hs_tx_retry_timer(void)
++{
++    int32_t left;
++    ble_hs_lock();
++    if (!ble_hs_tx_retry_pending) {
++        ble_hs_unlock();
++        return BLE_HS_FOREVER;
++    }
++    left = (ble_npl_stime_t)(ble_hs_tx_retry_due - ble_npl_time_get());
++    if (left > 0) {
++        ble_hs_unlock();
++        return left;
++    }
++    ble_hs_tx_retry_pending = false;
++    ble_hs_unlock();
++    ble_hs_wakeup_tx();
++    ble_hs_lock();
++    left = ble_hs_tx_retry_pending ?
++        (ble_npl_stime_t)(ble_hs_tx_retry_due - ble_npl_time_get()) : BLE_HS_FOREVER;
++    ble_hs_unlock();
++    return left;
++}
++
+ /**
+  * Schedules the transmission of all queued ACL data packets to the controller.
+  */
+@@ -579,6 +623,9 @@
+         ticks_until_next = ble_gattc_timer();
+         ble_hs_timer_sched(ticks_until_next);
+ #endif
++        ticks_until_next = ble_hs_tx_retry_timer();
++        ble_hs_timer_sched(ticks_until_next);
++
+         ticks_until_next = ble_l2cap_sig_timer();
+         ble_hs_timer_sched(ticks_until_next);
+ 
+@@ -939,6 +986,10 @@
+ ble_hs_init(void)
+ {
+     int rc;
++#if NIMBLE_BLE_CONNECT
++    ble_hs_tx_retry_pending = false;
++#endif
++
+ 
+ #if MYNEWT_VAL(BLE_STATIC_TO_DYNAMIC)
+     size_t event_buf_size = OS_MEMPOOL_SIZE(BLE_HS_HCI_EVT_COUNT, sizeof(struct ble_npl_event)) * sizeof(os_membuf_t);
+--- a/src/ble_hs_hci.c
++++ b/src/ble_hs_hci.c
+@@ -929,4 +929,4 @@
+ {
+-    struct os_mbuf *txom;
+-    struct os_mbuf *frag;
++    struct os_mbuf *txom = *om, *frag;
++    uint16_t len;
+     uint8_t pb;
+@@ -935,32 +935,30 @@
+     BLE_HS_DBG_ASSERT(ble_hs_locked_by_cur_task());
+-
+-    txom = *om;
+     *om = NULL;
+-
+-    if (!(conn->bhc_flags & BLE_HS_CONN_F_TX_FRAG)) {
+-        /* The first fragment uses the first-non-flush packet boundary value.
+-         * After sending the first fragment, pb gets set appropriately for all
+-         * subsequent fragments in this packet.
+-         */
+-        pb = BLE_HCI_PB_FIRST_NON_FLUSH;
+-    } else {
+-        pb = BLE_HCI_PB_MIDDLE;
+-    }
+-
+-    /* Send fragments until the entire packet has been sent. */
++    pb = (conn->bhc_flags & BLE_HS_CONN_F_TX_FRAG) ?
++        BLE_HCI_PB_MIDDLE : BLE_HCI_PB_FIRST_NON_FLUSH;
++
+     while (txom != NULL && ble_hs_hci_avail_pkts > 0) {
+ #if SOC_ESP_NIMBLE_CONTROLLER && CONFIG_BT_CONTROLLER_ENABLED
+-        frag = mem_split_frag(&txom, BLE_ACL_MAX_PKT_SIZE, ble_hs_hci_frag_alloc, NULL);
++        len = BLE_ACL_MAX_PKT_SIZE;
+ #else
+-        frag = mem_split_frag(&txom, ble_hs_hci_max_acl_payload_sz(), ble_hs_hci_frag_alloc, NULL);
+-#endif
++        len = ble_hs_hci_max_acl_payload_sz();
++#endif
++        if (len > OS_MBUF_PKTLEN(txom)) {
++            len = OS_MBUF_PKTLEN(txom);
++        }
++        /* The transport consumes its fragment even on allocation failure.
++         * Keep the exact unsent original until acceptance; never requeue a
++         * consumed pointer or replay an already accepted prefix. The existing
++         * dedicated one-fragment pool lets a full shared pool drain. */
++        frag = ble_hs_hci_frag_alloc(len, NULL);
+         if (frag == NULL) {
+-            *om = txom;
+-            return BLE_HS_EAGAIN;
+-        }
+-
++            goto retry;
++        }
++        if (os_mbuf_appendfrom(frag, txom, 0, len)) {
++            os_mbuf_free_chain(frag);
++            goto retry;
++        }
+         frag = ble_hs_hci_acl_hdr_prepend(frag, conn->bhc_handle, pb);
+         if (frag == NULL) {
+-            rc = BLE_HS_ENOMEM;
+-            goto err;
++            goto retry;
+         }
+@@ -973,7 +971,5 @@
+ 
+-        /* Account for the controller buf that will hold the txed fragment. */
+         conn->bhc_outstanding_pkts++;
+         ble_hs_hci_avail_pkts--;
+-
+-        rc = ble_hs_tx_data(frag);
++        rc = ble_hs_tx_data(frag); /* Consumes frag on every result. */
+         if (rc != 0) {
+@@ -981,14 +977,18 @@
+             ble_hs_hci_avail_pkts++;
+-            goto err;
+-        }
+-
+-        /* If any fragments remain, they should be marked as 'middle'
+-         * fragments.
+-         */
++            if (rc == BLE_HS_ENOMEM || rc == BLE_HS_EAGAIN) {
++                goto retry;
++            }
++            conn->bhc_flags &= ~BLE_HS_CONN_F_TX_FRAG;
++            os_mbuf_free_chain(txom);
++            return rc;
++        }
++        os_mbuf_adj(txom, len);
+         conn->bhc_flags |= BLE_HS_CONN_F_TX_FRAG;
+         pb = BLE_HCI_PB_MIDDLE;
+-    }
+-
++        if (!OS_MBUF_PKTLEN(txom)) {
++            os_mbuf_free_chain(txom);
++            txom = NULL;
++        }
++    }
+     if (txom != NULL) {
+-        /* The controller couldn't accommodate some or all of the packet. */
+         *om = txom;
+@@ -996,14 +996,8 @@
+     }
+-
+-    /* The entire packet was transmitted. */
+     conn->bhc_flags &= ~BLE_HS_CONN_F_TX_FRAG;
+-
+     return 0;
+-
+-err:
+-    BLE_HS_DBG_ASSERT(rc != 0);
+-
+-    conn->bhc_flags &= ~BLE_HS_CONN_F_TX_FRAG;
+-    os_mbuf_free_chain(txom);
+-    return rc;
++retry:
++    *om = txom;
++    ble_hs_sched_tx_retry();
++    return BLE_HS_EAGAIN;
+ }
+--- a/src/ble_hs_priv.h
++++ b/src/ble_hs_priv.h
+@@ -122,5 +122,7 @@
+ void ble_hs_process_rx_data_queue(void);
+ int ble_hs_tx_data(struct os_mbuf *om);
+ void ble_hs_wakeup_tx(void);
++/* Caller holds host lock; bounded existing-timer memory-pressure retry. */
++void ble_hs_sched_tx_retry(void);
+ void ble_hs_enqueue_hci_event(uint8_t *hci_evt);
+ void ble_hs_event_enqueue(struct os_event *ev);
