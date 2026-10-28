@@ -35,7 +35,7 @@ space and use the ordinary reservation/fallback path. The library consumes
 ownership explicitly, and connection teardown releases it. Peer verification,
 record/reassembly bounds and post-authentication compaction remain in force.
 The positive reassembly fixture checks a 25 KiB fragmented message plus following
-records without moving the adopted input buffer; normal mTLS/reconnect tests
+records without moving the adopted input buffer; normal mTLS/close tests
 exercise cleanup under ASan/UBSan. Hardware pressure qualification is separate.
 
 ## Allocation ownership
@@ -43,7 +43,8 @@ exercise cleanup under ASan/UBSan. Hardware pressure qualification is separate.
 Firmware installs one Mbed TLS allocator pair in the system-init stage before
 ESP-IDF's PSA initialization. Both baseline and mesh allocations carry a common
 ownership prefix; task-local mesh charging is enabled at `app_main`, after
-compiler TLS becomes available. CPU and I/O jobs retain their initiating scope.
+compiler TLS becomes available. TLS contexts retain their initiating scope
+through setup, record I/O and teardown. Queued work remains inactive here.
 Callbacks stay installed throughout mesh enable/disable cycles. Uncharged
 PKI/TLS baseline allocations use strict PSRAM when an external heap is registered,
 preserving the C5 profile; before PSRAM registration or on SRAM-only boards they
@@ -61,7 +62,8 @@ Certificate workspace borrowing matches the cache's original owner/placement.
 Baseline management TLS may borrow the idle mesh-owned input reserve without
 retagging it or allocating a second26 KiB block. On mesh shutdown caching stops;
 the original mesh ledger remains draining until that finite TLS loan returns,
-then its matching destructor frees it. Other management allocations remain
+then its matching destructor frees it, even if another service epoch has already
+started. A foreign scope cannot refill the owner's cache. Other management allocations remain
 baseline-owned.
 
 The pinned liboqs ordinary allocator hooks and native ML-DSA heap-temporary
@@ -70,43 +72,24 @@ extension use the initiating scope too. Polynomial/vector temporaries receive
 firmware still needs separate accounting for raw transient trust/HTTP inputs,
 heap bookkeeping, and SDK/radio memory before claiming a whole-system heap cap.
 
-## Native mesh issuer ALPN
+## Layer activation and existing leaf
 
-Native streamed-DER carrier/app TLS supports WendyOS's auxiliary
-`wendy-net-issuers/<digest>` offer. The real service ALPN is unchanged; servers
-never select the auxiliary identifier. Certificates remain binary DER.
+This layer streams the complete verified own issuer path. It does not offer or
+select an auxiliary issuer-hint ALPN, infer issuer omission from a peer, or install
+an issuer-negotiation callback. That negotiation belongs to the later sibling
+layer. Ordinary certificate/path/principal/time verification remains mandatory.
 
-Eligibility is computed per connection after complete local identity/path/key
-verification and exact source pinning. Every presented issuer after the leaf
-must match an explicitly enrolled anchor by DER size and SHA256. A valid path
-to a root alone is insufficient. The digest matches WendyOS: sort the issuer
-DER hashes, hash their concatenation, encode the first16bytes as the existing
-22-character base64url ALPN identifier. This identifier is not certificate
-material or a base64 certificate transport.
+The existing `CONFIG_WENDY_MESH_LEAF` component retains its JSON/base64 DER bundle,
+v3 manifest signature domain and leaf/3 ALPN until final cutover. This preserves
+that already-enabled component's behavior. Native artifact signing and borrowed
+key verification use v4 independently; no old/new wire negotiation is introduced.
 
-A server sends only its leaf when the client offered the identical eligible
-issuer digest. A client sends only its leaf after the server's chain,
-CertificateVerify and Finished have passed, the server actually sent one wire
-certificate, and its issuer DN/AKI match this device's leaf. The wire count is
-captured before later input reuse; parsed-chain compaction cannot manufacture
-a one-certificate signal. During that decision Mbed TLS's public peer getter
-still exposes only an established session, so the code reads the already
-verified pending session under the existing exclusive handshake-context loan.
-Normal full-chain fallback remains for absent hints, different issuer sets,
-root-only enrollment trust, nonstreaming identities or optional allocation
-pressure. Chain/principal/tenant/time validation is unchanged.
+The worker API is an inactive synchronous facade: baseline CPU callbacks execute
+inline, asynchronous submissions return false, and no task or serialized
+admission is created. Native actor activation is rejected at compile time until
+the serialized worker layer supplies actual admission and context loans.
+Public own-DER read helpers remain synchronous generic APIs; their future outer
+worker/actor integration is outside this layer.
 
-There is no global issuer cache or off-state arena. On current RV32 builds the
-connection remains3288bytes (the pointer fits prior padding); eligible native
-sessions add96bytes of optional state plus a32-byte ledger prefix. Ineligible
-sessions add no allocation. The state follows its initiating connection owner,
-uses PSRAM on the PSRAM profile and is released after TLS/config destruction.
-Existing16KiB trust-input bounds remain unchanged.
-
-The optional host test `pki_issuer_wos_interop_normal` uses the actual WendyOS
-issuer helpers through temporary Go overlays, without editing that checkout.
-Configure `WENDYOS_GO_ROOT` to its `go` module and run that selected test. It
-covers both roles with matched pinned issuers, old/full-chain peers, different
-issuers and root-only trust. Generated fixture padding keeps its legitimate CA
-bundle inside the existing limit. Final firmware flash cost and ESP hardware
-savings still require a built image/current enrolled trust measurement.
+The optional own ML-DSA private-key backend remains off by default and is not
+qualified here. Normal TLS fixtures use P-256 own keys with P-256/ML-DSA issuers.
