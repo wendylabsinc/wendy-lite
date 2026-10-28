@@ -48,7 +48,7 @@ diff --git a/library/ssl_msg.c b/library/ssl_msg.c
          if (required > MBEDTLS_SSL_IN_BUFFER_LEN) {
              required = MBEDTLS_SSL_IN_BUFFER_LEN;
          }
-@@ -4849,7 +4866,9 @@
+@@ -4849,6 +4866,8 @@
              MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_fetch_input", ret);
              return ret;
          }
@@ -58,4 +58,3 @@ diff --git a/library/ssl_msg.c b/library/ssl_msg.c
 +        rec.buf = ssl->in_hdr;
          ssl->in_left = 0;
      }
- 

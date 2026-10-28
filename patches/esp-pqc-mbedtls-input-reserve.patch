@@ -33,7 +33,7 @@
      int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
      size_t in_buf_len = MBEDTLS_SSL_IN_BUFFER_LEN;
      size_t out_buf_len = MBEDTLS_SSL_OUT_BUFFER_LEN;
-@@ -1210,6 +1220,8 @@
+@@ -1210,5 +1220,7 @@
          in_buf_len -= MBEDTLS_SSL_HANDSHAKE_HEADROOM;
      }
  #endif
@@ -41,4 +41,3 @@
 +    if (minimum_input > in_buf_len) in_buf_len = minimum_input;
  
      ssl->conf = conf;
- 

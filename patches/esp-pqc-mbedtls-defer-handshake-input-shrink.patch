@@ -32,7 +32,7 @@
                                 mbedtls_ssl_get_output_buflen(ssl));
      }
  }
-@@ -4713,7 +4719,7 @@
+@@ -4713,6 +4719,6 @@
       * processes datagrams and the fact that a datagram is allowed to have
       * several records in it, it is possible that the I/O buffers are not
       * empty at this stage */
@@ -40,4 +40,3 @@
 +    handle_buffer_resizing(ssl, 1, handshake_input_target(ssl),
                             mbedtls_ssl_get_output_buflen(ssl));
  #endif
- 

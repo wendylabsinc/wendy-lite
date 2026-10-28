@@ -73,7 +73,7 @@
      mbedtls_free(ssl->out_buf);
  
      ssl->conf = NULL;
-@@ -5340,7 +5353,7 @@
+@@ -5340,6 +5353,6 @@
          size_t in_buf_len = MBEDTLS_SSL_IN_BUFFER_LEN;
  #endif
  
@@ -81,4 +81,3 @@
 +        release_input_buffer(ssl,ssl->in_buf,in_buf_len);
          ssl->in_buf = NULL;
      }
- 
