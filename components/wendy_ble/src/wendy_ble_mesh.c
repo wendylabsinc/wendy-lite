@@ -25,6 +25,9 @@
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(CONFIG_BT_DUAL_MODE_ARCH) && CONFIG_BT_DUAL_MODE_ARCH
+#include "btdm_osal_freertos.h"
+#endif
 
 #ifndef CONFIG_WENDY_NET_BLE_RX_SDU_SLOTS
 #define CONFIG_WENDY_NET_BLE_RX_SDU_SLOTS 1
@@ -49,8 +52,15 @@
  * 64 bytes with profiling. The public handle is opaque; reserve that ceiling
  * before creation rather than claiming an exact SDK allocation size. */
 #define TIMER_RESERVATION_BYTES 64
-#define PIPE_SDK_BYTES (sizeof(StaticSemaphore_t) + sizeof(struct ble_npl_event_freertos))
-#define INIT_SDK_BYTES (sizeof(StaticSemaphore_t) + 4 * sizeof(struct ble_npl_event_freertos) + TIMER_RESERVATION_BYTES)
+/* Both NPL ports wrap a separately pooled/allocated event, but dual-mode
+ * targets use the BTDM OSAL backing type rather than NimBLE's FreeRTOS type. */
+#if defined(CONFIG_BT_DUAL_MODE_ARCH) && CONFIG_BT_DUAL_MODE_ARCH
+#define NPL_EVENT_ALLOCATION_BYTES sizeof(struct btdm_osal_event_freertos)
+#else
+#define NPL_EVENT_ALLOCATION_BYTES sizeof(struct ble_npl_event_freertos)
+#endif
+#define PIPE_SDK_BYTES (sizeof(StaticSemaphore_t) + NPL_EVENT_ALLOCATION_BYTES)
+#define INIT_SDK_BYTES (sizeof(StaticSemaphore_t) + 4 * NPL_EVENT_ALLOCATION_BYTES + TIMER_RESERVATION_BYTES)
 #ifndef CONFIG_WENDY_NET_CONSTRAINED_PROFILE
 #define CONFIG_WENDY_NET_CONSTRAINED_PROFILE 0
 #endif
