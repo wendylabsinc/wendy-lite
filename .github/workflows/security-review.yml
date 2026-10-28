@@ -141,6 +141,27 @@ jobs:
           --review-output "$REVIEW_FILE" \
           --result-output "$RESULT_FILE" \
           --model "$CLAUDE_MODEL"
+    - name: Validate review result provenance
+      id: review_result
+      env:
+        RESULT_FILE: ${{ runner.temp }}/review-result.json
+      run: |
+        python3 <<'PYEOF'
+        import json
+        import os
+        from pathlib import Path
+        result = json.loads(Path(os.environ['RESULT_FILE']).read_text())
+        manifest = json.loads(Path('input_manifest.json').read_text())
+        expected = {'credit_unavailable', 'has_blocking', 'head_sha', 'sha256'}
+        if (not isinstance(result, dict) or set(result) != expected
+            or not isinstance(result.get('credit_unavailable'), bool)
+            or not isinstance(result.get('has_blocking'), bool)
+            or result.get('head_sha') != manifest.get('head_sha')
+            or result.get('sha256') != manifest.get('sha256')):
+            raise RuntimeError('Review result does not match the complete PR input')
+        with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+            output.write('complete=' + str(not result['credit_unavailable']).lower() + '\n')
+        PYEOF
     - name: Prepare security review comment
       env:
         COMMENT_FILE: ${{ runner.temp }}/comment.md
@@ -169,22 +190,10 @@ jobs:
           --comment "$COMMENT_FILE"
     - name: Require complete review coverage
       env:
-        RESULT_FILE: ${{ runner.temp }}/review-result.json
+        REVIEW_COMPLETE: ${{ steps.review_result.outputs.complete }}
       run: |
-        python3 <<'PYEOF'
-        import json
-        import os
-        from pathlib import Path
-        result = json.loads(Path(os.environ['RESULT_FILE']).read_text())
-        manifest = json.loads(Path('input_manifest.json').read_text())
-        expected = {'credit_unavailable', 'has_blocking', 'head_sha', 'sha256'}
-        if (not isinstance(result, dict) or set(result) != expected
-            or not isinstance(result.get('credit_unavailable'), bool)
-            or not isinstance(result.get('has_blocking'), bool)
-            or result.get('head_sha') != manifest.get('head_sha')
-            or result.get('sha256') != manifest.get('sha256')):
-            raise RuntimeError('Review result does not match the complete PR input')
-        if result['credit_unavailable']:
-            raise RuntimeError('No complete review: provider credits unavailable')
         # Findings remain post-only, preserving the existing Lite severity policy.
-        PYEOF
+        if [ "$REVIEW_COMPLETE" != true ]; then
+          echo '::error::No complete review: provider credits unavailable'
+          exit 1
+        fi
