@@ -12,8 +12,14 @@ special leaf protocol, startup quarantine, or separately signed service gossip.
 Append `boards/wendy_net.defaults` after a board profile and, for guest apps,
 `boards/wasm.defaults`. ESP32-C5 with verified 8 MiB quad PSRAM additionally uses
 `boards/esp32c5_net_psram.defaults`; ESP32-C6 uses `boards/esp32c6_net.defaults`.
-Use a fresh sdkconfig when selecting defaults. Board flash size and partition
-layout must match the actual module; mesh support does not change them.
+Use a fresh sdkconfig when selecting defaults. The release catalog includes
+`esp32c5_net_psram` (8 MiB flash and 8 MiB quad PSRAM) and `esp32c6_net`
+(8 MiB flash). Their `.cfg` files select the actual mesh, WASM, target and
+`partitions.net.8mb.csv` defaults together. The C5 guest linear-memory ceiling
+is 5 MiB; the C6 ceiling is 64 KiB. Both support bytecode and target AOT/XIP
+modules. Existing generic 4 MiB native catalog variants retain their physical
+management-only build policy; use a mesh variant for runtime Wendy Net settings.
+Flash/PSRAM capacity and the partition layout must match the physical module.
 
 Mesh starts off until enabled using WendyCom configuration. The management
 interface reports compiled carrier capabilities, desired and applied policy,

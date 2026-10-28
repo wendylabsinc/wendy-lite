@@ -763,3 +763,10 @@ The full list of host functions is defined in [`wasm_apps/include/wendy.h`](wasm
 See [real PKI enrollment](docs/cloud-enrollment.md) for the PKI-enabled ESP32-C6 build,
 USB setup with the Wendy CLI, and broker presence.
 Cloud connections use the [TLS handoff and reconnect loop](docs/cloud-relay.md).
+
+The release catalog also offers **esp32c5_net_psram** (8 MiB flash, 8 MiB quad
+PSRAM) and **esp32c6_net** (8 MiB flash) with Wendy Net and WASM compiled in.
+Mesh remains off until enabled over WendyCom. C5 permits a 5 MiB guest and up to
+three carriers per transport; C6 permits a 64 KiB guest and one selected BLE or
+Wi-Fi carrier. See [the native peer configuration guide](docs/wendy-net.md)
+for runtime settings, tested topology limits and the exact hardware requirements.
