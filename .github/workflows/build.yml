@@ -36,8 +36,6 @@ jobs:
       image: ${{ matrix.idf_image || format('espressif/idf:{0}', matrix.idf_version) }}
     steps:
       - uses: actions/checkout@v5
-        with:
-          submodules: recursive
 
       - name: Trust checkout paths in the build container
         run: |

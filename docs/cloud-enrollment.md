@@ -25,7 +25,6 @@ PKI and the cloud connection task are enabled by default. The task starts after
 Wi-Fi connects and enrollment is configured. Build without deployment-specific roots:
 
 ```sh
-git submodule update --init --recursive components/esp-pqc
 echo 'CONFIG_WENDY_CLOUD=y' > cloud.defaults
 idf.py -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;cloud.defaults' set-target esp32c6
 idf.py build
