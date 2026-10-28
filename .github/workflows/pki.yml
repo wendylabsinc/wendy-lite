@@ -90,7 +90,13 @@ jobs:
           grep -q '^CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y$' sdkconfig
           grep -q '^CONFIG_MBEDTLS_USE_BUNDLED_PQC=y$' sdkconfig
           grep -q '^CONFIG_MBEDTLS_SSL_TLS1_3_SIG_MLDSA65=y$' sdkconfig
-          grep -q '^# CONFIG_MBEDTLS_DYNAMIC_BUFFER is not set$' sdkconfig
+          # PKI variable buffers hide IDF's separate dynamic allocator option.
+          # Hidden disabled options can be absent from the generated config.
+          grep -q '^CONFIG_MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH=y$' sdkconfig
+          if grep -q '^CONFIG_MBEDTLS_DYNAMIC_BUFFER=y$' sdkconfig; then
+            echo 'ESP-IDF dynamic TLS buffers must remain disabled' >&2
+            exit 1
+          fi
           grep -q '^CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384$' sdkconfig
           grep -q 'liboqs.a' build/*.map
           if [ "${{ matrix.wasm }}" = enabled ]; then

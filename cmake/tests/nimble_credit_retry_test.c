@@ -185,6 +185,26 @@ static void incoming(struct ble_l2cap_chan *chan, const uint8_t *bytes, unsigned
     struct os_mbuf *p = &packet;
     assert(ble_l2cap_coc_rx_fn(chan, &p) == 0);
 }
+static void full_receive_window(void) {
+    struct ble_hs_conn conn;
+    struct ble_l2cap_chan sig, chan;
+    struct os_mbuf buffers[TEST_RX_SLOTS], deferred;
+    connect_channel(&conn, &sig, &chan, 4, 67);
+    chan.coc_rx.credits = chan.initial_credits;
+    for (unsigned i = 0; i < TEST_RX_SLOTS; ++i) {
+        init_mbuf(&buffers[i]);
+        assert(ble_l2cap_coc_recv_ready(&chan, &buffers[i]) == 0);
+    }
+    init_mbuf(&deferred);
+    /* Ordinary caller backpressure must leave every accepted buffer armed,
+     * including the one-slot profile used by constrained devices. */
+    assert(ble_l2cap_coc_recv_ready(&chan, &deferred) == BLE_HS_EBUSY);
+    for (unsigned i = 0; i < TEST_RX_SLOTS; ++i) {
+        assert(chan.coc_rx.sdus[i] == &buffers[i]);
+    }
+    assert(chan.coc_rx.next_sdu_alloc_idx == 0 && !chan.coc_rx.flags);
+    SLIST_REMOVE(&connections, &conn, ble_hs_conn, bhc_next);
+}
 #if TEST_RX_SLOTS > 1
 static void deferred_backed_window(void) {
     struct ble_hs_conn conn;
@@ -294,6 +314,7 @@ int main(void) {
 #if TEST_RX_SLOTS > 1
     deferred_backed_window();
 #endif
+    full_receive_window();
     printf("credit fixture RXslots=%u PASS: %d exact grants, %d bytes, pool peak %d, allocations %d, no extra SDUs\n",TEST_RX_SLOTS,
            grant_pdus, received_bytes, pool_peak, pool_allocations);
     return 0;
