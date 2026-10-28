@@ -1,0 +1,125 @@
+package netmesh
+
+import (
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/mldsa"
+	"crypto/rand"
+	"crypto/x509"
+	"math/big"
+	"net/netip"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
+	"github.com/wendylabsinc/wendy/go/internal/agent/netwire"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshid"
+	"github.com/wendylabsinc/wendy/go/internal/shared/meshoperator"
+)
+
+// This overlays only a new test file. All signing/encoding comes from the
+// current production WendyOS implementation; no source or module is edited.
+func TestLiteOperatorLifecycleNormal(t *testing.T) {
+	binary := os.Getenv("WENDY_LITE_OPERATOR_LIFECYCLE")
+	if binary == "" {
+		t.Fatal("missing native operator lifecycle driver")
+	}
+	for _, algorithm := range []string{"P256", "MLDSA65", "MLDSA65-long", "MLDSA87"} {
+		t.Run(algorithm, func(t *testing.T) {
+			var authority fixtureAuthority
+			operator := fixtureCredentials(t, &authority)[1]
+			var signer crypto.Signer = operator.Signer
+			leaf, err := x509.ParseCertificate(operator.Certificate.Certificate[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if algorithm == "P256" {
+				key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+				if err != nil {
+					t.Fatal(err)
+				}
+				signer = key
+			}
+			if algorithm == "MLDSA87" {
+				key, err := mldsa.GenerateKey(mldsa.MLDSA87())
+				if err != nil {
+					t.Fatal(err)
+				}
+				signer = key
+			}
+			if algorithm == "MLDSA65-long" {
+				prefix := "spiffe://wendy.sh/tenant/" + operator.Device.Tenant().String() + "/operator/"
+				principal := prefix + "Auth0%7C" + strings.Repeat("s", meshoperator.MaxPrincipalBytes-len(prefix)-8)
+				uri, err := url.Parse(principal)
+				if err != nil {
+					t.Fatal(err)
+				}
+				leaf.URIs = []*url.URL{uri}
+			}
+			leaf.SerialNumber = big.NewInt(888)
+			leaf.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
+			der, err := x509.CreateCertificate(rand.Reader, leaf, authority.certificate, signer.Public(), authority.key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			principal := leaf.URIs[0].String()
+			peer, err := meshid.PeerFromPrincipal(principal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			peer, err = peer.WithInstance(operator.Device.UUID())
+			if err != nil {
+				t.Fatal(err)
+			}
+			other, err := peer.WithInstance(uuid.MustParse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().Truncate(time.Second)
+			base := localmesh.Manifest{Version: 4, Owner: &localmesh.OperatorOwner{Principal: principal, Instance: peer.UUID()}, Name: "operator lifecycle", Revision: 42, Issued: now.UnixMilli(), Expires: now.Add(15 * time.Minute).UnixMilli(), Route: &localmesh.RouteOrigin{Prefix: netip.PrefixFrom(peer.MeshAddress(), 128), RouterID: 100, Seqno: 7}}
+			refresh, withdrawal, another := base, base, base
+			refresh.Revision = 43
+			withdrawal.Revision = 44
+			withdrawal.Withdraw = true
+			another.Owner = &localmesh.OperatorOwner{Principal: principal, Instance: other.UUID()}
+			another.Route = &localmesh.RouteOrigin{Prefix: netip.PrefixFrom(other.MeshAddress(), 128), RouterID: 101, Seqno: 8}
+			dir := t.TempDir()
+			paths := []string{filepath.Join(dir, "leaf.der"), filepath.Join(dir, "root.der")}
+			for i, bytes := range [][]byte{der, authority.certificate.Raw} {
+				if err := os.WriteFile(paths[i], bytes, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i, manifest := range []localmesh.Manifest{base, refresh, base, withdrawal, another} {
+				signed, err := localmesh.SignManifest(manifest, [][]byte{der}, signer, now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				bytes, err := netwire.Marshal(signed)
+				if err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(dir, []string{"live.cbor", "refresh.cbor", "stale.cbor", "withdraw.cbor", "other.cbor"}[i])
+				if err = os.WriteFile(path, bytes, 0600); err != nil {
+					t.Fatal(err)
+				}
+				paths = append(paths, path)
+			}
+			if algorithm == "MLDSA87" {
+				paths = append(paths[:3], "unsupported")
+			}
+			output, err := exec.Command(binary, paths...).CombinedOutput()
+			t.Logf("%s", output)
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

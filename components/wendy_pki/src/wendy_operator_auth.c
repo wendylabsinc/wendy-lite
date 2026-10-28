@@ -1,6 +1,7 @@
 #include "wendy_operator_auth.h"
 #include "wendy_pki_crypto.h"
 #include "wendy_peer_identity.h"
+#include "wendy_pki_operator.h"
 #include "mbedtls/oid.h"
 #include "mbedtls/platform.h"
 
@@ -15,7 +16,13 @@ static int certificate_tenant(const mbedtls_x509_crt *crt, const char *kind,
         if (mbedtls_x509_parse_subject_alt_name(&a->buf, &san) ||
             san.type != MBEDTLS_X509_SAN_UNIFORM_RESOURCE_IDENTIFIER) continue;
         const mbedtls_x509_buf *uri = &san.san.unstructured_name;
-        if (!wendy_peer_identity(uri->p, uri->len, kind, tenant)) return -1;
+        if (!strcmp(kind,"operator")) {
+            /* Primary subjects are opaque URI text, not enrolled-device path
+             * segments. Share the bounded manifest grammar without copying
+             * a principal into each live TLS connection. */
+            if(wendy_pki_operator_principal((const char *)uri->p,uri->len,NULL))return -1;
+            memcpy(tenant,uri->p+sizeof(wendy_identity_prefix)-1,36);
+        } else if (!wendy_peer_identity(uri->p, uri->len, kind, tenant)) return -1;
         count++;
     }
     return count == 1 ? 0 : -1;

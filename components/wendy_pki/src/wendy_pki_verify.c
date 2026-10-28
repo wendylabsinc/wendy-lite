@@ -7,6 +7,7 @@
 #include "wendy_pki_crypto.h"
 #include "wendy_operator_auth.h"
 #include "wendy_pki_mesh.h"
+#include "wendy_pki_operator.h"
 #include "wendy_peer_identity.h"
 #include <pthread.h>
 #include <stdio.h>
@@ -851,3 +852,55 @@ struct identity_cpu {const uint8_t *cert,*roots,*key;size_t cert_size,roots_size
 static void identity_cpu(void *context){struct identity_cpu *j=context;j->result=verify_identity_direct(j->cert,j->cert_size,j->roots,j->roots_size,j->key,j->key_size,j->principal,j->now,j->expires);}
 int wendy_pki_verify_identity(const uint8_t *cert,size_t size,const uint8_t *roots,size_t roots_size,const uint8_t *key,size_t key_size,const char *principal,time_t now,time_t *expires)
 {struct identity_cpu j={cert,roots,key,size,roots_size,key_size,principal,now,expires,-1};return wendy_pki_work_run(identity_cpu,&j) ? -1:j.result;}
+
+int wendy_pki_operator_chain(const uint8_t *const *data,const size_t *sizes,size_t count,
+    const uint8_t *roots,size_t roots_size,const char *tenant,time_t now,
+    struct wendy_pki_operator_peer *out)
+{
+    /* Reuse the actual primary verifier and its valid-at path selection. No
+     * authority from the descriptor, attachment peer or Lite twin is adopted.
+     * This target keeps the existing eight-certificate path bound, while
+     * allowing the primary protocol's128KiB total DER ceiling. */
+    if(!data || !sizes || !count || count>8 || !roots || !roots_size || !tenant || !out || now<=0 ||
+       !wendy_identity_uuid((const unsigned char*)tenant,strlen(tenant)))return -1;
+    mbedtls_x509_crt *certs[8]={0};size_t total=0;int result=-1;
+    struct wendy_pki_operator_peer *peer=pki_owned_calloc(1,sizeof *peer);
+    if(!peer)return -1;
+    for(size_t i=0;i<count;i++){
+        if(!sizes[i] || sizes[i]>32768 || total>128*1024-sizes[i])goto done;
+        total+=sizes[i];certs[i]=parse_cert_borrowed(data[i],sizes[i]);
+        if(!certs[i] || certs[i]->raw.len!=sizes[i])goto done;
+    }
+    mbedtls_x509_crt *leaf=certs[0];
+    if(leaf->MBEDTLS_PRIVATE(ca_istrue) || wendy_pki_certificate_policy(leaf,false) ||
+       !(leaf->MBEDTLS_PRIVATE(key_usage) & MBEDTLS_X509_KU_DIGITAL_SIGNATURE) ||
+       !has_eku(leaf,MBEDTLS_OID_CLIENT_AUTH,MBEDTLS_OID_SIZE(MBEDTLS_OID_CLIENT_AUTH)) ||
+       verify_chain(leaf,certs,(int)count,roots,roots_size,now,&peer->expires) || peer->expires<=now)goto done;
+    unsigned uris=0;
+    for(const mbedtls_x509_sequence *a=&leaf->subject_alt_names;a && a->buf.p;a=a->next){
+        mbedtls_x509_subject_alternative_name san;
+        if(mbedtls_x509_parse_subject_alt_name(&a->buf,&san) || san.type!=MBEDTLS_X509_SAN_UNIFORM_RESOURCE_IDENTIFIER)continue;
+        const uint8_t *uri=san.san.unstructured_name.p;size_t size=san.san.unstructured_name.len;
+        if(wendy_pki_operator_principal((const char*)uri,size,tenant))goto done;
+        memcpy(peer->principal,uri,size);peer->principal[size]=0;uris++;
+    }
+    if(uris!=1)goto done;
+    /* Only the same two typed signing schemes as the Go proof contract. The
+     * exact SPKI is retained; proof verification selects from its DER OID. */
+    der raw={leaf->raw.p,leaf->raw.p,leaf->raw.len,leaf->raw.len,0},serial,issuer,spki,id,params,key;
+    if(certificate_parts(raw,&serial,&issuer,&spki))goto done;
+    if(ec_public_key(spki,false)){
+        int n=mbedtls_pk_write_pubkey_der(&leaf->pk,peer->spki,sizeof peer->spki);
+        if(n<=0 || (size_t)n>sizeof peer->spki)goto done;
+        memmove(peer->spki,peer->spki+sizeof peer->spki-n,n);peer->spki_size=(size_t)n;
+    }else{
+        if(public_key_parts(spki,&id,&params,&key) || !bytes(id,mldsa65_oid,sizeof mldsa65_oid) ||
+           params.n || key.n!=1953 || spki.raw_n>sizeof peer->spki)goto done;
+        memcpy(peer->spki,spki.raw,spki.raw_n);peer->spki_size=spki.raw_n;
+    }
+    if(wendy_pki_sha256(data[0],sizes[0],peer->leaf_hash))goto done;
+    *out=*peer;result=0;
+done:
+    for(size_t i=0;i<count;i++)free_cert(certs[i]);
+    pki_owned_free(peer);return result;
+}

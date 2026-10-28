@@ -22,7 +22,8 @@ static bool allowed(void *context, uint64_t router, const struct wb_prefix *p,
 {
     struct wnr_core *c = context;
     return p->family == 6 && p->bits == 128 && !receipt_pending(c,p->bytes) &&
-           wnd_authorizes(&c->directory, p->bytes, router, seqno, c->now_us);
+           (wnd_authorizes(&c->directory, p->bytes, router, seqno, c->now_us) ||
+            wno_authorizes(c->operators,p->bytes,router,seqno,c->now_us));
 }
 static int stop(struct wnr_core *c, const char *stage, int error)
 {
@@ -293,6 +294,7 @@ void wnr_deinit(struct wnr_core *c)
     wb_deinit(&c->babel);
     wnd_deinit(&c->directory);
     wne_clear(&c->endpoints);
+    if(c->operators){wno_deinit(c->operators);wendy_net_free(c->operators);}
     wendy_net_free(c->checkpoint);
     memset(c, 0, sizeof *c);
 }
@@ -343,6 +345,19 @@ int wnr_manifest_verified(struct wnr_core *c, const void *data, size_t size,
         return WB_STOPPED;
     return !r && !c->durable ? 4:r;
 }
+int wnr_operator_manifest_verified(struct wnr_core *c,const struct wno_manifest *proof,
+    const struct wendy_pki_operator_peer *identity,int64_t unix_ms,int64_t now)
+{
+    if(c && c->config.endpoint_gateway)return 1;
+    int r=clock_at(c,unix_ms,now);if(r)return r;
+    if(!c->operators){
+        c->operators=wendy_net_calloc(1,sizeof *c->operators);
+        if(c->operators && wno_init(c->operators,c->directory.tenant,WNO_DIRECTORY_MAX))return -1;
+    }
+    r=c->operators ? wno_accept_manifest_verified(c->operators,proof,identity,unix_ms,now):3;
+    if(finish(c,wnr_busy(c) ? 0:wb_tick(&c->babel,babel_now(c))))return WB_STOPPED;
+    return r;
+}
 int wnr_attach(struct wnr_core *c, const char *peer, uint16_t cost,
                int64_t unix_ms, int64_t now, uint64_t *id)
 {
@@ -392,6 +407,7 @@ int wnr_tick(struct wnr_core *c,int64_t unix_ms,int64_t now)
 {
     int r=clock_at(c,unix_ms,now);if(r)return r;
     wne_reap(&c->endpoints,now);
+    wno_expire(c->operators,now);
     if(pending_finish(c))return WB_STOPPED;
     if(wnr_busy(c))return 0;
     for(unsigned i=0;i<WB_LINKS;i++)if(c->detaching[i]){
@@ -425,7 +441,8 @@ bool wnr_lookup(const struct wnr_core *c, const uint8_t address[16],
     if (!route || route->unreachable || route->metric == WB_INFINITY ||
         !route_live(c, route, now) ||
         (!route->local && (receipt_pending(c,address) ||
-            !wnd_authorizes(&c->directory,address,route->router,route->seqno,now))))
+            !(wnd_authorizes(&c->directory,address,route->router,route->seqno,now) ||
+              wno_authorizes(c->operators,address,route->router,route->seqno,now)))))
         return false;
     *out = *route;
     return true;
@@ -467,5 +484,6 @@ size_t wnr_memory(const struct wnr_core *c)
 {
     return sizeof *c + wb_memory(&c->babel).current - sizeof c->babel +
            wnd_memory(&c->directory) - sizeof c->directory + c->checkpoint_capacity +
-           c->endpoints.count*sizeof(struct wne_entry);
+           c->endpoints.count*sizeof(struct wne_entry) +
+           (c->operators ? sizeof *c->operators+wno_memory(c->operators):0);
 }
