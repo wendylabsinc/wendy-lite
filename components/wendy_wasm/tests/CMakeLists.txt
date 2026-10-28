@@ -2,9 +2,18 @@ cmake_minimum_required(VERSION 3.20)
 project(wendy_wasm_memory_test C ASM)
 set(CMAKE_C_STANDARD 11)
 enable_testing()
+option(WENDY_TEST_SANITIZE "Enable address and undefined-behavior sanitizers" OFF)
+if(WENDY_TEST_SANITIZE)
+    add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address,undefined)
+endif()
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME wasm_partition_loader COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_LIST_DIR}/partition_loader_test.py)
 add_executable(memory_limit_test memory_limit_test.c ../src/memory_limit.c)
 target_include_directories(memory_limit_test PRIVATE ../src)
 target_compile_options(memory_limit_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME wasm_memory_admission_boundaries COMMAND memory_limit_test)
 if(DEFINED FIXTURE_DIR)
     add_test(NAME wasm_memory_admission COMMAND memory_limit_test
         "${FIXTURE_DIR}/multi-echo-capacity-c5-udp-6m.wasm"
@@ -41,16 +50,17 @@ if(DEFINED WAMR_ROOT_DIR)
     target_include_directories(memory_grow_test PRIVATE ../src)
     target_compile_options(memory_grow_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
     target_link_libraries(memory_grow_test PRIVATE wamr_memory_runtime)
-    if(DEFINED FIXTURE_DIR)
-        add_test(NAME wasm_actual_memory_grow COMMAND memory_grow_test "${FIXTURE_DIR}/memory-grow-normal.wasm")
-    endif()
+    add_test(NAME wasm_actual_memory_grow COMMAND memory_grow_test)
 endif()
 
 # Standalone positive mapping-lifetime fixture; dependency sources are copied
 # privately and the installed SDK is never changed.
 if(DEFINED ENV{IDF_PATH})
-    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    set(wamr_source_args "")
+    if(DEFINED WAMR_ROOT_DIR)
+        list(APPEND wamr_source_args --wamr ${WAMR_ROOT_DIR})
+    endif()
     add_test(NAME wasm_linear_hot_replacement COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_LIST_DIR}/linear_replacement_test.py --idf $ENV{IDF_PATH}
-        --sanitize)
+        --sanitize ${wamr_source_args})
 endif()

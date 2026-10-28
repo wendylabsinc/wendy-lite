@@ -25,7 +25,7 @@ static wendy_wasm_config_t s_config={.use_psram=true};
 static void *s_pool_buf;
 static wendy_wasm_module_handle_t s_current_module;
 static bool s_wasm_active,s_current_module_flash_backed,s_wasm_flash_busy;
-static bool load_failed;
+static bool load_failed, reinit_failed, exports_failed, start_failed;
 static unsigned starts;
 static void *wasm_runtime_get_memory(WASMMemoryInstance *instance,unsigned index)
 {return index ? NULL:instance;}
@@ -48,8 +48,8 @@ static void wendy_wasm_unload(wendy_wasm_module_handle_t module)
 }
 static esp_err_t wendy_wasm_init(const wendy_wasm_config_t *config)
 {s_config=*config;return ESP_OK;}
-static esp_err_t wendy_wasm_reinit(void) {return ESP_OK;}
-static esp_err_t wendy_hal_export_init(void) {return ESP_OK;}
+static esp_err_t wendy_wasm_reinit(void) {return reinit_failed ? ESP_FAIL:ESP_OK;}
+static esp_err_t wendy_hal_export_init(void) {return exports_failed ? ESP_FAIL:ESP_OK;}
 static void wasm_output_cb(const char *bytes,uint32_t size,void *context)
 {(void)bytes;(void)size;(void)context;}
 static const char *partition_label_for(uint8_t slot)
@@ -66,7 +66,8 @@ static esp_err_t load_wasm_module_from_flash(const char *label,wendy_wasm_module
 }
 static bool start_loaded_wasm_module(void)
 {
-    assert(s_current_module);s_current_module->state=WENDY_WASM_STATE_RUNNING;
+    assert(s_current_module);if(start_failed)return false;
+    s_current_module->state=WENDY_WASM_STATE_RUNNING;
     s_wasm_active=true;starts++;return true;
 }
 #include "linear_core_production.inc"
@@ -105,5 +106,16 @@ static void core_replacement_lifecycle(void)
     assert(!wasm_app_start_on_control_thread(0) && starts==4);
     assert(!wasm_app_stop_on_control_thread(NULL));
     assert(!s_current_module && allocations==releases);
+    /* Every APP_START exit must return the loan, including failure before
+     * loading a new module and failure to launch a successfully loaded one. */
+    bool *failure_points[]={&reinit_failed,&exports_failed,&start_failed};
+    for(unsigned i=0;i<3;i++){
+        assert(!wasm_app_start_on_control_thread(0));
+        assert(!wasm_app_stop_for_flash_on_control_thread());
+        *failure_points[i]=true;
+        assert(wasm_app_start_on_control_thread(0)==ESP_FAIL);
+        assert(!s_current_module && !s_wasm_active && allocations==releases);
+        *failure_points[i]=false;
+    }
     puts("core lifecycle PASS: PushBegin->Start reuses; explicit Stop releases; failed Start and final Stop drain");
 }

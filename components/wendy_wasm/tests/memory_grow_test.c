@@ -3,11 +3,18 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 int main(int argc,char **argv)
 {
-    assert(argc==2);FILE *file=fopen(argv[1],"rb");assert(file);
-    assert(!fseek(file,0,SEEK_END));long size=ftell(file);assert(size>0);rewind(file);
-    unsigned char *bytes=malloc((size_t)size);assert(bytes && fread(bytes,1,(size_t)size,file)==(size_t)size);fclose(file);
+    (void)argc;(void)argv;
+    /* (module (memory 1) (func (export "grow_by") (param i32) (result i32)
+     *   local.get 0 memory.grow)) -- mutable because WAMR's loader owns edits. */
+    unsigned char fixture[]={0,0x61,0x73,0x6d,1,0,0,0,
+        1,6,1,0x60,1,0x7f,1,0x7f,3,2,1,0,5,3,1,0,1,
+        7,11,1,7,'g','r','o','w','_','b','y',0,0,
+        10,8,1,6,0,0x20,0,0x40,0,0x0b};
+    size_t size=sizeof fixture;unsigned char *bytes=malloc(size);assert(bytes);
+    memcpy(bytes,fixture,size);
     RuntimeInitArgs initialization={.mem_alloc_type=Alloc_With_System_Allocator};
     assert(wasm_runtime_full_init(&initialization));
     char error[128]={0};uint32_t max_pages;

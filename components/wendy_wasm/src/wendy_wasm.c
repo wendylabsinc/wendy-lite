@@ -190,7 +190,7 @@ static wasm_module_inst_t instantiate(struct wendy_wasm_module *mod,
  * It holds no allocation at boot, while idle or after an APP_START result. */
 uint32_t wendy_wasm_replacement_begin(wendy_wasm_module_handle_t module)
 {
-#if CONFIG_SPIRAM && CONFIG_WENDY_WASM_USE_PSRAM
+#if CONFIG_SPIRAM && CONFIG_WENDY_WASM_USE_PSRAM && !CONFIG_WAMR_ENABLE_MULTI_MODULE
     if (!s_config.use_psram || s_pool_buf || !module || !module->module_inst ||
         module->state == WENDY_WASM_STATE_RUNNING ||
         wasm_runtime_get_memory(module->module_inst, 1)) return 0;
@@ -268,6 +268,7 @@ esp_err_t wendy_wasm_init(const wendy_wasm_config_t *config)
     ESP_LOGE(TAG,"bounded linear memory requires multi-module support disabled");
     return ESP_ERR_NOT_SUPPORTED;
 #endif
+    if (!config) return ESP_ERR_INVALID_ARG;
     s_config = *config;
     s_output_cb  = config->output_cb;
     s_output_ctx = config->output_ctx;
@@ -281,11 +282,13 @@ esp_err_t wendy_wasm_init(const wendy_wasm_config_t *config)
         init_args.mem_alloc_option.pool.heap_size = s_pool_size;
     } else {
 #if CONFIG_SPIRAM && CONFIG_WENDY_WASM_USE_PSRAM
-        init_args.mem_alloc_type = Alloc_With_Allocator;
+        init_args.mem_alloc_type = s_config.use_psram ? Alloc_With_Allocator
+                                                    : Alloc_With_System_Allocator;
         init_args.mem_alloc_option.allocator.malloc_func = psram_preferred_malloc;
         init_args.mem_alloc_option.allocator.realloc_func = psram_preferred_realloc;
         init_args.mem_alloc_option.allocator.free_func = heap_caps_free;
-        ESP_LOGI(TAG,"using PSRAM-preferred runtime allocator: internal_free=%u",
+        ESP_LOGI(TAG, "using %s runtime allocator: internal_free=%u",
+            s_config.use_psram ? "PSRAM-preferred" : "system",
             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
 #elif CONFIG_WENDY_WASM_PREFER_RTC_RAM
         init_args.mem_alloc_type = Alloc_With_Allocator;
@@ -420,10 +423,12 @@ esp_err_t wendy_wasm_load_from_partition(const char *partition_label,
         return ESP_ERR_NOT_FOUND;
     }
 
+    if (part->size < sizeof(uint32_t)) return ESP_ERR_INVALID_SIZE;
+
     /* Read the first 4 bytes to get the stored size */
     uint32_t wasm_len = 0;
     esp_err_t err = esp_partition_read(part, 0, &wasm_len, sizeof(wasm_len));
-    if (err != ESP_OK || wasm_len == 0 || wasm_len > part->size - 4) {
+    if (err != ESP_OK || part->size < 4 || wasm_len == 0 || wasm_len > part->size - 4) {
         ESP_LOGE(TAG, "invalid WASM binary in partition (len=%lu)", (unsigned long)wasm_len);
         return ESP_ERR_INVALID_SIZE;
     }
@@ -440,13 +445,17 @@ esp_err_t wendy_wasm_load_from_partition(const char *partition_label,
     const void *mapping=NULL;
     err=esp_partition_mmap(part,0,wasm_len+4,ESP_PARTITION_MMAP_INST,
                            &mapping,&mod->flash_mapping);
-    if(err!=ESP_OK){free(mod);return err;}
-    mod->mapped=true;mod->wasm_buf=(uint8_t *)mapping+4;
-    if(!wasm_runtime_is_xip_file(mod->wasm_buf,wasm_len))
-        release_module_bytes(mod);
-    else
-        ESP_LOGI(TAG,"AOT XIP module mapped from flash: bytes=%lu address=%p",
-                 (unsigned long)wasm_len,mod->wasm_buf);
+    if (err == ESP_OK) {
+        mod->mapped = true;
+        mod->wasm_buf = (uint8_t *)mapping + 4;
+        if (!wasm_runtime_is_xip_file(mod->wasm_buf, wasm_len))
+            release_module_bytes(mod);
+        else
+            ESP_LOGI(TAG, "AOT XIP module mapped from flash: bytes=%lu address=%p",
+                     (unsigned long)wasm_len, mod->wasm_buf);
+    }
+    /* Mapping may be unavailable (or the guest may be bytecode). Preserve the
+     * writable partition loader in either case. */
 #endif
     if(!mod->mapped){
         mod->wasm_buf=wasm_runtime_malloc(wasm_len);

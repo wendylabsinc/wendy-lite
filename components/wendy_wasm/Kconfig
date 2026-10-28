@@ -37,8 +37,7 @@ menu "Wendy WASM Runtime"
         default 0
         help
             Bound the active guest's linear memory, including memory.grow.
-            PSRAM mesh profiles default to 5 MiB, leaving room for the 2 MiB
-            Wendy Net budget and runtime/system state on an 8 MiB board.
+            Select a cap appropriate to the board and application budget.
             Runtime metadata, code and execution stacks are additional memory.
             The bounded profile supports one linear memory. Host-managed heap
             insertion uses conservative headroom inside this same limit.

@@ -30,9 +30,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--idf', required=True)
     parser.add_argument('--sanitize', action='store_true')
+    parser.add_argument('--wamr', type=Path, help='pristine pinned WAMR source tree')
     args = parser.parse_args()
     project = Path(__file__).resolve().parents[3]
-    original = project / 'managed_components/espressif__wasm-micro-runtime'
+    original = args.wamr or project / 'managed_components/espressif__wasm-micro-runtime'
     memory = (original / 'core/iwasm/common/wasm_memory.c').read_text()
     with tempfile.TemporaryDirectory(prefix='wendy-linear-replacement-') as temp:
         work = Path(temp)
