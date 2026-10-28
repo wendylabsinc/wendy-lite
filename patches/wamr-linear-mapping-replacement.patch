@@ -1,0 +1,59 @@
+--- a/core/iwasm/common/wasm_memory.c
++++ b/core/iwasm/common/wasm_memory.c
+@@ -1896,6 +1896,16 @@
+     return ret;
+ }
+ 
++#if defined(BH_PLATFORM_ESP_IDF) && WASM_MEM_ALLOC_WITH_USAGE == 0
++/* Optional host-owned one-use transfer. Only explicit linear-memory paths
++ * participate; generic/executable mmap and their free ABI stay untouched. */
++extern bool wendy_wasm_retain_linear_mapping(
++    void *, uint64, uint64, void (*)(void *, uint64, uint64))
++    __attribute__((weak));
++extern bool wendy_wasm_reuse_linear_mapping(void **, uint64, uint64)
++    __attribute__((weak));
++#endif
++
+ void
+ wasm_deallocate_linear_memory(WASMMemoryInstance *memory_inst)
+ {
+@@ -1928,8 +1938,19 @@
+ #endif
+               memory_inst->memory_data);
+ #else
+-    wasm_munmap_linear_memory(memory_inst->memory_data,
+-                              memory_inst->memory_data_size, map_size);
++#if defined(BH_PLATFORM_ESP_IDF)
++    if (wendy_wasm_retain_linear_mapping
++        && wendy_wasm_retain_linear_mapping(memory_inst->memory_data,
++                                            memory_inst->memory_data_size,
++                                            map_size, wasm_munmap_linear_memory)) {
++        /* The host transaction now owns the exact mapping. */
++    }
++    else
++#endif
++    {
++        wasm_munmap_linear_memory(memory_inst->memory_data,
++                                  memory_inst->memory_data_size, map_size);
++    }
+ #endif
+ 
+     memory_inst->memory_data = NULL;
+@@ -1983,7 +2004,16 @@
+             return BHT_ERROR;
+         }
+ #else
+-        if (!(*data = wasm_mmap_linear_memory(map_size, *memory_data_size))) {
++        void *reused = NULL;
++#if defined(BH_PLATFORM_ESP_IDF)
++        if (wendy_wasm_reuse_linear_mapping) {
++            wendy_wasm_reuse_linear_mapping(&reused, *memory_data_size, map_size);
++        }
++#endif
++        if (reused) {
++            *data = reused;
++        }
++        else if (!(*data = wasm_mmap_linear_memory(map_size, *memory_data_size))) {
+             return BHT_ERROR;
+         }
+ #endif
