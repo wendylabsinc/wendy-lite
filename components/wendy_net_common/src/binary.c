@@ -38,6 +38,7 @@ int wn_finish(struct wn_writer *w)
 /* Kept in sync with WendyOS netwire/keys.go. */
 const char *wn_key_name(const char *name)
 {
+    if(!strcmp(name,"owner"))return "o";
     static const struct {const char *name,*key;} fields[]={
         {"Expires","e"},
         {"Issued","i"},

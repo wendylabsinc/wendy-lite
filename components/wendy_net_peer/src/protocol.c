@@ -192,10 +192,14 @@ int wn_directory_missing_write(const char *principal,bool manifest,char *out,siz
 
 bool wn_ip_admits(const uint8_t self[16], const void *data, size_t size, bool incoming)
 {
-    static const uint8_t prefix[6] = {0xfd,0x45,0xb8,0x91,0x56,0x7f};
+    static const uint8_t prefix[5] = {0xfd,0x45,0xb8,0x91,0x56};
     const uint8_t *p = data;
+    /* Structural netif gate only. The actor subsequently requires the exact
+     * signed origin on full routers, or the sole authenticated gateway on the
+     * constrained profile. The local endpoint must still be our exact address. */
     if (!self || !p || size < 40 || size > WN_MTU || p[0]>>4 != 6 || wn_get16(p+4) != size-40 ||
-        memcmp(p+8,prefix,6) || memcmp(p+24,prefix,6)) return false;
+        memcmp(p+8,prefix,5) || (p[13]!=0x7f && p[13]!=0x80) ||
+        memcmp(p+24,prefix,5) || (p[29]!=0x7f && p[29]!=0x80)) return false;
     uint8_t address[16];
     wn_address(self,address);
     return !memcmp(p+(incoming?24:8),address,16);

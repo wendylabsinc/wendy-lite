@@ -12,7 +12,7 @@ if(NOT EXISTS "${CJSON_ROOT}/cJSON.c")
 endif()
 add_library(format_cjson STATIC "${CJSON_ROOT}/cJSON.c")
 target_include_directories(format_cjson PUBLIC "${CJSON_ROOT}")
-set(format_sources ../src/protocol.c ../src/binary.c ../src/packet.c ../src/directory.c ../src/manifest_service.c ../src/service_protocol.c ../src/guest_json.c ../src/certificate_fetch.c ../src/certificate_store.c ../src/certificate_wire.c)
+set(format_sources ../src/operator.c ../src/protocol.c ../src/binary.c ../src/packet.c ../src/directory.c ../src/manifest_service.c ../src/service_protocol.c ../src/guest_json.c ../src/certificate_fetch.c ../src/certificate_store.c ../src/certificate_wire.c)
 add_library(peer_format STATIC ${format_sources})
 target_include_directories(peer_format BEFORE PUBLIC "${CJSON_ROOT}")
 target_include_directories(peer_format PUBLIC ../include PRIVATE ../src)
@@ -87,6 +87,9 @@ session_test(catalog manifest_catalog_success_test.c)
 session_test(publication async_manifest_publication_success_test.c)
 session_test(inventory inventory_success_test.c)
 session_test(crypto_retry crypto_retry_success_test.c "${session_key}")
+add_executable(session_operator_manifest operator_manifest_success_test.c)
+target_link_libraries(session_operator_manifest PRIVATE peer_session)
+target_compile_options(session_operator_manifest PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 
 # All translation units use the same charged-pointer ABI in pressure fixtures.
 add_library(peer_session_budget STATIC ${format_sources} ${session_sources}
@@ -211,3 +214,16 @@ target_compile_options(topology_driver_success_test PRIVATE -Wall -Wextra -Werro
 target_link_libraries(topology_driver_success_test PRIVATE Threads::Threads)
 add_test(NAME topology_driver_success COMMAND topology_driver_success_test)
 set_tests_properties(topology_driver_success PROPERTIES TIMEOUT 20)
+add_executable(session_operator_actor operator_actor_success_test.c ../src/operator_worker.c)
+target_link_libraries(session_operator_actor PRIVATE peer_session_budget)
+target_compile_options(session_operator_actor PRIVATE -Wall -Wextra -Werror -UNDEBUG -Wno-misleading-indentation)
+
+# Optional exact production WendyOS signer/encoder, with no source overlays of
+# application code or module changes. The C target also supports the old driver.
+if(WENDYOS_GO_ROOT)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME session_operator_lifecycle_normal COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_LIST_DIR}/operator_lifecycle_interop.py" --go "${GO_EXECUTABLE}"
+        --wendyos-root "${WENDYOS_GO_ROOT}" --driver "$<TARGET_FILE:session_operator_actor>")
+    set_tests_properties(session_operator_lifecycle_normal PROPERTIES TIMEOUT 90)
+endif()
