@@ -235,7 +235,28 @@ static esp_err_t attempt_handoff(uint32_t request)
     s_retry_count = 0;
     xEventGroupClearBits(s_wifi_events, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
     err = esp_wifi_set_config(WIFI_IF_STA, &s_handoff_config);
+#if CONFIG_WENDY_WIFI_TEST_MAX_11N
+#if CONFIG_SOC_WIFI_SUPPORT_5G
+    wifi_protocols_t protocols={.ghz_2g=WIFI_PROTOCOL_11B|WIFI_PROTOCOL_11G|WIFI_PROTOCOL_11N,
+                               .ghz_5g=WIFI_PROTOCOL_11A|WIFI_PROTOCOL_11N};
+    esp_err_t protocol_result=esp_wifi_set_protocols(WIFI_IF_STA,&protocols);
+#else
+    esp_err_t protocol_result=esp_wifi_set_protocol(WIFI_IF_STA,
+        WIFI_PROTOCOL_11B|WIFI_PROTOCOL_11G|WIFI_PROTOCOL_11N);
+#endif
+    ESP_LOGI(TAG,"lab station maximum protocol 11n: result=%s",esp_err_to_name(protocol_result));
+#endif
     if (err == ESP_OK) err = esp_wifi_start();
+#if CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3
+    // A SensorLink camera is a continuous source: modem sleep adds beacon/DTIM
+    // waits between the TLS records that carry each frame.
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+#elif CONFIG_WENDY_WIFI_TEST_DISABLE_POWER_SAVE
+    esp_err_t ps_result=esp_wifi_set_ps(WIFI_PS_NONE);
+    ESP_LOGI(TAG,"lab station power save disabled: result=%s",esp_err_to_name(ps_result));
+#endif
+
+
     if (err == ESP_OK) {
         s_connect_requested = true;
         ESP_LOGI(TAG, "connecting to WiFi SSID '%s'...", (char *)s_handoff_config.sta.ssid);
@@ -264,28 +285,6 @@ static esp_err_t wifi_connect(const char *ssid, const char *password)
         strlcpy((char *)wifi_config.sta.password, password, sizeof(wifi_config.sta.password));
         wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
     }
-
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-#if CONFIG_WENDY_WIFI_TEST_MAX_11N
-#if CONFIG_SOC_WIFI_SUPPORT_5G
-    wifi_protocols_t protocols={.ghz_2g=WIFI_PROTOCOL_11B|WIFI_PROTOCOL_11G|WIFI_PROTOCOL_11N,
-                               .ghz_5g=WIFI_PROTOCOL_11A|WIFI_PROTOCOL_11N};
-    esp_err_t protocol_result=esp_wifi_set_protocols(WIFI_IF_STA,&protocols);
-#else
-    esp_err_t protocol_result=esp_wifi_set_protocol(WIFI_IF_STA,
-        WIFI_PROTOCOL_11B|WIFI_PROTOCOL_11G|WIFI_PROTOCOL_11N);
-#endif
-    ESP_LOGI(TAG,"lab station maximum protocol 11n: result=%s",esp_err_to_name(protocol_result));
-#endif
-    ESP_ERROR_CHECK(esp_wifi_start());
-#if CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3
-    // A SensorLink camera is a continuous source: modem sleep adds beacon/DTIM
-    // waits between the TLS records that carry each frame.
-    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
-#elif CONFIG_WENDY_WIFI_TEST_DISABLE_POWER_SAVE
-    esp_err_t ps_result=esp_wifi_set_ps(WIFI_PS_NONE);
-    ESP_LOGI(TAG,"lab station power save disabled: result=%s",esp_err_to_name(ps_result));
-#endif
 
     ESP_LOGI(TAG, "connecting to WiFi SSID '%s'...", ssid);
     // Own the credentials before returning an error: the caller's buffers may
