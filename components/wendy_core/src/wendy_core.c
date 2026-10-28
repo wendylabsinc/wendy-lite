@@ -46,7 +46,6 @@
 
 #if CONFIG_WENDY_WIFI_ENABLED
 #include "wendy_wifi.h"
-#include "wendy_mesh.h"
 #include "wendy_com.h"
 #endif
 
@@ -61,6 +60,22 @@ static const char *TAG = "wendy_core";
 #define EVT_APP_START_REQUEST BIT6
 
 static EventGroupHandle_t s_events;
+static bool s_boot_ble_enabled=true;
+esp_err_t wendy_core_set_boot_radios(bool ble,bool wifi)
+{
+    if(s_events)return ESP_ERR_INVALID_STATE;
+#if CONFIG_WENDY_WIFI_ENABLED
+    esp_err_t result=wendy_wifi_set_boot_radio_enabled(wifi);
+    if(result!=ESP_OK)return result;
+#else
+    if(wifi)return ESP_ERR_NOT_SUPPORTED;
+#endif
+#if !CONFIG_WENDY_BLE
+    if(ble)return ESP_ERR_NOT_SUPPORTED;
+#endif
+    s_boot_ble_enabled=ble;
+    return ESP_OK;
+}
 
 /* ── Reboot boot-params ─────────────────────────────────────────────────
  *
@@ -1009,7 +1024,8 @@ esp_err_t wendy_core_init(void)
      * disagree. */
 #if CONFIG_WENDY_BLE
     {
-        esp_err_t ble_err = wendy_ble_start();
+        esp_err_t ble_err = s_boot_ble_enabled ? wendy_ble_start():ESP_OK;
+        if(!s_boot_ble_enabled)ESP_LOGI(TAG,"BLE radio omitted by saved endpoint policy");
         if (ble_err != ESP_OK) {
             ESP_LOGW(TAG, "BLE transport not started: %s",
                      esp_err_to_name(ble_err));
@@ -1021,17 +1037,15 @@ esp_err_t wendy_core_init(void)
 #if CONFIG_WENDY_WIFI_ENABLED
     err = wendy_wifi_init();
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "WiFi connected");
+        ESP_LOGI(TAG, "%s", !wendy_wifi_radio_available() ? "WiFi radio disabled by boot policy" :
+                 wendy_wifi_is_connected() ? "WiFi connected" :
+                 "WiFi infrastructure ready; station disconnected");
     } else if (err == WENDY_WIFI_ERR_NO_CREDS) {
         ESP_LOGW(TAG, "no WiFi credentials configured, continuing without WiFi");
     } else {
         ESP_LOGW(TAG, "WiFi init failed (running without WiFi)");
     }
 #endif /* CONFIG_WENDY_WIFI_ENABLED */
-#if CONFIG_WENDY_MESH_LEAF
-    err = wendy_mesh_start();
-    if (err != ESP_OK) ESP_LOGW(TAG, "mesh not started: %s", esp_err_to_name(err));
-#endif
 
 
     /* ── App start gate: honor the reboot params ─────────────────────── */

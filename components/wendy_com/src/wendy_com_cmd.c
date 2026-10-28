@@ -17,8 +17,10 @@ static const struct wcom_net_delegate *net_delegate;
 void wcom_cmd_set_net_delegate(const struct wcom_net_delegate *delegate){net_delegate=delegate;}
 WendyComResult wcom_cmd_net_get(WendyComNetStatus *status)
 {return net_delegate && net_delegate->get ? net_delegate->get(status):WendyComResult_WENDY_COM_RESULT_BAD_STATE;}
-WendyComResult wcom_cmd_net_set(const WendyComNetConfig *config,WendyComNetStatus *status)
-{return net_delegate && net_delegate->set ? net_delegate->set(config,status):WendyComResult_WENDY_COM_RESULT_BAD_STATE;}
+WendyComResult wcom_cmd_net_set(const WendyComNetConfig *config,WendyComNetStatus *status,uint32_t *token)
+{*token=0;return net_delegate && net_delegate->set ? net_delegate->set(config,status,token):WendyComResult_WENDY_COM_RESULT_BAD_STATE;}
+void wcom_cmd_net_reply_complete(uint32_t token)
+{if(token && net_delegate && net_delegate->reply_complete)net_delegate->reply_complete(token);}
 static const struct wcom_sensor_link_delegate *_sensor_link_delegate;
 bool wcom_cmd_sensor_link_available(void)
 {return _sensor_link_delegate && _sensor_link_delegate->on_sensor_link_get_manifest;}

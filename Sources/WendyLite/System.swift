@@ -31,17 +31,21 @@ public enum System {
     @inline(__always)
     public static func sleepMs(_ ms: Int32) {
         sys_sleep_ms(ms)
+        Services.poll()
     }
 
     @inline(__always)
     public static func yield() {
         sys_yield()
+        Services.poll()
     }
 
     @discardableResult
     @inline(__always)
     public static func waitForEvent(timeoutMs: Int32) -> Int32 {
-        sys_wait_for_event(timeoutMs)
+        let dispatched = sys_wait_for_event(timeoutMs)
+        Services.poll()
+        return dispatched
     }
 }
 

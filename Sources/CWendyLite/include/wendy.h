@@ -365,3 +365,6 @@ int usb_hid_send_report(int report_id, const char *data, int len);
  *
  * Callbacks are dispatched when you call sys_yield().
  */
+
+/* Guest-owned Wendy Net service declarations and restart replay. */
+#include "wendy_services.h"

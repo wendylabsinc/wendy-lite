@@ -68,3 +68,5 @@ add_test(NAME incoming_gap_lifetime COMMAND incoming_gap_lifetime_success_test)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME mesh_connection_claim COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/mesh_connection_claim_success_test.py)
 add_test(NAME physical_rx_rearm COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/physical_rx_rearm_success_test.py)
+
+add_test(NAME mesh_output_drain COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/mesh_output_drain_success_test.py)

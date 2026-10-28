@@ -1,4 +1,4 @@
-/* Native artifacts retain their v4 domain while the existing leaf uses v3. */
+/* Native artifacts and synchronous helpers share the v4 signing domain. */
 #include "artifact_crypto.h"
 #include "wendy_pki_crypto.h"
 #include "wendy_pki_mesh.h"
@@ -38,6 +38,6 @@ int main(void)
     strcpy(view.device,principal+69);
     assert(!wendy_pki_mesh_verify_key(&view,principal,body,sizeof body,signature,written));
     uint8_t legacy[32];assert(!wendy_pki_mesh_digest(principal,body,sizeof body,legacy));
-    reference("wendy-local-mesh/manifest/3",principal,body,sizeof body,hash);assert(!memcmp(hash,legacy,32));
+    reference("wendy-local-mesh/manifest/4",principal,body,sizeof body,hash);assert(!memcmp(hash,legacy,32));
     mbedtls_pk_free(&key);return 0;
 }

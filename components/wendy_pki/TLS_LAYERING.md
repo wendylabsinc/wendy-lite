@@ -1,14 +1,20 @@
-# TLS foundation staging
+# TLS identity and connection layers
 
-Direct DER identity/trust and bounded TLS buffer ownership are integrated here.
-The following layer replaces the synchronous baseline crypto facade with the
-serialized worker and context admission; premature native actor enable fails
-to compile. Existing baseline TLS callers retain synchronous behavior. Issuer
-negotiation is now enabled only for exactly shared pinned issuer sets; every
-other connection streams its ordinary full chain.
+Identity certificates and trust material use DER directly in storage, on the
+mesh wire and in the TLS library. Connections with exactly shared pinned issuer
+sets can omit the shared issuer chain; other connections send their full chain.
 
-Keep existing legacy leaf byte/signature behavior under its existing compile
-flag until final native activation removes that component. This is temporary
-source staging, never an old/new wire negotiation or a new compatibility lane.
-Future operator-origin proof APIs and diagnostic probes are excluded from the
-initial product extraction; baseline operator TLS/Cloud authorization remains.
+A carrier authenticates neighbouring peers. A routed service connection has
+its own end-to-end TLS session with the destination, independent of the route's
+intermediate peers. WendyCom runs directly inside that destination session and
+does not add another TLS wrapper. Physical and Cloud management retain their
+existing authentication paths.
+
+Heavy TLS and signature operations use the
+[serialized crypto worker](CRYPTO_WORKER.md) while mesh is running. Existing
+management callers can operate synchronously when it is off. A lent TLS context
+has one owner until completion; unrelated established TLS connections remain
+available to the mesh task.
+
+The special leaf protocol is removed. Lite uses ordinary signed device manifests
+and authenticated router connections; there is no legacy leaf compatibility mode.
