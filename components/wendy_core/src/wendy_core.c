@@ -389,13 +389,14 @@ static bool start_loaded_wasm_module(void)
 /* These lifecycle implementations are only called by wasm_control_thread_entry.
  * WAMR uses pthread TLS internally, so invoking them from the raw FreeRTOS wcom
  * task can assert while WAMR reports an otherwise recoverable loader error. */
-static esp_err_t wasm_app_stop_on_control_thread(void)
+static esp_err_t wasm_app_stop_on_control_thread(uint32_t *replacement)
 {
     if (!s_current_module) return ESP_OK;
     esp_err_t err = wendy_wasm_stop(s_current_module);
     if (err != ESP_OK) return err;
     if (!wait_for_wasm_inactive(5000)) return ESP_ERR_TIMEOUT;
     reset_guest_resources();
+    if (replacement) *replacement = wendy_wasm_replacement_begin(s_current_module);
     wendy_wasm_unload(s_current_module);
     mark_current_module_unloaded();
     return ESP_OK;
@@ -418,7 +419,8 @@ static esp_err_t wasm_app_start_on_control_thread(uint8_t slot)
 {
     static bool initialized;
 
-    esp_err_t err = wasm_app_stop_on_control_thread();
+    uint32_t replacement = 0;
+    esp_err_t err = wasm_app_stop_on_control_thread(&replacement);
     if (err != ESP_OK) return err;
 
     ESP_LOGI(TAG, "loading WASM from flash slot %d...", slot);
@@ -427,7 +429,7 @@ static esp_err_t wasm_app_start_on_control_thread(uint8_t slot)
         err = wendy_wasm_reinit();
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "WASM runtime reinit failed");
-            return err;
+            goto finished;
         }
     } else {
         /* Initialize the WASM runtime — must be in pthread context */
@@ -438,7 +440,7 @@ static esp_err_t wasm_app_start_on_control_thread(uint8_t slot)
         err = wendy_wasm_init(&wasm_cfg);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "WASM runtime init failed");
-            return err;
+            goto finished;
         }
 
         initialized = true;
@@ -448,7 +450,7 @@ static esp_err_t wasm_app_start_on_control_thread(uint8_t slot)
     err = wendy_hal_export_init();
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "some HAL exports failed to register");
-        return err;
+        goto finished;
     }
 
     wendy_wasm_module_handle_t flash_module = NULL;
@@ -459,14 +461,18 @@ static esp_err_t wasm_app_start_on_control_thread(uint8_t slot)
         if (!start_loaded_wasm_module()) {
             wendy_wasm_unload(s_current_module);
             mark_current_module_unloaded();
-            return ESP_FAIL;
+            err = ESP_FAIL;
+            goto finished;
         }
     } else {
         ESP_LOGE(TAG, "failed to load WASM from flash: %s", esp_err_to_name(err));
-        return err;
+        goto finished;
     }
 
-    return ESP_OK;
+    err = ESP_OK;
+finished:
+    wendy_wasm_replacement_finish(replacement);
+    return err;
 }
 
 static void wasm_control_request_release(wasm_control_request_t *request)
@@ -493,7 +499,7 @@ static void *wasm_control_thread_entry(void *arg)
             request->result = wasm_app_start_on_control_thread(request->slot);
             break;
         case WASM_CONTROL_STOP:
-            request->result = wasm_app_stop_on_control_thread();
+            request->result = wasm_app_stop_on_control_thread(NULL);
             break;
         case WASM_CONTROL_STOP_FOR_FLASH:
             request->result = wasm_app_stop_for_flash_on_control_thread();
