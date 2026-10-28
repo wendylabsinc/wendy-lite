@@ -1,3 +1,14 @@
+/* Orchestration tests use opaque identity markers and mock the certificate
+ * import boundary as well as identity verification. Real DER is tested by the
+ * TLS/cache/snapshot interoperability fixtures. */
+#include "wendy_cert_bundle.h"
+#include <string.h>
+static int test_bundle_measure(const uint8_t *p,size_t n,size_t *out)
+{if(!p || !n)return -1;*out=n;return 0;}
+static int test_bundle_import(const uint8_t *p,size_t n,uint8_t *out,size_t cap,size_t *written)
+{if(!p || !out || n>cap)return -1;memmove(out,p,n);*written=n;return 0;}
+#define wendy_cert_bundle_measure test_bundle_measure
+#define wendy_cert_bundle_import test_bundle_import
 /* Exercise the production connection flow with in-memory NVS and failed HTTP
  * renewal. Cryptographic validation itself is covered by verify_test. */
 #include "wendy_pki_internal.h"
@@ -7,6 +18,11 @@ static size_t build_roots_size = 1;
 #include "../src/wendy_pki.c"
 #include <assert.h>
 
+/* The separate cache fixture covers storage; this flow verifies that every
+ * certificate install passes its invalidation boundary before replacing it. */
+static bool cache_invalidated;
+int pki_der_cache_invalidate(nvs_handle_t h){(void)h;cache_invalidated=true;return 0;}
+void pki_public_certificate_changed(void){}
 const uint8_t wendy_pki_device_roots_start[] = {0};
 const uint8_t wendy_pki_tsa_roots_start[] = {0};
 const uint8_t wendy_pki_https_roots_start[] = {0};
@@ -18,6 +34,9 @@ int wendy_pki_verify_roots(const uint8_t *pem, size_t size)
     return !pem || !size || bad_roots ? -1 : 0;
 }
 static const time_t signed_now = 1800000000;
+static int64_t durable_floor;
+static unsigned floor_writes, revision_writes;
+static time_t reply_seconds, verifier_floor;
 static time_t clock_now, stored_expiry;
 static bool have_certificate, invalid_certificate, expire_during_renewal;
 static int renewal_calls, broker_calls, identity_checks;
@@ -39,6 +58,7 @@ static int authority_writes, lite_accepts, operator_accepts, lan_accepts;
 static int stream_accepts;
 static wendy_pki_connection stream_connection;
 static bool have_key, have_binding, have_nonce, config_cleared, fail_clear;
+static uint64_t snapshot_generation;
 static int64_t reset_pending;
 static uint8_t stored_nonce[32], random_counter;
 static const char *fail_erase;
@@ -84,14 +104,18 @@ esp_err_t nvs_get_i64(nvs_handle_t h, const char *name, int64_t *out)
         *out = reset_pending;
     } else {
         assert(!strcmp(name, "floor"));
-        *out = signed_now;
+        *out = durable_floor;
     }
     return ESP_OK;
 }
 esp_err_t nvs_set_i64(nvs_handle_t h, const char *name, int64_t value)
 {
     if (!strcmp(name, "reset_pending")) reset_pending = value;
-    else assert(!strcmp(name, "floor"));
+    else {
+        assert(!strcmp(name, "floor"));
+        durable_floor=value;
+        floor_writes++;
+    }
     return ESP_OK;
 }
 esp_err_t nvs_commit(nvs_handle_t h)
@@ -105,6 +129,7 @@ esp_err_t nvs_erase_key(nvs_handle_t h, const char *name)
         erase_calls++;
     }
     if (fail_erase && !strcmp(name, fail_erase)) return ESP_FAIL;
+    if(!strncmp(name,"net_der_",8))return ESP_ERR_NVS_NOT_FOUND;
     if (!strcmp(name, "pending")) pending_certificate = false;
     else if (!strcmp(name, "lite_ca")) lite_authority[0] = 0;
     else if (!strcmp(name, "pending_ca")) { pending_authority[0] = 0; pending_authority_size = 0; }
@@ -159,6 +184,7 @@ esp_err_t nvs_set_blob(nvs_handle_t h, const char *name, const void *data, size_
     if (!strcmp(name, "mesh_revision")) {
         assert(size==sizeof mesh_reserved);
         memcpy(&mesh_reserved,data,size);
+        revision_writes++;
     }
     if (!strcmp(name, "nonce")) {
         assert(size == sizeof stored_nonce);
@@ -181,7 +207,8 @@ esp_err_t nvs_set_blob(nvs_handle_t h, const char *name, const void *data, size_
     }
     if (!strcmp(name, "certificate"))
     {
-        assert(issuance_success && !invalid_certificate);
+        assert(issuance_success && !invalid_certificate && cache_invalidated);
+        cache_invalidated=false;
         have_certificate = true;
         stored_is_issued = size == 6 && !memcmp(data, "issued", 6);
     }
@@ -203,11 +230,19 @@ esp_err_t wendy_conf_copy_enrollment(WendyConfEnrollment *out,
     if (config_cleared) return ESP_ERR_INVALID_STATE;
     *out = config;
     *data = usb_data;
+    data->generation=snapshot_generation;
     return ESP_OK;
+}
+
+esp_err_t wendy_conf_copy_device_trust(WendyConfEnrollment *out,
+    struct wendy_conf_enrollment_data *data)
+{
+    return wendy_conf_copy_enrollment(out,data);
 }
 
 const char *wendy_conf_get_device_id(void) { return "441bf6804824"; }
 bool wendy_conf_is_current(void) { return !config_cleared; }
+bool wendy_conf_snapshot_current(uint64_t generation) { return !config_cleared && generation==snapshot_generation; }
 esp_err_t wendy_conf_clear_enrollment(void)
 {
     clear_calls++;
@@ -224,7 +259,9 @@ int wendy_pki_verify_time(const uint8_t *input, size_t size, const uint8_t nonce
 {
     if (reject_radio_time && input && size == 3 && !memcmp(input, "tsa", 3)) return -1;
     assert(roots == (config.provision_trust ? usb_roots : wendy_pki_tsa_roots_start));
-    *out = issuance_received && distinct_issued_certificate ? issued_not_before : signed_now;
+    verifier_floor=floor;
+    *out = reply_seconds ? reply_seconds :
+        issuance_received && distinct_issued_certificate ? issued_not_before : signed_now;
     return 0;
 }
 int wendy_pki_verify_identity(const uint8_t *pem, size_t size, const uint8_t *roots,
@@ -242,8 +279,14 @@ int wendy_pki_verify_identity(const uint8_t *pem, size_t size, const uint8_t *ro
     *expires = stored_expiry;
     return invalid_certificate || now >= stored_expiry ? -1 : 0;
 }
+static bool certificate_is(struct wendy_conf_span certificate, const char *marker)
+{
+    size_t size = strlen(marker);
+    return certificate.data && certificate.size == size &&
+        !memcmp(certificate.data, marker, size);
+}
 int pki_http_post(const char *url, const char *type, const char *token, const void *body,
-                  size_t body_size, const uint8_t *key, size_t key_size, const char *cert,
+                  size_t body_size, const uint8_t *key, size_t key_size, struct wendy_conf_span cert,
                   struct wendy_conf_span roots, uint8_t **response, size_t *response_size)
 {
     if (!strcmp(type, "application/timestamp-query"))
@@ -257,11 +300,11 @@ int pki_http_post(const char *url, const char *type, const char *token, const vo
     renewal_calls++;
     if (have_certificate)
     {
-        assert(cert && (!strcmp(cert, "stored") || !strcmp(cert, "issued")) && key && !token);
+        assert((certificate_is(cert, "stored") || certificate_is(cert, "issued")) && key && !token);
     }
     else
     {
-        assert(!cert && !key && token);
+        assert(!cert.data && !key && token);
     }
     if (issuance_success)
     {
@@ -274,9 +317,15 @@ int pki_http_post(const char *url, const char *type, const char *token, const vo
         clock_now = stored_expiry;
     return -1;
 }
+int pki_http_post_stream(const char *url,const char *type,const void *body,size_t size,
+    struct wendy_conf_span roots,const struct wendy_pki_stream *stream,uint8_t **reply,size_t *reply_size)
+{
+    (void)url;(void)type;(void)body;(void)size;(void)roots;(void)stream;
+    *reply=NULL;*reply_size=0;return -1;
+}
 int pki_http_post_enrollment(const char *url, const char *type, const char *token,
                   const void *body, size_t body_size, const uint8_t *key, size_t key_size,
-                  const char *cert, struct wendy_conf_span roots, uint8_t **response,
+                  struct wendy_conf_span cert, struct wendy_conf_span roots, uint8_t **response,
                   size_t *response_size, char **lite_authority_header)
 {
     *lite_authority_header = NULL;
@@ -286,20 +335,20 @@ int pki_http_post_enrollment(const char *url, const char *type, const char *toke
         *lite_authority_header = strdup(response_authority);
     return result;
 }
-int wendy_pki_lite_authority_from_header(const char *header, char **pem)
+int wendy_pki_lite_authority_from_header(const char *header,uint8_t **pem,size_t *pem_size)
 {
     *pem = NULL;
     if (strcmp(header, "valid-new-authority")) return -1;
-    *pem = strdup("new-authority-pem");
+    *pem = (uint8_t*)strdup("new-authority-pem");*pem_size=strlen((char*)*pem);
     return *pem ? 0 : -1;
 }
 int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t key_size,
-                    const char *cert, struct wendy_conf_span roots, wendy_pki_connection **out)
+                    struct wendy_conf_span cert, struct wendy_conf_span roots, wendy_pki_connection **out)
 {
     broker_calls++;
     assert(roots.data == (config.provision_trust ? usb_roots : wendy_pki_https_roots_start));
-    assert(cert && (!strcmp(cert, "stored") || !strcmp(cert, "issued")));
-    assert(clock_now < (!strcmp(cert, "issued") ? issued_expiry : stored_expiry) && !invalid_certificate);
+    assert((certificate_is(cert, "stored") || certificate_is(cert, "issued")));
+    assert(clock_now < (certificate_is(cert, "issued") ? issued_expiry : stored_expiry) && !invalid_certificate);
     return 0;
 }
 cJSON *cJSON_CreateObject(void) { return calloc(1, sizeof(cJSON)); }
@@ -317,6 +366,11 @@ void cJSON_Delete(cJSON *o) { free(o); }
 
 static void reset(void)
 {
+    memset(&boot_revisions,0,sizeof boot_revisions);
+    memset(&boot_floor,0,sizeof boot_floor);
+    durable_floor=signed_now;floor_writes=revision_writes=0;
+    reply_seconds=verifier_floor=0;
+    snapshot_generation=0;
     mesh_reserved=0;mesh_connect_calls=0;monotonic_us=mesh_connect_delay=0;mesh_tls_failure=false;
     pending_certificate = issuance_success = false;
     strcpy(lite_authority, "old-authority-pem");
@@ -509,11 +563,11 @@ static void test_lite_authority_lifecycle(void)
         .https_roots = {wendy_pki_https_roots_start, 1},
         .tsa_roots = {wendy_pki_tsa_roots_start, 1},
     };
-    char *fresh = NULL;
+    struct wendy_conf_span fresh={0};
     time_t expires;
-    assert(issue(1, &config, &data, key_der, key_der_size, "stored", "principal",
+    assert(issue(1, &config, &data, key_der, key_der_size,(struct wendy_conf_span){"stored",6}, "principal",
                  &fresh, &expires) != 0);
-    assert(!fresh && !strcmp(lite_authority, "old-authority-pem") && authority_writes == 0);
+    assert(!fresh.data && !strcmp(lite_authority, "old-authority-pem") && authority_writes == 0);
 
     /* Migration renews a valid long-lived device identity immediately. If the
      * service omits the header, control still works and the next connect retries. */
@@ -674,7 +728,7 @@ static void test_stream_stored_identity(void)
 
 #if CONFIG_WENDY_MESH_LEAF
 int pki_tls_mesh_connect(const char* host, unsigned port, const char* tenant, const char* device,
-    const char* router, const uint8_t* key, size_t key_size, const char* cert,
+    const char* router, const uint8_t* key, size_t key_size, struct wendy_conf_span cert,
     struct wendy_conf_span roots, wendy_pki_connection** out)
 {
     mesh_connect_calls++;
@@ -691,7 +745,7 @@ int pki_tls_mesh_connect(const char* host, unsigned port, const char* tenant, co
 }
 int pki_tls_mesh_stream(const struct wendy_pki_stream* stream, bool server,
     const char* tenant, const char* device, const char* router, const uint8_t* key,
-    size_t key_size, const char* cert, struct wendy_conf_span roots, wendy_pki_connection** out)
+    size_t key_size, struct wendy_conf_span cert, struct wendy_conf_span roots, wendy_pki_connection** out)
 {
     return pki_tls_mesh_connect("stream", 0, tenant, device,
         router ? router : "12345678-9abc-4def-8123-000000000003",
@@ -736,7 +790,7 @@ static void test_mesh_radio_time(void)
         assert(!timestamp_calls && !renewal_calls && !broker_calls);
         assert(io.written == 9 && !memcmp(io.request, "WMT3", 4));
         if (scenario % 4 == 0) {
-            assert(mesh_reserved == 1024 && mesh_connect_calls == 1);
+            assert(mesh_reserved == MESH_REVISION_BOOT_RANGE && mesh_connect_calls == 1);
             assert(!strcmp(identity.peer, peer));
             wendy_pki_close(connection);
         }
@@ -758,18 +812,22 @@ static void test_mesh_identity(void)
     strcpy(config.device_id, "12345678-9abc-4def-8123-000000000002");
     assert(wendy_pki_mesh_connect("router", 43024, router, &connection, &identity) == ESP_OK);
     assert(
-        identity.revision_first == 1 && identity.revision_limit == 1025 && mesh_reserved == 1024);
+        identity.revision_first == 1 && identity.revision_limit == 1025 && mesh_reserved == MESH_REVISION_BOOT_RANGE);
     assert(identity.verified_seconds == signed_now && identity.verified_monotonic_us == 0
         && timestamp_calls == 1);
     assert(connection->mesh_deadline_us == INT64_C(300000000));
     assert(wendy_pki_mesh_connect("router", 43024, router, &connection, &identity) == ESP_OK);
     assert(identity.revision_first == 1025 && identity.revision_limit == 2049
-        && mesh_reserved == 2048);
+        && mesh_reserved == MESH_REVISION_BOOT_RANGE);
     int calls = mesh_connect_calls;
+    /* Storage failure checks apply only to a fresh boot reservation; an
+     * ordinary reconnect no longer writes a revision counter at all. */
+    memset(&boot_revisions,0,sizeof boot_revisions);
     fail_set = "mesh_revision";
     assert(wendy_pki_mesh_connect("router", 43024, router, &connection, &identity) != ESP_OK
         && mesh_connect_calls == ++calls && connection == NULL);
     fail_set = NULL;
+    memset(&boot_revisions,0,sizeof boot_revisions);
     fail_commit = commit_calls + 1;
     assert(wendy_pki_mesh_connect("router", 43024, router, &connection, &identity) != ESP_OK
         && mesh_connect_calls == ++calls && connection == NULL);
@@ -779,6 +837,7 @@ static void test_mesh_identity(void)
     assert(wendy_pki_mesh_connect("router", 43024, router, &connection, &identity) != ESP_OK
         && mesh_connect_calls == calls && mesh_reserved == reserved);
     issuance_received = fail_post_issue_time = false;
+    memset(&boot_revisions,0,sizeof boot_revisions);
     mesh_reserved = UINT64_MAX - 500;
     assert(wendy_pki_mesh_connect("router", 43024, router, &connection, &identity) != ESP_OK
         && mesh_connect_calls == ++calls && connection == NULL);
@@ -802,14 +861,14 @@ static void test_mesh_identity(void)
 static int gateway_calls, direct_calls;
 int pki_tls_gateway_connect(const char* host, unsigned port, const char* tenant,
     const char* device, const char* router, const uint8_t* key, size_t key_size,
-    const char* cert, struct wendy_conf_span roots, wendy_pki_connection** out)
+    struct wendy_conf_span cert, struct wendy_conf_span roots, wendy_pki_connection** out)
 {
     assert(port == 18867 && !strcmp(host, "fd00::1"));
     gateway_calls++;
     return pki_tls_mesh_connect(host, port, tenant, device, router, key, key_size, cert, roots, out);
 }
 int pki_tls_bound_connect(const char* host, unsigned port, const char* interface,
-    const char* resolver, const uint8_t* key, size_t key_size, const char* cert,
+    const char* resolver, const uint8_t* key, size_t key_size, struct wendy_conf_span cert,
     struct wendy_conf_span roots, wendy_pki_connection** out)
 {
     assert(!strcmp(host, config.broker_host) && port == config.broker_port);
@@ -850,8 +909,88 @@ static void test_gateway_identity(void)
     strcpy(config.device_id, "lite-test"); reset();
 }
 #endif
+static void test_signed_clock_generation(void)
+{
+    reset();snapshot_generation=7;
+    mesh_verified_generation=7;mesh_verified_seconds=signed_now;mesh_verified_monotonic_us=0;
+    assert(mesh_time_recent());
+    monotonic_us=INT64_C(300000000);assert(!mesh_time_recent());
+    monotonic_us=0;snapshot_generation=8;assert(!mesh_time_recent());
+    snapshot_generation=7;config_cleared=true;assert(!mesh_time_recent());
+    config_cleared=false;monotonic_us=-1;assert(!mesh_time_recent());
+    mesh_verified_seconds=0;mesh_verified_monotonic_us=0;mesh_verified_generation=0;
+    reset();
+}
+#if CONFIG_WENDY_MESH_LEAF
+static void test_normal_boot_persistence(void)
+{
+    reset();
+    const char *peer="12345678-9abc-4def-8123-000000000003";
+    strcpy(config.device_id,"12345678-9abc-4def-8123-000000000002");
+    wendy_pki_connection *connection=NULL;
+    struct wendy_pki_mesh_identity first,second;
+    assert(wendy_pki_mesh_connect("router",43024,peer,&connection,&first)==ESP_OK);
+    assert(first.revision_first==1 && first.revision_limit==1025);
+    assert(mesh_reserved==MESH_REVISION_BOOT_RANGE && revision_writes==1);
+    int commits=commit_calls;
+    uint64_t value;
+    assert(wendy_pki_mesh_revision_next(&value)==ESP_OK && value==1025);
+    wendy_pki_close(connection);connection=NULL;
+    /* Disconnect/off/on is not a reboot: all state below is retained. */
+    assert(wendy_pki_mesh_connect("router",43024,peer,&connection,&second)==ESP_OK);
+    assert(second.revision_first==1026 && second.revision_limit==2050);
+    assert(wendy_pki_mesh_revision_next(&value)==ESP_OK && value==2050);
+    assert(commit_calls==commits && revision_writes==1);
+    wendy_pki_close(connection);connection=NULL;
+    /* A renewed certificate/configuration keeps the same boot counter. */
+    snapshot_generation++;
+    stored_is_issued=true;distinct_issued_certificate=true;
+    assert(wendy_pki_mesh_revision_next(&value)==ESP_OK && value==2051);
+    assert(revision_writes==1 && commit_calls==commits);
+    stored_is_issued=distinct_issued_certificate=false;
+
+    /* Verified refreshes use the RAM high-water even though only the first
+     * advancement is durable. Normal clock refresh makes no subsequent NVS
+     * writes, and the wall clock continues to advance. */
+    struct wendy_conf_enrollment_data trust={.generation=snapshot_generation,
+        .tsa_roots={wendy_pki_tsa_roots_start,1}};
+    reply_seconds=signed_now+10;
+    assert(!refresh_time_via(1,config.time_url,&trust,NULL));
+    assert(verifier_floor==signed_now && floor_writes==1 && durable_floor==signed_now+10);
+    reply_seconds=signed_now+20;
+    assert(!refresh_time_via(1,config.time_url,&trust,NULL));
+    assert(verifier_floor==signed_now+10 && floor_writes==1 && durable_floor==signed_now+10);
+    reply_seconds=signed_now+30;
+    assert(!refresh_time_via(1,config.time_url,&trust,NULL));
+    assert(verifier_floor==signed_now+20 && clock_now==signed_now+30 && floor_writes==1);
+    assert(commit_calls==commits+1);
+
+    /* Simulated reboot retains NVS but not process globals. Its new range
+     * starts beyond every value that could have been issued last boot. */
+    memset(&boot_revisions,0,sizeof boot_revisions);
+    memset(&boot_floor,0,sizeof boot_floor);
+    pthread_mutex_lock(&identity_lock);
+    assert(!reserve_boot_revisions(1));
+    pthread_mutex_unlock(&identity_lock);
+    assert(wendy_pki_mesh_revision_next(&value)==ESP_OK && value==MESH_REVISION_BOOT_RANGE+1);
+    assert(mesh_reserved==2*MESH_REVISION_BOOT_RANGE && revision_writes==2);
+    reply_seconds=signed_now+40;
+    assert(!refresh_time_via(1,config.time_url,&trust,NULL));
+    assert(verifier_floor==signed_now+10 && durable_floor==signed_now+40 && floor_writes==2);
+    puts("normal carrier reconnect, certificate change, boot revision and clock persistence passed");
+}
+#endif
 int main(int argc, char **argv)
 {
+    if(argc==3 && !strcmp(argv[2],"--normal-boot-persistence")) {
+        FILE *key=fopen(argv[1],"rb");assert(key);
+        key_der_size=fread(key_der,1,sizeof key_der,key);fclose(key);assert(key_der_size);
+#if CONFIG_WENDY_MESH_LEAF
+        test_normal_boot_persistence();
+        return 0;
+#endif
+    }
+    test_signed_clock_generation();
     assert(argc == 2);
     FILE *f = fopen(argv[1], "rb");
     assert(f);
@@ -954,19 +1093,19 @@ int main(int argc, char **argv)
     puts("renewal fallback, Lite authority lifecycle and local enrollment reset tests passed");
 }
 
-int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, const char *cert, struct wendy_conf_span roots, const char *tenant, wendy_pki_connection **out, int64_t deadline)
+int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, struct wendy_conf_span cert, struct wendy_conf_span roots, const char *tenant, wendy_pki_connection **out, int64_t deadline)
 {
     operator_accepts++;
     assert(roots.data == wendy_pki_device_roots_start);
     return -1;
 }
-int pki_tls_accept_lan(int fd, const uint8_t *key, size_t key_size, const char *cert, struct wendy_conf_span roots, const char *tenant, wendy_pki_connection **out, int64_t deadline)
+int pki_tls_accept_lan(int fd, const uint8_t *key, size_t key_size, struct wendy_conf_span cert, struct wendy_conf_span roots, const char *tenant, wendy_pki_connection **out, int64_t deadline)
 {
     lan_accepts++;
     assert(roots.data == wendy_pki_device_roots_start);
     return -1;
 }
-int pki_tls_accept_lite(int fd, const uint8_t *key, size_t key_size, const char *cert, struct wendy_conf_span roots, const char *tenant, wendy_pki_connection **out, int64_t deadline)
+int pki_tls_accept_lite(int fd, const uint8_t *key, size_t key_size, struct wendy_conf_span cert, struct wendy_conf_span roots, const char *tenant, wendy_pki_connection **out, int64_t deadline)
 {
     lite_accepts++;
     assert(lite_authority[0] && roots.size == strlen(lite_authority));
@@ -974,13 +1113,13 @@ int pki_tls_accept_lite(int fd, const uint8_t *key, size_t key_size, const char 
     return -1;
 }
 int pki_tls_accept_stream(const struct wendy_pki_stream *stream, const uint8_t *key,
-    size_t key_size, const char *cert, struct wendy_conf_span roots,
+    size_t key_size, struct wendy_conf_span cert, struct wendy_conf_span roots,
     const char *tenant, wendy_pki_connection **out, int64_t deadline)
 {
     stream_accepts++;
     assert(stream->context == &stream_connection && stream->read && stream->write && stream->wait);
     assert(key && key_size == key_der_size && !memcmp(key, key_der, key_size));
-    assert(!strcmp(cert, "stored") && !strcmp(tenant, config.tenant_id));
+    assert(certificate_is(cert, "stored") && !strcmp(tenant, config.tenant_id));
     assert(roots.data == wendy_pki_device_roots_start && roots.size == build_roots_size);
     assert(deadline > esp_timer_get_time());
     *out = &stream_connection;

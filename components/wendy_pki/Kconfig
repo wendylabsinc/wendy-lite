@@ -2,6 +2,7 @@ menu "Wendy PKI"
     config WENDY_PKI
         bool "Use pki-core Tier C enrollment"
         default y
+        select MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH
         select MBEDTLS_X509_CREATE_C
         select MBEDTLS_X509_CSR_WRITE_C
         help
@@ -11,6 +12,15 @@ menu "Wendy PKI"
         string "PEM device identity trust bundle, optional build-time fallback"
         depends on WENDY_PKI
         default ""
+    config WENDY_PKI_MLDSA65_SIGNING
+        bool "Enable experimental own ML-DSA-65 private-key backend"
+        depends on WENDY_PKI && MBEDTLS_SSL_TLS1_3_SIG_MLDSA65 && !LIBOQS_MLD_VERIFY_ONLY
+        default n
+        help
+            Enable seed-only PKCS8 import/export, key generation and pure-message
+            signing. This does not change the default P-256 enrollment key or
+            enable own ML-DSA TLS/CSR/artifact publication, which need separate
+            integration. Large math temporaries use the scoped crypto allocator.
     config WENDY_PKI_TSA_ROOTS
         string "PEM TSA trust bundle, optional build-time fallback"
         depends on WENDY_PKI

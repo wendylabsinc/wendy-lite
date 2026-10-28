@@ -1,0 +1,75 @@
+--- a/include/mbedtls/ssl.h
++++ b/include/mbedtls/ssl.h
+@@ -1963,6 +1963,15 @@
+ int mbedtls_ssl_setup_with_input_reserve(mbedtls_ssl_context *ssl,
+                                        const mbedtls_ssl_config *conf,
+                                        size_t minimum_input);
++/* Wendy: adopt a caller's zeroed stream input buffer. Its capacity must cover
++ * an ordinary input record and obey the configured handshake bound. *input
++ * becomes NULL when ownership moves to ssl, including later setup failure;
++ * otherwise the caller still owns it. ssl_free releases a consumed buffer. */
++int mbedtls_ssl_setup_with_preallocated_input(mbedtls_ssl_context *ssl,
++                                             const mbedtls_ssl_config *conf,
++                                             unsigned char **input,
++                                             size_t capacity);
++
+ 
+ int mbedtls_ssl_setup(mbedtls_ssl_context *ssl,
+                       const mbedtls_ssl_config *conf);
+--- a/library/ssl_tls.c
++++ b/library/ssl_tls.c
+@@ -1239,7 +1239,8 @@
+ 
+ static int ssl_setup_input(mbedtls_ssl_context *ssl,
+                            const mbedtls_ssl_config *conf,
+-                           size_t minimum_input, int small_initial)
++                           size_t minimum_input, int small_initial,
++                           unsigned char **preallocated)
+ {
+     if (minimum_input > MBEDTLS_SSL_IN_BUFFER_LEN ||
+         (minimum_input && conf->transport != MBEDTLS_SSL_TRANSPORT_STREAM))
+@@ -1284,7 +1285,12 @@
+ #if defined(MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH)
+     ssl->in_buf_len = in_buf_len;
+ #endif
+-    ssl->in_buf = mbedtls_calloc(1, in_buf_len);
++    if (preallocated && *preallocated) {
++        ssl->in_buf = *preallocated;
++        *preallocated = NULL;
++    } else {
++        ssl->in_buf = mbedtls_calloc(1, in_buf_len);
++    }
+     if (ssl->in_buf == NULL) {
+         MBEDTLS_SSL_DEBUG_MSG(1, ("alloc(%" MBEDTLS_PRINTF_SIZET " bytes) failed", in_buf_len));
+         ret = MBEDTLS_ERR_SSL_ALLOC_FAILED;
+@@ -1346,13 +1352,28 @@
+                                        const mbedtls_ssl_config *conf,
+                                        size_t minimum_input)
+ {
+-    return ssl_setup_input(ssl, conf, minimum_input, 0);
++    return ssl_setup_input(ssl, conf, minimum_input, 0, NULL);
++}
++
++int mbedtls_ssl_setup_with_preallocated_input(mbedtls_ssl_context *ssl,
++                                             const mbedtls_ssl_config *conf,
++                                             unsigned char **input,
++                                             size_t capacity)
++{
++    size_t ordinary = MBEDTLS_SSL_IN_BUFFER_LEN;
++#if defined(MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH)
++    ordinary -= MBEDTLS_SSL_HANDSHAKE_HEADROOM;
++#endif
++    if (!input || !*input || conf->transport != MBEDTLS_SSL_TRANSPORT_STREAM ||
++        capacity < ordinary || capacity > MBEDTLS_SSL_IN_BUFFER_LEN)
++        return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
++    return ssl_setup_input(ssl, conf, capacity, 0, input);
+ }
+ 
+ int mbedtls_ssl_setup_small_input(mbedtls_ssl_context *ssl,
+                                   const mbedtls_ssl_config *conf)
+ {
+-    return ssl_setup_input(ssl, conf, 0, 1);
++    return ssl_setup_input(ssl, conf, 0, 1, NULL);
+ }
+ 
+ /*

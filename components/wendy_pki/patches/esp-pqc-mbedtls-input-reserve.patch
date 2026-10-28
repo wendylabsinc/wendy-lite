@@ -1,0 +1,43 @@
+--- a/include/mbedtls/ssl.h
++++ b/include/mbedtls/ssl.h
+@@ -1948,6 +1948,13 @@
+  * \return         0 if successful, or #PSA_ERROR_INSUFFICIENT_MEMORY if
+  *                 memory allocation failed
+  */
++/* Wendy: reserve a bounded stream handshake input buffer at setup, before
++ * small certificate/workspace allocations fragment a constrained heap.
++ * Zero preserves the normal setup behavior. Record limits are unchanged. */
++int mbedtls_ssl_setup_with_input_reserve(mbedtls_ssl_context *ssl,
++                                       const mbedtls_ssl_config *conf,
++                                       size_t minimum_input);
++
+ int mbedtls_ssl_setup(mbedtls_ssl_context *ssl,
+                       const mbedtls_ssl_config *conf);
+ 
+--- a/library/ssl_tls.c
++++ b/library/ssl_tls.c
+@@ -1202,6 +1202,16 @@
+ int mbedtls_ssl_setup(mbedtls_ssl_context *ssl,
+                       const mbedtls_ssl_config *conf)
+ {
++    return mbedtls_ssl_setup_with_input_reserve(ssl, conf, 0);
++}
++
++int mbedtls_ssl_setup_with_input_reserve(mbedtls_ssl_context *ssl,
++                                       const mbedtls_ssl_config *conf,
++                                       size_t minimum_input)
++{
++    if (minimum_input > MBEDTLS_SSL_IN_BUFFER_LEN ||
++        (minimum_input && conf->transport != MBEDTLS_SSL_TRANSPORT_STREAM))
++        return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
+     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+     size_t in_buf_len = MBEDTLS_SSL_IN_BUFFER_LEN;
+     size_t out_buf_len = MBEDTLS_SSL_OUT_BUFFER_LEN;
+@@ -1210,5 +1220,7 @@
+         in_buf_len -= MBEDTLS_SSL_HANDSHAKE_HEADROOM;
+     }
+ #endif
++
++    if (minimum_input > in_buf_len) in_buf_len = minimum_input;
+ 
+     ssl->conf = conf;
