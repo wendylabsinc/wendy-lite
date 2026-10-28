@@ -11,6 +11,11 @@
 extern "C" {
 #endif
 
+struct wcom_net_delegate {
+    WendyComResult (*get)(WendyComNetStatus *);
+    WendyComResult (*set)(const WendyComNetConfig *,WendyComNetStatus *);
+};
+
 struct wcom_app_delegate {
     WendyComResult (*on_app_push_begin)(size_t size, WendyComAppType app_type);
     WendyComResult (*on_app_push_data)(size_t offset, const uint8_t *data, size_t size);
