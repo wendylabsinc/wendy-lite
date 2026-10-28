@@ -1,11 +1,11 @@
-# Signed native routing sessions
+# Signed routing sessions
 
 One actor owns node state across authenticated carrier sessions. The component
 starts no radio, actor, worker or public runtime by itself. Each carrier's outer
 owner admits its verified TLS identity, supplies nonblocking send callbacks and
-retains an input frame whenever a continuation returns positive. The later
-actor layer drives timers and readiness. The existing baseline PKI provider
-polls CPU and I/O work; the actor starts/binds the dedicated crypto worker and
+retains an input frame whenever a continuation returns positive. The outer
+driver supplies timers and readiness. The existing baseline PKI provider polls
+CPU and I/O work; the actor starts/binds the dedicated crypto worker and
 quiesces it before waiting for the common task ledger to drain.
 
 The sole gossiped artifact is a complete signed device manifest. Its services
@@ -30,8 +30,8 @@ keys and up to 64 compact endpoint projections. Those projections survive key
 FIFO eviction and permit outgoing VIP lookup when the individual manifest fits
 the SRAM download bound. Larger individual manifests remain unavailable for
 C6 outgoing lookup; incoming default-gateway traffic does not depend on them.
-There is no independent service gossip, service signature, operator-origin
-runtime or delegated leaf protocol.
+There is no independent service gossip, service signature or delegated leaf
+protocol.
 
 Raw FIFO eviction skips active transfers and the local proof, sends the
 existing GONE/UNAVAILABLE messages, and retains bounded verified metadata rather
@@ -60,11 +60,12 @@ one extra retry. Identity repair retains metadata only in the async runtime,
 while the completed gossip download owns the full body; the old copied-body
 8 KiB limit does not reject a PSRAM node's larger valid manifest.
 
-The host suite covers normal routing/fallback, coalescing/sequence ordering,
-backpressured 64-origin inventories, valid-signature allocation retry, active
-upload pins, cancellation/drain, and actual WendyOS P-256/ML-DSA-65 manifests.
-The 80-origin churn fixture measures bounded component state, not a radio mesh
-or complete firmware heap. Configure `WENDYOS_GO_ROOT` to the reviewed WendyOS
-`go` directory to include its independent fixture generator; select
-`^(session_|format_)` in CTest. Real C5/C6 actors, radios, VIP overlap and runtime
-OFF/ON memory drain remain later-layer integration/hardware gates.
+## Component validation
+
+The host suite covers routing, coalescing, backpressure, allocation retry, upload
+pins, cancellation and C/Go manifest interoperability. Configure
+`WENDYOS_GO_ROOT` to the WendyOS `go` directory to include its independent fixture
+generator; select `^(session_|format_)` in CTest. These tests exercise component
+state and formats, not complete radio or firmware resource use. See
+[the component README](README.md) for build instructions. Complete firmware
+limits also depend on the selected build configuration and carrier drivers.
