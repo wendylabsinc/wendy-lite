@@ -15,6 +15,25 @@ menu "Wendy BLE (WendyCom transport)"
             installs the host sync callback and drives advertising. No other
             component may bring the stack up.
 
+    config WENDY_BLE_INTERNAL_CONTROLLER_DATA
+        bool "Keep native C5 HCI fragment pool in internal RAM"
+        default n
+        depends on WENDY_BLE && IDF_TARGET_ESP32C5 && BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL
+        help
+            Placement investigation: keep the dedicated HCI fragment pool
+            internal while retaining the normal external host metadata policy.
+            The native C5 controller receives mbufs directly. Its shared MSYS
+            pools already use internal controller allocation. Host-only private
+            Wendy Net SDUs remain eligible for external memory.
+    config WENDY_NET_TEST_BLE_STREAM_CRC
+        bool "Trace bounded mesh stream CRC checkpoints (lab only)"
+        default n
+        depends on WENDY_NET_BLE && WENDY_NET_TEST_DIAGNOSTICS
+        help
+            Compare accepted encrypted stream prefixes with a passive Bluetooth
+            observer. Stores forty bytes per pipe, no payload or new task.
+            Emits offsets/checksums on existing diagnostics and disconnect.
+
     config WENDY_BLE_PSM
         int "L2CAP PSM"
         default 128

@@ -10,6 +10,7 @@ static void (*worker)(void *);
 static EventBits_t event_bits;
 static uint32_t notifications;
 static unsigned task_creates, event_deletes, retry_waits, connect_wait_ms;
+static unsigned netif_inits, event_loop_inits, station_netifs, driver_inits, credential_opens;
 static unsigned mdns_inits, hostname_sets, server_starts, cloud_starts;
 static unsigned mdns_failures, hostname_failures, cloud_failures;
 static bool fail_task, enrolled, disconnect_on_retry;
@@ -171,7 +172,7 @@ uint32_t ulTaskNotifyTake(int clear, TickType_t ticks)
 }
 void vTaskDelay(TickType_t ticks) {}
 TickType_t xTaskGetTickCount(void) { return test_ticks; }
-esp_err_t esp_event_loop_create_default(void) { return ESP_OK; }
+esp_err_t esp_event_loop_create_default(void) { event_loop_inits++; return ESP_OK; }
 esp_err_t esp_event_handler_instance_register(esp_event_base_t base, int32_t id,
     void (*handler)(void *, esp_event_base_t, int32_t, void *), void *arg,
     esp_event_handler_instance_t *instance) { return ESP_OK; }
@@ -203,9 +204,9 @@ esp_err_t esp_event_post(esp_event_base_t base, int32_t id, const void *data, si
     }
     return ESP_OK;
 }
-esp_err_t esp_netif_init(void) { return ESP_OK; }
-void *esp_netif_create_default_wifi_sta(void) { return &event_bits; }
-esp_err_t esp_wifi_init(const wifi_init_config_t *config) { return ESP_OK; }
+esp_err_t esp_netif_init(void) { netif_inits++; return ESP_OK; }
+void *esp_netif_create_default_wifi_sta(void) { station_netifs++; return &event_bits; }
+esp_err_t esp_wifi_init(const wifi_init_config_t *config) { driver_inits++; return ESP_OK; }
 esp_err_t esp_wifi_connect(void)
 {
     if (driver_model) assert(driver_started);
@@ -242,7 +243,7 @@ esp_err_t esp_wifi_stop(void)
     return ESP_OK;
 }
 esp_err_t esp_wifi_deinit(void) { return ESP_OK; }
-esp_err_t nvs_open(const char *name, int mode, nvs_handle_t *handle) { *handle = 1; return ESP_OK; }
+esp_err_t nvs_open(const char *name, int mode, nvs_handle_t *handle) { credential_opens++; *handle = 1; return ESP_OK; }
 esp_err_t nvs_get_str(nvs_handle_t handle, const char *name, char *out, size_t *size)
 {
     strlcpy(out, !strcmp(name, "ssid") ? "test-network" : "", *size);
@@ -259,7 +260,7 @@ esp_err_t mdns_init(void)
 }
 esp_err_t mdns_hostname_set(const char *hostname)
 {
-    assert(!strcmp(hostname, "test-board"));
+    assert(!strcmp(hostname, "wendylt-test-board"));
     hostname_sets++;
     if (hostname_failures) { hostname_failures--; return ESP_FAIL; }
     return ESP_OK;

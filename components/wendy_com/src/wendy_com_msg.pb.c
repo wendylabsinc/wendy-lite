@@ -48,6 +48,18 @@ PB_BIND(WendyComGetDeviceIdentityParams, WendyComGetDeviceIdentityParams, AUTO)
 PB_BIND(WendyComDeviceIdentity, WendyComDeviceIdentity, AUTO)
 
 
+PB_BIND(WendyComNetConfig, WendyComNetConfig, AUTO)
+
+
+PB_BIND(WendyComNetGetParams, WendyComNetGetParams, AUTO)
+
+
+PB_BIND(WendyComNetSetParams, WendyComNetSetParams, AUTO)
+
+
+PB_BIND(WendyComNetStatus, WendyComNetStatus, AUTO)
+
+
 PB_BIND(WendyComGetDeviceInfoParams, WendyComGetDeviceInfoParams, AUTO)
 
 
@@ -115,16 +127,3 @@ PB_BIND(WendyComService, WendyComService, AUTO)
 
 
 PB_BIND(WendyComMessage, WendyComMessage, 2)
-
-
-
-
-
-
-
-
-
-
-
-
-

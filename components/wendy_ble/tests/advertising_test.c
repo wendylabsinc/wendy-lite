@@ -14,13 +14,24 @@ struct test_hs_cfg ble_hs_cfg;
 struct ble_hs_adv_fields test_adv, test_rsp;
 const struct ble_gatt_svc_def *test_services;
 
+static bool test_physical_claim, test_mesh_claim;
+bool wble_l2cap_connection_idle(uint16_t handle){(void)handle;return !test_physical_claim;}
+bool wble_mesh_uses_connection(uint16_t handle){(void)handle;return test_mesh_claim;}
 esp_err_t wble_l2cap_init(void) { return ESP_OK; }
 bool wble_l2cap_wait_session(TickType_t timeout) { return false; }
 void wble_l2cap_end_session(void) {}
 int wble_l2cap_wakeup_fd(void) { return -1; }
 bool wble_l2cap_can_read(void) { return false; }
 bool wble_l2cap_can_write(void) { return false; }
-esp_err_t wble_tls_session_start(bool enrolled) { return ESP_FAIL; }
+static esp_err_t test_handshake_result;
+static unsigned test_handshake_calls;
+esp_err_t wble_tls_session_start(bool enrolled) {
+#if WENDY_BLE_IO_DISPATCH_TEST
+    extern void test_physical_tls_entry(void);
+    test_physical_tls_entry();
+#endif
+    ++test_handshake_calls; return test_handshake_result;
+}
 void wble_tls_session_end(void) {}
 ssize_t wble_tls_read(void *buf, size_t len) { return WBLE_ERR_WANT_READ; }
 ssize_t wble_tls_write(const void *buf, size_t len) { return WBLE_ERR_WANT_WRITE; }
@@ -44,6 +55,7 @@ static void reset_fixture(void)
     test_current = true;
     strcpy(test_enrollment_device_id, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
     test_adv_starts = 0;
+    test_advertising_active=false;test_advertising_error=0;
     test_fail_semaphore = test_fail_task = false;
     test_semaphore_calls = test_semaphores_allocated = test_semaphores_deleted = 0;
     test_task_calls = test_tasks_created = test_task_stack = 0;
@@ -117,7 +129,7 @@ static void test_pki_enrollment(void)
     assert(wendy_ble_start() == ESP_OK);
     assert_advertisement(1);
     assert(test_task_calls == 1 && test_tasks_created == 1);
-    assert(test_task_stack == 24576);
+    assert(test_task_stack == 4096);
     assert(wendy_ble_start() == ESP_OK);
     assert(test_task_calls == 1 && test_tasks_created == 1);
     assert(test_semaphore_calls == 1);
@@ -239,7 +251,7 @@ static void test_allocation_failure_retry(void)
             assert_advertisement(enrolled);
             assert(test_tasks_created == 1);
             assert(test_task_calls == (unsigned)fail_task + 1);
-            assert(test_task_stack == (enrolled ? 24576u : 4096u));
+            assert(test_task_stack == 4096);
             assert(test_semaphore_calls == 2);
             assert(test_semaphores_allocated == test_semaphores_deleted + 1);
 
@@ -278,8 +290,26 @@ static void test_invalidated_enrollment_cache(void)
 #endif
 }
 
+static void test_demand_handshake(void)
+{
+    for (int enrolled=0;enrolled<=CONFIG_WENDY_PKI;enrolled++) {
+        reset_fixture();_enrolled=enrolled;
+        test_handshake_calls=0;test_handshake_result=ESP_OK;
+        assert(_run_session_handshake()==ESP_OK);
+        assert(test_handshake_calls==1);
+        assert(test_task_stack==(enrolled ? 24576u : 4096u));
+        test_handshake_result=ESP_FAIL;
+        assert(_run_session_handshake()==ESP_FAIL);
+        assert(test_handshake_calls==2);
+        test_fail_task=true;
+        assert(_run_session_handshake()==ESP_ERR_NO_MEM);
+        assert(test_handshake_calls==2);
+    }
+}
+
 int main(void)
 {
+    test_demand_handshake();
     test_pki_enrollment();
     test_unenrolled();
     test_empty_enrollment_identity();

@@ -1,3 +1,8 @@
+#include "sdkconfig.h"
+#if CONFIG_WENDY_NET_PEER
+#include "wendy_net_peer.h"
+#endif
+#include "wendy_pki_work.h"
 #include "wendy_server.h"
 #include "wendy_server_tls.h"
 #include "wendy_conf.h"
@@ -191,6 +196,14 @@ static void _server_task(void *arg)
         return;
     }
 
+#if CONFIG_WENDY_NET_PEER
+    if (listen_fd >= FD_SETSIZE) {
+        ESP_LOGE(TAG, "listener exceeds select descriptor capacity");
+        close(listen_fd);
+        vTaskDelete(NULL);
+        return;
+    }
+#endif
     int opt = 1;
     setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
@@ -272,7 +285,19 @@ static void _server_task(void *arg)
     }
 
 
+#if CONFIG_WENDY_NET_PEER
+    wendy_pki_work_enable();
+#endif
     for (;;) {
+#if CONFIG_WENDY_NET_PEER
+        (void)wendy_pki_work_poll();
+        (void)wendy_pki_io_work_poll();
+        wendy_net_peer_maintain();
+        fd_set reading;FD_ZERO(&reading);FD_SET(listen_fd,&reading);
+        struct timeval poll={.tv_usec=250000};
+        int available=select(listen_fd+1,&reading,NULL,NULL,&poll);
+        if(available<=0 || !FD_ISSET(listen_fd,&reading))continue;
+#endif
         struct sockaddr_storage client_addr;
         socklen_t client_len = sizeof(client_addr);
         int client_fd = accept(listen_fd, (struct sockaddr *)&client_addr, &client_len);
