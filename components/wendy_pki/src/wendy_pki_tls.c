@@ -158,7 +158,8 @@ static int pin_presented_chain(wendy_pki_connection *c,
     return 0;
 }
 
-/* This layer always presents the full verified issuer path. */
+/* Only exact independently pinned issuers participate in this optional hint.
+ * Ordinary trust verification and the real service ALPN remain mandatory. */
 static int issuer_identity(const mbedtls_x509_crt *leaf,uint8_t output[32])
 {
     uint8_t parts[64];
@@ -288,6 +289,7 @@ void wendy_pki_close(wendy_pki_connection *c)
     release_mesh_roots(c);
     pki_public_chain_free(c->public_chain);
     pki_owned_free(c->authenticated_peer);
+    pki_owned_free(c->issuers);
     if (c->fd >= 0) close(c->fd);
     pki_owned_free(c);
     wendy_pki_crypto_cleanup();
@@ -427,7 +429,31 @@ static int handshake_step_direct(wendy_pki_connection *c,bool compact_server)
             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 #endif
     }
+    int state=c->ssl.MBEDTLS_PRIVATE(state);
+    struct pki_issuer_state *issuers=c->issuers;
+    if(issuers && c->config.MBEDTLS_PRIVATE(endpoint)==MBEDTLS_SSL_IS_CLIENT &&
+       state==MBEDTLS_SSL_CLIENT_CERTIFICATE){
+        const char *selected=mbedtls_ssl_get_alpn_protocol(&c->ssl);
+        uint8_t peer_issuer[32];
+        /* The public getter exposes only the established session, which is
+         * installed after we write our certificate. Read this verified pending
+         * session while its exclusively loaned handshake context is still live. */
+        const mbedtls_ssl_session *pending=c->ssl.MBEDTLS_PRIVATE(session_negotiate);
+        const mbedtls_x509_crt *peer=pending ? pending->MBEDTLS_PRIVATE(peer_cert):NULL;
+        /* Server chain, CertificateVerify and Finished have passed. The wire
+         * count survives library compaction of the verified parsed chain. */
+        issuers->omit=issuers->peer_presented_certificates==1 && selected &&
+            !strcmp(selected,issuers->protocols[0]) &&
+            !mbedtls_ssl_get_verify_result(&c->ssl) &&
+            !issuer_identity(peer,peer_issuer) &&
+            !memcmp(peer_issuer,issuers->own_issuer_identity,32);
+    }
     int result=mbedtls_ssl_handshake_step(&c->ssl);
+    if(!result && issuers && state==MBEDTLS_SSL_SERVER_CERTIFICATE &&
+       c->config.MBEDTLS_PRIVATE(endpoint)==MBEDTLS_SSL_IS_CLIENT &&
+       c->ssl.MBEDTLS_PRIVATE(state)==MBEDTLS_SSL_CERTIFICATE_VERIFY)
+        issuers->peer_presented_certificates=pki_certificate_message_count(
+            c->ssl.MBEDTLS_PRIVATE(in_msg),c->ssl.MBEDTLS_PRIVATE(in_hslen));
     return result;
 }
 
