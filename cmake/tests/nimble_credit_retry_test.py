@@ -30,6 +30,23 @@ def function(source, name):
     return source[start:at] + '\n'
 
 
+def copy_patched_host(project, idf, work):
+    original = Path(idf) / 'components/bt/host/nimble/nimble/nimble/host'
+    host = work / 'host'
+    shutil.copytree(original, host)
+    env = os.environ.copy()
+    env.pop('GIT_DIR', None)
+    env.pop('GIT_WORK_TREE', None)
+    env['GIT_CEILING_DIRECTORIES'] = str(work)
+    for patch in ('idf-nimble-coc-crossed-disconnect.patch',
+                  'idf-nimble-coc-credit-retry.patch',
+                  'idf-nimble-coc-backed-credit-window.patch',
+                  'idf-nimble-acl-queued-retry.patch'):
+        subprocess.run(['git', 'apply', '--no-index', str(project / 'patches' / patch)],
+                       cwd=host, env=env, check=True, timeout=30)
+    return host
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--idf', default=os.environ.get('IDF_PATH'))
@@ -41,18 +58,7 @@ def main():
     original = Path(args.idf) / 'components/bt/host/nimble/nimble/nimble/host'
     with tempfile.TemporaryDirectory(prefix='wendy-credit-retry-') as temporary:
         work = Path(temporary)
-        host = work / 'host'
-        shutil.copytree(original, host)
-        env = os.environ.copy()
-        env.pop('GIT_DIR', None)
-        env.pop('GIT_WORK_TREE', None)
-        env['GIT_CEILING_DIRECTORIES'] = str(work)
-        for patch in ['idf-nimble-coc-crossed-disconnect.patch',
-                      'idf-nimble-coc-credit-retry.patch',
-                      'idf-nimble-coc-backed-credit-window.patch',
-                      'idf-nimble-acl-queued-retry.patch']:
-            subprocess.run(['git', 'apply', '--no-index', str(project / 'patches' / patch)],
-                           cwd=host, env=env, check=True, timeout=30)
+        host = copy_patched_host(project, args.idf, work)
         endpoint = (host / 'src/ble_l2cap_coc_priv.h').read_text()
         start = endpoint.index('struct ble_l2cap_coc_endpoint {')
         end = endpoint.index('};', start) + 2
@@ -80,14 +86,13 @@ def main():
         (work / 'nimble_credit_production.inc').write_text('\n'.join(functions))
         compiler = os.environ.get('CC', 'cc')
         command = [compiler, '-std=c11', '-g', '-Wall', '-Wextra', '-Werror',
-                   '-I', str(work), '-I', str(project / 'components/wendy_ble/src'),
+                   '-I', str(work),
                    str(project / 'cmake/tests/nimble_credit_retry_test.c')]
         if args.sanitize:
             command += ['-fsanitize=address,undefined', '-fno-omit-frame-pointer']
         for slots in [1, 2]:
             binary = work / f'credit-test-{slots}'
             subprocess.run(command + [f'-DTEST_RX_SLOTS={slots}',
-                                      f'-DTEST_PRIVATE_SDUS={6 if slots == 1 else 13}',
                                       '-o', str(binary)], check=True, timeout=60)
             subprocess.run([str(binary)], check=True, timeout=30)
         # The live retry bits use existing storage, never a new per-channel member.

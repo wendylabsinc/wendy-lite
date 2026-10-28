@@ -46,7 +46,7 @@ struct os_mbuf {
     unsigned len;
     uint8_t *om_data;
     uint8_t bytes[640];
-    bool pooled, used, private;
+    bool pooled, used;
 };
 #include "nimble_credit_endpoint.inc"
 struct ble_l2cap_chan {
@@ -83,8 +83,6 @@ static int32_t procedure_deadline = BLE_HS_FOREVER;
 static struct os_mbuf ordinary_pool[2];
 static unsigned pool_capacity = 2;
 static uint8_t completed[1024];
-static void private_freed(struct os_mbuf *);
-static void adapter_received(struct ble_l2cap_chan *,struct os_mbuf *);
 
 static void ble_hs_lock(void) { assert(!locked); locked = 1; }
 static void ble_hs_unlock(void) { assert(locked); locked = 0; }
@@ -123,7 +121,6 @@ static struct os_mbuf *ble_hs_mbuf_l2cap_pkt(void) {
     return NULL;
 }
 static void os_mbuf_free_chain(struct os_mbuf *om) {
-    if (om && om->private) { private_freed(om); return; }
     if (om && om->pooled) { assert(om->used); om->used = false; assert(pool_in_use > 0); pool_in_use--; }
 }
 static void *os_mbuf_extend(struct os_mbuf *om, unsigned size) {
@@ -156,14 +153,10 @@ static int os_mbuf_appendfrom(struct os_mbuf *out, struct os_mbuf *in, unsigned 
     assert(at + len <= in->len && out->len + len <= sizeof(out->bytes));
     memcpy(out->om_data + out->len, in->om_data + at, len); out->len += len; return 0;
 }
-static int os_mbuf_copydata(struct os_mbuf *om,unsigned at,unsigned count,void *out) {
-    assert(at+count<=om->len);memcpy(out,om->om_data+at,count);return 0;
-}
 static void ble_l2cap_disconnect(struct ble_l2cap_chan *chan) { (void)chan; assert(!"unexpected disconnect"); }
 static void ble_l2cap_event_coc_received_data(struct ble_l2cap_chan *chan, struct os_mbuf *om) {
     (void)chan; assert(!locked); assert(om->len <= sizeof(completed));
     memcpy(completed, om->om_data, om->len); received_sdus++; received_bytes += om->len;
-    adapter_received(chan,om);
 }
 static int32_t ble_l2cap_sig_extract_expired(struct ble_l2cap_sig_proc_list *list) {
     STAILQ_INIT(list); return procedure_deadline;
@@ -192,6 +185,41 @@ static void incoming(struct ble_l2cap_chan *chan, const uint8_t *bytes, unsigned
     struct os_mbuf *p = &packet;
     assert(ble_l2cap_coc_rx_fn(chan, &p) == 0);
 }
+#if TEST_RX_SLOTS > 1
+static void deferred_backed_window(void) {
+    struct ble_hs_conn conn;
+    struct ble_l2cap_chan sig, chan;
+    struct os_mbuf old_rx, parked_rx;
+    const uint8_t short_sdu[] = {3, 0, 'x', 'y', 'z'};
+    int before_pdus = grant_pdus, before_sdus = received_sdus;
+    connect_channel(&conn, &sig, &chan, 3, 66);
+    init_mbuf(&old_rx); init_mbuf(&parked_rx);
+    chan.initial_credits = 2;
+    chan.coc_rx.credits = 1; /* One earlier credit is already at the peer. */
+    chan.coc_rx.sdus[0] = &old_rx;
+    chan.coc_rx.next_sdu_alloc_idx = 1;
+    struct os_mbuf *busy0 = ble_hs_mbuf_l2cap_pkt();
+    struct os_mbuf *busy1 = ble_hs_mbuf_l2cap_pkt();
+    assert(busy0 && busy1);
+    assert(ble_l2cap_coc_recv_ready(&chan, &parked_rx) == 0);
+    assert(chan.coc_rx.sdus[1] == &parked_rx && chan.coc_rx.credits == 1);
+    assert(chan.coc_rx.flags & BLE_L2CAP_COC_RX_CREDITS_INITIAL);
+    incoming(&chan, short_sdu, sizeof(short_sdu));
+    assert(received_sdus == before_sdus + 1 && chan.coc_rx.current_sdu_idx == 1);
+    assert(!chan.coc_rx.sdus[0] && chan.coc_rx.credits == 0);
+    os_mbuf_free_chain(busy0); os_mbuf_free_chain(busy1);
+    assert(ble_l2cap_sig_timer() == BLE_HS_FOREVER);
+    /* Only one buffer remains now. Recomputing the armed ring prevents the
+     * old target of two from granting an unbacked short-SDU receive. */
+    assert(grant_pdus == before_pdus + 1 && credit_sum[66] == 1);
+    assert(chan.coc_rx.credits == 1 && !chan.coc_rx.flags);
+    incoming(&chan, short_sdu, sizeof(short_sdu));
+    assert(received_sdus == before_sdus + 2 && chan.coc_rx.credits == 0);
+    assert(ble_l2cap_sig_timer() == BLE_HS_FOREVER && grant_pdus == before_pdus + 1);
+    assert(!chan.coc_rx.sdus[1] && pool_in_use == 0);
+    SLIST_REMOVE(&connections, &conn, ble_hs_conn, bhc_next);
+}
+#endif
 int main(void) {
     struct ble_hs_conn conn, other;
     struct ble_l2cap_chan sig, chan, other_sig, other_chan;
@@ -263,6 +291,9 @@ int main(void) {
     chan.disable_auto_credit_update = true;
     assert(ble_l2cap_sig_timer() == BLE_HS_FOREVER && !chan.coc_rx.flags);
     assert(pool_in_use == 0 && pool_peak == 2 && !locked);
+#if TEST_RX_SLOTS > 1
+    deferred_backed_window();
+#endif
     printf("credit fixture RXslots=%u PASS: %d exact grants, %d bytes, pool peak %d, allocations %d, no extra SDUs\n",TEST_RX_SLOTS,
            grant_pdus, received_bytes, pool_peak, pool_allocations);
     return 0;

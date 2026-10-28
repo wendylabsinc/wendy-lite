@@ -59,9 +59,6 @@ static struct os_mbuf *ble_hs_hci_frag_alloc(uint16_t size,void *arg){
 }
 static int os_mbuf_appendfrom(struct os_mbuf *to,struct os_mbuf *from,unsigned offset,unsigned len){assert(from->used && to->used && offset+len<=from->len && to->len+len<=sizeof to->bytes);memcpy(to->bytes+to->len,from->bytes+offset,len);to->len+=len;return 0;}
 static void os_mbuf_adj(struct os_mbuf *m,int len){assert(len>=0 && (unsigned)len<=m->len);m->len-=(unsigned)len;memmove(m->bytes,m->bytes+len,m->len);}
-static struct os_mbuf *mem_split_frag(struct os_mbuf **m,unsigned max,struct os_mbuf *(*alloc)(uint16_t,void *),void *arg){
- if((*m)->len<=max){struct os_mbuf *out=*m;*m=NULL;return out;}struct os_mbuf *out=alloc((uint16_t)max,arg);if(!out)return NULL;os_mbuf_appendfrom(out,*m,0,max);os_mbuf_adj(*m,(int)max);return out;
-}
 static struct os_mbuf *ble_hs_hci_acl_hdr_prepend(struct os_mbuf *m,uint16_t handle,uint8_t pb){assert(handle==1 && m && m->used);m->pb=pb;return m;}
 static int ble_hs_tx_data(struct os_mbuf *m){
  assert(m && m->used);

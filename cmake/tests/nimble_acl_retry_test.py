@@ -8,7 +8,6 @@ import argparse
 import importlib.util
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -33,19 +32,7 @@ def main():
         if args.host:
             host = Path(args.host).resolve()
         else:
-            original = Path(args.idf) / 'components/bt/host/nimble/nimble/nimble/host'
-            host = work / 'host'
-            shutil.copytree(original, host)
-            env = os.environ.copy()
-            env.pop('GIT_DIR', None)
-            env.pop('GIT_WORK_TREE', None)
-            env['GIT_CEILING_DIRECTORIES'] = str(work)
-            for patch in ('idf-nimble-coc-crossed-disconnect.patch',
-                          'idf-nimble-coc-credit-retry.patch',
-                          'idf-nimble-coc-backed-credit-window.patch',
-                          'idf-nimble-acl-queued-retry.patch'):
-                subprocess.run(['git', 'apply', '--no-index', str(project / 'patches' / patch)],
-                    cwd=host, env=env, check=True, timeout=30)
+            host = helper.copy_patched_host(project, args.idf, work)
         production = []
         for source, names in (
             ('ble_hs_hci.c', ('ble_hs_hci_acl_tx_now', 'ble_hs_hci_acl_tx')),
@@ -58,7 +45,7 @@ def main():
         for maximum in (251, 8):
             binary = work / ('acl-' + str(maximum))
             command = [os.environ.get('CC', 'cc'), '-std=c11', '-g', '-Wall', '-Wextra',
-                '-Werror', '-Wno-unused-function', '-Wno-misleading-indentation',
+                '-Werror',
                 '-I', str(work), '-DHAVE_RETRY_TIMER=1', '-DTEST_ACL_MAX=' + str(maximum),
                 str(Path(__file__).with_suffix('.c')), '-o', str(binary)]
             if args.sanitize:
