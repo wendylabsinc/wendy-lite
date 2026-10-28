@@ -214,3 +214,6 @@ target_compile_options(topology_driver_success_test PRIVATE -Wall -Wextra -Werro
 target_link_libraries(topology_driver_success_test PRIVATE Threads::Threads)
 add_test(NAME topology_driver_success COMMAND topology_driver_success_test)
 set_tests_properties(topology_driver_success PROPERTIES TIMEOUT 20)
+add_executable(session_operator_actor operator_actor_success_test.c ../src/operator_worker.c)
+target_link_libraries(session_operator_actor PRIVATE peer_session_budget)
+target_compile_options(session_operator_actor PRIVATE -Wall -Wextra -Werror -UNDEBUG -Wno-misleading-indentation)

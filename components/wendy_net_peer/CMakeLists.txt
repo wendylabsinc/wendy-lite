@@ -4,7 +4,7 @@ if(CONFIG_WENDY_NET_PEER)
 else()
  list(APPEND native_driver_sources "src/native_staging.c")
 endif()
-idf_component_register(SRCS ${native_driver_sources} "src/operator.c" "src/router.c" "src/control.c" "src/router_session.c" "src/topology_record.c" "src/crypto_job.c" "src/certificate_worker.c" "src/certificate_read.c" "src/catalog_node.c" "src/manifest_catalog.c" "src/catalog_guest.c" "src/service_store.c"  "src/protocol.c" "src/binary.c" "src/packet.c" "src/directory.c" "src/manifest_service.c" "src/service_protocol.c" "src/guest_json.c" "src/certificate_fetch.c" "src/certificate_store.c" "src/certificate_wire.c"
+idf_component_register(SRCS ${native_driver_sources} "src/operator.c" "src/operator_worker.c" "src/router.c" "src/control.c" "src/router_session.c" "src/topology_record.c" "src/crypto_job.c" "src/certificate_worker.c" "src/certificate_read.c" "src/catalog_node.c" "src/manifest_catalog.c" "src/catalog_guest.c" "src/service_store.c"  "src/protocol.c" "src/binary.c" "src/packet.c" "src/directory.c" "src/manifest_service.c" "src/service_protocol.c" "src/guest_json.c" "src/certificate_fetch.c" "src/certificate_store.c" "src/certificate_wire.c"
     INCLUDE_DIRS "include" PRIV_INCLUDE_DIRS "src"
     REQUIRES wendy_ble wendy_wifi mdns esp_netif esp_wifi vfs nvs_flash wendy_net_common wendy_pki wendy_conf wendy_com wendy_net_gossip wendy_babel esp_timer esp_hw_support lwip freertos pthread espressif__cjson)
 
