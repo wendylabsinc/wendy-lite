@@ -80,9 +80,6 @@ static unsigned _tx_backoff_count;  // consecutive hold-offs, reset on a send
 static bool     _peer_gone;        // channel closed; drain the ring, then EOF
 static bool     _rx_retry;
 static struct ble_npl_event _rx_rearm_event;
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-static unsigned _rx_rearm_failures;
-#endif
 static bool     _recv_ready_owed;  // the stack is waiting on us for a buffer
 static uint8_t  _ring[RING_SIZE];
 static size_t   _ring_head;
@@ -177,18 +174,6 @@ static void _rx_rearm_host(struct ble_npl_event *event)
     bool retry=rc && rc!=BLE_HS_EBUSY;
     _recv_ready_owed=retry;
     _rx_retry=retry;
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-    if(retry){
-        unsigned failures=++_rx_rearm_failures;
-        if(failures==1 || !(failures%64))
-            ESP_LOGW(TAG,"physical RX rearm: rc=%d owed=%u private_free=%u ring=%u failures=%u",
-                rc,(unsigned)_recv_ready_owed,(unsigned)_sdu_mempool.mp_num_free,(unsigned)_ring_len,failures);
-    }else if(_rx_rearm_failures){
-        ESP_LOGI(TAG,"physical RX rearm recovered: rc=%d failures=%u private_free=%u",
-            rc,_rx_rearm_failures,(unsigned)_sdu_mempool.mp_num_free);
-        _rx_rearm_failures=0;
-    }
-#endif
     _unlock();
     if(retry){
         esp_err_t err=esp_timer_start_once(_tx_backoff_timer,TX_BACKOFF_MS*1000);

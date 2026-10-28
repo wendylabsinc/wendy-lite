@@ -57,7 +57,7 @@ static struct {unsigned mp_num_free;} _sdu_mempool={6};
 static int _sdu_mbuf_pool,_tx_backoff_timer,_rx_sem,_tx_sem,_session_sem;
 static struct ble_l2cap_chan *_chan;
 static bool _rx_retry,_recv_ready_owed,_peer_gone,_tx_stalled,_tx_backoff;
-static unsigned _tx_backoff_count,_rx_rearm_failures;
+static unsigned _tx_backoff_count;
 static uint16_t _tx_mtu;
 static size_t _ring_head,_ring_len;
 static uint8_t _ring[RING_SIZE];

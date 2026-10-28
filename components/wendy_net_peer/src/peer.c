@@ -34,7 +34,6 @@
 #include "wendy_net_ble_protocol.h"
 #endif
 #include "router_session.h"
-#include "wendy_net.h"
 #include "wendy_pki_mesh.h"
 #include "wendy_pki_crypto.h"
 #include "wendy_pki_verify.h"
@@ -46,18 +45,12 @@
 #include <errno.h>
 #include <unistd.h>
 #include "wendy_wifi.h"
-#if CONFIG_WENDY_NET_NAN
-#include "wendy_net_nan.h"
-#endif
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef CONFIG_WENDY_NET_TEST_ACCEPT_ONLY
-#define CONFIG_WENDY_NET_TEST_ACCEPT_ONLY 0
-#endif
 
 #ifndef CONFIG_WENDY_NET_PACKET_QUEUE
 #define CONFIG_WENDY_NET_PACKET_QUEUE 4
@@ -68,18 +61,9 @@
 #define CONFIG_WENDY_NET_ROUTING_QUEUE_FRAMES 4
 #endif
 #define FRESH_TIME_US INT64_C(300000000)
-#ifndef CONFIG_WENDY_NET_TEST_REFRESH_SECONDS
-#define CONFIG_WENDY_NET_TEST_REFRESH_SECONDS 240
-#endif
-#define REFRESH_INTERVAL_US (INT64_C(1000000)*CONFIG_WENDY_NET_TEST_REFRESH_SECONDS)
+#define REFRESH_INTERVAL_US INT64_C(240000000)
 #ifndef CONFIG_WENDY_NET_CONSTRAINED_PROFILE
 #define CONFIG_WENDY_NET_CONSTRAINED_PROFILE 0
-#endif
-#ifndef CONFIG_WENDY_NET_TEST_TIME_CONTROL_PEER
-#define CONFIG_WENDY_NET_TEST_TIME_CONTROL_PEER ""
-#endif
-#ifndef CONFIG_WENDY_NET_TEST_BLE_ONLY
-#define CONFIG_WENDY_NET_TEST_BLE_ONLY 0
 #endif
 struct time_bootstrap_job {
     struct wble_mesh_pipe *pipe;
@@ -111,8 +95,6 @@ struct service_query {
     int result;
     char input[];
 };
-#define PROBE(s,key) ((void)0)
-#define PROBE_IF(s,key,condition) ((void)0)
 struct peer_state
 {
     WendyComNetConfig config;
@@ -151,7 +133,7 @@ struct peer_state
     struct wnrs *router;
     struct wnrs_node *router_node;
     struct service_query *service_query;
-#if CONFIG_WENDY_NET_TEST_RECLAIM_FIFO_FOR_APP
+#if CONFIG_WENDY_NET_RECLAIM_PAYLOADS_FOR_TLS
     struct {uint64_t serial;size_t released;bool owned,processing,complete;} reclaim;
 #endif
     struct wnsc_registry *service_registry;
@@ -165,21 +147,18 @@ struct peer_state
         bool owned, complete, found, agent;
     } app_query;
     struct wnpq *queue;
-    struct wn_origin offered;
     uint8_t self[16];
     char *control;
     struct wnc_carrier carrier;
     bool framed,candidate_held;
-#if CONFIG_WENDY_NET_TEST_RETAIN_TLS_INPUT
+#if CONFIG_WENDY_NET_RETAIN_TLS_INPUT
     bool input_workspace_active; /* Root-owned; shares existing alignment padding. */
 #endif
-    uint64_t revision;
     uint32_t packet_id;
     uint32_t pressure_drops;
-    int64_t lease_us, offered_us;
-    bool added, advertised;
+    int64_t lease_us;
+    bool added;
     int listener;
-    char advertised_principal[106];
     atomic_bool active;
 #if CONFIG_WENDY_NET_BLE
     struct wn_ble_scope ble_scope;
@@ -314,8 +293,7 @@ void wendy_net_peer_maintain(void)
     pthread_mutex_unlock(&state_lock);
     wendy_net_memory_scope_t previous=wendy_net_runtime_scope_enter();
     esp_err_t result;
-    if(!wendy_wifi_is_connected() || (CONFIG_WENDY_NET_TEST_TIME_CONTROL_PEER[0] &&
-       !strcmp(s->authenticated_peer,CONFIG_WENDY_NET_TEST_TIME_CONTROL_PEER)))result=control_clock(s,&fresh);
+    if(!wendy_wifi_is_connected())result=control_clock(s,&fresh);
     else
         result=wendy_pki_net_refresh_time(&fresh,relay[0] ? relay:NULL);
     ESP_LOGI(TAG,"signed time worker finished: result=%s stackfree=%u",
@@ -371,9 +349,6 @@ static void queue_clock(struct peer_state *s,const char *relay_host)
     }
     pthread_mutex_unlock(&state_lock);
 }
-enum {NET_PHASE_IDLE=1,NET_PHASE_DISCOVER,NET_PHASE_HANDSHAKE,NET_PHASE_HELLO,
-      NET_PHASE_ROUTER_TICK,NET_PHASE_REFRESH,NET_PHASE_PUMP,NET_PHASE_WAIT,NET_PHASE_CLOSE};
-#define mark_stage(s,phase) ((void)0)
 
 static int planned_candidate(struct peer_state *s,struct wn_candidate *hint,
                              const char *self,const uint8_t peer_hint[4],int64_t now)
@@ -530,7 +505,7 @@ static void update_ble(struct peer_state *s,const char *tenant,const char *devic
 
 void wendy_net_peer_prepare_handshake(void)
 {
-#if CONFIG_WENDY_NET_ROUTER && CONFIG_WENDY_NET_TEST_RECLAIM_FIFO_FOR_APP
+#if CONFIG_WENDY_NET_ROUTER && CONFIG_WENDY_NET_RECLAIM_PAYLOADS_FOR_TLS
     if(heap_caps_get_free_size(MALLOC_CAP_8BIT)>=144*1024 ||
        heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)>=48*1024)return;
     pthread_mutex_lock(&state_lock);
@@ -553,7 +528,7 @@ void wendy_net_peer_prepare_handshake(void)
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 #endif
 }
-#if CONFIG_WENDY_NET_ROUTER && CONFIG_WENDY_NET_TEST_RECLAIM_FIFO_FOR_APP
+#if CONFIG_WENDY_NET_ROUTER && CONFIG_WENDY_NET_RECLAIM_PAYLOADS_FOR_TLS
 static void service_reclaim(struct peer_state *s)
 {
     pthread_mutex_lock(&state_lock);
@@ -664,8 +639,9 @@ static void service_query_release(struct service_query *q)
 {
     if(atomic_fetch_sub(&q->references,1)==1){wendy_net_free(q->output);wendy_net_free(q);}
 }
+/* Guest listeners join with the VIP adapter, not the inactive carrier layer. */
 static int guest_listener_owner(void *context,uint16_t port,bool datagram)
-{(void)context;return wendy_net_guest_listener_owner(port,datagram);}
+{(void)context;(void)port;(void)datagram;return -1;}
 static void service_catalog_query(struct peer_state *s)
 {
     pthread_mutex_lock(&state_lock);
@@ -754,7 +730,7 @@ static err_t output(struct netif *netif, struct pbuf *p, const ip6_addr_t *desti
     int64_t now = esp_timer_get_time();
     bool allowed = node_address_live(s,now) &&
                    wn_ip_admits(s->self, packet.bytes, packet.size, false);
-    /* The router actor checks current signed device/operator routes when it
+    /* The router actor checks current signed device routes when it
      * drains this bounded queue. This netif callback only admits local output. */
     /* A full bounded carrier queue is backpressure, not loss of the route.
      * ERR_RTE makes lwIP abort TCP during a multi-record certificate flight. */
@@ -843,61 +819,6 @@ struct netif *lwip_hook_ip6_route(const ip6_addr_t *source, const ip6_addr_t *de
     const uint8_t *address=(const uint8_t *)destination->addr;
     bool mesh=!memcmp(address,prefix,sizeof prefix) && (address[5]==0x7f || address[5]==0x80);
     return mesh ? s ? &s->netif : &rejecting : NULL;
-}
-static int transfer(struct peer_state *s, void *buffer, size_t size, bool writing)
-{
-    uint8_t *p = buffer;
-    int64_t deadline = esp_timer_get_time() + INT64_C(5000000);
-    while (size)
-    {
-        int64_t now = esp_timer_get_time();
-        if (now >= deadline || !identity_live(s, now)) {
-            ESP_LOGW(TAG, "carrier %s expired: remaining=%u timed_out=%u identity_live=%u",
-                writing ? "write" : "read", (unsigned)size,
-                (unsigned)(now >= deadline), (unsigned)identity_live(s,now));
-            return -1;
-        }
-        ssize_t n = writing ? wendy_pki_write(s->connection, p, size)
-                            : wendy_pki_read(s->connection, p, size);
-        if (n > 0 && (size_t)n <= size)
-        {
-            p += n;
-            size -= n;
-            continue;
-        }
-        if (n != -2 && n != -3) {
-            ESP_LOGW(TAG, "carrier %s failed: result=%d remaining=%u errno=%d",
-                writing ? "write" : "read", (int)n, (unsigned)size, errno);
-            return -1;
-        }
-        int64_t slice = now + 100000;
-        if (wendy_pki_wait(s->connection, n == -3, slice < deadline ? slice : deadline) < 0) {
-            ESP_LOGW(TAG, "carrier wait failed: writing=%u errno=%d",(unsigned)writing,errno);
-            return -1;
-        }
-    }
-    return 0;
-}
-static int write_control(struct peer_state *s, const char *json, size_t size, bool hello)
-{
-    if (!size || size > (CONFIG_WENDY_NET_ROUTER && !hello ? 65536 : WN_CONTROL_MAX))
-        return -1;
-    if (!hello && s->framed)
-        return wnc_enqueue(&s->carrier,json,size,true);
-    uint8_t header[9] = {1};
-    size_t n = hello ? 4 : 9;
-    if (hello)
-        wn_put32(header, size);
-    else
-    {
-        wn_put32(header + 1, size + 4);
-        wn_put32(header + 5, size);
-    }
-    return transfer(s, header, n, true) || transfer(s, (void *)json, size, true) ? -1 : 0;
-}
-static int write_datagram(struct peer_state *s, uint8_t *packet, size_t size)
-{
-    return s->framed ? wnc_enqueue(&s->carrier,packet,size,false) : -1;
 }
 static int router_send(void *context,const void *data,size_t size,bool is_control)
 {
@@ -1033,97 +954,11 @@ static int receive_frame(void *ctx,const void *data,size_t size,bool is_control)
 }
 /* One bounded TLS worker owns both directions. Extra incoming attempts are
  * closed while an attachment is active, rather than retaining idle handshakes. */
-static int session_setup(struct peer_state *s, const struct wn_candidate *hint,int accepted,
-                   const struct wendy_pki_stream *stream,bool stream_server)
-{
-    struct wn_candidate candidate=*hint;
-    if(reserve_candidate(s,hint)<0){if(accepted>=0)close(accepted);return -1;}
-    struct wendy_pki_mesh_identity identity;
-    char peer[37];
-    bool incoming=stream ? stream_server:accepted>=0;
-#if CONFIG_WENDY_NET_NAN
-    if(candidate.medium==WN_NAN &&
-       wendy_pki_net_sync_time(candidate.address,43025)!=ESP_OK){
-        if(accepted>=0)close(accepted);
-        ESP_LOGW(TAG,"NAN signed-time bootstrap unavailable; TLS setup deferred");
-        return -1;
-    }
-#endif
-#if CONFIG_WENDY_NET_TEST_TIME_RELAY
-    if(!stream) {
-    int64_t time_started=esp_timer_get_time();
-    if (wendy_pki_net_sync_time(candidate.address,43025)!=ESP_OK) {
-        if (accepted>=0) close(accepted);
-        ESP_LOGW(TAG,"signed-time relay failed; no TLS or route admission");
-        return -1;
-    }
-    ESP_LOGI(TAG,"signed-time relay verified: ms=%u heap=%u largest=%u",
-        (unsigned)((esp_timer_get_time()-time_started)/1000),
-        (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-    }
-#endif
-    mark_stage(s,NET_PHASE_HANDSHAKE);
-    esp_err_t result=
-        stream ? wendy_pki_net_router_stream(stream,stream_server,
-                     candidate.device[0] ? candidate.device:NULL,&s->connection,&identity,peer)
-        : incoming ? wendy_pki_net_router_accept(accepted,&s->connection,&identity,peer)
-        : wendy_pki_net_router_connect(candidate.address,candidate.port,candidate.device,
-                                 &s->connection,&identity);
-    if(result!=ESP_OK) return -1;
-    if(incoming && hint->device[0] && strcmp(hint->device,peer))return -1;
-    mark_stage(s,NET_PHASE_HELLO);
-    if(!incoming && !stream) memcpy(peer,candidate.device,37);
-    memcpy(candidate.device,peer,37);
-    memcpy(s->authenticated_peer,peer,sizeof s->authenticated_peer);
-    pthread_mutex_lock(&state_lock);
-    s->identity = identity;
-    int invalid = wn_uuid_parse(identity.device, s->self);
-    pthread_mutex_unlock(&state_lock);
-    if (invalid)
-        return -1;
-    s->offered = (struct wn_origin){0};
-    s->offered_us = 0;
-    s->revision = identity.revision_first;
-    /* Open the listener before signing the first route authorization, so its
-     * capability is present immediately instead of one offer interval later. */
-    esp_err_t apps=wendy_net_app_start();
-    if (apps!=ESP_OK) ESP_LOGW(TAG,"app listener unavailable: %s",esp_err_to_name(apps));
-    int n = CONFIG_WENDY_NET_ROUTER ?
-        wn_router_hello_write(identity.device,peer,s->control,PEER_CONTROL_BYTES):
-        wn_hello_write(identity.device, peer, s->control, PEER_CONTROL_BYTES);
-    uint8_t length[4];
-    if (n < 0 || write_control(s, s->control, n, true) || transfer(s, length, 4, false))
-        return -1;
-    uint32_t size = wn_get32(length);
-    if (!size || size > WN_CONTROL_MAX)return -1;
-    char *hello=size>PEER_CONTROL_BYTES ? wendy_net_malloc(size):s->control;
-    if(!hello)return -1;
-    int hello_result=transfer(s,hello,size,false);
-    if(!hello_result)hello_result=CONFIG_WENDY_NET_ROUTER ?
-        wn_router_hello_check(hello,size,identity.device,peer):
-        wn_hello_check(hello,size,identity.device,peer);
-    if(hello!=s->control)wendy_net_free(hello);
-    if(hello_result)return -1;
-    struct wnc_io io={.context=s,.read=carrier_read,.write=carrier_write};
-    if(wnc_init(&s->carrier,&io,s->control,PEER_CONTROL_BYTES,8192,
-                CONFIG_WENDY_NET_ROUTER ? 65536 : WN_CONTROL_MAX))return -1;
-    /* Ordinary PQC app flights on C6 have stalled a carrier beyond5s while
-     * completing through the other medium. Keep partial frames bounded but
-     * leave route loss/convergence to Babel's independent neighbour timers. */
-    s->carrier.stall_timeout_us=INT64_C(30000000);
-    s->carrier.frame_timeout_us=INT64_C(90000000);
-    /* Keep room for Babel and ordinary gossip replies during a TLS flight
-     * forwarded from fast LAN to BLE. IP loss is handled by endpoint TCP. */
-    s->carrier.priority_reserve=2048;
-    s->framed=true;
-    return 0;
-}
 static void discovery_results(struct peer_state *s,const char *tenant,const char *self,mdns_result_t *results)
 {
     for (mdns_result_t *r = results; r; r = r->next)
     {
-        if (!r->ttl || r->port != 43024)
+        if (!r->ttl || !r->port)
             continue;
         const char *keys[] = {"version", "protocol", "principal", "role", "ble", "ble_psm"};
         const char *values[6] = {0};
@@ -1190,15 +1025,13 @@ static void discovery_results(struct peer_state *s,const char *tenant,const char
 
 static void close_listener(struct peer_state *s)
 {
-    s->advertised=false;
-    s->advertised_principal[0]=0;
     if(s->listener>=0) close(s->listener);
     s->listener=-1;
 }
 static int update_listener(struct peer_state *s,const char *tenant,const char *device)
 {
     char principal[106];
-    if(!s->config.infrastructure_wifi || CONFIG_WENDY_NET_TEST_BLE_ONLY || wn_principal(tenant,device,principal)<0 || !wendy_wifi_is_connected() ||
+    if(!s->config.infrastructure_wifi || wn_principal(tenant,device,principal)<0 || !wendy_wifi_is_connected() ||
         !wendy_conf_is_current() || wendy_pki_reset_in_progress()) {
         close_listener(s);return -1;
     }
@@ -1227,7 +1060,7 @@ static void close_session(struct peer_state *s,int candidate)
      * evidence that its discovered endpoint failed. */
     bool failed_attempt=!s->framed && !atomic_load(&stopping);
     failed_attempt=failed_attempt && !s->tls_state.cancel;
-    mark_stage(s,NET_PHASE_CLOSE);
+
     pthread_mutex_lock(&state_lock);
     ++s->attachment;
     if(s->clock.phase==CLOCK_QUEUED)s->clock.phase=CLOCK_EMPTY;
@@ -1282,7 +1115,7 @@ static bool medium_available(struct peer_state *root,enum wn_medium medium)
     }
     if(total>=root->config.max_links)return false;
     if(medium==WN_BLE)return root->config.ble && active<root->config.ble_links;
-    if(medium==WN_NAN)return root->config.nan && active<root->config.nan_links;
+    if(medium==WN_NAN)return false; /* No NAN runtime in this delivery. */
     return root->config.infrastructure_wifi && active<root->config.wifi_links;
 }
 #if CONFIG_WENDY_NET_BLE
@@ -1311,7 +1144,7 @@ static struct peer_state *reserve_slot(struct peer_state *root)
     pthread_mutex_lock(&state_lock);last->next=link;pthread_mutex_unlock(&state_lock);
     return link;
 }
-#if CONFIG_WENDY_NET_TEST_RETAIN_TLS_INPUT
+#if CONFIG_WENDY_NET_RETAIN_TLS_INPUT
 static void update_input_workspace(struct peer_state *root,bool wanted)
 {
     if(root->input_workspace_active==wanted){
@@ -1344,14 +1177,14 @@ static void update_node_status(struct peer_state *root)
     bool address_was=root->address_lifetime.up;
     bool address_up=wnnl_update(&root->address_lifetime,up,
         snapshot_live(&root->node_identity,now),now);
-#if CONFIG_WENDY_NET_TEST_RETAIN_TLS_INPUT
+#if CONFIG_WENDY_NET_RETAIN_TLS_INPUT
     bool workspace_wanted=address_up;
     for(struct peer_state *link=root;link;link=link->next)
         if(link->setup_waiting || atomic_load(&link->setup_pending))workspace_wanted=true;
 #endif
     if(!up && root->app_query.owned){root->app_query.found=false;root->app_query.complete=true;}
     pthread_mutex_unlock(&state_lock);
-#if CONFIG_WENDY_NET_TEST_RETAIN_TLS_INPUT
+#if CONFIG_WENDY_NET_RETAIN_TLS_INPUT
     update_input_workspace(root,workspace_wanted);
 #endif
     if(was!=up){
@@ -1396,7 +1229,6 @@ static int setup_hello(struct peer_state *link)
          * rows intentionally ignore unauthenticated advertisement identities. */
         if(link->candidate_held && wn_candidate_authenticated(node_root(link)->selection,
                 (unsigned)link->candidate_index,link->authenticated_peer))return -1;
-        link->revision=link->identity.revision_first;
         int n=wn_router_hello_write(link->identity.device,link->authenticated_peer,link->control+4,PEER_CONTROL_BYTES-4);
         if(n<0)return -1;
         wn_put32((uint8_t *)link->control,(uint32_t)n);link->hello_size=(size_t)n+4;
@@ -1404,7 +1236,7 @@ static int setup_hello(struct peer_state *link)
     }
     if(link->hello_out<link->hello_size){
         ssize_t n=wendy_pki_write(link->connection,link->control+link->hello_out,link->hello_size-link->hello_out);
-        if(n>0){link->hello_out+=(size_t)n;PROBE(node_root(link),AP_HELLO);}
+        if(n>0){link->hello_out+=(size_t)n;}
         else if(n!=-2 && n!=-3)return -1;
         return 1;
     }
@@ -1412,7 +1244,7 @@ static int setup_hello(struct peer_state *link)
     if(wanted>PEER_CONTROL_BYTES || wanted<4)return -1;
     if(link->hello_in<wanted){
         ssize_t n=wendy_pki_read(link->connection,link->control+link->hello_in,wanted-link->hello_in);
-        if(n>0){link->hello_in+=(size_t)n;PROBE(node_root(link),AP_HELLO);}
+        if(n>0){link->hello_in+=(size_t)n;}
         else if(n!=-2 && n!=-3)return -1;
         return 1;
     }
@@ -1440,7 +1272,7 @@ static int advance_setup(struct peer_state *link,int64_t now)
     int moved=wnad_channel_io(link->tls_channel,link->setup_fd,
         link->setup_have_stream ? &link->setup_stream:NULL);
     if(moved<0)return -1;
-    if(moved>0)PROBE(node_root(link),AP_IO);
+
     if(link->tls_state.phase==WNA_READY){
         if(link->tls_state.cancel || now>=(int64_t)link->tls_state.deadline)return -1;
         return setup_hello(link);
@@ -1469,11 +1301,12 @@ static void begin_setup(struct peer_state *link,const struct wn_candidate *candi
     link->setup_connecting=false;
     if(index>=0 && !link->setup_have_stream && fd<0)
         fd=wnad_connect(candidate->address,candidate->port,&link->setup_connecting);
+    if(!link->setup_have_stream && fd>=0 && !wnad_prepare_socket(fd)){close(fd);fd=-1;}
     link->setup_fd=fd;
     if(!link->tls_channel || (!link->setup_have_stream && fd<0))link->tls_state.phase=WNA_FAILED;
     link->setup_waiting=true;link->setup_at=esp_timer_get_time();link->failed=false;
     atomic_store(&link->setup_complete,false);
-#if CONFIG_WENDY_NET_TEST_RETAIN_TLS_INPUT
+#if CONFIG_WENDY_NET_RETAIN_TLS_INPUT
     /* Reserve before a worker can parse credentials or consume the first
      * flight. Its released input must remain reusable before admission too. */
     update_input_workspace(node_root(link),true);
@@ -1646,7 +1479,7 @@ static bool setup_room(struct peer_state *root)
 {
 #if CONFIG_WENDY_NET_SETUP_FREE_BYTES > 0
     size_t available=heap_caps_get_free_size(MALLOC_CAP_8BIT);
-#if CONFIG_WENDY_NET_TEST_RETAIN_TLS_INPUT
+#if CONFIG_WENDY_NET_RETAIN_TLS_INPUT
     available+=wendy_pki_input_workspace_cached_bytes();
 #endif
     return !atomic_load(&root->carrier_count) || available>=CONFIG_WENDY_NET_SETUP_FREE_BYTES;
@@ -1678,47 +1511,14 @@ static bool ble_admission_available(struct peer_state *root)
 static void router_run(struct peer_state *root)
 {
     unsigned busy_loops=0;
-#if CONFIG_WENDY_NET_TEST_WIFI_PAUSE_AFTER > 0
-    int64_t wifi_pause_at=0;bool wifi_paused=false,wifi_done=false;
-#endif
-#if CONFIG_WENDY_NET_TEST_LAN_PAUSE_AFTER > 0
-    int64_t pause_at=0;bool was_paused=false;
-#endif
     for(;;){
         if(atomic_load(&stopping))return;
-        PROBE(root,AP_LOOPS);mark_stage(root,NET_PHASE_DISCOVER);
+
         int64_t now=esp_timer_get_time();bool progress=false;
-#if CONFIG_WENDY_NET_TEST_RECLAIM_FIFO_FOR_APP
+#if CONFIG_WENDY_NET_RECLAIM_PAYLOADS_FOR_TLS
         service_reclaim(root);
 #endif
-#if CONFIG_WENDY_NET_TEST_WIFI_PAUSE_AFTER > 0
-        if(!wifi_pause_at && any_router(root))
-            wifi_pause_at=now+INT64_C(1000000)*CONFIG_WENDY_NET_TEST_WIFI_PAUSE_AFTER;
-        if(!wifi_done && wifi_pause_at && now>=wifi_pause_at && !wifi_paused){
-            esp_err_t result=wendy_wifi_set_station_enabled(false);wifi_paused=true;
-            ESP_LOGI(TAG,"lab physical WiFi pause: begin result=%s",esp_err_to_name(result));
-        }
-        if(wifi_paused && !wifi_done && now-wifi_pause_at>=
-            INT64_C(1000000)*CONFIG_WENDY_NET_TEST_WIFI_PAUSE_SECONDS){
-            esp_err_t result=wendy_wifi_set_station_enabled(true);wifi_done=true;
-            ESP_LOGI(TAG,"lab physical WiFi pause: end result=%s",esp_err_to_name(result));
-        }
-#endif
         bool lan_paused=false;
-#if CONFIG_WENDY_NET_TEST_LAN_PAUSE_AFTER > 0
-        if(!pause_at){
-            for(struct peer_state *link=root;link;link=link->next)
-                if(atomic_load(&link->active) && !link->setup_have_stream){
-                    pause_at=now+INT64_C(1000000)*CONFIG_WENDY_NET_TEST_LAN_PAUSE_AFTER;break;
-                }
-        }
-        lan_paused=pause_at && now>=pause_at &&
-            now-pause_at<INT64_C(1000000)*CONFIG_WENDY_NET_TEST_LAN_PAUSE_SECONDS;
-        if(lan_paused!=was_paused){
-            ESP_LOGI(TAG,"lab LAN carrier pause: %s",lan_paused ? "begin":"end");
-            was_paused=lan_paused;
-        }
-#endif
         char tenant[37],device[65];wendy_conf_get_enrolled_ids(tenant,device);
         /* Establish this boot's time before creating a native TLS setup. A
          * cold setup cannot authenticate yet and must not starve its bootstrap. */
@@ -1740,7 +1540,7 @@ static void router_run(struct peer_state *root)
              * with a fresh monotonic sample, never that earlier snapshot. */
             now=esp_timer_get_time();
             if(link->setup_waiting){
-                mark_stage(root,NET_PHASE_HANDSHAKE);
+
                 if(lan_paused && link->candidate.medium==WN_LAN)link->tls_state.cancel=true;
                 int pending=advance_setup(link,now);
                 if(pending<0){retire_link(link);progress=true;}
@@ -1761,27 +1561,24 @@ static void router_run(struct peer_state *root)
                         (unsigned)link->tls_channel->failed,errno);
                     retire_link(link);continue;
                 }
-                if(io>0)PROBE(root,AP_IO);
+
                 progress|=io>0;
             }
             bool lost=link->candidate.medium==WN_LAN && (lan_paused || !wendy_wifi_is_connected());
-#if CONFIG_WENDY_NET_NAN
-            if(link->candidate.medium==WN_NAN && !wn_nan_peer_live(link->candidate.device))lost=true;
-#endif
             bool live=identity_live(link,now);
             if(link->failed || !live || lost){
                 ESP_LOGW(TAG,"carrier retired: peer=%s failed=%u identity_live=%u medium_lost=%u",
                     link->candidate.device,(unsigned)link->failed,(unsigned)live,(unsigned)lost);
                 retire_link(link);continue;
             }
-            mark_stage(root,NET_PHASE_ROUTER_TICK);
+
             if(wnrs_tick(link->router)){retire_link(link);continue;}
             /* Tick/publication callbacks may have just lent this connection.
              * The per-I/O guards also cover loans made by receive callbacks. */
             if(wncrypto_borrowed(link->connection))continue;
             time_tick(link,now);
             if(now>=link->refresh_at)queue_clock(link,link->candidate.address);
-            mark_stage(root,NET_PHASE_PUMP);
+
             int pumped=wnc_pump(&link->carrier,esp_timer_get_time(),receive_frame,link);
             if(pumped<0){
                 struct wnc_timeout timeout;
@@ -1792,9 +1589,9 @@ static void router_run(struct peer_state *root)
                         (unsigned)link->carrier.queued,(unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT));
                 ESP_LOGW(TAG,"carrier ended: peer=%s result=%d",link->candidate.device,pumped);retire_link(link);
             }
-            else if(pumped){PROBE(root,AP_FRAME);progress=true;}
+            else if(pumped){progress=true;}
         }
-        mark_stage(root,NET_PHASE_IDLE);
+
         update_node_status(root);
         service_catalog_query(root);
         if(atomic_load(&root->node_active)){
@@ -1821,18 +1618,6 @@ static void router_run(struct peer_state *root)
         }
         struct wn_candidate hint={.medium=WN_LAN,.port=43024,.cost=WNR_LAN_COST};
         bool accepted=false;
-#if CONFIG_WENDY_NET_NAN
-        int nan_fd=-1;
-        if(wn_nan_take(&hint,&nan_fd)){
-            if(nan_fd<0)(void)wn_candidate_seen(root->selection,&hint,esp_timer_get_time()/1000);
-            else{
-                accepted=true;struct peer_state *link=setup_capacity_available(root) && setup_room(root) &&
-                    medium_available(root,WN_NAN) ? reserve_slot(root):NULL;
-                if(!link)close(nan_fd);
-                else{link->setup_have_stream=false;link->setup_server=true;begin_setup(link,&hint,nan_fd);}
-            }
-        }
-#endif
 #if CONFIG_WENDY_NET_BLE
         struct wble_mesh_peer remote;struct wble_mesh_pipe *pipe=accepted || !root->config.ble ? NULL:wble_mesh_take(&remote);
         if(pipe && remote.psm==WBLE_MESH_TIME_PSM){
@@ -1865,7 +1650,7 @@ static void router_run(struct peer_state *root)
                 }
             }
         }
-        if(!accepted && root->clock_ready && !CONFIG_WENDY_NET_TEST_ACCEPT_ONLY &&
+        if(!accepted && root->clock_ready &&
            setup_capacity_available(root) && capacity_available(root) && setup_room(root)){
             int index=additional_candidate(root,esp_timer_get_time()/1000,lan);
             if(index>=0){
@@ -1894,15 +1679,15 @@ static void router_run(struct peer_state *root)
          * constrained profiles remain scan/dial only. */
         if(root->config.ble)wble_mesh_router_admission(ble_admission_available(root));
 #endif
-        if(progress)PROBE(root,AP_PROGRESS);
+
         ++busy_loops;
         if(!progress || busy_loops>=8){
             bool quota=busy_loops>=8;
             /* A ready descriptor/deadline can yield no protocol progress
              * (e.g. send ENOBUFS). Count those polls too: otherwise a zero
              * timeout loop can starve the lower-priority crypto worker. */
-            if(quota){busy_loops=0;PROBE(root,AP_QUOTA);}
-            mark_stage(root,NET_PHASE_WAIT);
+            if(quota){busy_loops=0;}
+
             fd_set rd,wr;FD_ZERO(&rd);FD_ZERO(&wr);
             int maximum=wnad_wake_fd();FD_SET(maximum,&rd);
             if(root->listener>=0 && root->clock_ready && setup_capacity_available(root) &&
@@ -1911,13 +1696,13 @@ static void router_run(struct peer_state *root)
             }
             int64_t deadline=esp_timer_get_time()+INT64_C(1000000);
             int64_t mdns_deadline=wnm_deadline(root->mdns);
-            PROBE_IF(root,AP_MDNS,mdns_deadline<=esp_timer_get_time());
+
             if(mdns_deadline<deadline)deadline=mdns_deadline;
 #if CONFIG_WENDY_NET_BLE
             if(root->config.ble){int64_t retry=wble_mesh_retry_deadline();if(retry<deadline)deadline=retry;}
 #endif
             int64_t netif_deadline=wnne_deadline(&root->netif_effect);
-            PROBE_IF(root,AP_NETIF,netif_deadline<=esp_timer_get_time());
+
             if(netif_deadline<deadline)deadline=netif_deadline;
             for(struct peer_state *link=root;link;link=link->next){
                 if(link->tls_state.lent || wncrypto_borrowed(link->connection))continue;
@@ -1935,19 +1720,19 @@ static void router_run(struct peer_state *root)
                 if(can_read && link->tls_state.phase==WNA_READY &&
                    ((link->tls_channel && link->tls_channel->input.size) ||
                     (link->connection && wendy_pki_pending(link->connection)))){
-                    PROBE_IF(root,AP_RAW,link->tls_channel && link->tls_channel->input.size);
-                    PROBE_IF(root,AP_PLAIN,link->connection && wendy_pki_pending(link->connection));
-                    PROBE_IF(root,AP_HELLO_BLOCKED,link->setup_waiting && link->hello_started && link->hello_out<link->hello_size);
+
+
+
                     deadline=esp_timer_get_time();
                 }
-                if(link->router){int64_t next=wnrs_next_deadline(link->router);PROBE_IF(root,AP_ROUTER,next<=esp_timer_get_time());if(next<deadline)deadline=next;}
+                if(link->router){int64_t next=wnrs_next_deadline(link->router);if(next<deadline)deadline=next;}
             }
             wendy_net_app_watch(&rd,&wr,&maximum,&deadline);
             wendy_net_agent_watch(&rd,&wr,&maximum,&deadline);
             int64_t left=deadline-esp_timer_get_time();if(left<0)left=0;
             /* Bounded batches must also let the lower-priority worker and
              * SDK idle tasks run under continuously ready traffic. */
-            if(!left)PROBE(root,AP_ZERO);
+
             /* At a tick boundary a one-tick delay may unblock almost
              * immediately. Keep one whole tick available to lower priorities,
              * as the crypto worker already does between bounded batches. */
@@ -2005,7 +1790,7 @@ static bool shutdown_step(struct peer_state *root)
     }
     root->app_query.found=false;root->app_query.complete=true;
     waiting|=root->app_query.owned;
-#if CONFIG_WENDY_NET_TEST_RECLAIM_FIFO_FOR_APP
+#if CONFIG_WENDY_NET_RECLAIM_PAYLOADS_FOR_TLS
     root->reclaim.released=0;root->reclaim.complete=true;waiting|=root->reclaim.owned;
 #endif
     pthread_mutex_unlock(&state_lock);
@@ -2014,9 +1799,6 @@ static bool shutdown_step(struct peer_state *root)
         waiting|=!wble_mesh_stop();
         waiting|=!wendy_ble_mesh_advertisement_idle();
     }
-#endif
-#if CONFIG_WENDY_NET_NAN
-    if(root->config.nan)waiting|=!wn_nan_stop();
 #endif
     /* Join all protocol/context loans before trimming empty shared PSA tables.
      * This mutex-taking SDK operation stays on the existing crypto worker. */
@@ -2031,7 +1813,7 @@ static void finish_shutdown(struct peer_state *root)
     while(!shutdown_step(root))vTaskDelay(1);
     while(!wendy_pki_io_work_idle())vTaskDelay(1);
     while(!wendy_pki_work_stop())vTaskDelay(1);
-#if CONFIG_WENDY_NET_TEST_RETAIN_TLS_INPUT
+#if CONFIG_WENDY_NET_RETAIN_TLS_INPUT
     update_input_workspace(root,false);
 #endif
 #if CONFIG_WENDY_NET_BLE
@@ -2062,18 +1844,14 @@ static void run(void *argument)
     struct peer_state *s=argument;
     if(wnad_start()) {
         ESP_LOGE(TAG,"actor driver initialization failed");atomic_store(&runtime_error,ESP_ERR_NO_MEM);
+        /* No mesh crypto operation has run before driver startup succeeds.
+         * Cleanup must not wait forever for the worker that failed to start,
+         * or trim unrelated baseline PSA state on a failed activation. */
+        s->crypto_cleanup_submitted=true;atomic_store(&s->crypto_cleanup_done,true);
         finish_shutdown(s);wendy_net_memory_scope_leave(previous);vTaskDelete(NULL);return;
     }
 #if CONFIG_WENDY_NET_BLE
     wble_mesh_set_wakeup(wnad_wake);
-#endif
-#if CONFIG_WENDY_NET_NAN
-    /* Start only after this actor exists and owns the cooperative teardown. */
-    esp_err_t nan=s->config.nan ? wn_nan_start():ESP_OK;
-    if(nan!=ESP_OK){
-        atomic_store(&runtime_error,nan);finish_shutdown(s);
-        wendy_net_memory_scope_leave(previous);vTaskDelete(NULL);return;
-    }
 #endif
     wendy_net_agent_start();
     (void)wendy_net_app_start();

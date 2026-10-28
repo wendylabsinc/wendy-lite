@@ -5,9 +5,6 @@ endif()
 if(CONFIG_WENDY_NET_BLE)
     list(APPEND wendy_ble_sources "src/wendy_ble_mesh.c")
     set(wendy_ble_mesh_requires "wendy_net_common")
-    if(CONFIG_WENDY_NET_TEST_BLE_STREAM_CRC)
-        list(APPEND wendy_ble_sources "src/mesh_stream_crc.c")
-    endif()
 endif()
 
 idf_component_register(

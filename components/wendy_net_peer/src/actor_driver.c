@@ -17,19 +17,7 @@
 #else
 #include <sched.h>
 #endif
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-static struct {atomic_uint rx_bytes,tx_bytes,rx_calls,tx_calls,rx_blocked,tx_blocked;} io_probe;
-void wnad_io_probe_take(struct wnad_io_probe *out)
-{
-    if(!out)return;
-    *out=(struct wnad_io_probe){.rx_bytes=atomic_exchange(&io_probe.rx_bytes,0),.tx_bytes=atomic_exchange(&io_probe.tx_bytes,0),
-        .rx_calls=atomic_exchange(&io_probe.rx_calls,0),.tx_calls=atomic_exchange(&io_probe.tx_calls,0),
-        .rx_blocked=atomic_exchange(&io_probe.rx_blocked,0),.tx_blocked=atomic_exchange(&io_probe.tx_blocked,0)};
-}
-#define IOPROBE(key,n) ((void)atomic_fetch_add(&io_probe.key,(unsigned)(n)))
-#else
 #define IOPROBE(key,n) ((void)0)
-#endif
 static struct wnad_wake_lifetime wake_socket={.descriptor=-1};
 static atomic_uint_fast64_t io_during_crypto;
 uint64_t wnad_io_during_crypto(void){return atomic_load(&io_during_crypto);}
@@ -49,6 +37,7 @@ int wnad_start(void)
     esp_err_t r=esp_vfs_eventfd_register(&config);
     if(r!=ESP_OK && r!=ESP_ERR_INVALID_STATE)return -1;
     int fd=eventfd(0,0);if(fd<0)return -1;
+    if(fd>=FD_SETSIZE){close(fd);return -1;}
     atomic_store(&wake_socket.descriptor,fd);
     wendy_pki_work_bind_actor();
     if(!wendy_pki_work_start(wnad_wake)){wnad_stop();return -1;}
@@ -97,6 +86,12 @@ int wnad_channel_io(struct wna_channel *c,int fd,const struct wendy_pki_stream *
     }
     return progress;
 }
+bool wnad_prepare_socket(int fd)
+{
+    int yes=1;
+    return fd>=0 && fd<FD_SETSIZE && fcntl(fd,F_SETFL,O_NONBLOCK)>=0 &&
+        !setsockopt(fd,IPPROTO_TCP,TCP_NODELAY,&yes,sizeof yes);
+}
 int wnad_connect(const char *host,unsigned port,bool *connecting)
 {
     char service[6];snprintf(service,sizeof service,"%u",port);
@@ -104,9 +99,7 @@ int wnad_connect(const char *host,unsigned port,bool *connecting)
     if(getaddrinfo(host,service,&hints,&address))return -1;
     int fd=socket(address->ai_family,SOCK_STREAM,0);
     if(fd<0){freeaddrinfo(address);return -1;}
-    int yes=1;
-    if(fd>=FD_SETSIZE || fcntl(fd,F_SETFL,O_NONBLOCK)<0 ||
-       setsockopt(fd,IPPROTO_TCP,TCP_NODELAY,&yes,sizeof yes)){close(fd);freeaddrinfo(address);return -1;}
+    if(!wnad_prepare_socket(fd)){close(fd);freeaddrinfo(address);return -1;}
     int r=connect(fd,address->ai_addr,address->ai_addrlen);freeaddrinfo(address);
     if(r && errno!=EINPROGRESS){close(fd);return -1;}
     *connecting=r!=0;return fd;

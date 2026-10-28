@@ -4,10 +4,14 @@ menu "Wendy Net native peer prototype"
         default n
         depends on WENDY_PKI && LWIP_IPV6 && WENDY_WIFI_ENABLED
         depends on !WENDY_MESH_LEAF && LWIP_HOOK_IP6_ROUTE_CUSTOM
+        depends on FREERTOS_THREAD_LOCAL_STORAGE_POINTERS >= 2
+        select FREERTOS_TLSP_DELETION_CALLBACKS
         select LWIP_IP6_FRAG
         select LWIP_IP6_REASSEMBLY
         help
             Native TLS/IP carrier using the enrolled device UUID identity.
+            Requires at least two FreeRTOS thread-local storage slots so task
+            reservations remain charged through actual stack/TCB reaping.
             IPv6 receive reassembly is required for ordinary UDP packets larger
             than the mesh MTU. Fragment storage is allocated on demand and
             bounded by the existing lwIP reassembly pbuf limit.
@@ -33,33 +37,30 @@ menu "Wendy Net native peer prototype"
         default 32 if SPIRAM
         default 8
         help
-            Shared bounded LAN, BLE and NAN discovery hints and recent failure
+            Shared bounded LAN and BLE discovery hints and recent failure
             history. Physical setup/live owners and cooldowns are protected;
             other hints use oldest-first replacement. PSRAM devices retain
             more alternatives for multiple simultaneous carriers. At 144 bytes
-            per entry, 32 entries cost 3456 bytes more than the SRAM default8.
+            per entry, 32 entries cost 3456 bytes more than the SRAM default 8.
             The table is allocated only while mesh is enabled.
     config WENDY_NET_TASK_PRIORITY
         int "Mesh actor task priority"
         range 1 6
         default 4
         help
-            Crypto runs exactly one priority lower. A value of1 lets its
-            complete CPU operations share priority0 with FreeRTOS IDLE while
-            this nonblocking actor still preempts them. Existing profiles use4.
+            Crypto runs exactly one priority lower. A value of 1 lets its
+            complete CPU operations share priority 0 with FreeRTOS IDLE while
+            this nonblocking actor still preempts them. Existing profiles use 4.
 
     config WENDY_NET_TASK_STACK_SIZE
-        int "Native Wendy Net connection task stack (bytes)"
+        int "Native Wendy Net actor task stack (bytes)"
         depends on WENDY_NET_PEER
-        range 12288 65536 if WENDY_NET_TEST_DIAGNOSTICS
         range 14336 65536
         default 20480
         help
             Packet, control, Babel, gossip and established TLS actor stack.
             Heavy TLS and signature jobs use the lower-priority crypto task.
             Measure both task high-water marks on each supported chip.
-            Diagnostic builds permit a 12KiB experiment with stack checks;
-            this is not the default budget for unmeasured configurations.
     config WENDY_NET_CRYPTO_TASK_STACK_SIZE
         int "Serialized Wendy Net crypto worker stack (bytes)"
         depends on WENDY_NET_PEER
@@ -68,8 +69,8 @@ menu "Wendy Net native peer prototype"
         help
             One preemptible lower-priority worker for whole TLS setup/steps,
             signature jobs and bounded storage effects. C5/C6 pilot maximum
-            observed use was below 6.5KiB with the enrolled four-part chain;
-            10KiB leaves more than 3.5KiB measured margin. Requalify against
+            observed use was below 6.5 KiB with the enrolled four-part chain;
+            10 KiB leaves more than 3.5 KiB measured margin. Requalify against
             other certificate profiles before reducing this budget.
     config WENDY_NET_ROUTER
         bool
@@ -79,15 +80,15 @@ menu "Wendy Net native peer prototype"
             Uses WendyOS StreamALPN and the native sparse Babel engine with
             independently signed route authorizations and bounded RAM state.
             Multiple authenticated LAN/BLE streams share one sparse node.
-            Indirect certificate fetching and service catalog remain under
-            integration; measure actual intermediate routing before deployment.
+            Certificate relay and service projection share the bounded native
+            session; the later runtime layer owns public activation.
     config WENDY_NET_CONSTRAINED_PROFILE
         bool "Use a single-carrier, non-transit mesh profile"
         depends on WENDY_NET_ROUTER
         default n if SPIRAM
         default y
         help
-            SRAM-only devices may choose one BLE, infrastructure Wi-Fi or NAN
+            SRAM-only devices may choose one BLE or infrastructure Wi-Fi
             carrier at a time. Both radio implementations can remain compiled;
             management selects the enabled medium. Physical Wi-Fi used for
             management is independent of Wi-Fi mesh carrier support.
@@ -97,72 +98,28 @@ menu "Wendy Net native peer prototype"
             infrastructure carriers scan and dial available peers, without
             publishing a mesh advertisement or accepting inbound carriers.
             Physical management and VIP services keep their normal listeners.
-            The explicit no-radio C6 transit test can relax only the single-link
-            forwarding/discovery policy while retaining these SRAM bounds.
-    config WENDY_NET_TEST_C6_BLE_TRANSIT
-        bool "Integration test: two BLE carriers with SRAM bounds"
-        default n
-        depends on WENDY_NET_TEST_NO_WIFI_RADIO && WENDY_NET_CONSTRAINED_PROFILE
-        depends on WENDY_NET_TEST_BLOB_FIFO && WENDY_NET_MAX_LINKS >= 2
-        depends on WENDY_NET_BLE_CHANNELS >= 2 && BT_NIMBLE_MAX_CONNECTIONS >= 3
-        depends on BT_NIMBLE_L2CAP_COC_MAX_NUM >= 3
-        help
-            Boot-only C6 two-BLE transit experiment. Keep eight total verified
-            device/operator key slots, demand-driven services, bounded peer
-            DER relay retention, pending-eight gossip and SRAM FIFO quotas. Permit
-            up to two BLE mesh carriers, normal forwarding, mesh advertisement
-            and incoming carriers. WiFi/NAN remain unsupported; management
-            settings are RAM-only and mesh is still off by default.
-            Requires three GAP/CoC slots for two carriers plus physical BLE
-            management. Does not reserve these slots or guarantee their RAM
-            admission. Measure the full guest/TLS/radio workload before use.
-
-    config WENDY_NET_TEST_BLOB_FIFO
-        bool "Investigate bounded FIFO announcement payload caches"
+    config WENDY_NET_RETAIN_TLS_INPUT
+        bool "Retain one active-mesh TLS input workspace"
         depends on WENDY_NET_ROUTER
         default n
         help
-            Experimental per-category blob quotas and proactive GONE notices.
-            Keeps verified endpoint projections and bounded retired digests.
-            Enable only with peers supporting GONE/forgiving parsers. Own
-            publication admission and large-mesh churn need qualification.
-            No PSRAM: 8KiB router/configurable service, 128 metadata objects. PSRAM:
-            16KiB router/64KiB service, 256 objects. Receive buffers and active
-            upload pins share those quotas. Reserved route-proof slots prevent
-            relay retirement receipts consuming all metadata capacity.
-    config WENDY_NET_TEST_RETAIN_TLS_INPUT
-        bool "Investigate retaining one active-mesh TLS input workspace"
-        depends on WENDY_NET_ROUTER
-        default n
-        help
-            Retains one zeroized 26KiB input allocation during mesh handshakes,
+            Retains one zeroized 26 KiB input allocation during mesh handshakes,
             active routing and the bounded logical-address recovery window
             to avoid repeated large allocations in fragmented SRAM. TLS borrows
             the workspace; compaction/free returns it for the next handshake.
             The allocation is released when the node becomes quiescent. This trades mesh
             RAM headroom for reliable contiguous handshake storage.
 
-    config WENDY_NET_TEST_RECLAIM_FIFO_FOR_APP
-        bool "Investigate FIFO reclamation before low-memory TLS handshakes"
-        depends on WENDY_NET_TEST_BLOB_FIFO
+    config WENDY_NET_RECLAIM_PAYLOADS_FOR_TLS
+        bool "Reclaim optional FIFO payloads before low-memory TLS handshakes"
+        depends on WENDY_NET_ROUTER
         default n
         help
-            When app or management TLS begins below 144KiB free and a 48KiB largest block,
-            ask the routing actor to retire up to 12KiB of optional payloads.
+            When app or management TLS begins below 144 KiB free and a 48 KiB largest block,
+            ask the routing actor to retire up to 12 KiB of optional payloads.
             Active uploads and the local route proof stay protected; endpoint
             summaries remain usable and GONE prevents exact-digest refills.
             No RAM is reserved while idle. Measure before choosing a default.
-
-    config WENDY_NET_TEST_SRAM_SERVICE_CACHE_KIB
-        int "Service FIFO payload budget on SRAM-only peers (KiB)"
-        depends on WENDY_NET_TEST_BLOB_FIFO
-        range 4 32
-        default 8
-        help
-            Measure useful relay-cache capacity against concurrent TLS workspace.
-            8KiB leaves room for concurrent management in the measured 24-service
-            C6 workload. Endpoint summaries and retirement metadata remain when
-            a body is evicted. PSRAM peers keep their separate 64KiB payload cap.
 
     config WENDY_NET_PACKET_QUEUE
         int "Maximum queued complete outbound IPv6 packets"
@@ -181,6 +138,8 @@ menu "Wendy Net native peer prototype"
         int "Prototype simultaneous authenticated carriers"
         depends on WENDY_NET_ROUTER
         range 1 6
+        default 1 if WENDY_NET_CONSTRAINED_PROFILE
+        default 6 if SPIRAM
         default 2
         help
             A prototype allocation bound, not a measured hardware maximum.
@@ -301,24 +260,13 @@ menu "Wendy Net native peer prototype"
             a separate PSM from WendyCom management. Buffers are sparse.
             Requires MSYS1 blocks of at least256bytes, providing MPS>=245
             so one advertised SDU uses one receive credit and buffer.
+    # No NAN runtime is shipped in this wave. The investigation adapter owned
+    # an extra task and uncharged queues; it must join the outer-effect driver
+    # and be qualified before this can become an enableable carrier.
     config WENDY_NET_NAN
-        bool "Prototype NAN-only Wi-Fi carrier with native TLS"
+        bool
+        depends on n
         default n
-        depends on WENDY_NET_ROUTER && SOC_WIFI_NAN_SUPPORT && ESP_WIFI_NAN_SYNC_ENABLE
-        help
-            Use synchronized NAN instead of infrastructure station mode.
-            BLE remains available. Device must already be enrolled. NAN
-            discovery supplies hints; the same enrolled TLS and Babel stream
-            performs admission. Requires a compatible WendyOS TLS NAN peer.
-    config WENDY_NET_TEST_NAN_PASSIVE_SUBSCRIBER
-        bool "Integration test: NAN passive subscriber only"
-        default n
-        depends on WENDY_NET_NAN
-        help
-            Register only a passive subscriber for the existing mesh service.
-            Tests ordinary NDP interoperability without an earlier solicited
-            service advertisement or opposite-role registration for one name.
-            This diagnostic does not advertise this device as a NAN publisher.
     config WENDY_NET_PREFER_RTC_PACKET_QUEUE
         bool "Prefer unused RTC heap for queued packet bytes"
         depends on WENDY_NET_PEER && ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP
@@ -372,78 +320,10 @@ menu "Wendy Net native peer prototype"
             thirteen private SDU blocks allow two RX plus one TX each and spare.
             Initialization rejects a two-slot profile unless every configured
             native channel has that RX+TX capacity plus one shared spare block.
-    config WENDY_NET_TEST_BLE_ONLY
-        bool "Integration test: use BLE for mesh packets, retaining infrastructure Wi-Fi"
-        default n
-        depends on WENDY_NET_BLE
-        help
-            Suppresses LAN carrier publication/dialing to isolate BLE. Wi-Fi
-            management and direct signed-time HTTPS remain available. This
-            does not prove offline BLE clock bootstrap or LAN/BLE handover.
-    config WENDY_NET_TEST_DIAGNOSTICS
-        bool "Integration test: periodic routing task progress and memory"
-        default n
-        depends on WENDY_NET_PEER
-        help
-            Emit task phase, age, state, stack spare and heap metrics every
-            fifteen seconds from an independent timer. Use together with SDK
-            stack-canary checks when measuring tight task stack profiles.
-    config WENDY_NET_TEST_ACTOR_READINESS
-        bool "Integration test: bounded actor readiness and phase counters"
-        depends on WENDY_NET_TEST_DIAGNOSTICS && WENDY_NET_ROUTER
-        default y if FREERTOS_GENERATE_RUN_TIME_STATS
-        default n
-        help
-            Count actor loops, progress, immediate-deadline reasons and select
-            outcomes using the existing fifteen-second diagnostic callback.
-            Phase totals are elapsed wall microseconds, including preemption
-            and select waits; compare them with the independent task CPU probe.
-            No extra task, queue, periodic callback or per-poll allocation.
-    config WENDY_NET_TEST_RETAIN_PANIC
-        bool "Integration test: retain a small panic frame across reboot"
-        default n
-        depends on WENDY_NET_TEST_DIAGNOSTICS
-    config WENDY_NET_TEST_NAN_MODE
-        bool "Integration test: finite SDK NAN mode and station restoration"
-        default n
-        depends on WENDY_NET_TEST_DIAGNOSTICS && SOC_WIFI_NAN_SUPPORT && ESP_WIFI_NAN_SYNC_ENABLE
-        help
-            After90seconds, leave station mode for120seconds of SDK NAN
-            discovery, then restore station mode with existing credentials.
-            Logs total/internal heap and task stack. This is a mode/footprint
-            experiment, not a Wendy Net NAN carrier; no data service is opened.
-    config WENDY_NET_TEST_LATE_MANAGEMENT_RECORDS
-        bool "Integration test: allocate management receive buffer after own path"
-        default n
-        depends on WENDY_NET_TEST_DIAGNOSTICS
-        help
-            Measure the lower peak from verifying and releasing own issuers
-            before allocating final TLS receive storage. Keeps all verification
-            and record limits. May lose receive-buffer contiguity; compare
-            actual management sessions alongside multiple native carriers.
-    config WENDY_NET_TEST_LAN_PAUSE_AFTER
-        int "Integration test: pause LAN carrier after first admission (seconds)"
-        default 0
-        range 0 600
-        depends on WENDY_NET_ROUTER && WENDY_NET_TEST_DIAGNOSTICS
-        help
-            Zero disables this ordinary handover experiment. Otherwise pause
-            native LAN acceptance, dialing and existing carriers once, after
-            this delay from the first admitted LAN carrier. BLE and agent
-            service remain available. Wi-Fi and signed-time HTTPS stay online.
-    config WENDY_NET_TEST_WIFI_PAUSE_AFTER
-        int "Integration test: pause station after first carrier (seconds)"
-        default 0
-        range 0 600
-        depends on WENDY_NET_ROUTER && WENDY_NET_TEST_DIAGNOSTICS
-        help
-            Default-off finite physical WiFi outage, preserving credentials,
-            BLE, the native interface and agent listeners. Tests encrypted
-            mesh timestamp renewal while the station has no AP association.
     config WENDY_NET_ENDPOINT_GATEWAY
         bool "Single-carrier endpoint uses its authenticated neighbour as gateway"
         default y
-        depends on WENDY_NET_CONSTRAINED_PROFILE && !WENDY_NET_TEST_C6_BLE_TRANSIT
+        depends on WENDY_NET_CONSTRAINED_PROFILE
         help
             Advertise the local signed origin and maintain Babel adjacency,
             without learning remote routes or requesting unrelated router and
@@ -470,7 +350,8 @@ menu "Wendy Net native peer prototype"
             Build a BLE-only SRAM endpoint retaining shared IP, native VIPs,
             the guest runtime and physical BLE management. Never initialize
             Wi-Fi, its station netif, services task or mDNS. Management reports
-            Wi-Fi/NAN unsupported; choose another firmware profile to use them.
+            Wi-Fi unsupported; choose another firmware profile to use it.
+            NAN remains unavailable in this delivery.
             Mesh remains off by default. Explicit management settings persist
             normally, unlike the temporary no-radio laboratory experiment.
             This does not enable transit or additional BLE carriers and does
@@ -480,7 +361,7 @@ menu "Wendy Net native peer prototype"
         bool "Integration test: omit WiFi radio initialization for this boot"
         default n
         depends on IDF_TARGET_ESP32C6 && WENDY_NET_ROUTER && WENDY_NET_BLE
-        depends on WENDY_NET_TEST_DIAGNOSTICS && WENDY_WIFI_ENABLED
+        depends on WENDY_WIFI_ENABLED
         depends on !WENDY_NET_NAN && !WENDY_MESH_ESPNOW && !WENDY_CLOUD
         help
             Boot-only laboratory RAM experiment. Keep shared lwIP, native VIP
@@ -495,89 +376,9 @@ menu "Wendy Net native peer prototype"
     config WENDY_NET_TEST_COLD_BLE
         bool "Integration test: boot without connecting the station"
         default n
-        depends on WENDY_NET_ROUTER && WENDY_NET_TEST_DIAGNOSTICS
+        depends on WENDY_NET_ROUTER
         help
             Preserve saved credentials but skip station connection from boot.
             Use to measure BLE-only worker, application and signed-time
             bootstrap. This does not itself supply a trusted clock.
-    config WENDY_NET_TEST_WIFI_PAUSE_SECONDS
-        int "Integration test: physical station pause duration (seconds)"
-        default 540
-        range 10 900
-        depends on WENDY_NET_TEST_WIFI_PAUSE_AFTER > 0
-    config WENDY_NET_TEST_LAN_DIAL_SKIP_PEER
-        string "Integration test: omit outgoing LAN carrier to this peer UUID"
-        default ""
-        depends on WENDY_NET_ROUTER && WENDY_NET_TEST_DIAGNOSTICS
-        help
-            Leave discovery, advertisement and inbound LAN enabled. Use this
-            only to construct a measured mixed LAN/BLE laboratory topology;
-            an empty value retains automatic selection of every candidate.
-    config WENDY_NET_TEST_LAN_PAUSE_SECONDS
-        int "Integration test: LAN carrier pause duration (seconds)"
-        default 60
-        range 10 900
-        depends on WENDY_NET_TEST_LAN_PAUSE_AFTER > 0
-    config WENDY_NET_TEST_TIME_RELAY
-        bool "Integration test: fetch signed time through the discovered peer"
-        default n
-        depends on WENDY_NET_PEER
-        help
-            Uses the finite WNT1 lab relay on TCP43025 instead of allocating a
-            separate HTTPS client. TSA signature, nonce and floor verification
-            are identical. This requires the lab relay on the selected peer.
-    config WENDY_NET_TEST_TIME_CONTROL_PEER
-        string "Integration test: renew through this router control peer"
-        default ""
-        depends on WENDY_NET_ROUTER && WENDY_NET_TEST_DIAGNOSTICS
-        help
-            With station connectivity still available, exercise the ordinary
-            encrypted control time relay on the selected authenticated UUID.
-            Empty retains direct HTTPS online and control renewal offline.
-    config WENDY_NET_TEST_REFRESH_SECONDS
-        int "Integration test: signed-time renewal interval (seconds)"
-        depends on WENDY_NET_TEST_DIAGNOSTICS
-        range 30 240
-        default 240
-        help
-            Shorten only the renewal schedule for repeatable endurance and
-            crash diagnosis. The original300second proof validity and
-            certificate/enrollment revocation checks remain unchanged.
-    config WENDY_NET_TEST_ACCEPT_ONLY
-        bool "Integration test: accept connections without initiating dials"
-        default n
-        depends on WENDY_NET_PEER
-        help
-            Exercises discovery and reverse dialing from WendyOS in the lab.
-            Normal peers keep both accepting and initiating connections.
-    config WENDY_NET_TEST_ECHO_SERVICE
-        bool "Integration test: bounded TLS echo service on app port28081"
-        default n
-        depends on WENDY_NET_PEER
-        help
-            A native echo sink for throughput and headroom measurements.
-            It is not part of the production service authorization table.
-    config WENDY_NET_TEST_APP_CLIENT
-        bool "Integration test: dial neighbor's signed TLS app endpoint"
-        default n
-        depends on WENDY_NET_ROUTER
-        help
-            Attempt a bounded65536-byte random echo through the current
-            neighbor's signed TLS endpoint. Uses its mesh IPv6 address, full
-            device mTLS and WAS1 service selection. Receiver must explicitly
-            enable the lab echo service. One transient16KiB handshake task;
-            retry at most once a minute until the first successful echo.
-    config WENDY_NET_TEST_AGENT_PROXY
-        bool "Integration test: opaque operator TCP bridge to a signed mesh agent"
-        default n
-        depends on WENDY_NET_ROUTER
-        help
-            Opens one lab-only TCP15054 listener. The destination must have a
-            current signed mtls-v1 capability and live authorized mesh route.
-            All operator TLS remains end-to-end; no operator keys are stored
-            on this device. This is a TCP proxy, not intermediate IP routing.
-    config WENDY_NET_TEST_AGENT_PROXY_PEER
-        string "Integration test: target enrolled device UUID"
-        default ""
-        depends on WENDY_NET_TEST_AGENT_PROXY
 endmenu

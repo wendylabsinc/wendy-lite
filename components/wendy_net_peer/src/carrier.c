@@ -12,60 +12,16 @@ struct wnc_frame
     int64_t started, progress;
     bool begun,priority;
     uint8_t category;
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-    unsigned queued_at_us;
-#endif
     uint8_t data[];
 };
 _Static_assert(WNC_CLASS_RESERVE>=sizeof(struct wnc_frame)+5+WN_DATAGRAM_MAX,
     "routing reserve must admit a maximum datagram");
 _Static_assert(WNC_CLASS_RESERVE>=WN_MTU+2*(sizeof(struct wnc_frame)+5+9),
     "IP reserve must admit one complete two-fragment packet");
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-static unsigned probe_class(const struct wnc_frame *f)
-{return f->category;}
-void wnc_probe_clock(struct wnc_carrier *c,int64_t now)
-{if(c)c->probe.now_us=(unsigned)now;}
-static void probe_enqueue(struct wnc_carrier *c,struct wnc_frame *f,size_t bytes)
-{
-    unsigned k=probe_class(f);f->queued_at_us=c->probe.now_us;
-    if(!atomic_fetch_add(&c->probe.queued_frames[k],1))atomic_store(&c->probe.oldest_us[k],f->queued_at_us);
-    atomic_fetch_add(&c->probe.queued_bytes[k],(unsigned)bytes);
-}
-static void probe_dequeue(struct wnc_carrier *c,const struct wnc_frame *f,size_t bytes)
-{
-    unsigned k=probe_class(f);atomic_fetch_sub(&c->probe.queued_frames[k],1);
-    atomic_fetch_sub(&c->probe.queued_bytes[k],(unsigned)bytes);
-    unsigned oldest=0;
-    for(const struct wnc_frame *at=c->head;at;at=at->next)if(probe_class(at)==k){oldest=at->queued_at_us;break;}
-    atomic_store(&c->probe.oldest_us[k],oldest);
-}
-static void probe_start(struct wnc_carrier *c,const struct wnc_frame *f,unsigned now)
-{
-    if(!f->queued_at_us)return;
-    unsigned k=probe_class(f),age=now-f->queued_at_us,old=atomic_load(&c->probe.wait_max_us[k]);
-    while(age>old && !atomic_compare_exchange_weak(&c->probe.wait_max_us[k],&old,age)){}
-}
-void wnc_probe_take(struct wnc_carrier *c,int64_t now,struct wnc_probe_snapshot *out)
-{
-    if(!c || !out)return;
-    *out=(struct wnc_probe_snapshot){.tx_bytes=atomic_exchange(&c->probe.tx_bytes,0),
-        .rx_bytes=atomic_exchange(&c->probe.rx_bytes,0),.tx_frames=atomic_exchange(&c->probe.tx_frames,0),
-        .rx_frames=atomic_exchange(&c->probe.rx_frames,0)};
-    for(unsigned i=0;i<WNC_CLASSES;i++){
-        out->queued_bytes[i]=atomic_load(&c->probe.queued_bytes[i]);
-        out->queued_frames[i]=atomic_load(&c->probe.queued_frames[i]);
-        unsigned oldest=atomic_load(&c->probe.oldest_us[i]);out->oldest_age_us[i]=oldest ? (unsigned)now-oldest:0;
-        out->wait_max_us[i]=atomic_exchange(&c->probe.wait_max_us[i],0);
-    }
-}
-#define CPROBE_ADD(c,key,n) ((void)atomic_fetch_add(&(c)->probe.key,(unsigned)(n)))
-#else
 #define CPROBE_ADD(c,key,n) ((void)0)
 #define probe_enqueue(c,f,n) ((void)0)
 #define probe_dequeue(c,f,n) ((void)0)
 #define probe_start(c,f,n) ((void)0)
-#endif
 int wnc_init(struct wnc_carrier *c, const struct wnc_io *io, void *small,
              size_t size, size_t limit, size_t control_limit)
 {
@@ -347,9 +303,6 @@ int wnc_pump(struct wnc_carrier *c, int64_t now, wnc_receive receive, void *ctx)
 {
     if (!c || !c->io.read || !c->io.write || !receive || now < 0)
         return WNC_INVALID;
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-    wnc_probe_clock(c,now);
-#endif
     int written = pump_write(c, now);
     if (written < 0)
         return written;

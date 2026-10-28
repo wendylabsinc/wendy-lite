@@ -49,11 +49,6 @@ struct wble_mesh_pipe *wble_mesh_take(struct wble_mesh_peer *);
 struct wendy_pki_stream wble_mesh_stream(struct wble_mesh_pipe *);
 void wble_mesh_release(struct wble_mesh_pipe *);
 size_t wble_mesh_memory(void);
-#if CONFIG_WENDY_NET_TEST_BLE_STREAM_CRC
-/* Existing diagnostics caller; takes a zero-wait snapshot and logs outside
- * the metadata gate. No raw payloads. OFF lifetime is protected. */
-void wble_mesh_crc_diagnose(void);
-#endif
 /* Multiplex the existing legacy management advertisement with a native
  *31byte mesh advertisement, retaining both primary service advertisements. */
 esp_err_t wendy_ble_mesh_advertisement(const uint8_t *data, size_t size);

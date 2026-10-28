@@ -9,14 +9,8 @@
 #include "mesh_rx_window.h"
 #include "mesh_report_lifetime.h"
 #include "mesh_gap_effect.h"
-#if CONFIG_WENDY_NET_TEST_BLE_STREAM_CRC
-#include "mesh_stream_crc.h"
-#endif
 #include "esp_log.h"
 #include "esp_timer.h"
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-#include "esp_memory_utils.h"
-#endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "host/ble_gap.h"
@@ -81,37 +75,7 @@ struct wble_mesh_pipe
     unsigned backoffs;
     int64_t retry_at;
     int64_t created;
-#if CONFIG_WENDY_NET_TEST_BLE_STREAM_CRC
-    struct wble_stream_crc crc;
-#endif
 };
-#if CONFIG_WENDY_NET_TEST_BLE_STREAM_CRC
-struct crc_snapshot {
-    struct wble_stream_crc stream;
-    int64_t epoch;
-    uint16_t handle,psm;
-    bool server;
-};
-static struct crc_snapshot crc_snapshot(const struct wble_mesh_pipe *p)
-{
-    return (struct crc_snapshot){.stream=p->crc,.epoch=p->created,
-        .handle=p->handle,.psm=p->peer.psm,.server=p->peer.server};
-}
-/* Only immutable metadata leaves the gate. At disconnect RX may still drain;
- * these are valid prefixes at that instant, not a final-delivery assertion. */
-static void crc_emit(const struct crc_snapshot *s,const char *event)
-{
-    for(unsigned d=0;d<2;d++){
-        if(!s->stream.bytes[d])continue;
-        ESP_LOGI(TAG,"mesh_crc epoch=%llu handle=%u psm=%u server=%u dir=%s event=%s bytes=%llu crc=%08lx first_crc=%08lx boundary=%llu boundary_crc=%08lx",
-            (unsigned long long)s->epoch,s->handle,s->psm,(unsigned)s->server,
-            d ? "rx":"tx",event,(unsigned long long)s->stream.bytes[d],
-            (unsigned long)s->stream.crc[d],(unsigned long)s->stream.first_crc[d],
-            (unsigned long long)(s->stream.bytes[d]/WBLE_CRC_STRIDE*WBLE_CRC_STRIDE),
-            (unsigned long)s->stream.boundary_crc[d]);
-    }
-}
-#endif
 static struct wble_mesh_pipe *pipes[CHANNELS], *pending;
 static struct os_mempool pool;
 static struct os_mbuf_pool mbufs;
@@ -140,41 +104,6 @@ static atomic_uint router_capacity_refusals;
 static bool timer_running, scan_paused, dialing, scan_owned;
 /* Capacity affects discovery only; an already queued dial remains valid. */
 static atomic_bool scan_interest=true, scan_listen_pending;
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-static int64_t tx_pressure_reported_us;
-/* The controller-backed SDK exposes no public MSYS-list iterator. Its public
- * mempool registry still identifies backing storage and occupancy. Include
- * named MSYS pools and MSYS-sized candidates; retain their names rather than
- * claiming that every same-sized pool belongs to MSYS. Bound both traversal
- * and output, and run only under the existing once-per-second pressure gate. */
-static void report_shared_pool_pressure(void)
-{
-    struct os_mempool *entry = NULL;
-    struct os_mempool_info info;
-    unsigned reported = 0, scanned = 0;
-    while (scanned < 64 && (entry = os_mempool_info_get_next(entry, &info))) {
-        scanned++;
-        if (entry == &pool)
-            continue;
-        bool named = strstr(info.omi_name, "msys") || strstr(info.omi_name, "MSYS");
-        bool sized = info.omi_block_size == MYNEWT_VAL(MSYS_1_BLOCK_SIZE) ||
-                     info.omi_block_size == MYNEWT_VAL(MSYS_2_BLOCK_SIZE);
-        if (!named && !sized)
-            continue;
-        const void *base = (const void *)(uintptr_t)entry->mp_membuf_addr;
-        ESP_LOGI(TAG,"mesh shared pool: name=%s msys_named=%u block=%d free=%d/%d min=%d internal=%u external=%u",
-            info.omi_name,(unsigned)named,info.omi_block_size,info.omi_num_free,
-            info.omi_num_blocks,info.omi_min_free,(unsigned)esp_ptr_internal(base),
-            (unsigned)esp_ptr_external_ram(base));
-        if (++reported == 4)
-            break;
-    }
-    if (!reported)
-        ESP_LOGI(TAG,"mesh shared pool details unavailable: registered_scanned=%u",scanned);
-    else if (reported == 4 || scanned == 64)
-        ESP_LOGI(TAG,"mesh shared pool listing bounded: reported=%u scanned=%u",reported,scanned);
-}
-#endif
 static uint8_t own_type;
 static uint16_t dial_psm;
 static wble_mesh_report report;
@@ -519,16 +448,6 @@ static void pipe_event(struct ble_npl_event *event)
                  * The owning TLS/carrier deadline and GAP supervision still
                  * close a link that cannot make progress. */
                 if(p->backoffs<UINT_MAX)p->backoffs++;
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-                int64_t stamp=esp_timer_get_time();
-                if(stamp-tx_pressure_reported_us>=1000000){
-                    tx_pressure_reported_us=stamp;
-                    ESP_LOGI(TAG,"mesh TX buffer pressure: handle=%u retries=%u private_free=%u/%u msys_free=%u",
-                        p->handle,p->backoffs,(unsigned)pool.mp_num_free,(unsigned)SDUS,
-                        (unsigned)os_msys_num_free());
-                    report_shared_pool_pressure();
-                }
-#endif
                 p->retry_at = esp_timer_get_time() + 10000;
             }
             else{
@@ -589,12 +508,7 @@ static int coc_event(struct ble_l2cap_event *event, void *context)
             !atomic_load(&router_accepting))
         {
             unsigned count=atomic_fetch_add(&router_capacity_refusals,1)+1;
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-            if(count==1 || !(count%32))
-                ESP_LOGI(TAG,"mesh CoC capacity refusals: %u",count);
-#else
             (void)count;
-#endif
             return BLE_HS_EBUSY;
         }
         lock();
@@ -719,18 +633,8 @@ static int coc_event(struct ble_l2cap_event *event, void *context)
             os_mbuf_free_chain(sdu);
         return 0;
     }
-#if CONFIG_WENDY_NET_TEST_BLE_STREAM_CRC
-    struct crc_snapshot ended={0};bool have_ended=false;
-#endif
     if (p && event->type == BLE_L2CAP_EVENT_COC_DISCONNECTED)
     {
-#if CONFIG_WENDY_NET_TEST_BLE_STREAM_CRC
-        ended=crc_snapshot(p);have_ended=true;
-#endif
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-        ESP_LOGI(TAG,"mesh CoC disconnected: handle=%u local_close=%u rx=%u tx_pending=%u",
-            p->handle,(unsigned)p->closing,(unsigned)p->ring_size,(unsigned)p->tx_pending);
-#endif
         p->channel = NULL;
         p->stack = p->connected = false;
         p->tx_pending = false;
@@ -760,9 +664,6 @@ static int coc_event(struct ble_l2cap_event *event, void *context)
         }
     }
     unlock();
-#if CONFIG_WENDY_NET_TEST_BLE_STREAM_CRC
-    if(have_ended)crc_emit(&ended,"disconnect");
-#endif
     return 0;
 }
 
@@ -772,10 +673,6 @@ static int gap_event(struct ble_gap_event *event, void *context)
     if (event->type == BLE_GAP_EVENT_DISCONNECT)
     {
         wble_gap_retiring_done(stopping_acls,MYNEWT_VAL(BLE_MAX_CONNECTIONS),event->disconnect.conn.conn_handle);
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-        ESP_LOGI(TAG,"mesh GAP disconnected: handle=%u reason=%d",
-            event->disconnect.conn.conn_handle,event->disconnect.reason);
-#endif
         lock();
         for(unsigned i=0;i<CHANNELS;i++){
             struct wble_mesh_pipe *p=pipes[i];
@@ -1055,10 +952,6 @@ fail:
 }
 static int initialize_host(void)
 {
-#if CONFIG_WENDY_NET_TEST_BLE_STREAM_CRC
-    if(!wble_stream_crc_self_test())return ESP_FAIL;
-    ESP_LOGI(TAG,"mesh stream CRC32/IEEE ROM self-test passed; bytes_per_pipe=40 stride=4096");
-#endif
     if (ble_hs_id_infer_auto(0, &own_type))
         return ESP_FAIL;
     if(!WENDY_NET_NON_TRANSIT){
@@ -1330,9 +1223,6 @@ static ssize_t stream_read(void *context, void *data, size_t size)
         memcpy((uint8_t *)data + first, p->ring, n - first);
     p->ring_head = (p->ring_head + n) % sizeof p->ring;
     p->ring_size -= n;
-#if CONFIG_WENDY_NET_TEST_BLE_STREAM_CRC
-    wble_stream_crc_accept(&p->crc,1,data,n);
-#endif
     bool closed = !p->connected || p->closing;
     if (!closed && wble_rx_rearm_budget(RX_SLOTS,p->rx_owed,sizeof p->ring-p->ring_size,MTU))
         post(p);
@@ -1366,9 +1256,6 @@ static ssize_t stream_write(void *context, const void *data, size_t size)
     memcpy(p->tx, data, n);
     p->tx_size = n;
     p->tx_pending = true;
-#if CONFIG_WENDY_NET_TEST_BLE_STREAM_CRC
-    wble_stream_crc_accept(&p->crc,0,data,n);
-#endif
     post(p);
     unlock();
     return (ssize_t)n;
@@ -1433,18 +1320,3 @@ bool wble_mesh_uses_connection(uint16_t handle)
     wble_report_release(&report_lifetime);
     return used;
 }
-
-#if CONFIG_WENDY_NET_TEST_BLE_STREAM_CRC
-void wble_mesh_crc_diagnose(void)
-{
-    if(!wble_report_acquire(&report_lifetime))return;
-    struct crc_snapshot snapshots[CHANNELS];unsigned used=0;
-    if(trylock()){
-        for(unsigned i=0;i<CHANNELS;i++)
-            if(pipes[i])snapshots[used++]=crc_snapshot(pipes[i]);
-        unlock();
-    }
-    wble_report_release(&report_lifetime);
-    for(unsigned i=0;i<used;i++)crc_emit(&snapshots[i],"periodic");
-}
-#endif

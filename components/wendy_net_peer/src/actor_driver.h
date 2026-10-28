@@ -12,6 +12,8 @@ void wnad_wake(void);
 int wnad_wake_fd(void);
 void wnad_drain_wake(void);
 int wnad_channel_io(struct wna_channel *,int fd,const struct wendy_pki_stream *);
+/* Validate select capacity and make accepted/outbound TCP sockets nonblocking. */
+bool wnad_prepare_socket(int fd);
 int wnad_connect(const char *,unsigned,bool *connecting);
 int wnad_connected(int fd);
 int wnad_no_wait(void *,bool,int64_t);
@@ -24,8 +26,3 @@ void wnad_handshake_release(void *owner);
 bool wendy_net_app_yield_setup(void);
 
 uint64_t wnad_io_during_crypto(void);
-
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-struct wnad_io_probe {unsigned rx_bytes,tx_bytes,rx_calls,tx_calls,rx_blocked,tx_blocked;};
-void wnad_io_probe_take(struct wnad_io_probe *);
-#endif
