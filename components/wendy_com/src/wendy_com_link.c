@@ -25,6 +25,9 @@
 // limit. Bound queued writes so their done handlers can return borrowed
 // sensor buffers. Successful writes renew this deadline, even during OTA.
 #define WCOM_TX_STALL_TIMEOUT_US (15LL * 1000 * 1000)
+/* Routed TCP may pause while a physical carrier and its signed route return.
+ * The queue/buffer limits stay the same; this only bounds their holding time. */
+#define WCOM_TX_ROUTED_STALL_TIMEOUT_US (45LL * 1000 * 1000)
 
 #define WENDY_COM_LINK_ERR_UNKNOWN    -1
 #define WENDY_COM_LINK_ERR_WANT_READ  -2
@@ -64,6 +67,7 @@ struct wcom_link {
     bool rx_need_write;                // last conn_read() returned WANT_WRITE
     bool rx_tls_readable;              // TLS layer may have buffered bytes not yet consumed
     bool tx_need_read;                 // last conn_write() returned WANT_READ
+    bool routed;
 };
 
 
@@ -71,7 +75,7 @@ struct wcom_link {
 
 static const char *TAG = "wcom_hub";
 static struct wcom_link _links[WCOM_LINK_COUNT];
-static int _wakeup_efd = -1;
+static _Atomic(int) _wakeup_efd = -1;
 static TaskHandle_t _main_task = NULL;
 static int _link_id_generator = 0;
 static _Atomic(struct wcom_operation *) _op_queue_head;
@@ -194,6 +198,11 @@ static void _link_interrupt(struct wcom_link *ch, enum wcom_link_state state)
                              : WCOM_INTERRUPTION_CONNECTION_CLOSED);
 }
 
+static int64_t _tx_stall_timeout(const struct wcom_link *ch)
+{
+    return ch->routed ? WCOM_TX_ROUTED_STALL_TIMEOUT_US : WCOM_TX_STALL_TIMEOUT_US;
+}
+
 static int64_t _tx_stall_delay(const struct wcom_link *ch, int64_t now_us)
 {
     if (ch->state != WCOM_LINK_STATE_CONNECTED || !ch->tx_chunk_first)
@@ -206,7 +215,8 @@ static bool _expire_stalled_tx(struct wcom_link *ch, int64_t now_us)
 {
     if (_tx_stall_delay(ch, now_us) != 0)
         return false;
-    ESP_LOGW(TAG, "tx stalled for 15 seconds on link %d, closing", ch->id);
+    ESP_LOGW(TAG, "tx stalled for %u seconds on link %d, closing",
+        (unsigned)(_tx_stall_timeout(ch) / 1000000), ch->id);
     _link_interrupt(ch, WCOM_LINK_STATE_ERROR);
     return true;
 }
@@ -262,7 +272,7 @@ static void _link_do_tx(struct wcom_link *ch)
         ssize_t n = _link_write(ch, data, remaining);
         if (n > 0) {
             ch->tx_need_read = false;
-            ch->tx_deadline_us = esp_timer_get_time() + WCOM_TX_STALL_TIMEOUT_US;
+            ch->tx_deadline_us = esp_timer_get_time() + _tx_stall_timeout(ch);
             ch->tx_chunk_offset += (size_t)n;
             if (ch->tx_chunk_offset >= chunk->size) {
                 ch->tx_chunk_first = chunk->next;
@@ -457,8 +467,10 @@ static void _main(void *arg)
                 // the eventfd after it changes state, so a signal that races
                 // this is still visible in can_read()/can_write() — or, if it
                 // lands later, leaves the counter non-zero and wakes the next
-                // select(). Draining last would swallow it.
-                if (FD_ISSET(ch->fd, &rfds)) {
+                // select(). Draining last would swallow it. The shared core fd
+                // was already drained globally; leave later edges for the
+                // next select rather than draining it once per link.
+                if (ch->fd != _wakeup_efd && FD_ISSET(ch->fd, &rfds)) {
                     uint64_t drain;
                     read(ch->fd, &drain, sizeof(drain));
                 }
@@ -525,9 +537,20 @@ void wcom_core_exec(struct wcom_operation *op)
         &_op_queue_head, &old_head, op,
         memory_order_release, memory_order_relaxed));
 
-    if (_wakeup_efd >= 0) {
-        uint64_t val = 1;
-        write(_wakeup_efd, &val, sizeof(val));
+    wcom_core_wake();
+}
+
+int wcom_core_wakeup_fd(void)
+{
+    return atomic_load_explicit(&_wakeup_efd, memory_order_acquire);
+}
+
+void wcom_core_wake(void)
+{
+    int fd = wcom_core_wakeup_fd();
+    if (fd >= 0) {
+        uint64_t value = 1;
+        (void)write(fd, &value, sizeof(value));
     }
 }
 
@@ -612,7 +635,7 @@ void wcom_send(int link_id, struct wcom_tx_chunk *chunk)
         ch->tx_chunk_last->next = chunk;
     else {
         ch->tx_chunk_first = chunk;
-        ch->tx_deadline_us = esp_timer_get_time() + WCOM_TX_STALL_TIMEOUT_US;
+        ch->tx_deadline_us = esp_timer_get_time() + _tx_stall_timeout(ch);
     }
 
     while (chunk->next)
@@ -661,6 +684,7 @@ int wcom_add_tls_link_with_permission(esp_tls_t *tls,
             ch->id = _link_id_generator * WCOM_LINK_COUNT + i;
             ch->state = WCOM_LINK_STATE_CONNECTED;
             ch->type = LINK_TYPE_TLS;
+            ch->routed = false;
             ch->permission = permission;
             ch->tls = tls;
             ch->interruption_handler = interruption_handler;
@@ -696,6 +720,7 @@ int wcom_add_uart_link(wendy_com_uart_t *uart, wcom_interruption_handler_t inter
             ch->id = _link_id_generator * WCOM_LINK_COUNT + i;
             ch->state = WCOM_LINK_STATE_CONNECTED;
             ch->type = LINK_TYPE_UART;
+            ch->routed = false;
             ch->permission = WCOM_LINK_PERMISSION_FULL;
             ch->uart = uart;
             ch->interruption_handler = interruption_handler;
@@ -721,12 +746,13 @@ int wcom_add_uart_link(wendy_com_uart_t *uart, wcom_interruption_handler_t inter
 
 static int _add_custom_link(enum link_type type, const struct wcom_stream_ops *ops,
                             void *ctx, wcom_interruption_handler_t interruption_handler,
-                            enum wcom_link_permission permission)
+                            enum wcom_link_permission permission, bool routed)
 {
     assert(xTaskGetCurrentTaskHandle() == _main_task);
     if (!_valid_permission(permission)) return -1;
     assert(ops && ops->read && ops->write && ops->wakeup_fd);
     assert(type != LINK_TYPE_STREAM || (ops->can_read && ops->can_write));
+    if ((ops->allocate_buffer == NULL) != (ops->free_buffer == NULL)) return -1;
 
     for (int i = 0; i < WCOM_LINK_COUNT; i++) {
         struct wcom_link *ch = &_links[i];
@@ -737,6 +763,7 @@ static int _add_custom_link(enum link_type type, const struct wcom_stream_ops *o
             ch->id = _link_id_generator * WCOM_LINK_COUNT + i;
             ch->state = WCOM_LINK_STATE_CONNECTED;
             ch->type = type;
+            ch->routed = routed;
             ch->permission = permission;
             ch->ops = ops;
             ch->stream_ctx = ctx;
@@ -764,7 +791,29 @@ static int _add_custom_link(enum link_type type, const struct wcom_stream_ops *o
 int wcom_add_stream_link(const struct wcom_stream_ops *ops, void *ctx,
                          wcom_interruption_handler_t handler)
 {
-    return _add_custom_link(LINK_TYPE_STREAM, ops, ctx, handler, WCOM_LINK_PERMISSION_FULL);
+    return _add_custom_link(LINK_TYPE_STREAM, ops, ctx, handler, WCOM_LINK_PERMISSION_FULL, false);
+}
+
+int wcom_add_routed_stream_link_with_permission(const struct wcom_stream_ops *ops, void *ctx,
+                                                wcom_interruption_handler_t handler,
+                                                enum wcom_link_permission permission)
+{
+    return _add_custom_link(LINK_TYPE_STREAM, ops, ctx, handler, permission, true);
+}
+
+bool wcom_link_get_buffer_allocator(int link_id, struct wcom_link_buffer_allocator *out)
+{
+    if (!out) return false;
+    *out = (struct wcom_link_buffer_allocator){0};
+    struct wcom_link *link = _get_link(link_id);
+    if (!link || link->state != WCOM_LINK_STATE_CONNECTED) return false;
+    if ((link->type == LINK_TYPE_STREAM || link->type == LINK_TYPE_SOCKET) &&
+        link->ops->allocate_buffer && link->ops->free_buffer) {
+        out->context = link->stream_ctx;
+        out->allocate = link->ops->allocate_buffer;
+        out->release = link->ops->free_buffer;
+    }
+    return true;
 }
 
 int wcom_add_socket_link(const struct wcom_stream_ops *ops, void *ctx,
@@ -777,7 +826,14 @@ int wcom_add_socket_link_with_permission(const struct wcom_stream_ops *ops, void
                                          wcom_interruption_handler_t handler,
                                          enum wcom_link_permission permission)
 {
-    return _add_custom_link(LINK_TYPE_SOCKET, ops, ctx, handler, permission);
+    return _add_custom_link(LINK_TYPE_SOCKET, ops, ctx, handler, permission, false);
+}
+
+int wcom_add_routed_socket_link_with_permission(const struct wcom_stream_ops *ops, void *ctx,
+                                               wcom_interruption_handler_t handler,
+                                               enum wcom_link_permission permission)
+{
+    return _add_custom_link(LINK_TYPE_SOCKET, ops, ctx, handler, permission, true);
 }
 
 enum wcom_link_permission wcom_link_get_permission(int link_id)

@@ -304,6 +304,39 @@ static void test_progress(void)
     assert(!disconnections && !interruptions);
 }
 
+static void test_routed_recovery(void)
+{
+    int id = wcom_add_routed_socket_link_with_permission(&wire_ops, NULL,
+        interrupted, WCOM_LINK_PERMISSION_FULL);
+    assert(id > 0);
+    current_link = id;
+    struct wcom_link *link = _get_link(id);
+    push_frame(256);
+    int64_t deadline = link->tx_deadline_us;
+    assert(deadline == now_us + WCOM_TX_ROUTED_STALL_TIMEOUT_US);
+    /* Ordinary no-route pause exceeds the LAN budget, preserving the same
+     * borrowed SensorLink frame and resuming it exactly once afterward. */
+    now_us += 31LL * 1000000;
+    assert(!_expire_stalled_tx(link, now_us));
+    assert(link->tx_deadline_us == deadline && _streams[0].frame.busy);
+    write_budget = SIZE_MAX;
+    drain_tx(link);
+    assert(frame_completions == 1 && !_streams[0].frame.busy);
+    assert(!link->tx_deadline_us && !disconnections && !interruptions);
+    /* This scenario intentionally closes a healthy link, unlike the shared
+     * stalled-peer callback, which expects a transport error. */
+    link->interruption_handler = NULL;
+    wcom_close(id);
+    wcom_remove_link(id);
+    int ordinary = open_link(false);
+    assert(_get_link(ordinary) == link && !link->routed);
+    push_frame(256);
+    assert(link->tx_deadline_us == now_us + WCOM_TX_STALL_TIMEOUT_US);
+    write_budget = SIZE_MAX;
+    drain_tx(link);
+    assert(frame_completions == 2);
+}
+
 int main(int argc, char **argv)
 {
     assert(argc == 2);
@@ -314,6 +347,7 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[1], "want_read")) test_stall(false, true, true);
     else if (!strcmp(argv[1], "no_bytes")) test_stall(false, false, false);
     else if (!strcmp(argv[1], "progress")) test_progress();
+    else if (!strcmp(argv[1], "routed_recovery")) test_routed_recovery();
     else if (!strcmp(argv[1], "uart_initial")) { uart_scenario = UART_INITIAL; test_uart(); }
     else if (!strcmp(argv[1], "uart_cdc")) { uart_scenario = UART_CDC; test_uart(); }
     else if (!strcmp(argv[1], "uart_full")) { uart_scenario = UART_FULL; test_uart(); }

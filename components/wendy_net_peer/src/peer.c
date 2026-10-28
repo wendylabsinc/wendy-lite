@@ -23,6 +23,7 @@
 #include "wendy_net_packet_queue.h"
 #include "actor_driver.h"
 #include "wendy_net_agent.h"
+#include "wendy_net.h"
 #include "crypto_job.h"
 #include "settings.h"
 #include "esp_vfs.h"
@@ -639,9 +640,8 @@ static void service_query_release(struct service_query *q)
 {
     if(atomic_fetch_sub(&q->references,1)==1){wendy_net_free(q->output);wendy_net_free(q);}
 }
-/* Guest listeners join with the VIP adapter, not the inactive carrier layer. */
 static int guest_listener_owner(void *context,uint16_t port,bool datagram)
-{(void)context;(void)port;(void)datagram;return -1;}
+{(void)context;return wendy_net_guest_listener_owner(port,datagram);}
 static void service_catalog_query(struct peer_state *s)
 {
     pthread_mutex_lock(&state_lock);
