@@ -816,6 +816,9 @@ static int claim_legacy_handshake(wendy_pki_connection *c,int64_t deadline)
 #endif
     return 0;
 }
+/* Keep an elapsed idle deadline distinct from EOF, reset and transport errors.
+ * Existing I/O callers treat every nonzero wait result as failure. */
+enum { SOCKET_WAIT_TIMEOUT = -2 };
 static int wait_socket(wendy_pki_connection *c, int error, int64_t deadline)
 {
     if (wendy_pki_reset_in_progress()) return -1;
@@ -828,10 +831,15 @@ static int wait_socket(wendy_pki_connection *c, int error, int64_t deadline)
 #endif
     int64_t left = deadline - esp_timer_get_time();
     if (left <= 0)
-        return -1;
+        return SOCKET_WAIT_TIMEOUT;
     if (c->stream.wait) {
         if (wendy_pki_reset_in_progress()) return -1;
-        return c->stream.wait(c->stream.context, error == MBEDTLS_ERR_SSL_WANT_WRITE, deadline);
+        int result=c->stream.wait(c->stream.context, error == MBEDTLS_ERR_SSL_WANT_WRITE, deadline);
+        /* The stream contract merges timeout/disconnect into -1. Preserve
+         * that failure even at the renewal boundary. Only a successful retry
+         * hint may become an elapsed wait, with its TLS direction retained. */
+        if(result || wendy_pki_reset_in_progress())return -1;
+        return esp_timer_get_time()>=deadline ? SOCKET_WAIT_TIMEOUT:0;
     }
     fd_set rd, wr;
     FD_ZERO(&rd);
@@ -841,7 +849,8 @@ static int wait_socket(wendy_pki_connection *c, int error, int64_t deadline)
     else
         FD_SET(c->fd, &wr);
     struct timeval tv = {left / 1000000, left % 1000000};
-    return select(c->fd + 1, &rd, &wr, NULL, &tv) > 0 ? 0 : -1;
+    int ready = select(c->fd + 1, &rd, &wr, NULL, &tv);
+    return ready > 0 ? 0 : ready == 0 ? SOCKET_WAIT_TIMEOUT : -1;
 }
 static int detach_socket(wendy_pki_connection *c)
 {
@@ -2011,13 +2020,29 @@ enum wendy_peer_role wendy_pki_get_peer_role(const wendy_pki_connection *connect
     return connection ? connection->peer_role : WENDY_PEER_ROLE_NONE;
 }
 
+enum { READ_ALL_IDLE_TIMEOUT = -2 };
 static int read_all(wendy_pki_connection *c, uint8_t *out, size_t n, int64_t deadline)
 {
+    size_t size = n;
+    bool idle_read = true;
     while (n) {
-        if (esp_timer_get_time() >= deadline) return -1;
+        if (wendy_pki_reset_in_progress()) return -1;
+        if (esp_timer_get_time() >= deadline)
+            return n == size && idle_read ? READ_ALL_IDLE_TIMEOUT : -1;
         int got = connection_read(c, out, n);
         if (got > 0) { out += got; n -= got; }
-        else if (!got || wait_socket(c, got, deadline)) return -1;
+        else {
+            if (!got) return -1;
+            /* A readiness hint can cross the deadline before the next loop.
+             * Keep WANT_WRITE failures distinct from an empty idle read. */
+            idle_read = got == MBEDTLS_ERR_SSL_WANT_READ;
+            int waited = wait_socket(c, got, deadline);
+            if (waited) {
+                if (waited == SOCKET_WAIT_TIMEOUT && got == MBEDTLS_ERR_SSL_WANT_READ &&
+                    n == size) return READ_ALL_IDLE_TIMEOUT;
+                return -1;
+            }
+        }
     }
     return 0;
 }
@@ -2045,13 +2070,16 @@ int wendy_pki_relay_upgrade(wendy_pki_connection *c, struct wendy_lite_trust *tr
         stage = "heartbeat";
         deadline = esp_timer_get_time() + 30000000;
         if (deadline > renew) deadline = renew;
-        if (read_all(c, header, 4, deadline) || memcmp(header, "WR\x03", 3)) {
-            if (esp_timer_get_time() >= renew) {
+        int result = read_all(c, header, 4, deadline);
+        if (result) {
+            if (result == READ_ALL_IDLE_TIMEOUT && deadline == renew &&
+                !wendy_pki_reset_in_progress()) {
                 ESP_LOGI("wendy_pki", "refreshing broker control connection");
                 return WENDY_PKI_RELAY_RENEW;
             }
             goto fail;
         }
+        if (memcmp(header, "WR\x03", 3)) goto fail;
         if (header[3] == 1) {
             if (write_all(c, "WR\x03\x02", 4, deadline)) goto fail;
             if (first) ESP_LOGI("wendy_pki", "broker control heartbeat received and answered");
@@ -2069,7 +2097,7 @@ int wendy_pki_relay_upgrade(wendy_pki_connection *c, struct wendy_lite_trust *tr
     }
 fail:
     ESP_LOGW("wendy_pki", "broker control failed at %s", stage);
-    return -1;
+    return WENDY_PKI_RELAY_FAILED;
 }
 
 int pki_relay_grant(wendy_pki_connection *c, const struct wendy_lite_trust *trust, int64_t deadline)
