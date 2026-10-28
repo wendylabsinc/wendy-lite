@@ -81,7 +81,30 @@ function(wendy_patch_mbedtls source)
     wendy_prepare_patched_tree("${source}" "${destination}"
         "${project_dir}/patches/esp-pqc-mbedtls4-private-headers.patch"
         "${project_dir}/patches/esp-pqc-mbedtls-tls13-certificate-fragmentation.patch"
-        "${project_dir}/patches/esp-pqc-mbedtls-mldsa87-ca.patch")
+        "${project_dir}/patches/esp-pqc-mbedtls-mldsa87-ca.patch"
+        "${project_dir}/patches/esp-pqc-mbedtls-lazy-handshake-buffer.patch"
+        "${project_dir}/patches/esp-pqc-mbedtls-asymmetric-input-buffer.patch"
+        "${project_dir}/patches/esp-pqc-mbedtls-lazy-pqc-public-key.patch"
+        "${project_dir}/patches/esp-pqc-mbedtls-record-sized-reassembly.patch"
+        "${project_dir}/patches/esp-pqc-mbedtls-reuse-peer-trust-anchor.patch"
+        "${project_dir}/patches/esp-pqc-mbedtls-input-reserve.patch"
+        "${project_dir}/patches/esp-pqc-mbedtls-reuse-own-issuers.patch"
+        "${project_dir}/patches/esp-pqc-mbedtls-release-issuer-candidates.patch"
+        "${project_dir}/patches/esp-pqc-mbedtls-demand-application-record.patch"
+        "${project_dir}/patches/esp-pqc-mbedtls-consume-pem-der.patch"
+        "${project_dir}/patches/esp-pqc-mbedtls-borrow-verified-peer-issuers.patch"
+        "${project_dir}/patches/esp-pqc-mbedtls-stream-verified-own-chain.patch"
+        "${project_dir}/patches/esp-pqc-mbedtls-defer-peer-leaf-copy.patch"
+        "${project_dir}/patches/esp-pqc-mbedtls-small-initial-stream-record.patch"
+        "${project_dir}/patches/esp-pqc-mbedtls-borrow-certificate-pqc-keys.patch"
+        "${project_dir}/patches/esp-pqc-mbedtls-direct-small-input-setup.patch"
+        "${project_dir}/patches/esp-pqc-mbedtls-preserve-pending-output.patch"
+        "${project_dir}/patches/esp-pqc-mbedtls-adopt-input-reservation.patch"
+        "${project_dir}/patches/esp-pqc-mbedtls-recycle-input-buffer.patch"
+        "${project_dir}/patches/esp-pqc-mbedtls-defer-handshake-input-shrink.patch"
+        "${project_dir}/patches/esp-pqc-mbedtls-psa-global-key-tables.patch"
+        "${project_dir}/patches/esp-pqc-mbedtls-mldsa65-private-key.patch"
+        "${project_dir}/patches/esp-pqc-mbedtls-mldsa65-certificate-verify.patch")
     foreach(target __idf_mbedtls mbedtls mbedx509 tfpsacrypto builtin extras platform utilities everest p256-m)
         wendy_redirect_dependency_target(${target} "${source}" "${destination}")
         if(ESP_PLATFORM)
@@ -94,6 +117,10 @@ function(wendy_patch_mbedtls source)
         if(TARGET ${target} AND (NOT ESP_PLATFORM OR CONFIG_MBEDTLS_SSL_TLS1_3_SIG_MLDSA65))
             # The inline key buffer layout must match in every consumer.
             target_compile_definitions(${target} PUBLIC MBEDTLS_X509_MLDSA87=)
+        endif()
+        if(TARGET ${target} AND (CONFIG_WENDY_PKI_MLDSA65_SIGNING OR WENDY_PKI_MLDSA65_SIGNING))
+            # Layout and opt-in private-key backend must match every consumer.
+            target_compile_definitions(${target} PUBLIC MBEDTLS_MLDSA65_PRIVATE_KEY=)
         endif()
     endforeach()
     if(TARGET ml_dsa_87_ref)

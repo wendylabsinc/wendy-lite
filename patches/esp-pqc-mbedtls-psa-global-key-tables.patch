@@ -1,0 +1,119 @@
+--- a/tf-psa-crypto/core/psa_crypto_slot_management.c
++++ b/tf-psa-crypto/core/psa_crypto_slot_management.c
+@@ -190,6 +190,27 @@
+ 
+ static psa_global_data_t global_data;
+ 
++/* Optional process-global metadata allocator. Key bytes still use the normal
++ * scoped allocator. Install only before PSA initialization, with the same free
++ * ABI as mbedtls_free; a late registration is explicitly rejected. */
++static void *(*key_slot_table_calloc)(size_t, size_t);
++psa_status_t mbedtls_psa_set_key_slot_table_allocator(
++    void *(*allocator)(size_t, size_t))
++{
++    if (global_data.key_slots_initialized || allocator == NULL) {
++        return PSA_ERROR_BAD_STATE;
++    }
++    key_slot_table_calloc = allocator;
++    return PSA_SUCCESS;
++}
++#if defined(MBEDTLS_PSA_KEY_STORE_DYNAMIC)
++static void *allocate_key_slot_table(size_t count, size_t size)
++{
++    return key_slot_table_calloc ? key_slot_table_calloc(count, size) :
++           mbedtls_calloc(count, size);
++}
++#endif
++
+ static uint8_t psa_get_key_slots_initialized(void)
+ {
+     uint8_t initialized;
+@@ -407,7 +428,7 @@
+ {
+ #if defined(MBEDTLS_PSA_KEY_STORE_DYNAMIC)
+     global_data.key_slices[KEY_SLOT_CACHE_SLICE_INDEX] =
+-        mbedtls_calloc(PERSISTENT_KEY_CACHE_COUNT,
++        allocate_key_slot_table(PERSISTENT_KEY_CACHE_COUNT,
+                        sizeof(*global_data.key_slices[KEY_SLOT_CACHE_SLICE_INDEX]));
+     if (global_data.key_slices[KEY_SLOT_CACHE_SLICE_INDEX] == NULL) {
+         return PSA_ERROR_INSUFFICIENT_MEMORY;
+@@ -489,7 +510,7 @@
+ 
+     if (global_data.key_slices[slice_idx] == NULL) {
+         global_data.key_slices[slice_idx] =
+-            mbedtls_calloc(key_slice_length(slice_idx),
++            allocate_key_slot_table(key_slice_length(slice_idx),
+                            sizeof(psa_key_slot_t));
+         if (global_data.key_slices[slice_idx] == NULL) {
+             return PSA_ERROR_INSUFFICIENT_MEMORY;
+@@ -952,6 +973,46 @@
+                               &mbedtls_threading_key_slot_mutex));
+ #endif
+ 
++    return status;
++}
++
++/* Keep the initial volatile slice and persistent cache. Secondary slices
++ * may be retired only when every slot is EMPTY: no filling operation, key or
++ * registered reader then retains an address into that allocation. */
++psa_status_t mbedtls_psa_trim_empty_key_slots(size_t *freed_bytes)
++{
++    psa_status_t status = PSA_SUCCESS;
++    if (freed_bytes == NULL) {
++        return PSA_ERROR_INVALID_ARGUMENT;
++    }
++    *freed_bytes = 0;
++    if (!psa_get_key_slots_initialized()) {
++        return PSA_ERROR_BAD_STATE;
++    }
++#if defined(MBEDTLS_THREADING_C)
++    PSA_THREADING_CHK_RET(mbedtls_mutex_lock(&mbedtls_threading_key_slot_mutex));
++#endif
++#if defined(MBEDTLS_PSA_KEY_STORE_DYNAMIC)
++    for (size_t slice_idx = 1; slice_idx < KEY_SLOT_VOLATILE_SLICE_COUNT; slice_idx++) {
++        psa_key_slot_t *slice = global_data.key_slices[slice_idx];
++        if (slice == NULL) {
++            continue;
++        }
++        size_t count = key_slice_length(slice_idx), slot_idx = 0;
++        while (slot_idx < count && slice[slot_idx].state == PSA_SLOT_EMPTY) {
++            slot_idx++;
++        }
++        if (slot_idx == count) {
++            global_data.key_slices[slice_idx] = NULL;
++            global_data.first_free_slot_index[slice_idx] = 0;
++            *freed_bytes += count * sizeof(*slice);
++            mbedtls_free(slice);
++        }
++    }
++#endif
++#if defined(MBEDTLS_THREADING_C)
++    PSA_THREADING_CHK_RET(mbedtls_mutex_unlock(&mbedtls_threading_key_slot_mutex));
++#endif
+     return status;
+ }
+ 
+--- a/tf-psa-crypto/include/psa/crypto_extra.h
++++ b/tf-psa-crypto/include/psa/crypto_extra.h
+@@ -156,6 +156,21 @@
+  *       may not expose this function.
+  */
+ void mbedtls_psa_get_stats(mbedtls_psa_stats_t *stats);
++
++/** Register a process-global allocator for PSA key-slot TABLE metadata only.
++ * Key material retains the normal allocator. Call before psa_crypto_init(),
++ * without concurrent PSA users. Return PSA_ERROR_BAD_STATE if already initialized.
++ * The callback must return zeroed memory releasable by the current mbedtls_free;
++ * changing that allocation/free ABI after initialization is not supported. */
++psa_status_t mbedtls_psa_set_key_slot_table_allocator(
++    void *(*allocator)(size_t, size_t));
++
++/** Release EMPTY secondary volatile-key tables under the key-slot mutex.
++ * Never wipes keys, changes live key identifiers, or retires a table with a
++ * filling/pending-deletion/read-locked slot. The initial table and persistent
++ * cache remain. This may run alongside ordinary PSA operations, but never
++ * concurrently with the global mbedtls_psa_crypto_free() teardown. */
++psa_status_t mbedtls_psa_trim_empty_key_slots(size_t *freed_bytes);
+ 
+ /** \addtogroup crypto_types
+  * @{

@@ -77,16 +77,16 @@ int main(int argc, char** argv)
     wendy_pki_connection* connection = NULL;
     /* Optional peer discovery must never relax TCP or gateway pinning. */
     assert(pki_tls_mesh_connect("127.0.0.1", 43024, argv[5], argv[6], NULL,
-        key, kn, (char*)cert, (struct wendy_conf_span) { roots, rn }, &connection) != 0);
+        key, kn, (struct wendy_conf_span){cert,cn}, (struct wendy_conf_span) { roots, rn }, &connection) != 0);
     assert(!connection);
     assert(pki_tls_gateway_connect("127.0.0.1", 43024, argv[5], argv[6], NULL,
-        key, kn, (char*)cert, (struct wendy_conf_span) { roots, rn }, &connection) != 0);
+        key, kn, (struct wendy_conf_span){cert,cn}, (struct wendy_conf_span) { roots, rn }, &connection) != 0);
     assert(!connection);
     int result, fd = -1;
     const char* mode = getenv("MESH_STREAM_MODE");
     if (mode && !strcmp(mode, "gateway")) {
         result = pki_tls_gateway_connect("127.0.0.1", (unsigned)strtoul(argv[4], NULL, 10),
-            argv[5], argv[6], argv[7], key, kn, (char*)cert,
+            argv[5], argv[6], argv[7], key, kn, (struct wendy_conf_span){cert,cn},
             (struct wendy_conf_span) { roots, rn }, &connection);
     } else if (mode && strcmp(mode, "tcp")) {
         fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -98,10 +98,10 @@ int main(int argc, char** argv)
         struct wendy_pki_stream stream = { .context = &fd, .read = stream_read, .write = stream_write, .wait = stream_wait };
         result = pki_tls_mesh_stream(&stream, !strcmp(mode, "server"), argv[5], argv[6],
             !strcmp(mode, "same-tenant") ? NULL : argv[7],
-            key, kn, (char*)cert, (struct wendy_conf_span) { roots, rn }, &connection);
+            key, kn, (struct wendy_conf_span){cert,cn}, (struct wendy_conf_span) { roots, rn }, &connection);
     } else
         result = pki_tls_mesh_connect("127.0.0.1", (unsigned)strtoul(argv[4], NULL, 10),
-            argv[5], argv[6], argv[7], key, kn, (char*)cert,
+            argv[5], argv[6], argv[7], key, kn, (struct wendy_conf_span){cert,cn},
             (struct wendy_conf_span) { roots, rn }, &connection);
     bool expected = strcmp(argv[8], "accept") == 0;
     if ((result == 0) != expected) {

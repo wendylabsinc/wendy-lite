@@ -3,20 +3,16 @@
 
 /* Shared bounded response parsing for the two authenticated HTTPS backends. */
 #define LITE_AUTHORITY_HEADER "x-wendy-lite-operator-authority"
-/* A body without Content-Length is kept in small segments and joined after
- * the TLS connection closes. Boards without PSRAM may lack a free block for
- * the TLS buffers and a growing copy of the body at the same time. */
-#define RESPONSE_SEGMENT 4096
-struct segment {
-    struct segment *next;
-    size_t size;
-    uint8_t bytes[RESPONSE_SEGMENT];
+struct response_chunk {
+    struct response_chunk *next;
+    size_t used;
+    uint8_t bytes[4096];
 };
 struct response {
     uint8_t *bytes;
     size_t size, capacity;
-    struct segment *head, *tail;
-    bool complete, capture_lite_authority, headers_complete, alloc_failed;
+    struct response_chunk *head, *tail;
+    bool complete, capture_lite_authority, headers_complete;
     char field[sizeof LITE_AUTHORITY_HEADER];
     size_t field_size;
     bool in_value, authority_value, authority_seen;
@@ -78,15 +74,6 @@ static int on_headers_complete(http_parser *p)
     struct response *r = p->data;
     if (r->capture_lite_authority && finish_header(r)) return -1;
     r->headers_complete = true;
-    /* With Content-Length, allocate the body once instead of segments. */
-    if (!r->bytes && p->content_length > 0 && p->content_length <= PKI_MAX_RESPONSE) {
-        r->bytes = malloc(p->content_length + 1);
-        if (!r->bytes) {
-            r->alloc_failed = true;
-            return -1;
-        }
-        r->capacity = p->content_length + 1;
-    }
     return 0;
 }
 
@@ -94,71 +81,50 @@ static int on_body(http_parser *p, const char *bytes, size_t size)
 {
     struct response *r = p->data;
     if (size > PKI_MAX_RESPONSE - r->size) return -1;
-    if (r->bytes) {
-        /* Content-Length sized the buffer, and the parser stops there. */
-        if (size >= r->capacity - r->size) return -1;
-        memcpy(r->bytes + r->size, bytes, size);
-        r->size += size;
-        r->bytes[r->size] = 0;
-        return 0;
-    }
     while (size) {
-        if (!r->tail || r->tail->size == RESPONSE_SEGMENT) {
-            struct segment *s = malloc(sizeof *s);
-            if (!s) {
-                r->alloc_failed = true;
-                return -1;
-            }
-            s->next = NULL;
-            s->size = 0;
-            if (r->tail) r->tail->next = s;
-            else r->head = s;
-            r->tail = s;
+        if (!r->tail || r->tail->used == sizeof r->tail->bytes) {
+            struct response_chunk *chunk = calloc(1, sizeof *chunk);
+            if (!chunk) return -1;
+            if (r->tail) r->tail->next = chunk;
+            else r->head = chunk;
+            r->tail = chunk;
+            r->capacity += sizeof chunk->bytes;
         }
-        size_t n = RESPONSE_SEGMENT - r->tail->size;
-        if (n > size) n = size;
-        memcpy(r->tail->bytes + r->tail->size, bytes, n);
-        r->tail->size += n;
-        r->size += n;
-        bytes += n;
-        size -= n;
+        size_t count = sizeof r->tail->bytes - r->tail->used;
+        if (count > size) count = size;
+        memcpy(r->tail->bytes + r->tail->used, bytes, count);
+        r->tail->used += count;
+        r->size += count;
+        bytes += count;
+        size -= count;
     }
     return 0;
 }
 
-/* Join the segments into one NUL-terminated buffer, freeing each one as it
- * is copied. */
-static int join_body(struct response *r)
+static void response_free_chunks(struct response *r)
 {
-    if (r->bytes || !r->head) return 0;
-    r->bytes = malloc(r->size + 1);
-    if (!r->bytes) {
-        r->alloc_failed = true;
-        return -1;
-    }
-    size_t at = 0;
     while (r->head) {
-        struct segment *s = r->head;
-        memcpy(r->bytes + at, s->bytes, s->size);
-        at += s->size;
-        r->head = s->next;
-        free(s);
+        struct response_chunk *next = r->head->next;
+        free(r->head);
+        r->head = next;
     }
     r->tail = NULL;
-    r->bytes[at] = 0;
-    return 0;
 }
-
-static void free_body(struct response *r)
+/* Call only after closing TLS: no large contiguous response allocation or
+ * realloc copy must compete with the live certificate/record buffers. */
+static int response_flatten(struct response *r)
 {
-    free(r->bytes);
-    r->bytes = NULL;
-    while (r->head) {
-        struct segment *s = r->head;
-        r->head = s->next;
-        free(s);
+    uint8_t *bytes = malloc(r->size + 1);
+    if (!bytes) return -1;
+    size_t offset = 0;
+    for (struct response_chunk *chunk = r->head; chunk; chunk = chunk->next) {
+        memcpy(bytes + offset, chunk->bytes, chunk->used);
+        offset += chunk->used;
     }
-    r->tail = NULL;
+    bytes[offset] = 0;
+    r->bytes = bytes;
+    response_free_chunks(r);
+    return 0;
 }
 
 static int on_complete(http_parser *p)

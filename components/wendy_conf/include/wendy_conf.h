@@ -153,7 +153,7 @@ void wendy_conf_get_enrolled_ids(char tenant[37], char device[65]);
 struct wendy_conf_enrollment_data {
     struct wendy_conf_span signed_time, device_roots, tsa_roots, https_roots;
     uint8_t *storage;
-    /* Boot-local generation, populated only by DER snapshot functions. */
+    /* Boot-local generation of this owned DER snapshot. */
     uint64_t generation;
     /* SHA-256 of the provisioned device-root bytes, before DER import.
      * Set only for DER snapshots that include nonempty device roots. */
@@ -161,8 +161,8 @@ struct wendy_conf_enrollment_data {
 };
 /* All snapshot functions require non-NULL outputs, replace their contents,
  * and return empty data on failure. Free a previous snapshot before reuse.
- * Legacy callers free storage and retain the exact provisioned encoded spans;
- * the DER metadata fields remain zero during staged adoption. */
+ * Callers free storage. The historical name is a thin DER snapshot wrapper;
+ * every trust span carries an explicit concatenated-DER byte length. */
 esp_err_t wendy_conf_copy_enrollment(WendyConfEnrollment *, struct wendy_conf_enrollment_data *);
 /* DER snapshot callers free data->storage. Trust spans contain concatenated DER.
  * All spans survive configuration writes. PEM is decoded from mapped flash at

@@ -1,6 +1,10 @@
 /* Host adapter for the production TLS implementation. Go drives real TLS peers. */
 #include "wendy_pki_internal.h"
 #include "wendy_pki_crypto.h"
+#include "wendy_cert_bundle.h"
+#include "wendy_pki_parsed_identity.h"
+#include <mbedtls/platform.h>
+#include <psa/crypto_extra.h>
 #include "wendy_pki_certificate_policy.h"
 #include "esp_timer.h"
 #include <mbedtls/net_sockets.h>
@@ -25,6 +29,42 @@ static unsigned char *load(const char *path, size_t *size) {
     FILE *f = fopen(path, "rb"); assert(f); fseek(f, 0, SEEK_END);
     *size = ftell(f); rewind(f); unsigned char *p = calloc(1, *size + 1);
     assert(p && fread(p, 1, *size, f) == *size); fclose(f); return p;
+}
+/* Fixtures cross the same one-time import boundary as enrolled storage. */
+static void import_fixture(unsigned char **bytes,size_t *size)
+{
+    size_t der_size=0;
+    assert(!wendy_cert_bundle_measure(*bytes,*size,&der_size));
+    unsigned char *der=malloc(der_size+1);assert(der);
+    assert(!wendy_cert_bundle_import(*bytes,*size,der,der_size,&der_size));
+    der[der_size]=0;free(*bytes);*bytes=der;*size=der_size;
+}
+struct fixture_der {
+    const uint8_t *part[8];size_t size[8];unsigned count,reads,ranges;
+};
+static int fixture_read(void *context,unsigned i,uint8_t **bytes,size_t *size)
+{
+    struct fixture_der *source=context;*bytes=NULL;*size=0;
+    if(i>=source->count)return i==source->count ? 0:-1;
+    *bytes=mbedtls_calloc(1,source->size[i]);if(!*bytes)return MBEDTLS_ERR_X509_ALLOC_FAILED;
+    memcpy(*bytes,source->part[i],source->size[i]);*size=source->size[i];source->reads++;return 1;
+}
+static int fixture_range(void *context,unsigned i,size_t offset,uint8_t *out,size_t size,const uint8_t expected[32])
+{
+    struct fixture_der *source=context;uint8_t hash[32];
+    if(i>=source->count || offset>source->size[i] || size>source->size[i]-offset ||
+       wendy_pki_sha256(source->part[i],source->size[i],hash) || memcmp(hash,expected,32))return -1;
+    memcpy(out,source->part[i]+offset,size);source->ranges++;return (int)size;
+}
+static wendy_net_memory_t owned_memory=WENDY_NET_MEMORY_INITIALIZER;
+static void owned_drained(void)
+{
+    if(!getenv("WENDY_TLS_SCOPED_OWNER"))return;
+    wendy_net_memory_snapshot_t state;wendy_net_memory_snapshot(&owned_memory,&state);
+    fprintf(stderr,"owned ledger current=%zu allocations=%zu reservations=%zu peak=%zu\n",state.current_bytes,state.allocation_count,state.reservation_count,state.high_water_bytes);
+    assert(state.high_water_bytes && !state.current_bytes && !state.allocation_count && !state.reservation_count);
+    wendy_net_memory_close(&owned_memory);assert(wendy_net_memory_drained(&owned_memory));
+    fprintf(stderr,"owned TLS allocation scope drained; peak=%zu\n",state.high_water_bytes);
 }
 static bool resetting;
 bool wendy_pki_reset_in_progress(void) { return resetting; }
@@ -74,12 +114,12 @@ static void wait_io(wendy_pki_connection *c, int result) {
     assert(poll(&fd, 1, 3000) == 1);
 }
 static void outbound(unsigned port, const unsigned char *key, size_t kn,
-                     const unsigned char *cert, const unsigned char *root, size_t rn,
+                     const unsigned char *cert, size_t cn, const unsigned char *root, size_t rn,
                      bool truncate) {
     short_writes = true;
     truncate_certificate = truncate;
     wendy_pki_connection *c = NULL;
-    int connected = pki_tls_connect("localhost", port, key, kn, (const char *)cert,
+    int connected = pki_tls_connect("localhost", port, key, kn, (struct wendy_conf_span){cert,cn},
         (struct wendy_conf_span){root, rn}, &c);
     if (truncate) {
         assert(connected && !c && certificate_record && !record_remaining);
@@ -118,8 +158,8 @@ static void fragmented_client(const char *port, const unsigned char *key_der, si
     mbedtls_x509_crt_init(&cert); mbedtls_x509_crt_init(&roots);
     mbedtls_pk_init(&key); mbedtls_net_init(&net);
     assert(!wendy_pki_crypto_init());
-    assert(!mbedtls_x509_crt_parse(&cert, cert_pem, cn + 1));
-    assert(!mbedtls_x509_crt_parse(&roots, roots_pem, rn + 1));
+    assert(!pki_parse_certificate_bundle(&cert,cert_pem,cn,false));
+    assert(!pki_parse_certificate_bundle(&roots,roots_pem,rn,false));
     assert(!mbedtls_pk_parse_key(&key, key_der, kn, NULL, 0));
     assert(!mbedtls_ssl_config_defaults(&config, MBEDTLS_SSL_IS_CLIENT,
         MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT));
@@ -264,6 +304,7 @@ int main(int argc, char **argv) {
     resetting = false;
     assert(argc == 5 || argc == 6 || argc == 7 || argc == 8); size_t kn, cn, rn;
     unsigned char *key = load(argv[1], &kn), *cert = load(argv[2], &cn), *root = load(argv[3], &rn);
+    import_fixture(&cert,&cn);import_fixture(&root,&rn);
     if (argc == 7) {
         assert(!strncmp(argv[4], "http-", 5));
         bool renew = !strcmp(argv[4], "http-renew");
@@ -273,7 +314,7 @@ int main(int argc, char **argv) {
         size_t body_size = 0;
         char *authority = NULL;
         int result = pki_http_post_enrollment(argv[5], "application/json", renew ? NULL : "test-token",
-            "{}", 2, renew ? key : NULL, renew ? kn : 0, renew ? (char *)cert : NULL,
+            "{}", 2, renew ? key : NULL, renew ? kn : 0, (struct wendy_conf_span){renew ? cert:NULL,renew ? cn:0},
             (struct wendy_conf_span){root, rn}, &body, &body_size, &authority);
         if (!strcmp(argv[4], "http-reject")) {
             assert(result && !body && !authority);
@@ -303,7 +344,7 @@ int main(int argc, char **argv) {
         }
         bool truncate = !strcmp(argv[4], "connect-truncated");
         assert(truncate || !strcmp(argv[4], "connect"));
-        outbound((unsigned)strtoul(argv[5], NULL, 10), key, kn, cert, root, rn, truncate);
+        outbound((unsigned)strtoul(argv[5], NULL, 10), key, kn, cert, cn, root, rn, truncate);
         free(key); free(cert); free(root);
         return 0;
     }
@@ -326,13 +367,48 @@ int main(int argc, char **argv) {
         .context = &transport, .read = stream_read, .write = stream_write, .wait = stream_wait,
     };
     int rc;
-    if (stream_mode) {
+    struct fixture_der source={0};
+    if (stream_mode && getenv("WENDY_TLS_OWNED_STREAM")) {
+        assert(!fcntl(fd,F_SETFL,O_NONBLOCK));
+        size_t offset=0;const uint8_t *part;size_t bytes;
+        while(wendy_cert_der_next(cert,cn,&offset,&part,&bytes)==1){
+            assert(source.count<8);source.part[source.count]=part;source.size[source.count++]=bytes;
+        }
+        assert(offset==cn && source.count>1);
+        if(getenv("WENDY_TLS_SOURCE_ROOT_OMITTED")){
+            /* Ordinary already-trimmed local chain. Pin its intermediates
+             * locally, while the independent Go peer still trusts only root.
+             * Removing a second tail CA would make that peer unable to build
+             * the complete path, despite successful local verification. */
+            source.count--;
+            unsigned i=source.count-1;
+            uint8_t *more=realloc(root,rn+source.size[i]+1);assert(more);root=more;
+            memcpy(root+rn,source.part[i],source.size[i]);rn+=source.size[i];root[rn]=0;
+        }
+        struct pki_tls_owned_identity owned={.key=key,.key_size=kn,
+            .read_der=fixture_read,.read_der_range=fixture_range,.der_context=&source,
+            .verify_at=time(NULL)};
+        wendy_net_memory_scope_t previous={0};
+        if(getenv("WENDY_TLS_SCOPED_OWNER")){
+            assert(wendy_net_memory_open(&owned_memory,2*1024*1024,false));
+            assert(!mbedtls_platform_set_calloc_free(wendy_net_memory_scoped_calloc,wendy_net_memory_scoped_free));
+            assert(mbedtls_psa_set_key_slot_table_allocator(wendy_pki_crypto_shared_calloc)==PSA_SUCCESS);
+            assert(!wendy_pki_crypto_init()); /* Firmware initializes PSA before task scopes. */
+            previous=wendy_net_memory_scope_enter(&owned_memory,WENDY_NET_MEMORY_INTERNAL);
+        }
+        rc=pki_tls_accept_owned_stream(&stream,&owned,(struct wendy_conf_span){root,rn},
+            "2558fd76-afc7-466e-9613-6b715296a526","00000000-0000-4000-8000-000000000004",
+            &c,esp_timer_get_time()+10000000);
+        if(getenv("WENDY_TLS_SCOPED_OWNER"))wendy_net_memory_scope_leave(previous);
+        key=NULL;assert(!owned.key && !owned.certificate && !owned.input_reservation);
+        if(!rc)assert(source.reads>=source.count && source.ranges && !c->certificate.raw.len && !c->roots.raw.len);
+    } else if (stream_mode) {
         assert(!fcntl(fd, F_SETFL, O_NONBLOCK));
-        rc = pki_tls_accept_stream(&stream, key, kn, (char *)cert,
+        rc = pki_tls_accept_stream(&stream, key, kn, (struct wendy_conf_span){cert,cn},
             (struct wendy_conf_span){root, rn}, "2558fd76-afc7-466e-9613-6b715296a526",
             &c, esp_timer_get_time() + 3000000);
     } else {
-        rc = (lite ? pki_tls_accept_lite : lan ? pki_tls_accept_lan : pki_tls_accept)(fd, key, kn, (char *)cert, (struct wendy_conf_span){root, rn},
+        rc = (lite ? pki_tls_accept_lite : lan ? pki_tls_accept_lan : pki_tls_accept)(fd, key, kn, (struct wendy_conf_span){cert,cn}, (struct wendy_conf_span){root, rn},
             "2558fd76-afc7-466e-9613-6b715296a526", &c, esp_timer_get_time() + 3000000);
     }
     free(key); free(cert); free(root);
@@ -347,7 +423,7 @@ int main(int argc, char **argv) {
     }
     if (rc) return 2;
     assert(wendy_pki_get_peer_role(c) == (!strcmp(mode, "valid-device") ? WENDY_PEER_ROLE_DEVICE : WENDY_PEER_ROLE_OPERATOR));
-    if (stream_mode) { stream_exchange(c, &transport); return 0; }
+    if (stream_mode) { stream_exchange(c, &transport); owned_drained(); return 0; }
     if (!strcmp(mode, "valid-device"))
         assert(pki_relay_grant(c, NULL, esp_timer_get_time() + 3000000) == -1);
     if (argc == 8) {

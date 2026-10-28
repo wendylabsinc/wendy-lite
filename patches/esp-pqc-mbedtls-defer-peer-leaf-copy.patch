@@ -1,0 +1,42 @@
+--- a/library/ssl_tls13_generic.c
++++ b/library/ssl_tls13_generic.c
+@@ -613,10 +613,10 @@
+         MBEDTLS_SSL_CHK_BUF_READ_PTR(p, certificate_list_end, cert_data_len);
+         ret = 0;
+         if (certificate_index == 0 || !ssl_tls13_duplicate_anchor(ssl, p, cert_data_len)) {
+-            /* The complete Certificate message remains stable until process
+-             * certificate returns. Keep the leaf independently owned for the
+-             * subsequent CertificateVerify and caller identity/role checks. */
+-            ret = ssl->conf->wendy_compact_peer_chain && certificate_index != 0
++            /* Compact roles borrow all Certificate-message DER while the
++             * full path is verified. Materialize the peer leaf only after
++             * issuer objects/workspace are released, before buffer reuse. */
++            ret = ssl->conf->wendy_compact_peer_chain
+                 ? mbedtls_x509_crt_parse_der_nocopy(ssl->session_negotiate->peer_cert,
+                                                    p, cert_data_len)
+                 : mbedtls_x509_crt_parse_der(ssl->session_negotiate->peer_cert,
+@@ -860,6 +860,24 @@
+         mbedtls_x509_crt *issuers=ssl->session_negotiate->peer_cert->next;
+         ssl->session_negotiate->peer_cert->next=NULL;
+         if (issuers) {mbedtls_x509_crt_free(issuers);mbedtls_free(issuers);}
++        mbedtls_x509_crt *borrowed=ssl->session_negotiate->peer_cert;
++        if (ret==0 && borrowed->raw.len) {
++            mbedtls_x509_crt *owned=mbedtls_calloc(1,sizeof *owned);
++            if (owned==NULL) ret=MBEDTLS_ERR_SSL_ALLOC_FAILED;
++            else {
++                mbedtls_x509_crt_init(owned);
++                ret=mbedtls_x509_crt_parse_der(owned,borrowed->raw.p,borrowed->raw.len);
++                if (ret!=0) {mbedtls_x509_crt_free(owned);mbedtls_free(owned);}
++                else ssl->session_negotiate->peer_cert=owned;
++            }
++            if (ret!=0) ssl->session_negotiate->peer_cert=NULL;
++            /* Borrowed DER remains in the unchanged transcript/input buffer;
++             * freeing this object cannot own or overwrite those bytes. */
++            mbedtls_x509_crt_free(borrowed);mbedtls_free(borrowed);
++        } else if (ret!=0) {
++            ssl->session_negotiate->peer_cert=NULL;
++            mbedtls_x509_crt_free(borrowed);mbedtls_free(borrowed);
++        }
+     }
+ #endif
+ #else /* MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED */
