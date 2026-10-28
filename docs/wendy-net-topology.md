@@ -1,69 +1,80 @@
 # Reading Wendy Net topology
 
-The read-only WendyCom `net_topology` command 24 / response 9 reports this
-device's authenticated links, selected exact routes and verified announcement
-metadata. It uses an existing full-role physical or authenticated Cloud
-management connection. It does not start mesh participation, change policy or
-return certificates, signatures, keys or signed bodies. Device-role SensorLink
-connections retain their SensorLink-only permissions.
+An enrolled Lite device can report its mesh connections, selected routes and
+verified device announcements through its existing management connection.
+Reading topology does not enable mesh or change its configuration.
 
-Each binary protobuf reply contains at most one metadata record and an opaque
-next cursor. Start with cursor and generation zero, then echo the returned
-generation and next cursor until the latter is zero. A changed structural view
-returns BUSY; discard collected rows and retry at most once. Ordinary routing
-counters and timer work do not invalidate the view. Serial clients bound
-collection to 1,024 rows, 512 KiB and 60 seconds. A terminal cursor returns no
-record, including when a larger view was truncated at the row limit.
+## CLI and Wendy Client
 
-The application task submits one charged mailbox to the main actor, with a
-two-second wait. It never reads mutable router state or lends a caller buffer
-after timeout; the actor rejects waiting on itself. Independent references cover
-pre-pickup cancellation, an actor that outlives its caller and queued OFF. On the
-64-bit host the fixed page is 320 B and the mailbox is 352 B. The selected device
-fixture encodes 114 B, the operator fixture 203 B, and the maximum 1,024-byte
-principal fixture 1,152 B. No fixed principal array, per-origin snapshot array or
-persistent snapshot cache is added. OFF reads existing public identity/status
-without opening the runtime ledger, starting a task or allocating a mailbox.
+Use a matching CLI and select the device through USB, BLE, LAN, Cloud or an
+available mesh connection:
 
-`owner_role` distinguishes device (1) and operator (2); zero retains the
-original device encoding. `device` is only an enrolled device UUID. An operator
-instead has an exact case-sensitive `owner_principal` and a sixteen-byte
-`owner_instance`, its routing installation UUID. Its verified address uses the
-5680 allocation. These fields are metadata, not additional authority. The
-following operator-authority delivery supplies verified state through the
-otherwise empty extension hook. Endpoint gateway / C6 allocates no operator
-registry. Next-hop device metadata remains an actual device neighbor.
+```sh
+wendy --device wendy-lite:PORT device wendy-net topology
+wendy --device wendy-lite:PORT --json device wendy-net topology
+```
 
-Principal strings use a nanopb callback. Scans and generation hashing borrow
-metadata during one actor turn; only the selected operator row obtains an
-immutable copy, capped at 1,024 bytes and charged to the runtime ledger. Both
-response sizing and encoding read that copy. Successful encoding, output-budget
-failure, timeout and OFF release it exactly once. A transferred row keeps the
-closed ledger undrained until its encoder releases it, preventing runtime reopen
-from racing that loan. The dispatcher fixture covers a normal maximum-length
-subject whose response exceeds its provider's output budget.
+Replace `wendy-lite:PORT` with the selector shown by discovery. Cloud access
+requires a profile with Cloud connectivity; the constrained C6 profile disables
+it. A management connection must have full operator permissions. A device-role
+SensorLink connection cannot read topology.
 
-The `wnrs_topology_operator_row` hook receives a borrowed `wnt_record_view`.
-Category 2 receives the route address/router/sequence and fills only its verified
-operator owner. Category 3 returns the indexed live operator announcement after
-device and endpoint rows. It returns 1 for found, 0 for absent and -1 for
-unavailable, and allocates nothing. The caller hashes semantic fields and clones
-only the selected row; it never hashes a pointer, padding or timer counter.
+In Wendy Client, open **Networks**. The desktop combines available local, Cloud
+and mesh reports; the browser uses authenticated Cloud devices. Both also show
+devices learned through neighbours. A visible node therefore does not guarantee
+that the client can connect to it directly. Reading a Lite report requires a
+client version with WendyCom topology support.
 
-Gateway profiles intentionally retain a partial directory. Their replies set
-`partial`, which also participates in the structural generation. Clients retain
-that limitation without fabricating remote route tables or full signed origin
-tuples. An unreachable route may have no retained owner proof; its address and
-route metadata remain useful without claiming authorization. A stopped or
-unready runtime exports no relationships. Live device proof expiry is bounded
-by both certificate and signed manifest validity. Settings reply/drain barriers,
-crypto context loans, actor teardown and task/heap drainage remain intact.
+C5 can report its routing state. C6 uses a single neighbour as its next hop and
+keeps a smaller directory, so its report is explicitly **partial**. Missing remote
+route details do not imply that the rest of the mesh is disconnected. An off or
+unready mesh reports its state without inventing connections or routes.
 
-CLI and UI adapters convert UUID/address bytes to canonical UUID/IPv6 text
-before JSON encoding. Raw generated byte fields must not become base64 in a
-public envelope. Preserve uint64 link/router/revision values as decimal
-strings. The C-to-Go binary fixture covers a genuine operator installation
-separate from the reporter device, a canonical 5680 address and maximum uint64
-IDs. The paired WendyOS adapter must consume the same case. Existing affected
-bindings here are C/nanopb and console Go; WendyOS Go travels in the paired
-adapter delivery. Neither repository has a WendyCom Swift binding.
+A busy C6 can reject an additional management connection while its one native
+client slot is in use, for example by SensorLink. Close the other client or retry
+later. Networks can still show that device through its neighbours. Slow BLE
+connections can take longer to read; the view retains previous observations as
+stale when a refresh fails, rather than treating them as a healthy empty mesh.
+
+## WendyCom API reference
+
+`net_topology` is command 24, response 9. Replies use binary protobuf and contain
+at most one metadata record plus a generation and opaque next cursor. Begin with
+cursor and generation zero, then echo the returned generation and next cursor
+until the next cursor is zero; that reply may contain the final record. A request
+at the end of the bounded view returns no record. A structural change
+returns `BUSY`; discard collected rows and retry at most once. Ordinary counters
+and timer updates do not invalidate a collection. Clients bound collection to
+1,024 rows, 512 KiB and 60 seconds and preserve the `partial` indication.
+
+`owner_role` distinguishes an enrolled device (1) from an operator router (2);
+zero retains the original device encoding. `device` is an enrolled device UUID.
+An operator instead has a case-sensitive `owner_principal` and sixteen-byte
+`owner_instance`, its routing installation UUID. Its address uses the operator
+allocation, `fd45:b891:5680::/48`. An operator identity is distinct from an
+enrolled device identity. Next-hop device metadata names an actual neighbour.
+A route without retained owner proof can report its address and routing metadata
+without claiming verified ownership.
+
+Public JSON adapters convert UUIDs and addresses to canonical text and represent
+64-bit link, router and revision values as decimal strings. They do not expose
+protobuf byte fields as base64. Certificates, signatures, keys and signed bodies
+are not included in topology replies. `--observation` on the CLI adds a typed
+result envelope for clients that need to distinguish partial or failed reads.
+
+## Firmware ownership
+
+The management task submits a bounded request to the mesh task; it never reads
+mutable routing state directly. The mesh task captures one immutable row for
+encoding. Timeout, shutdown and encoding failure release that row, and a pending
+response keeps its memory owner alive until release. Reads while mesh is off do
+not start its tasks or allocate a topology request.
+
+Operator projection uses `wnrs_topology_operator_row` with a borrowed
+`wnt_record_view`. Category 2 fills the verified operator owner for a selected
+route; category 3 returns the indexed live operator announcement. It returns 1
+for found, 0 for absent and -1 for unavailable and allocates nothing. Structural
+generation hashing uses semantic fields, not pointers, padding or timer counters.
+Principal strings use nanopb callbacks; only the selected operator row is copied,
+with a 1,024-byte cap. Device proof expiry is bounded by both certificate and
+manifest validity. These rules apply equally to full and partial reports.
