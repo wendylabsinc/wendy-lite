@@ -217,7 +217,8 @@ int main(void)
     assert(!wendy_pki_io_work_submit(inline_count,&calls));
     atomic_store(&io_held.release,true);assert(!pthread_join(io_caller.task.thread,NULL));stop();
     unsigned retired_wakes=atomic_load(&wakes);
-    for(unsigned i=0;i<4;i++)pause_tick();assert(atomic_load(&wakes)==retired_wakes);
+    for(unsigned i=0;i<4;i++)pause_tick();
+    assert(atomic_load(&wakes)==retired_wakes);
     assert(wendy_pki_work_available()); /* Registered baseline polling remains. */
     assert(wendy_pki_work_submit(count,&calls));assert(wendy_pki_work_poll());
     assert(wendy_pki_work_idle());assert(!wendy_pki_work_poll());
