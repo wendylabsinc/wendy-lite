@@ -1424,6 +1424,59 @@ void wendy_pki_agent_dispose(struct wendy_pki_agent_setup *op)
 }
 #endif
 
+/* Read/verify effects are inert until called by an outer protocol worker. */
+int wendy_pki_mesh_local_part(const struct wendy_pki_mesh_identity *clock,
+    const uint8_t hash[32],size_t offset,uint8_t out[1024],size_t *total)
+{
+    if (!clock || !hash || !total) return -1;
+    *total = 0;
+    if (pthread_mutex_trylock(&identity_lock)) return -2;
+    char tenant[37],device[65];
+    int result = -1;
+    nvs_handle_t handle;
+    wendy_conf_enrollment_identity(tenant,device);
+    if (identity_use_allowed() && wendy_conf_snapshot_current(clock->config_generation) &&
+        !strcmp(tenant,clock->tenant) && !strcmp(device,clock->device) &&
+        open_identity(&handle) == ESP_OK) {
+        struct pki_der_source source;
+        if (!pki_der_cache_open(handle,&source))
+            result = pki_der_cache_part(&source,hash,offset,out,total);
+        nvs_close(handle);
+    }
+    pthread_mutex_unlock(&identity_lock);
+    return result;
+}
+static int public_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
+    const uint8_t *const *der,const size_t *sizes,size_t count,
+    struct wendy_pki_mesh_peer *peer)
+{
+    if(!clock || !der || !sizes || !count || !peer ||
+       !wendy_conf_is_current() || wendy_pki_reset_in_progress())return -1;
+    int64_t monotonic=esp_timer_get_time();
+    if(monotonic<clock->verified_monotonic_us ||
+       monotonic-clock->verified_monotonic_us>=INT64_C(300000000))return -1;
+    WendyConfEnrollment config=WendyConfEnrollment_init_zero;
+    struct wendy_conf_enrollment_data trust={0};uint8_t hash[32];
+    int result=-1;
+    if(wendy_conf_copy_device_trust(&config,&trust)!=ESP_OK)goto done;
+    if(!config.provision_trust)
+        trust.device_roots=(struct wendy_conf_span){wendy_pki_device_roots_start,ROOT_SIZE(device)};
+    if(trust.generation!=clock->config_generation || strcmp(config.tenant_id,clock->tenant) ||
+       strcmp(config.device_id,clock->device) ||
+       wendy_pki_sha256(trust.device_roots.data,trust.device_roots.size,hash) ||
+       memcmp(hash,clock->trust_hash,32))goto done;
+    time_t now=clock->verified_seconds+
+        (monotonic-clock->verified_monotonic_us)/INT64_C(1000000);
+    result=wendy_pki_mesh_chain(der,sizes,count,trust.device_roots.data,
+        trust.device_roots.size,clock->tenant,now,peer);
+    if(!wendy_conf_snapshot_current(trust.generation) || wendy_pki_reset_in_progress())result=-1;
+done:
+    free(trust.storage);return result;
+}
+int wendy_pki_mesh_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
+    const uint8_t *const *der,const size_t *sizes,size_t count,struct wendy_pki_mesh_peer *peer)
+{return public_verify_snapshot(clock,der,sizes,count,peer);}
+
 #if CONFIG_WENDY_MESH_LEAF || CONFIG_WENDY_NET_PEER
 struct wendy_pki_net_setup {
     wendy_pki_connection *connection;
@@ -1675,57 +1728,6 @@ done:
     return result;
 }
 #if CONFIG_WENDY_NET_PEER
-int wendy_pki_mesh_local_part(const struct wendy_pki_mesh_identity *clock,
-    const uint8_t hash[32],size_t offset,uint8_t out[1024],size_t *total)
-{
-    if (!clock || !hash || !total) return -1;
-    *total = 0;
-    if (pthread_mutex_trylock(&identity_lock)) return -2;
-    char tenant[37],device[65];
-    int result = -1;
-    nvs_handle_t handle;
-    wendy_conf_enrollment_identity(tenant,device);
-    if (identity_use_allowed() && wendy_conf_snapshot_current(clock->config_generation) &&
-        !strcmp(tenant,clock->tenant) && !strcmp(device,clock->device) &&
-        open_identity(&handle) == ESP_OK) {
-        struct pki_der_source source;
-        if (!pki_der_cache_open(handle,&source))
-            result = pki_der_cache_part(&source,hash,offset,out,total);
-        nvs_close(handle);
-    }
-    pthread_mutex_unlock(&identity_lock);
-    return result;
-}
-static int public_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
-    const uint8_t *const *der,const size_t *sizes,size_t count,
-    struct wendy_pki_mesh_peer *peer)
-{
-    if(!clock || !der || !sizes || !count || !peer ||
-       !wendy_conf_is_current() || wendy_pki_reset_in_progress())return -1;
-    int64_t monotonic=esp_timer_get_time();
-    if(monotonic<clock->verified_monotonic_us ||
-       monotonic-clock->verified_monotonic_us>=INT64_C(300000000))return -1;
-    WendyConfEnrollment config=WendyConfEnrollment_init_zero;
-    struct wendy_conf_enrollment_data trust={0};uint8_t hash[32];
-    int result=-1;
-    if(wendy_conf_copy_device_trust(&config,&trust)!=ESP_OK)goto done;
-    if(!config.provision_trust)
-        trust.device_roots=(struct wendy_conf_span){wendy_pki_device_roots_start,ROOT_SIZE(device)};
-    if(trust.generation!=clock->config_generation || strcmp(config.tenant_id,clock->tenant) ||
-       strcmp(config.device_id,clock->device) ||
-       wendy_pki_sha256(trust.device_roots.data,trust.device_roots.size,hash) ||
-       memcmp(hash,clock->trust_hash,32))goto done;
-    time_t now=clock->verified_seconds+
-        (monotonic-clock->verified_monotonic_us)/INT64_C(1000000);
-    result=wendy_pki_mesh_chain(der,sizes,count,trust.device_roots.data,
-        trust.device_roots.size,clock->tenant,now,peer);
-    if(!wendy_conf_snapshot_current(trust.generation) || wendy_pki_reset_in_progress())result=-1;
-done:
-    free(trust.storage);return result;
-}
-int wendy_pki_mesh_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
-    const uint8_t *const *der,const size_t *sizes,size_t count,struct wendy_pki_mesh_peer *peer)
-{return public_verify_snapshot(clock,der,sizes,count,peer);}
 esp_err_t wendy_pki_net_begin(const struct wendy_pki_stream *stream,bool server,
     const char *expected,bool application,struct wendy_pki_net_setup **out)
 {
