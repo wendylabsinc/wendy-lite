@@ -17,9 +17,6 @@ static uint64_t generation=1;
 static void (*cpu_callback)(void *);
 static void *cpu_argument,*gate_owner;
 static unsigned actor_wakes,com_wakes,removed,steps,closed;
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-static unsigned snapshot_reads;
-#endif
 static struct wcom_operation *operations_first,*operations_last;
 static const struct wcom_stream_ops *com_ops;
 static void *com_context;
@@ -28,13 +25,6 @@ static int com_id=-1,next_id=4;
 static enum wcom_link_permission expected_permission=WCOM_LINK_PERMISSION_FULL;
 struct wendy_pki_connection {struct wendy_pki_stream bio;};
 struct wendy_pki_agent_setup {struct wendy_pki_connection *connection;unsigned steps;uint64_t generation;};
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-bool wendy_pki_agent_snapshot(const struct wendy_pki_agent_setup *op,struct wendy_pki_agent_snapshot *out)
-{
-    for(struct native_flow *f=flows;f;f=f->next)if(f->setup==op)assert(!f->state.lent);
-    snapshot_reads++;*out=(struct wendy_pki_agent_snapshot){.state=3,.input_capacity=WNA_IO_BYTES,.output_capacity=WNA_IO_BYTES};return true;
-}
-#endif
 int64_t esp_timer_get_time(void){return now;}
 bool wendy_conf_is_current(void){return current;}
 bool wendy_conf_snapshot_current(uint64_t value){return current && value==generation;}
@@ -134,11 +124,6 @@ static void handshake(void)
 {
     for(unsigned count=0;count<12 && (!flows->connection);count++){
         if(cpu_callback)finish_cpu();
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-        unsigned before=snapshot_reads;
-        native_snapshot(flows,"borrowed-normal-handoff");assert(snapshot_reads==before);
-        if(collect(flows,now) && flows->setup){native_snapshot(flows,"collected-normal-handoff");assert(snapshot_reads==before+1);}
-#endif
         wendy_net_agent_poll();
     }
     assert(flows && flows->connection && flows->bridge && !flows->state.lent);

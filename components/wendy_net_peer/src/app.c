@@ -1,5 +1,4 @@
 #include "wendy_net_alloc.h"
-#include "wendy_net_task.h"
 /* One bounded, device-authenticated app stream per TCP/TLS connection. */
 #include "wendy_net_peer.h"
 #include "wendy_net_peer_protocol.h"
@@ -16,10 +15,9 @@
 #include "esp_heap_caps.h"
 #include "esp_memory_utils.h"
 #include "esp_timer.h"
-#include "esp_random.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include "lwip/sockets.h"
+#include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -28,9 +26,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#ifndef CONFIG_WENDY_NET_TEST_ECHO_SERVICE
-#define CONFIG_WENDY_NET_TEST_ECHO_SERVICE 0
-#endif
 #define APP_PORT 43022
 #ifndef CONFIG_WENDY_SERVER_PORT
 #define CONFIG_WENDY_SERVER_PORT 5054
@@ -43,12 +38,7 @@
 #define CONFIG_WENDY_NET_TCP_RELAY_BUFFER_SIZE 1024
 #endif
 #endif
-#define ECHO_PORT 28081
 #define TIME_PORT 43025
-#define DATAGRAM_RELAY_STACK 4096
-#ifndef CONFIG_WENDY_NET_TCP_RELAY_STACK_SIZE
-#define CONFIG_WENDY_NET_TCP_RELAY_STACK_SIZE 8192
-#endif
 #ifndef CONFIG_WENDY_NET_APP_MAX_FLOWS
 #define CONFIG_WENDY_NET_APP_MAX_FLOWS 1
 #endif
@@ -68,144 +58,14 @@ static atomic_int listener=-1;
 static atomic_int time_listener=-1;
 static const char *TAG="wendy_net_app";
 
-static int transfer(wendy_pki_connection *c,void *data,size_t size,bool writing,int64_t deadline)
-{
-    uint8_t *p=data;
-    while (size && esp_timer_get_time()<deadline && wendy_conf_is_current()) {
-        ssize_t n=writing ? wendy_pki_write(c,p,size) : wendy_pki_read(c,p,size);
-        if (n>0 && (size_t)n<=size) {p+=n;size-=n;}
-        else if ((n!=-2 && n!=-3) || wendy_pki_wait(c,n==-3,deadline)<0) return -1;
-    }
-    return size ? -1 : 0;
-}
-
-static esp_err_t app_connect(const char *peer,uint16_t service_port,
-                            wendy_pki_connection **connection,uint16_t *datagrams)
-{
-    if (!connection) return ESP_ERR_INVALID_ARG;
-    *connection = NULL;
-    if (!peer || !service_port) return ESP_ERR_INVALID_ARG;
-    if(!datagrams && service_port==AGENT_PORT)return ESP_ERR_NOT_SUPPORTED;
-    uint8_t address[16]; uint16_t port;
-    esp_err_t result = wendy_net_peer_app_endpoint(peer, address, &port);
-    if (result != ESP_OK) return result;
-    char host[INET6_ADDRSTRLEN];
-    if (!inet_ntop(AF_INET6, address, host, sizeof host)) return ESP_FAIL;
-    struct wendy_pki_mesh_identity identity;
-    wendy_net_peer_prepare_handshake();
-    result = wendy_pki_app_connect(host, port, peer, connection, &identity);
-    if (result != ESP_OK) return result;
-    uint8_t request[8] = {'W','A','S','1'}, ack[8]={0};
-    size_t request_size=6,ack_size=1;
-    if(datagrams){
-        memcpy(request,"WAU3",4);wn_put16(request+6,*datagrams);
-        request_size=ack_size=8;
-    }
-    wn_put16(request+4, service_port);
-    int64_t deadline = esp_timer_get_time()+INT64_C(10000000);
-    bool failed=transfer(*connection,request,request_size,true,deadline) ||
-                transfer(*connection,ack,ack_size,false,deadline);
-    if(datagrams){
-        uint16_t selected=wn_get16(ack+6);
-        failed=failed || memcmp(ack,"WUA3",4) || ack[5]!=3 || ack[4]!=1 ||
-               !selected || selected>*datagrams;
-        if(!failed)*datagrams=selected;
-    }else failed=failed || ack[0]!=1;
-    if (failed) {
-        wendy_pki_close(*connection); *connection = NULL;
-        return ESP_FAIL;
-    }
-    return ESP_OK;
-}
-
-esp_err_t wendy_net_app_connect(const char *peer,uint16_t service_port,
-                               wendy_pki_connection **connection)
-{
-    return app_connect(peer,service_port,connection,NULL);
-}
-
-esp_err_t wendy_net_app_refresh_time(const char *peer,struct wendy_pki_mesh_identity *identity)
-{
-    if(!claim_flow(&outbound_flows))return ESP_ERR_INVALID_STATE;
-    wendy_pki_connection *connection=NULL;
-    esp_err_t result=wendy_net_app_connect(peer,TIME_PORT,&connection);
-    if(result!=ESP_OK){atomic_fetch_sub(&outbound_flows,1);return result;}
-    uint8_t nonce[32],request[128],header[8]={'W','N','T','1'},*reply=NULL;
-    esp_fill_random(nonce,sizeof nonce);
-    size_t size=wendy_pki_time_request(request,nonce),reply_size=0;
-    int64_t started=esp_timer_get_time(),deadline=started+INT64_C(30000000);
-    result=ESP_FAIL;wn_put32(header+4,(uint32_t)size);
-    if(!size || transfer(connection,header,8,true,deadline) ||
-       transfer(connection,request,size,true,deadline) || transfer(connection,header,4,false,deadline))goto done;
-    reply_size=wn_get32(header);
-    if(!reply_size || reply_size>65536 || !(reply=wendy_net_malloc(reply_size)) ||
-       transfer(connection,reply,reply_size,false,deadline))goto done;
-    /* Release all app TLS records/chain state before full TSA verification. */
-    wendy_pki_close(connection);connection=NULL;
-    result=wendy_pki_net_time_reply(identity,nonce,reply,reply_size,started);
-done:
-    wendy_pki_close(connection);wendy_net_free(reply);
-    ESP_LOGI(TAG,"mesh app signed-time renewal: peer=%s result=%s ms=%u",peer,
-        esp_err_to_name(result),(unsigned)((esp_timer_get_time()-started)/1000));
-    atomic_fetch_sub(&outbound_flows,1);return result;
-}
-
-#if CONFIG_WENDY_NET_TEST_APP_CLIENT
-static atomic_bool test_busy, test_passed;
-static int64_t test_next;
-static void test_client(void *argument)
-{
-    wendy_net_memory_scope_t previous=wendy_net_runtime_scope_enter();
-    char *peer = argument;
-    wendy_pki_connection *c = NULL;
-    int64_t started = esp_timer_get_time();
-    esp_err_t result = wendy_net_app_connect(peer, ECHO_PORT, &c);
-    size_t count = 0;
-    uint8_t sent[1024], received[1024];
-    int64_t deadline = started + INT64_C(180000000);
-    if (result == ESP_OK) {
-        while (count < 65536) {
-            esp_fill_random(sent, sizeof sent);
-            if (transfer(c, sent, sizeof sent, true, deadline) ||
-                transfer(c, received, sizeof received, false, deadline) ||
-                memcmp(sent, received, sizeof sent)) {
-                result = ESP_FAIL; break;
-            }
-            count += sizeof sent;
-        }
-    }
-    wendy_pki_close(c);
-    bool passed = result == ESP_OK && count == 65536;
-    ESP_LOGI(TAG, "native app TLS client: peer=%s result=%s bytes=%u ms=%u stackfree=%u",
-        peer, passed ? "PASS" : esp_err_to_name(result), (unsigned)count,
-        (unsigned)((esp_timer_get_time()-started)/1000),
-        (unsigned)uxTaskGetStackHighWaterMark(NULL));
-    if (passed) atomic_store(&test_passed, true);
-    wendy_net_free(peer); atomic_store(&test_busy, false);
-    wendy_net_memory_scope_leave(previous);vTaskDelete(NULL);
-}
-#endif
-void wendy_net_app_test_start(const char *peer)
-{
-#if CONFIG_WENDY_NET_TEST_APP_CLIENT
-    int64_t now = esp_timer_get_time();
-    if (atomic_load(&test_passed) || now < test_next || atomic_exchange(&test_busy, true)) return;
-    test_next = now + INT64_C(60000000);
-    char *copy = wendy_net_strdup(peer);
-    if (copy && wendy_net_task_create(test_client, "net-app-test", 16384, copy, 4, NULL) == pdPASS) return;
-    wendy_net_free(copy); atomic_store(&test_busy, false);
-#else
-    (void)peer;
-#endif
-}
-
 /* Native WendyCom mTLS uses its signed agent endpoint directly. App TLS is
  * for guest services, not another wrapper around the agent's own TLS. */
 struct buffer {uint8_t data[CONFIG_WENDY_NET_TCP_RELAY_BUFFER_SIZE];size_t size,offset;bool eof;};
 struct app_flow {
     wendy_pki_connection *connection;
     int backend;
-    bool test_echo,outbound,native_agent;
+    bool outbound,native_agent,disposing;
+    uint64_t config_generation;
     uint16_t datagram_max;
     uint16_t service_port;
     int guest_handle,listener_handle;
@@ -225,9 +85,8 @@ struct app_flow {
     char expected[37];
     struct buffer *buffers;
 };
-/* Only UDP flows carry this state. All live UDP relays share one on-demand
- * task; packet storage and each independently authenticated TLS context stay
- * owned by their flow. No task or payload allocation survives the last flow. */
+/* The actor keeps TCP and UDP flows in one intrusive list. Datagram buffers
+ * are allocated on demand and remain owned by their authenticated flow. */
 struct datagram_flow {
     struct app_flow flow;
     struct datagram_flow *next;
@@ -335,7 +194,7 @@ static void close_flow(struct app_flow *flow)
     /* Before WAU/WAS negotiation there is no native datagram association or
      * loopback stream yet. Complete the pending guest connect explicitly so
      * ordinary route loss/peer restart does not leave it resolving forever. */
-    if(flow->outbound && !flow->negotiated){
+    if(flow->outbound && flow->guest_handle>0 && !flow->negotiated){
         ESP_LOGI(TAG,"outgoing VIP setup closed: peer=%s phase=%u connecting=%u channel_failed=%u result=%d",
             flow->expected,(unsigned)flow->state.phase,(unsigned)flow->connecting,
             (unsigned)flow->channel.failed,flow->job_result);
@@ -347,17 +206,12 @@ static void close_flow(struct app_flow *flow)
     if(flow->fd>=0)close(flow->fd);
     if(flow->pair_listener>=0)close(flow->pair_listener);
     if(flow->pair_guest>=0)close(flow->pair_guest);
-    wendy_pki_net_dispose(flow->setup);
+    assert(!flow->setup && !flow->connection);
     wnad_handshake_release(flow);
     wendy_net_free(flow->buffers);
     bool outbound=flow->outbound;
-    wendy_pki_close(flow->connection);
     wendy_net_free(flow->datagram_in);free(flow->datagram_out);
     wendy_net_memory_release(&flow->datagram_out_charge);wendy_net_free(flow);
-    ESP_LOGI(TAG,"app TLS closed: heap=%u largest=%u stackfree=%u",
-        (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
-        (unsigned)uxTaskGetStackHighWaterMark(NULL));
     atomic_fetch_sub(outbound ? &outbound_flows : &inbound_flows,1);
 }
 #if CONFIG_WENDY_NET
@@ -390,10 +244,6 @@ static int guest_mesh_begin(int handle,const char *host,uint16_t port,bool datag
         int owner=-1;
         int fd=datagram ? wendy_net_guest_datagram_connect(port,&owner)
                         : wendy_net_guest_service_connect(port);
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-        ESP_LOGI(TAG,"guest local service: port=%u handle=%d fd=%d datagram=%u",
-                 (unsigned)port,handle,fd,(unsigned)datagram);
-#endif
         (void)wendy_net_mesh_connected(handle,fd);
         return 1;
     }
@@ -418,6 +268,7 @@ static struct app_flow *new_flow(int fd,bool outbound)
     struct datagram_flow *d=wendy_net_calloc(1,sizeof *d);if(!d)return NULL;
     struct app_flow *f=&d->flow;
     f->fd=fd;f->outbound=outbound;f->backend=f->pair_listener=f->pair_guest=-1;
+    atomic_init(&f->job_done,false);
     f->state=(struct wna_session){.phase=WNA_PREPARE,.deadline=(uint64_t)esp_timer_get_time()+UINT64_C(120000000)};
     f->wanted=6;return f;
 }
@@ -430,18 +281,44 @@ void wendy_net_app_accept(int fd)
 {
     if(!wendy_conf_is_current() || !claim_flow(&inbound_flows)){close(fd);return;}
     struct app_flow *flow=new_flow(fd,false);
-    if(!flow || fcntl(fd,F_SETFL,O_NONBLOCK)<0){wendy_net_free(flow);close(fd);atomic_fetch_sub(&inbound_flows,1);return;}
+    int flags=fcntl(fd,F_GETFL,0);
+    if(!flow || fd>=FD_SETSIZE || flags<0 || fcntl(fd,F_SETFL,flags|O_NONBLOCK)<0){wendy_net_free(flow);close(fd);atomic_fetch_sub(&inbound_flows,1);return;}
     app_actor_add(flow);
 }
 static void app_setup_work(void *context)
 {
     struct app_flow *f=context;
-    if(f->state.phase==WNA_PREPARE){
+    if(f->disposing){
+        wendy_pki_net_dispose(f->setup);f->setup=NULL;
+        wendy_pki_close(f->connection);f->connection=NULL;f->job_result=0;
+    }else if(f->state.phase==WNA_PREPARE){
         struct wendy_pki_stream bio={.context=&f->channel,.read=wna_read,.write=wna_write,.wait=wnad_no_wait};
         esp_err_t result=wendy_pki_net_begin(&bio,!f->outbound,f->expected[0] ? f->expected:NULL,true,&f->setup);
-        f->job_result=result==ESP_OK ? 0:result==ESP_ERR_TIMEOUT ? 2:-1;
+        f->job_result=result==ESP_OK ? 0:(result==ESP_ERR_TIMEOUT || result==ESP_ERR_NO_MEM) ? 2:-1;
     }else f->job_result=wendy_pki_net_step(f->setup);
     atomic_store(&f->job_done,true);
+}
+/* TLS destruction may touch the same crypto allocator/key tables as setup.
+ * Lend cleanup to the single worker too, after collecting any earlier loan. */
+static bool dispose_flow(struct app_flow *f)
+{
+    if(f->state.lent){
+        if(!atomic_load_explicit(&f->job_done,memory_order_acquire))return false;
+        f->state.lent=false;
+    }
+    if(!f->disposing){
+        f->disposing=true;f->state.cancel=true;
+        if(f->fd>=0){close(f->fd);f->fd=-1;}
+        if(f->backend>=0){close(f->backend);f->backend=-1;}
+        if(f->pair_listener>=0){close(f->pair_listener);f->pair_listener=-1;}
+        if(f->pair_guest>=0){close(f->pair_guest);f->pair_guest=-1;}
+    }
+    if(f->setup || f->connection){
+        atomic_store(&f->job_done,false);
+        if(wendy_pki_work_submit(app_setup_work,f))f->state.lent=true;
+        return false;
+    }
+    close_flow(f);return true;
 }
 static int tls_transfer(struct app_flow *f,uint8_t *bytes,size_t size,size_t *offset,bool writing)
 {
@@ -473,7 +350,11 @@ static int negotiate(struct app_flow *f)
             unsigned maximum=wn_get16(f->response+6);
             if(memcmp(f->response,"WUA3",4) || f->response[4]!=1 || f->response[5]!=3 || !maximum || maximum>f->datagram_max)return -1;
             f->datagram_max=(uint16_t)maximum;
+#if CONFIG_WENDY_NET
             if(wendy_net_mesh_datagram_connected(f->guest_handle,maximum))return -1;
+#else
+            return -1;
+#endif
         }else{
             if(f->response[0]!=1 || begin_pair(f))return -1;
             if(f->backend<0){
@@ -481,7 +362,11 @@ static int negotiate(struct app_flow *f)
                 if(f->backend<0)return errno==EAGAIN || errno==EWOULDBLOCK ? 1:-1;
                 if(f->backend>=FD_SETSIZE || fcntl(f->backend,F_SETFL,O_NONBLOCK)<0)return -1;
                 close(f->pair_listener);f->pair_listener=-1;
+#if CONFIG_WENDY_NET
                 wendy_net_mesh_connected(f->guest_handle,f->pair_guest);f->pair_guest=-1;
+#else
+                return -1;
+#endif
             }
         }
     }else{
@@ -490,6 +375,7 @@ static int negotiate(struct app_flow *f)
             f->service_port=wn_get16(f->request+4);
             if(!memcmp(f->request,"WAU3",4)){
                 f->wanted=8;if(f->received<8)return 1;
+#if CONFIG_WENDY_NET
                 unsigned maximum=wn_get16(f->request+6);
                 if(maximum>wendy_net_guest_datagram_capacity())maximum=wendy_net_guest_datagram_capacity();
                 if(maximum>65507)maximum=65507;
@@ -497,16 +383,18 @@ static int negotiate(struct app_flow *f)
                 if(!maximum || f->listener_handle<=0)return -1;
                 f->datagram_max=(uint16_t)maximum;memcpy(f->response,"WUA3",4);
                 f->response[4]=1;f->response[5]=3;wn_put16(f->response+6,f->datagram_max);
+#else
+                return -1;
+#endif
             }else{
                 if(memcmp(f->request,"WAS1",4))return -1;
                 if(f->service_port==AGENT_PORT)return -1;
-                f->test_echo=CONFIG_WENDY_NET_TEST_ECHO_SERVICE && f->service_port==ECHO_PORT;
-                if(!f->test_echo){
-                    if(f->service_port==TIME_PORT)
-                        f->backend=wnad_connect("127.0.0.1",f->service_port,&f->backend_connecting);
-                    else {f->backend=wendy_net_guest_service_begin(f->service_port);f->backend_connecting=f->backend>=0;}
-                    if(f->backend<0)return -1;
-                }
+                if(f->service_port==TIME_PORT)
+                    f->backend=wnad_connect("127.0.0.1",f->service_port,&f->backend_connecting);
+#if CONFIG_WENDY_NET
+                else {f->backend=wendy_net_guest_service_begin(f->service_port);f->backend_connecting=f->backend>=0;}
+#endif
+                if(f->backend<0)return -1;
                 f->response[0]=1;
             }
             f->phase=1;
@@ -529,14 +417,6 @@ static int relay_step(struct app_flow *f)
         ssize_t n=wendy_pki_read(f->connection,remote->data,sizeof remote->data);
         if(n>0){remote->offset=0;remote->size=n;progress=true;}
         else if(!n)remote->eof=true;else if(n!=-2 && n!=-3)return -1;
-    }
-    if(f->test_echo){
-        if(remote->offset<remote->size){
-            ssize_t n=wendy_pki_write(f->connection,remote->data+remote->offset,remote->size-remote->offset);
-            if(n>0){remote->offset+=n;progress=true;}else if(n!=-2 && n!=-3)return -1;
-        }
-        if(remote->eof && remote->offset==remote->size && !f->channel.output.size)return -1;
-        return progress;
     }
     if(remote->offset<remote->size){
         ssize_t n=send(f->backend,remote->data+remote->offset,remote->size-remote->offset,MSG_DONTWAIT);
@@ -563,13 +443,16 @@ static int app_step(struct app_flow *f,int64_t now)
         wna_completed(&f->state,f->job_result);
         if(f->job_result==2){f->state.retry_at=(uint64_t)now+50000;wnad_handshake_release(f);}
     }
-    if(f->state.cancel || !wendy_conf_is_current() || wendy_pki_reset_in_progress())return -1;
+    if(f->state.cancel || !wendy_conf_is_current() || wendy_pki_reset_in_progress() ||
+       (f->connection && !wendy_conf_snapshot_current(f->config_generation)))return -1;
     if(!f->negotiated && now>=(int64_t)f->state.deadline)return -1;
     if(f->connecting){int r=wnad_connected(f->fd);if(r<=0)return r;f->connecting=false;}
     if(f->native_agent){
         /* Transfer the connected raw stream to the guest. WendyCom's client
          * and native agent retain their one end-to-end TLS session. */
+#if CONFIG_WENDY_NET
         wendy_net_mesh_connected(f->guest_handle,f->fd);f->fd=-1;f->negotiated=true;
+#endif
         return -1;
     }
     int progress=wnad_channel_io(&f->channel,f->fd,NULL);if(progress<0)return -1;
@@ -584,7 +467,14 @@ static int app_step(struct app_flow *f,int64_t now)
         }
         return progress;
     }
-    if(!f->connection){f->connection=wendy_pki_net_take(f->setup,&(struct wendy_pki_mesh_identity){0});f->setup=NULL;wnad_handshake_release(f);if(!f->connection)return -1;}
+    if(!f->connection){
+        struct wendy_pki_mesh_identity identity;
+        f->connection=wendy_pki_net_take(f->setup,&identity);
+        if(!f->connection)return -1; /* failed take retains setup ownership */
+        f->setup=NULL;f->config_generation=identity.config_generation;
+        wnad_handshake_release(f);
+        if(!wendy_conf_snapshot_current(f->config_generation))return -1;
+    }
     if(!f->negotiated){if(now>=(int64_t)f->state.deadline)return -1;return negotiate(f)<0 ? -1:progress;}
     int r=f->datagram_max ? datagram_step((struct datagram_flow *)f):relay_step(f);
     return r<0 ? -1:progress || r;
@@ -639,8 +529,9 @@ int wendy_net_app_poll(void)
 #endif
     int64_t now=esp_timer_get_time();
     for(struct datagram_flow **at=&datagram_flows;*at;){
-        struct datagram_flow *d=*at;int r=app_step(&d->flow,now);
-        if(r<0){*at=d->next;close_flow(&d->flow);progress=1;}
+        struct datagram_flow *d=*at;int r=d->flow.disposing ? -1:app_step(&d->flow,now);
+        struct datagram_flow *next=d->next;
+        if(r<0 && dispose_flow(&d->flow)){*at=next;progress=1;}
         else{progress|=r>0;at=&d->next;}
     }
     return progress;
@@ -660,15 +551,9 @@ bool wendy_net_app_stop(void)
 #endif
     for(struct datagram_flow **at=&datagram_flows;*at;){
         struct app_flow *f=&(*at)->flow;f->state.cancel=true;
-        if(f->state.lent){
-            if(!atomic_load(&f->job_done)){at=&(*at)->next;continue;}
-            wna_completed(&f->state,f->job_result);
-        }
-        *at=(*at)->next;
-#if CONFIG_WENDY_NET
-        if(f->outbound && !f->negotiated && !f->datagram_max)wendy_net_mesh_connected(f->guest_handle,-1);
-#endif
-        close_flow(f);
+        struct datagram_flow *next=(*at)->next;
+        if(dispose_flow(f))*at=next;
+        else at=&(*at)->next;
     }
     bool done=datagram_flows==NULL;
 #if CONFIG_WENDY_NET
@@ -692,7 +577,7 @@ void wendy_net_app_watch(fd_set *rd,fd_set *wr,int *maximum,int64_t *deadline)
     if(fd>=0 && atomic_load(&inbound_flows)<CONFIG_WENDY_NET_APP_MAX_FLOWS){FD_SET(fd,rd);if(fd>*maximum)*maximum=fd;}
     for(struct datagram_flow *d=datagram_flows;d;d=d->next){
         struct app_flow *f=&d->flow;
-        if(f->state.lent)continue;
+        if(f->state.lent || f->disposing)continue;
         if(!f->negotiated && (int64_t)f->state.deadline<*deadline)*deadline=(int64_t)f->state.deadline;
         if(f->state.retry_at && f->state.retry_at>(uint64_t)esp_timer_get_time() &&
            f->state.retry_at<(uint64_t)*deadline)*deadline=(int64_t)f->state.retry_at;
@@ -736,11 +621,6 @@ esp_err_t wendy_net_app_start(void)
     wendy_net_set_service_catalog(wendy_net_peer_service_catalog);
 #endif
     ESP_LOGI(TAG,"TLS app listener ready on TCP%u; per-direction flow cap=%u",APP_PORT,(unsigned)CONFIG_WENDY_NET_APP_MAX_FLOWS);
-#if CONFIG_WENDY_NET_TEST_AGENT_PROXY
-    extern esp_err_t wendy_net_agent_proxy_start(void);
-    if (wendy_net_agent_proxy_start()!=ESP_OK)
-        ESP_LOGW(TAG,"lab agent proxy could not start");
-#endif
     return ESP_OK;
 failed:
     if (fd>=0) close(fd);

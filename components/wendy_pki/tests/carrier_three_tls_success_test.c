@@ -3,6 +3,9 @@
 #define main ordinary_tls_fixture_main
 #include "tls_test.c"
 #undef main
+#include "native_tls_fixture.h"
+#include "wendy_pki_work.h"
+#include "tls_agent_bio.h"
 #include "wendy_net_carrier.h"
 #include "wendy_net_peer_protocol.h"
 #include "wendy_net_alloc.h"

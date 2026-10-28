@@ -27,7 +27,7 @@ static ssize_t fixture_event_write(int fd,const void *in,size_t size){(void)fd;(
 #include "../../wendy_com/src/wendy_com_cmd.c"
 #undef TAG
 #include "wendy_com_sensor.h"
-static unsigned manifest_calls,subscriptions,frame_done,connections;
+static unsigned manifest_calls,subscriptions,frame_done,connections,console_attaches;
 #ifndef WENDY_COMPOSED_SAMPLE_BYTES
 #define WENDY_COMPOSED_SAMPLE_BYTES 6000
 #endif
@@ -39,7 +39,8 @@ ssize_t wendy_com_uart_write(wendy_com_uart_t *uart,const void *data,size_t size
 int wendy_com_uart_get_fd(wendy_com_uart_t *uart){return uart->fd;}
 int64_t wendy_com_uart_auto_close_delay(wendy_com_uart_t *uart){return -1;}
 void wcom_stdio_pump_client_disconnected(int id){}
-WendyComResult wcom_stdio_pump_attach(int id,uint32_t event,uint32_t duration,bool blocking){return WendyComResult_WENDY_COM_RESULT_OK;}
+WendyComResult wcom_stdio_pump_attach(int id,uint32_t event,uint32_t duration,bool blocking)
+{assert(event==77 && duration==1000 && !blocking);console_attaches++;return WendyComResult_WENDY_COM_RESULT_OK;}
 WendyComResult wcom_stdio_pump_detach(int id,uint32_t event){return WendyComResult_WENDY_COM_RESULT_OK;}
 size_t wendy_stdio_put_stdin_data(const void *data,size_t size){return size;}
 void wendy_conf_enrollment_identity(char tenant[37],char device[65]){tenant[0]=device[0]=0;}
@@ -97,4 +98,5 @@ void composed_com_poll(void)
     }
 }
 void composed_com_check(void)
-{assert(connections==1 && manifest_calls==1 && subscriptions==1 && frame_done==1);}
+{assert(connections==1 && manifest_calls==1 && subscriptions==1 && frame_done==1);
+ assert(console_attaches==(composed_expected_permission==WCOM_LINK_PERMISSION_FULL ? 1u:0u));}

@@ -9,9 +9,6 @@
 #include "wendy_conf.h"
 #include "esp_timer.h"
 #include "esp_log.h"
-#if ESP_PLATFORM && CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-#include "esp_heap_caps.h"
-#endif
 #ifdef ESP_PLATFORM
 #include "lwip/sockets.h"
 #else
@@ -44,45 +41,13 @@ struct native_flow {
     bool disposing,input_eof;
     int read_need,write_need;
     int64_t drain_deadline;
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-    int64_t diagnostic_at;
-#endif
 };
 static struct native_flow *flows;
 static unsigned flow_count;
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-static void native_snapshot(const struct native_flow *f,const char *reason)
-{
-    (void)reason;
-    /* BIO buffers and SSL fields are loaned together. Never inspect them until
-     * collect() has returned this exact context to the actor. */
-    if(f->state.lent || !f->setup)return;
-    struct wendy_pki_agent_snapshot snapshot;
-    if(!wendy_pki_agent_snapshot(f->setup,&snapshot))return;
-    ESP_LOGI("net-native-agent","TLS snapshot: reason=%s state=%u left=%u message=%u handshake=%u fragment=%u input=%u output=%u bio_in=%u bio_out=%u lent=%u result=%d need=%d",
-        reason,(unsigned)snapshot.state,(unsigned)snapshot.in_left,
-        (unsigned)snapshot.in_msglen,(unsigned)snapshot.in_hslen,
-        (unsigned)snapshot.in_hsfraglen,(unsigned)snapshot.input_capacity,
-        (unsigned)snapshot.output_capacity,(unsigned)f->channel.input.size,
-        (unsigned)f->channel.output.size,(unsigned)f->state.lent,f->result,f->state.need);
-}
-#endif
 static int ending(struct native_flow *f,const char *reason,int64_t now)
 {
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-    native_snapshot(f,reason);
-#endif
-#if ESP_PLATFORM && CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-    ESP_LOGI("net-native-agent","ending native VIP: reason=%s phase=%u result=%d need=%d deadline_left_ms=%lld tls=%u eof=%u io_failed=%u free=%u largest=%u",
-        reason,(unsigned)f->state.phase,f->result,f->state.need,
-        (long long)(((int64_t)f->state.deadline-now)/1000),f->connection!=NULL,
-        f->channel.eof,f->channel.failed,
-        (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-#else
-    (void)f;(void)reason;(void)now;
-#endif
-    return -1;
+    ESP_LOGI("net-native-agent","native VIP closed: reason=%s phase=%u result=%d",reason,(unsigned)f->state.phase,f->result);
+    (void)f;(void)reason;(void)now;return -1;
 }
 /* One raw descriptor mailbox, no allocation or per-flow fd while OFF. The
  * trylock never waits behind a preempted lower-priority publisher. */
@@ -214,12 +179,6 @@ static int step(struct native_flow *f,int64_t now)
     if(f->connection && (!wendy_conf_snapshot_current(f->info.config_generation) || now>=f->info.session_deadline_us))return ending(f,"session-expiry-or-generation",now);
     if(!f->connection && now>=(int64_t)f->state.deadline)return ending(f,"setup-deadline",now);
     int progress=wnad_channel_io(&f->channel,f->fd,NULL);if(progress<0)return ending(f,"socket-io",now);
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-    if(progress || (f->state.need!=-2 && f->state.need!=-3))f->diagnostic_at=now+INT64_C(5000000);
-    if(f->setup && f->state.phase==WNA_HANDSHAKE && now>=f->diagnostic_at){
-        native_snapshot(f,"io-stall");f->diagnostic_at=now+INT64_C(5000000);
-    }
-#endif
     if(f->state.phase!=WNA_READY){
         enum wna_effect effect=wna_next(&f->state,(uint64_t)now,
             f->channel.input.size || f->channel.eof,wna_buffer_space(&f->channel.output)!=0);
@@ -256,8 +215,8 @@ int wendy_net_agent_poll(void)
     int progress=0,fd=take_pending();
     if(fd>=0){
         struct native_flow *f=flow_count<CONFIG_WENDY_NET_APP_MAX_FLOWS ? wendy_net_calloc(1,sizeof *f):NULL;
-        int yes=1;
-        if(!f || fd>=FD_SETSIZE || fcntl(fd,F_SETFL,O_NONBLOCK)<0 ||
+        int yes=1,flags=fcntl(fd,F_GETFL,0);
+        if(!f || fd>=FD_SETSIZE || flags<0 || fcntl(fd,F_SETFL,flags|O_NONBLOCK)<0 ||
            setsockopt(fd,IPPROTO_TCP,TCP_NODELAY,&yes,sizeof yes)){
             close(fd);wendy_net_free(f);
         }else{

@@ -251,6 +251,12 @@ static void _server_task(void *arg)
         return;
     }
 
+#if CONFIG_WENDY_NET_PEER
+    if(listen_fd>=FD_SETSIZE){
+        ESP_LOGE(TAG,"listener exceeds select descriptor limit");
+        close(listen_fd);vTaskDelete(NULL);return;
+    }
+#endif
     int opt = 1;
     setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 

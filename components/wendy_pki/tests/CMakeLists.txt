@@ -330,3 +330,127 @@ endforeach()
 # Standalone production-dispatcher lifecycle/ownership coverage, also usable
 # without configuring the certificate/crypto libraries.
 add_subdirectory(work)
+
+add_executable(native_agent_success_test ../../wendy_net_peer/tests/native_agent_success_test.c
+    ../../wendy_net_peer/src/agent_bridge.c ../../wendy_net_peer/src/agent_pipe.c
+    ../../wendy_net_peer/src/actor.c ../../wendy_net_common/src/memory.c
+    ../../wendy_net_common/src/runtime_memory.c)
+target_include_directories(native_agent_success_test PRIVATE ../../wendy_net_peer/include
+    ../../wendy_net_peer/src ../../wendy_net_common/include ../../wendy_com/include
+    ../include stubs ../../wendy_conf/include ../../nanopb)
+target_compile_definitions(native_agent_success_test PRIVATE WENDY_NET_MEMORY_HOST_BUDGET_TEST=1
+    CONFIG_WENDY_NET_TCP_RELAY_BUFFER_SIZE=256)
+target_link_libraries(native_agent_success_test PRIVATE Threads::Threads)
+target_compile_options(native_agent_success_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME native_agent_success COMMAND native_agent_success_test)
+
+
+add_library(native_agent_com_backend OBJECT native_agent_com_backend.c
+    ../../wendy_com/src/wendy_com_sensor.c ../../wendy_com/src/wendy_com_msg.pb.c
+    ../../wendy_com/src/sensorlink.pb.c ../../nanopb/pb_common.c
+    ../../nanopb/pb_encode.c ../../nanopb/pb_decode.c)
+target_include_directories(native_agent_com_backend PRIVATE ../../wendy_com/tests/stubs stubs
+    ../../wendy_com/include ../include ../../wendy_conf/include ../../wendy_stdio/include ../../nanopb)
+target_compile_definitions(native_agent_com_backend PRIVATE CONFIG_WENDY_COM_TASK_PRIORITY=1
+    CONFIG_WENDY_COM_TASK_CORE_AFFINITY=0)
+target_compile_options(native_agent_com_backend PRIVATE -UNDEBUG -Wall -Wextra -Werror
+    -Wno-unused-parameter -Wno-unused-function)
+add_executable(native_agent_composed_test native_agent_composed_test.c ${PKI_TLS}
+    "${IDF_COMPONENTS}/http_parser/http_parser.c" $<TARGET_OBJECTS:native_agent_com_backend>
+    ../../wendy_net_peer/src/agent_bridge.c ../../wendy_net_peer/src/agent_pipe.c
+    ../../wendy_net_peer/src/actor.c ../../wendy_net_common/src/runtime_memory.c)
+target_include_directories(native_agent_composed_test PRIVATE ../src ../../wendy_net_peer/include
+    ../../wendy_net_peer/src ../../wendy_com/include "${IDF_COMPONENTS}/http_parser")
+target_compile_definitions(native_agent_composed_test PRIVATE WENDY_NET_MEMORY_HOST_BUDGET_TEST=1
+    WENDY_PKI_INPUT_SHRINK_HOST_TEST=1 WENDY_MESH_TEST_LOG=1 CONFIG_WENDY_NET_TCP_RELAY_BUFFER_SIZE=256)
+target_compile_options(native_agent_composed_test PRIVATE -UNDEBUG -Wall -Wextra -Werror -Wno-unused-parameter -Wno-unused-function)
+target_link_libraries(native_agent_composed_test PRIVATE pki)
+foreach(profile p256 mldsa65)
+    add_test(NAME pki_native_agent_composed_${profile} COMMAND "${GO_EXECUTABLE}" run
+        "${CMAKE_CURRENT_LIST_DIR}/native_agent_composed_driver.go"
+        "${CMAKE_CURRENT_LIST_DIR}/native_agent_composed_client.go"
+        "$<TARGET_FILE:native_agent_composed_test>" ${profile})
+    set_tests_properties(pki_native_agent_composed_${profile} PROPERTIES TIMEOUT 90
+        WORKING_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/../../../go/console/wendypb"
+        ENVIRONMENT "WENDY_TLS_OWNED_STREAM=1;WENDY_TLS_NORMAL_ONLY=1;WENDY_TLS_DER_RANGES=1;WENDY_TLS_BOUNDED_SOURCE_HASH=1;WENDY_TLS_AGENT_ACTOR=1;WENDY_TLS_OPERATOR_OPAQUE=1;WENDY_TLS_AGENT_COMPOSED=1")
+endforeach()
+
+add_executable(native_prepare_success_test native_prepare_success_test.c ../src/wendy_pki_work.c
+    ../../wendy_net_common/src/memory.c ../../wendy_net_common/src/runtime_memory.c)
+target_include_directories(native_prepare_success_test PRIVATE ../src ../include stubs
+    ../../wendy_net_common/include ../../wendy_conf/include ../../nanopb)
+target_compile_definitions(native_prepare_success_test PRIVATE WENDY_NET_MEMORY_HOST_BUDGET_TEST=1)
+target_compile_options(native_prepare_success_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_link_libraries(native_prepare_success_test PRIVATE Threads::Threads)
+add_test(NAME native_prepare_success COMMAND native_prepare_success_test)
+
+add_executable(handshake_admission_success_test handshake_admission_success_test.c ../src/wendy_pki_work.c
+    ../../wendy_net_peer/src/actor.c ../../wendy_net_common/src/memory.c ../../wendy_net_common/src/runtime_memory.c)
+target_include_directories(handshake_admission_success_test PRIVATE ../include ../../wendy_net_peer/include ../../wendy_net_common/include)
+target_link_libraries(handshake_admission_success_test PRIVATE Threads::Threads)
+target_compile_options(handshake_admission_success_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+add_test(NAME handshake_admission_success COMMAND handshake_admission_success_test)
+
+
+add_executable(carrier_three_tls_success_test carrier_three_tls_success_test.c ${PKI_TLS}
+    ../../wendy_net_common/src/runtime_memory.c ../../wendy_net_peer/src/packet.c
+    ../../wendy_net_peer/src/actor.c ../../wendy_net_peer/src/carrier.c
+    ../../wendy_net_peer/src/protocol.c ../../wendy_net_peer/src/binary.c
+    "${IDF_COMPONENTS}/http_parser/http_parser.c")
+target_include_directories(carrier_three_tls_success_test PRIVATE ../src ../../wendy_net_peer/include
+    "${IDF_COMPONENTS}/http_parser")
+target_compile_definitions(carrier_three_tls_success_test PRIVATE WENDY_NET_MEMORY_HOST_BUDGET_TEST=1 WENDY_MESH_TEST_LOG=1
+    WNA_IO_BYTES=512)
+target_compile_options(carrier_three_tls_success_test PRIVATE -UNDEBUG -Wall -Wextra -Werror -Wno-unused-parameter -Wno-unused-function)
+target_link_libraries(carrier_three_tls_success_test PRIVATE pki)
+foreach(profile p256 mldsa65)
+    add_test(NAME carrier_three_tls_${profile}_success COMMAND "${GO_EXECUTABLE}" run
+        "${CMAKE_CURRENT_LIST_DIR}/carrier_three_tls_success_driver.go"
+        "$<TARGET_FILE:carrier_three_tls_success_test>" ${profile})
+    set_tests_properties(carrier_three_tls_${profile}_success PROPERTIES TIMEOUT 90
+        WORKING_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}")
+endforeach()
+
+add_executable(app_actor_success_test ../../wendy_net_peer/tests/app_actor_success_test.c
+    ../../wendy_net_peer/src/actor.c ../../wendy_net_peer/src/protocol.c ../../wendy_net_peer/src/binary.c
+    ../../wendy_net_common/src/binary.c ../../wendy_net_common/src/memory.c ../../wendy_net_common/src/runtime_memory.c)
+target_include_directories(app_actor_success_test BEFORE PRIVATE ../../wendy_net_peer/tests/app_stubs
+    ../../wendy_net_peer/tests/io_stubs ../../wendy_net_peer/tests/router_stubs)
+target_include_directories(app_actor_success_test PRIVATE ../../wendy_net_peer/include
+    ../../wendy_net_peer/src ../../wendy_net_common/include ../../wendy_net/include
+    ../include stubs ../../wendy_conf/include ../../nanopb)
+target_compile_definitions(app_actor_success_test PRIVATE WENDY_NET_MEMORY_HOST_BUDGET_TEST=1
+    CONFIG_WENDY_NET=1 CONFIG_WENDY_NET_CONSTRAINED_PROFILE=1 CONFIG_WENDY_NET_APP_MAX_FLOWS=2
+    CONFIG_WENDY_NET_TCP_RELAY_BUFFER_SIZE=256)
+target_compile_options(app_actor_success_test PRIVATE -Wall -Wextra -Werror -Wno-unused-parameter -Wno-unused-function -UNDEBUG)
+target_link_libraries(app_actor_success_test PRIVATE Threads::Threads)
+add_test(NAME native_app_actor_success COMMAND app_actor_success_test)
+
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(carrier_loan_callbacks "${CMAKE_CURRENT_BINARY_DIR}/carrier_loan_callbacks.inc")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_LIST_DIR}/../../wendy_net_peer/src/peer.c"
+    "${CMAKE_CURRENT_LIST_DIR}/../../wendy_net_peer/src/router_session.c"
+    "${CMAKE_CURRENT_LIST_DIR}/../../wendy_net_peer/src/catalog_node.c"
+    "${CMAKE_CURRENT_LIST_DIR}/../../../cmake/tests/generate_carrier_loan_fixture.py")
+execute_process(COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_LIST_DIR}/../../../cmake/tests/generate_carrier_loan_fixture.py"
+    "${carrier_loan_callbacks}" COMMAND_ERROR_IS_FATAL ANY)
+add_executable(carrier_signing_loan_success_test carrier_signing_loan_success_test.c
+    ../../wendy_net_peer/src/carrier.c ../../wendy_net_peer/src/crypto_job.c
+    ../../wendy_net_peer/src/protocol.c ../../wendy_net_peer/src/binary.c ../../wendy_net_peer/src/certificate_wire.c
+    ../../wendy_net_peer/src/service_store.c ../../wendy_net_peer/src/service_protocol.c ../../wendy_net_peer/src/manifest_service.c
+    ../../wendy_net_peer/src/packet.c ../../wendy_net_common/src/runtime_memory.c)
+target_include_directories(carrier_signing_loan_success_test PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}" ../../wendy_net_peer/include ../../wendy_net_peer/src
+    ../../wendy_net_gossip/include)
+target_compile_definitions(carrier_signing_loan_success_test PRIVATE
+    WENDY_NET_ROUTE_CRYPTO_HOST_TEST=1 WENDY_NET_MEMORY_HOST_BUDGET_TEST=1)
+target_compile_options(carrier_signing_loan_success_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+target_link_libraries(carrier_signing_loan_success_test PRIVATE pki)
+add_test(NAME carrier_signing_loan_success COMMAND carrier_signing_loan_success_test
+    "${CMAKE_CURRENT_LIST_DIR}/fixtures/device-key.der")
+set_tests_properties(carrier_signing_loan_success PROPERTIES TIMEOUT 15)
+add_test(NAME carrier_signing_with_tls_workspace COMMAND carrier_signing_loan_success_test
+    "${CMAKE_CURRENT_LIST_DIR}/fixtures/device-key.der" tls-overlap)
+set_tests_properties(carrier_signing_with_tls_workspace PROPERTIES TIMEOUT 15)

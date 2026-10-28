@@ -11,3 +11,10 @@ idf_component_register(SRCS ${native_driver_sources} "src/router.c" "src/control
 if(CONFIG_WENDY_NET_PEER AND NOT CMAKE_BUILD_EARLY_EXPANSION)
  target_compile_definitions(${COMPONENT_LIB} PUBLIC WNA_IO_BYTES=${CONFIG_WENDY_NET_IO_BYTES})
 endif()
+
+# Guest networking is selected by the product/WASM entry point. Add its public
+# headers/link closure only when present, keeping native-OFF builds independent
+# of the optional WASM runtime during IDF's early component discovery.
+if(CONFIG_WENDY_NET AND NOT CMAKE_BUILD_EARLY_EXPANSION)
+ idf_component_optional_requires(PRIVATE wendy_net)
+endif()

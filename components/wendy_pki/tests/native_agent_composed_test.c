@@ -4,6 +4,8 @@
 #define main ordinary_tls_fixture_main
 #include "tls_test.c"
 #undef main
+#include "native_tls_fixture.h"
+#include "wendy_operator_auth.h"
 #include "wendy_net_alloc.h"
 #include <psa/crypto_extra.h>
 #include "../../wendy_net_peer/src/native_agent.c"
@@ -15,17 +17,7 @@ static struct pki_tls_owned_identity prepared;
 static struct wendy_conf_span prepared_roots;
 static uint64_t fixture_generation=1;
 static unsigned outer_reads,outer_writes,outer_wakes,independent_io;
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-static unsigned real_tls_snapshots;
-#endif
 struct wendy_pki_agent_setup {wendy_pki_connection *connection;bool complete;};
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-bool wendy_pki_agent_snapshot(const struct wendy_pki_agent_setup *op,struct wendy_pki_agent_snapshot *out)
-{
-    for(struct native_flow *f=flows;f;f=f->next)if(f->setup==op)assert(!f->state.lent);
-    return pki_tls_agent_snapshot(op->connection,out);
-}
-#endif
 bool wendy_conf_is_current(void){return true;}
 bool wendy_conf_snapshot_current(uint64_t generation){return generation==fixture_generation;}
 void wnad_wake(void){outer_wakes++;}
@@ -45,17 +37,6 @@ esp_err_t wendy_pki_agent_begin(const struct wendy_pki_stream *bio,struct wendy_
 int wendy_pki_agent_step(struct wendy_pki_agent_setup *op)
 {
     int result=pki_tls_agent_advance(op->connection);if(!result)op->complete=true;
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-    /* This exact TLS context is exclusively loaned to this worker here. */
-    struct wendy_pki_agent_snapshot snapshot;
-    assert(pki_tls_agent_snapshot(op->connection,&snapshot));real_tls_snapshots++;
-    assert(snapshot.state==(uint32_t)op->connection->ssl.MBEDTLS_PRIVATE(state));
-    assert(snapshot.in_left==(uint32_t)op->connection->ssl.MBEDTLS_PRIVATE(in_left));
-    assert(snapshot.in_msglen==(uint32_t)op->connection->ssl.MBEDTLS_PRIVATE(in_msglen));
-    assert(snapshot.in_hslen==(uint32_t)op->connection->ssl.MBEDTLS_PRIVATE(in_hslen));
-    assert(snapshot.in_hsfraglen==(uint32_t)op->connection->ssl.MBEDTLS_PRIVATE(in_hsfraglen));
-    assert(snapshot.input_capacity && snapshot.output_capacity);
-#endif
     return result;
 }
 wendy_pki_connection *wendy_pki_agent_take(struct wendy_pki_agent_setup *op,struct wendy_pki_agent_info *info)
@@ -91,10 +72,9 @@ int main(int argc,char **argv)
         unsetenv("WENDY_TLS_DEFER_INPUT_SHRINK");return ordinary_tls_fixture_main(argc,argv);
     }
     assert(getenv("WENDY_TLS_NORMAL_ONLY") && getenv("WENDY_TLS_AGENT_COMPOSED"));
-    cv_trace_begin(argv[1],true);
     composed_expected_permission=!strcmp(getenv("WENDY_TLS_EXPECT_ROLE"),"operator") ? WCOM_LINK_PERMISSION_FULL:WCOM_LINK_PERMISSION_SENSOR_ONLY;
     assert(wendy_net_runtime_memory_open());
-    if(!cv_trace_started)assert(!mbedtls_platform_set_calloc_free(wendy_net_memory_scoped_calloc,wendy_net_memory_scoped_free));
+    assert(!mbedtls_platform_set_calloc_free(wendy_net_memory_scoped_calloc,wendy_net_memory_scoped_free));
     assert(mbedtls_psa_set_key_slot_table_allocator(wendy_pki_crypto_shared_calloc)==PSA_SUCCESS);
     assert(!wendy_pki_crypto_init()); /* permanent baseline PSA initialization */
     size_t key_size,cert_size,roots_size;
@@ -119,7 +99,7 @@ int main(int argc,char **argv)
     wendy_net_memory_scope_t previous=wendy_net_runtime_scope_enter();
     wendy_net_agent_start();wendy_net_agent_accept(fd);
     int64_t deadline=esp_timer_get_time()+30000000;
-    bool authenticated=false,saw_eof=false,cancelled=false;
+    bool authenticated=false,saw_eof=false;
     while(esp_timer_get_time()<deadline){
         int progress=wendy_net_agent_poll();
         if(flows && flows->state.lent){
@@ -130,54 +110,34 @@ int main(int argc,char **argv)
             assert(recv(readiness[1],&byte,1,0)==1 && byte==42);independent_io++;
         }
         bool worked=wendy_pki_work_poll();
-#if defined(WENDY_TLS_CV_TRACE)
-        if(getenv("WENDY_TLS_CV_CANCEL") && wendy_test_cv_signs &&
-           wendy_test_cv_allocation && wendy_test_cv_wants && flows &&
-           atomic_load_explicit(&flows->done,memory_order_acquire)){
-            /* Ordinary owner OFF while the completed worker loan still owns
-             * a partially queued CV. Do not read its lent TLS context. */
-            assert(flows->state.lent);cancelled=true;cv_trace_cancelled=true;break;
-        }
-#endif
         composed_com_poll();
         if(flows && flows->connection)authenticated=true;
         if(flows && flows->input_eof){saw_eof=true;break;}
         if(!flows && authenticated)break;
         if(!progress && !worked){struct pollfd pending={.fd=fd,.events=POLLIN|POLLOUT};(void)poll(&pending,1,1);}
     }
-    if(!cancelled){
-        assert(authenticated && saw_eof);composed_com_check();
-        /* Hold the com application owner deliberately while OFF drains its TLS
-         * CPU loan. Its queued close ACK must retain the admission/buffer leases. */
-        assert(!wendy_net_agent_stop());
-        for(unsigned i=0;i<3;i++){
-            (void)wendy_pki_work_poll();assert(!wendy_net_agent_stop());
-            assert(flows && flow_count==1 && wnab_live()==1);
-        }
-        bool stopped=false;
-        for(unsigned i=0;i<30 && !stopped;i++){
-            composed_com_poll();(void)wendy_pki_work_poll();stopped=wendy_net_agent_stop();
-        }
-        assert(stopped && !flows && !wnab_live());
-    }else{
-        bool stopped=false;
-        for(unsigned i=0;i<30 && !stopped;i++){
-            stopped=wendy_net_agent_stop();(void)wendy_pki_work_poll();composed_com_poll();
-        }
-        assert(stopped && !flows && !wnab_live());
+    assert(authenticated && saw_eof);composed_com_check();
+    /* Hold the com application owner deliberately while OFF drains its TLS
+     * CPU loan. Its queued close ACK must retain the admission/buffer leases. */
+    assert(!wendy_net_agent_stop());
+    for(unsigned i=0;i<3;i++){
+        (void)wendy_pki_work_poll();assert(!wendy_net_agent_stop());
+        assert(flows && flow_count==1 && wnab_live()==1);
     }
+    bool stopped=false;
+    for(unsigned i=0;i<30 && !stopped;i++){
+        composed_com_poll();(void)wendy_pki_work_poll();stopped=wendy_net_agent_stop();
+    }
+    assert(stopped && !flows && !wnab_live());
     close(readiness[0]);close(readiness[1]);
     wendy_net_memory_snapshot_t memory;wendy_net_runtime_memory_snapshot(&memory);
     if(memory.current_bytes)fprintf(stderr,"COMPOSED outstanding: bytes=%zu allocations=%zu reservations=%zu\n",
         memory.current_bytes,memory.allocation_count,memory.reservation_count);
     assert(!memory.current_bytes && !memory.allocation_count && !memory.reservation_count);
     assert(outer_reads>1 && outer_writes>1 && outer_wakes && independent_io);
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-    assert(real_tls_snapshots>1);
-#endif
     wendy_net_memory_scope_leave(previous);wendy_net_runtime_memory_close();
     assert(wendy_net_runtime_memory_drained());mbedtls_x509_crt_free(&source.chain);
-    fprintf(stderr,"COMPOSED native TLS/WendyCom: role=%u reads=%u writes=%u independent_io=%u peak=%zu cancelled=%u OFF=0 PASS\n",
-        composed_expected_permission,outer_reads,outer_writes,independent_io,memory.high_water_bytes,cancelled);
+    fprintf(stderr,"COMPOSED native TLS/WendyCom: role=%u reads=%u writes=%u independent_io=%u peak=%zu OFF=0 PASS\n",
+        composed_expected_permission,outer_reads,outer_writes,independent_io,memory.high_water_bytes);
     return 0;
 }

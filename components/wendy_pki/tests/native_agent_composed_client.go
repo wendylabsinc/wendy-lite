@@ -119,5 +119,13 @@ func composedWendyCom(secure *tls.Conn, operator bool) {
 	if done.GetResponse().GetRequestId() != 75 || done.GetResponse().GetResult() != litepb.WendyComResult_WENDY_COM_RESULT_OK {
 		panic("actual unsubscribe mismatch")
 	}
-	fmt.Printf("PASS COMPOSED actual HELLO/Ping=%t/SensorLink%d operator=%t\n", operator, expectedBytes, operator)
+	if operator {
+		send(0, &litepb.WendyComMessage{Msg: &litepb.WendyComMessage_Command{Command: &litepb.WendyComCommand{
+			RequestId: 76, Params: &litepb.WendyComCommand_ConsoleAttach{ConsoleAttach: &litepb.WendyComConsoleAttachParams{EventId: 77, Duration: 1000}}}}})
+		channel, attached := receive()
+		if channel != 0 || attached.GetResponse().GetRequestId() != 76 || attached.GetResponse().GetResult() != litepb.WendyComResult_WENDY_COM_RESULT_OK {
+			panic("actual ConsoleAttach mismatch")
+		}
+	}
+	fmt.Printf("PASS COMPOSED actual HELLO/Ping=%t/SensorLink%d/ConsoleAttach=%t operator=%t\n", operator, expectedBytes, operator, operator)
 }
