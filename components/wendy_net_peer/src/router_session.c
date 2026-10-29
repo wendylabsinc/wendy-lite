@@ -1707,3 +1707,17 @@ int wnrs_topology(struct wnrs_node *n,uint32_t cursor,uint64_t generation,WendyC
     page->next_cursor=cursor+1<count ? cursor+1:0;
     return 0;
 }
+
+void wnrs_issuer_snapshot(struct wnrs_node *node,struct wendy_pki_net_issuers *snapshot)
+{
+    memset(snapshot,0,sizeof *snapshot);
+    if(!node)return;
+    int64_t now=(int64_t)node->clock.verified_seconds+
+        (esp_timer_get_time()-node->clock.verified_monotonic_us)/1000000;
+    struct wncs_loan *loan=wncs_issuer_loan(&node->certificates,now);
+    if(!loan)return;
+    snapshot->context=loan;snapshot->release=wncs_issuer_loan_free;
+    for(unsigned i=0;i<loan->count && i<WENDY_PKI_NET_CACHED_ISSUERS;i++){
+        snapshot->der[i]=loan->parts[i];snapshot->sizes[i]=loan->sizes[i];snapshot->count++;
+    }
+}

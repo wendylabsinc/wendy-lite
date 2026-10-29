@@ -76,6 +76,7 @@ struct app_flow {
     struct wna_channel channel;
     struct wna_session state;
     struct wendy_pki_net_setup *setup;
+    struct wendy_pki_net_issuers issuers;
     atomic_bool job_done;
     int job_result,fd,pair_listener,pair_guest;
     bool connecting,backend_connecting,negotiated,local_half;
@@ -290,10 +291,13 @@ static void app_setup_work(void *context)
     struct app_flow *f=context;
     if(f->disposing){
         wendy_pki_net_dispose(f->setup);f->setup=NULL;
+        wendy_pki_net_release_issuers(&f->issuers);
         wendy_pki_close(f->connection);f->connection=NULL;f->job_result=0;
     }else if(f->state.phase==WNA_PREPARE){
         struct wendy_pki_stream bio={.context=&f->channel,.read=wna_read,.write=wna_write,.wait=wnad_no_wait};
         esp_err_t result=wendy_pki_net_begin(&bio,!f->outbound,f->expected[0] ? f->expected:NULL,true,&f->setup);
+        if(result==ESP_OK)wendy_pki_net_add_issuers(f->setup,&f->issuers);
+        else wendy_pki_net_release_issuers(&f->issuers);
         f->job_result=result==ESP_OK ? 0:(result==ESP_ERR_TIMEOUT || result==ESP_ERR_NO_MEM) ? 2:-1;
     }else f->job_result=wendy_pki_net_step(f->setup);
     atomic_store(&f->job_done,true);
@@ -318,6 +322,7 @@ static bool dispose_flow(struct app_flow *f)
         if(wendy_pki_work_submit(app_setup_work,f))f->state.lent=true;
         return false;
     }
+    wendy_pki_net_release_issuers(&f->issuers);
     close_flow(f);return true;
 }
 static int tls_transfer(struct app_flow *f,uint8_t *bytes,size_t size,size_t *offset,bool writing)
@@ -462,6 +467,8 @@ static int app_step(struct app_flow *f,int64_t now)
         if(e==WNA_CLOSE)return -1;
         if(e==WNA_CRYPTO_PREPARE && !wnad_handshake_claim(f))return progress;
         if(e==WNA_CRYPTO_PREPARE || e==WNA_CRYPTO_STEP){
+            if(e==WNA_CRYPTO_PREPARE && !f->issuers.release)
+                wendy_net_peer_issuer_snapshot(&f->issuers);
             atomic_store(&f->job_done,false);
             if(wendy_pki_work_submit(app_setup_work,f))wna_lend(&f->state);
         }

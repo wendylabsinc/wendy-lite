@@ -23,7 +23,7 @@ def run():
     if (module / 'go/internal/agent/bleprovider').is_dir():
         module = module / 'go'
     package = module / 'internal/agent/bleprovider'
-    helper_path = package / 'tls_issuers_linux.go'
+    helper_path = module / 'internal/shared/meshalpn/config.go'
     fixture_path = package / 'tls_issuers_linux_test.go'
     helper = helper_path.read_text()
     fixture = fixture_path.read_text()
@@ -46,12 +46,6 @@ def run():
     with tempfile.TemporaryDirectory(prefix='lite-issuer-wos-') as temporary:
         temporary = Path(temporary)
         replacements = {}
-        if host_os != 'linux':
-            # Linux already compiles the canonical helper directly. On Darwin,
-            # compile its exact body under a neutral overlay filename instead.
-            target = temporary / 'issuer_helper.go'
-            target.write_text(helper.replace('//go:build linux\n', '', 1))
-            replacements[str(package / 'lite_issuer_helper_overlay.go')] = str(target)
         target = temporary / 'issuer_fixture_test.go'
         target.write_text(header + fixture)
         replacements[str(package / 'lite_issuer_fixture_overlay_test.go')] = str(target)

@@ -72,3 +72,8 @@ void wncs_release(void *);
 int wncs_chain_put(struct wncs_store *,const struct wncf_chain *,int64_t expires);
 int wncs_chain_get(struct wncs_store *,const char *principal,int64_t now,
                     struct wncf_chain *);
+
+/* Actor-only snapshot of resident CA parts from live verified descriptors.
+ * Missing/evicted data stays forgotten; no baseline read or refetch occurs. */
+struct wncs_loan *wncs_issuer_loan(struct wncs_store *,int64_t now);
+void wncs_issuer_loan_free(void *);

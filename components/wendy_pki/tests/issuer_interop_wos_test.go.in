@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+ "github.com/wendylabsinc/wendy/go/internal/agent/localmesh"
 )
 
 func TestLiteIssuerInteropNormal(t *testing.T) {
@@ -21,19 +22,21 @@ func TestLiteIssuerInteropNormal(t *testing.T) {
 	if binary == "" {
 		t.Fatal("WENDY_LITE_ISSUER_DRIVER required")
 	}
-	for _, fixture := range []struct{ shared, pinned, legacy bool }{
-		{true, true, false}, {true, true, true}, {false, true, false}, {true, false, false},
+	for _, fixture := range []struct{ shared, pinned, legacy,partial,cached bool }{
+		{true, true, false,false,false}, {true, true, true,false,false}, {false, true, false,false,false}, {true, false, false,false,false}, {false,true,false,true,false}, {false,false,false,true,false}, {false,true,false,true,true}, {false,false,false,true,true},
 	} {
-		shared, pinned, legacy := fixture.shared, fixture.pinned, fixture.legacy
+		shared, pinned, legacy,partial := fixture.shared, fixture.pinned, fixture.legacy,fixture.partial
 		for _, nativeServer := range []bool{false, true} {
-			for _, application := range []bool{false, true} {
+			for _, profile := range []int{0,1,2} {
+                if profile==2 && !nativeServer { continue }
+                application:=profile!=0
 				for _, cancel := range []bool{false, true} {
-					if cancel && !(shared && pinned && !legacy && !application) {
+					if cancel && !(shared && pinned && !legacy && !application && !partial) {
 						continue
 					}
-					t.Run(fmt.Sprintf("shared=%v/pinned=%v/legacy=%v/nativeServer=%v/application=%v/cancel=%v", shared, pinned, legacy, nativeServer, application, cancel), func(t *testing.T) {
-						native, remote := liteIssuerCredentials(t, shared, liteIssuerECDSA)
-						known := shared && pinned && !legacy
+					t.Run(fmt.Sprintf("shared=%v/pinned=%v/legacy=%v/partial=%v/cached=%v/nativeServer=%v/profile=%v/cancel=%v", shared, pinned, legacy,partial, fixture.cached,nativeServer, profile, cancel), func(t *testing.T) {
+						native, remote := liteIssuerCredentialsPaths(t, shared, partial,liteIssuerECDSA)
+						known := shared && !legacy
 						dir := t.TempDir()
 						put := func(name string, bytes []byte) string {
 							p := filepath.Join(dir, name)
@@ -89,13 +92,12 @@ func TestLiteIssuerInteropNormal(t *testing.T) {
 						if known {
 							expected = "1"
 						}
+                        cachedFile:="-"
+                        if fixture.cached { cachedFile=put("cached-issuer.der",remote.Certificate.Certificate[1]) }
 						command := exec.Command(binary, key, cert, roots, role, fmt.Sprint(listener.Addr().(*net.TCPAddr).Port), expected,
 							native.Device.Tenant().String(), native.Device.UUID().String(), remote.Device.UUID().String(), func() string {
-								if pinned {
-									return issuerHintPrefix + native.IssuerDigest()
-								}
-								return "-"
-							}(), fmt.Sprint(map[bool]int{false: 0, true: 1}[application]), fmt.Sprint(map[bool]int{false: 0, true: 1}[cancel]))
+								return "4"
+							}(), fmt.Sprint(profile), fmt.Sprint(map[bool]int{false: 0, true: 1}[cancel]),cachedFile)
 						output := &synchronizedOutput{}
 						command.Stdout = output
 						command.Stderr = output
@@ -127,9 +129,9 @@ func TestLiteIssuerInteropNormal(t *testing.T) {
 						if application {
 							protocol = "wendy-app-mesh-tls/1"
 						}
+                        if profile==2 { protocol="wendy-com/2" }
 						config := &tls.Config{MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13, NextProtos: []string{protocol},
 							InsecureSkipVerify: true, ClientAuth: tls.RequireAnyClientCert, SessionTicketsDisabled: true}
-						var verifiedServer []*x509.Certificate
 						config.VerifyConnection = func(state tls.ConnectionState) error {
 							chain := make([][]byte, len(state.PeerCertificates))
 							for i, part := range state.PeerCertificates {
@@ -142,44 +144,26 @@ func TestLiteIssuerInteropNormal(t *testing.T) {
 							if got.Device != native.Device {
 								return fmt.Errorf("unexpected identity %v", got.Device)
 							}
-							verifiedServer = state.PeerCertificates
 							return nil
 						}
 						var connection *tls.Conn
 						if nativeServer {
-							if !legacy && remote.IssuerDigest() != "" {
-								config.NextProtos = append(config.NextProtos, issuerHintPrefix+remote.IssuerDigest())
-							}
-							config.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
-								if legacy {
-									return &remote.Certificate, nil
-								}
-								return clientCertificate(remote, verifiedServer), nil
-							}
-							connection = tls.Client(raw, config)
-						} else {
-							config.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-								if legacy {
-									return &remote.Certificate, nil
-								}
-								selected := serverCertificate(remote, hello)
-								t.Logf("WOS server offered=%v digest=%s presents=%d", hello.SupportedProtos, remote.IssuerDigest(), len(selected.Certificate))
-								return selected, nil
-							}
-							connection = tls.Server(raw, config)
-						}
+                            if legacy { config.GetClientCertificate=func(*tls.CertificateRequestInfo)(*tls.Certificate,error){return &remote.Certificate,nil} } else { remote.ConfigureTLSClient(config,protocol) }
+                            connection=tls.Client(raw,config)
+                        } else {
+                            if legacy { config.Certificates=[]tls.Certificate{remote.Certificate} } else { remote.ConfigureTLSServer(config) }
+                            connection=tls.Server(raw,config)
+                        }
 						if err := connection.Handshake(); err != nil {
 							t.Fatalf("Go handshake: %v\n%s", err, output.String())
 						}
 						state := connection.ConnectionState()
 						want := len(native.Certificate.Certificate)
-						if known {
-							want = 1
-						}
+						if known { want=1 } else if partial && !legacy { want=2 }
 						if len(state.PeerCertificates) != want {
 							t.Fatalf("Go received %d certs want %d\n%s", len(state.PeerCertificates), want, output.String())
 						}
-						if state.NegotiatedProtocol != protocol || state.DidResume {
+						if localmesh.ApplicationProtocol(state.NegotiatedProtocol) != protocol || state.DidResume {
 							t.Fatal("unexpected protocol/resumption")
 						}
 						message := make([]byte, 6)
