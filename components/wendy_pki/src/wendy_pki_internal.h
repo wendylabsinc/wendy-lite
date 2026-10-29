@@ -64,7 +64,7 @@ struct wendy_pki_connection
     /* Full local/remote certificate path lifetime, independent of wall-clock
      * corrections, carrier leases and caller I/O deadlines. */
     int64_t session_deadline_us;
-    /* Nonzero only for the separate, explicitly pinned mesh leaf transport. */
+    /* Nonzero only for the authenticated native carrier transport. */
     int64_t mesh_deadline_us;
     char mesh_tenant[37];
     char mesh_device[37];
@@ -117,9 +117,6 @@ static inline int pki_net_apply_time(wendy_pki_connection *c,
 }
 int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t key_size,
                     struct wendy_conf_span cert, struct wendy_conf_span roots, wendy_pki_connection **out);
-int pki_tls_mesh_connect(const char *host, unsigned port, const char *tenant,
-    const char *device, const char *router, const uint8_t *key, size_t key_size,
-    struct wendy_conf_span cert, struct wendy_conf_span roots, wendy_pki_connection **out);
 int pki_http_post(const char *url, const char *type, const char *token, const void *body,
                   size_t body_size, const uint8_t *key, size_t key_size, struct wendy_conf_span cert,
                   struct wendy_conf_span roots, uint8_t **response, size_t *response_size);
@@ -161,13 +158,7 @@ int pki_relay_grant(wendy_pki_connection *, const struct wendy_lite_trust *, int
 
 /* A NULL peer is allowed only for client streams. The verified same-tenant
  * UUID is returned in connection->mesh_peer; self identities are rejected. */
-int pki_tls_mesh_stream(const struct wendy_pki_stream*, bool server, const char* tenant,
-    const char* device, const char* peer, const uint8_t* key, size_t key_size,
-    struct wendy_conf_span cert, struct wendy_conf_span roots, wendy_pki_connection** out);
 
-int pki_tls_gateway_connect(const char* host, unsigned port, const char* tenant, const char* device,
-    const char* router, const uint8_t* key, size_t key_size, struct wendy_conf_span cert,
-    struct wendy_conf_span roots, wendy_pki_connection** out);
 int pki_tls_bound_connect(const char* host, unsigned port, const char* interface, const char* resolver,
     const uint8_t* key, size_t key_size, struct wendy_conf_span cert,
     struct wendy_conf_span roots, wendy_pki_connection** out);

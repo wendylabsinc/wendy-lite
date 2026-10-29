@@ -4,8 +4,11 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "wendy_pki.h"
-/* Native endpoint integration baseline; never enables synthetic Babel routes. */
+typedef struct _WendyComNetStatus WendyComNetStatus;
+/* Native peer lifecycle; disabled by persisted policy until configured. */
 esp_err_t wendy_net_peer_start(void);
+/* Snapshot desired/applied configuration and bounded runtime counters. */
+esp_err_t wendy_net_peer_get_status(WendyComNetStatus *);
 /* Read persisted single-radio policy before core initializes either radio. */
 esp_err_t wendy_net_peer_boot_radios(bool *ble,bool *wifi);
 /* Run at most one pending time-maintenance job on the existing server/TLS

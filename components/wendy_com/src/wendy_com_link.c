@@ -140,6 +140,15 @@ static struct wcom_link *_get_link(int link_id)
     return ch;
 }
 
+void wcom_link_reply_barrier(int link_id,uint32_t token,void (*done)(uint32_t))
+{
+    struct wcom_link *link=_get_link(link_id);
+    if(link && link->state==WCOM_LINK_STATE_CONNECTED &&
+       (link->type==LINK_TYPE_STREAM || link->type==LINK_TYPE_SOCKET) && link->ops->reply_barrier)
+        link->ops->reply_barrier(link->stream_ctx,token,done);
+    else done(token);
+}
+
 static void _fire_state_change_handlers(int link_id, enum wcom_link_state state)
 {
     struct wcom_state_change_handler *h = _state_change_handler_first;
