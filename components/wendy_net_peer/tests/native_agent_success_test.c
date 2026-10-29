@@ -36,6 +36,9 @@ void wnad_handshake_release(void *owner){if(gate_owner==owner)gate_owner=NULL;}
 int wnad_no_wait(void *ctx,bool writing,int64_t deadline){(void)ctx;(void)writing;(void)deadline;assert(0);return -1;}
 bool wendy_pki_work_submit(void (*fn)(void *),void *context)
 {if(cpu_callback)return false;cpu_callback=fn;cpu_argument=context;return true;}
+void wendy_net_peer_issuer_snapshot(struct wendy_pki_net_issuers *snapshot){memset(snapshot,0,sizeof *snapshot);}
+void wendy_pki_net_release_issuers(struct wendy_pki_net_issuers *snapshot){if(snapshot->release)snapshot->release(snapshot->context);memset(snapshot,0,sizeof *snapshot);}
+void wendy_pki_agent_add_issuers(struct wendy_pki_agent_setup *op,struct wendy_pki_net_issuers *snapshot){assert(op);wendy_pki_net_release_issuers(snapshot);}
 static void finish_cpu(void)
 {assert(cpu_callback);void (*fn)(void *)=cpu_callback;void *arg=cpu_argument;cpu_callback=NULL;cpu_argument=NULL;fn(arg);}
 esp_err_t wendy_pki_agent_begin(const struct wendy_pki_stream *bio,struct wendy_pki_agent_setup **out)

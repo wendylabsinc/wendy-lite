@@ -10,6 +10,11 @@ Wendy Net is optional and **off by default**. Use matching WendyOS and Lite
 firmware: the current binary protocol replaces the old special-purpose leaf
 protocol and does not support it.
 
+Devices automatically reuse known certificate authorities during connection
+setup. Only the leaf and missing intermediates need transmitting; no manual
+certificate configuration is needed. New or changed issuing authorities can
+make setup take longer, especially over Bluetooth.
+
 ## Choose a firmware profile
 
 The release catalog includes these profiles with Wendy Net and WASM support:

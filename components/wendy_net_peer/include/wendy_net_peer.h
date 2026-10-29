@@ -40,3 +40,7 @@ bool wendy_net_app_stop(void);
 void wendy_net_app_watch(fd_set *,fd_set *,int *,int64_t *deadline);
 esp_err_t wendy_net_peer_app_endpoint_now(const char *,uint8_t[16],uint16_t *);
 esp_err_t wendy_net_peer_agent_endpoint_now(const char *,uint8_t[16],uint16_t *);
+
+/* Actor-only immutable RAM CA loans for a following crypto-worker setup. */
+struct wendy_pki_net_issuers;
+void wendy_net_peer_issuer_snapshot(struct wendy_pki_net_issuers *);

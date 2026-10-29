@@ -214,3 +214,30 @@ void *wncs_retain(void *context,const uint8_t hash[32])
     atomic_fetch_add(&p->references,1);return p;
 }
 void wncs_release(void *part){if(part!=&baseline_token)release(part);}
+
+struct wncs_loan *wncs_issuer_loan(struct wncs_store *s,int64_t now)
+{
+    if(!s || !s->opened)return NULL;
+    struct wncs_loan *loan=NULL;
+    for(struct wncs_descriptor *chain=s->chains_first;chain;chain=chain->next){
+        if(chain->expires<=now)continue;
+        for(unsigned i=1;i<chain->chain.count;i++){
+            struct wncs_part *part=find(s,chain->chain.hashes[i]);
+            if(!part)continue;
+            bool duplicate=false;
+            for(unsigned j=0;loan && j<loan->count;j++)if(loan->entries[j]==part)duplicate=true;
+            if(duplicate)continue;
+            if(!loan){loan=wendy_net_calloc(1,sizeof *loan);if(!loan)return NULL;}
+            unsigned n=loan->count++;
+            atomic_fetch_add(&part->references,1);
+            loan->entries[n]=part;loan->parts[n]=part->data;loan->sizes[n]=part->size;
+            if(loan->count==WENDY_PKI_NET_CACHED_ISSUERS)return loan;
+        }
+    }
+    return loan;
+}
+void wncs_issuer_loan_free(void *context)
+{
+    struct wncs_loan *loan=context;
+    if(loan){wncs_unpin(loan);wendy_net_free(loan);}
+}

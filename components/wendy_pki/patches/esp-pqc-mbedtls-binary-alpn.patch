@@ -1,0 +1,89 @@
+--- a/include/mbedtls/ssl.h
++++ b/include/mbedtls/ssl.h
+@@ -1569,6 +1569,10 @@
+ 
+ #if defined(MBEDTLS_SSL_ALPN)
+     const char *const *MBEDTLS_PRIVATE(alpn_list); /*!< ordered list of protocols */
++    /* Opt-in TLS1.3-only opaque protocol names. Parallel lengths permit NUL
++     * bytes; the caller owns and bounds both arrays for the full connection.
++     * This mode is used only with session resumption disabled. */
++    const size_t *MBEDTLS_PRIVATE(wendy_alpn_lengths);
+ #endif
+ 
+ #if defined(MBEDTLS_SSL_DTLS_SRTP)
+@@ -1851,6 +1855,7 @@
+ 
+ #if defined(MBEDTLS_SSL_ALPN)
+     const char *MBEDTLS_PRIVATE(alpn_chosen);    /*!<  negotiated protocol                   */
++    size_t MBEDTLS_PRIVATE(wendy_alpn_chosen_length);
+ #endif /* MBEDTLS_SSL_ALPN */
+ 
+ #if defined(MBEDTLS_SSL_DTLS_SRTP)
+--- a/library/ssl_client.c
++++ b/library/ssl_client.c
+@@ -146,7 +146,10 @@
+          * mbedtls_ssl_conf_set_alpn_protocols() checked that the length of
+          * protocol names is less than 255.
+          */
+-        size_t protocol_name_len = strlen(*cur);
++        size_t protocol_name_len = ssl->conf->wendy_alpn_lengths != NULL ?
++            ssl->conf->wendy_alpn_lengths[cur - ssl->conf->alpn_list] : strlen(*cur);
++        if (protocol_name_len == 0 || protocol_name_len > 255)
++            return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
+ 
+         MBEDTLS_SSL_CHK_BUF_PTR(p, end, 1 + protocol_name_len);
+         *p++ = (unsigned char) protocol_name_len;
+--- a/library/ssl_tls13_client.c
++++ b/library/ssl_tls13_client.c
+@@ -163,9 +163,12 @@
+     /* Check that the server chosen protocol was in our list and save it */
+     MBEDTLS_SSL_CHK_BUF_READ_PTR(p, protocol_name_list_end, protocol_name_len);
+     for (const char *const *alpn = ssl->conf->alpn_list; *alpn != NULL; alpn++) {
+-        if (protocol_name_len == strlen(*alpn) &&
++        size_t available_len = ssl->conf->wendy_alpn_lengths != NULL ?
++            ssl->conf->wendy_alpn_lengths[alpn - ssl->conf->alpn_list] : strlen(*alpn);
++        if (protocol_name_len == available_len &&
+             memcmp(p, *alpn, protocol_name_len) == 0) {
+             ssl->alpn_chosen = *alpn;
++            ssl->wendy_alpn_chosen_length = protocol_name_len;
+             return 0;
+         }
+     }
+--- a/library/ssl_tls.c
++++ b/library/ssl_tls.c
+@@ -1529,6 +1529,7 @@
+ 
+ #if defined(MBEDTLS_SSL_ALPN)
+     ssl->alpn_chosen = NULL;
++    ssl->wendy_alpn_chosen_length = 0;
+ #endif
+ 
+ #if defined(MBEDTLS_SSL_DTLS_SRTP)
+@@ -8676,13 +8677,15 @@
+ 
+     /* Use our order of preference */
+     for (const char *const *alpn = ssl->conf->alpn_list; *alpn != NULL; alpn++) {
+-        size_t const alpn_len = strlen(*alpn);
++        size_t const alpn_len = ssl->conf->wendy_alpn_lengths != NULL ?
++            ssl->conf->wendy_alpn_lengths[alpn - ssl->conf->alpn_list] : strlen(*alpn);
+         p = protocol_name_list;
+         while (p < protocol_name_list_end) {
+             protocol_name_len = *p++;
+             if (protocol_name_len == alpn_len &&
+                 memcmp(p, *alpn, alpn_len) == 0) {
+                 ssl->alpn_chosen = *alpn;
++                ssl->wendy_alpn_chosen_length = alpn_len;
+                 return 0;
+             }
+ 
+@@ -8710,7 +8713,9 @@
+         return 0;
+     }
+ 
+-    protocol_name_len = strlen(ssl->alpn_chosen);
++    protocol_name_len = ssl->wendy_alpn_chosen_length != 0 ?
++        ssl->wendy_alpn_chosen_length : strlen(ssl->alpn_chosen);
++    if (protocol_name_len > 255) return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
+     MBEDTLS_SSL_CHK_BUF_PTR(p, end, 7 + protocol_name_len);
+ 
+     MBEDTLS_SSL_DEBUG_MSG(3, ("server side, adding alpn extension"));

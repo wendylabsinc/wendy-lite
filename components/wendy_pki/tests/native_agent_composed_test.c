@@ -34,6 +34,8 @@ esp_err_t wendy_pki_agent_begin(const struct wendy_pki_stream *bio,struct wendy_
     if(result){pki_owned_free(op);return ESP_FAIL;}
     *out=op;return ESP_OK;
 }
+void wendy_net_peer_issuer_snapshot(struct wendy_pki_net_issuers *snapshot){memset(snapshot,0,sizeof *snapshot);}
+void wendy_pki_agent_add_issuers(struct wendy_pki_agent_setup *op,struct wendy_pki_net_issuers *snapshot){pki_tls_net_add_issuers(op->connection,snapshot);}
 int wendy_pki_agent_step(struct wendy_pki_agent_setup *op)
 {
     int result=pki_tls_agent_advance(op->connection);if(!result)op->complete=true;

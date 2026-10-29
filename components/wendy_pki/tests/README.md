@@ -231,15 +231,14 @@ all potentially issued revision values and resumes time verification from the
 first durable advance. This policy does not persist foreign peer/network state.
 
 
-`pki_issuer_helpers_normal` checks the canonical sorted digest and ordinary
+`pki_issuer_helpers_normal` checks binary root-first fingerprints and ordinary
 TLS 1.3 ClientHello/Certificate message layouts. With `WENDYOS_GO_ROOT` set,
-`pki_issuer_wos_interop_normal` overlays temporary test files onto the unchanged
-WendyOS issuer helpers. Sixteen real TLS handshakes cover both carrier and app
-ALPNs, both roles, shared/non-shared issuers, no auxiliary hint and partial
-local trust; two pre-handshake cancellations cover early cleanup. All fixture
-material supplied to Lite is binary DER. Actual TLS allocator hooks and an
-explicit owner ledger require zero retained bytes/allocations/reservations on
-close. An issuer hint is an existing short ALPN identifier, not encoded payload.
+`pki_issuer_wos_interop_normal` overlays temporary tests onto actual WendyOS
+helpers. Normal handshakes cover carrier, guest VIP and native WendyCom TLS,
+both applicable roles, shared ancestors, distinct issuing CAs, root-only trust,
+cached CA loans and full-chain fallback. Pre-handshake cancellation checks early
+cleanup. All Lite fixture inputs are DER. Actual TLS allocation hooks and the
+owner ledger require zero retained bytes, allocations and reservations on close.
 
 `pki_owned_der_source_without_root_{p256,mldsa65}` supplies an ordinary local
 chain that already omits its self-signed root. Its trailing intermediate is
