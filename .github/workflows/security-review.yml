@@ -32,7 +32,7 @@ jobs:
           exit 1
         fi
     - name: Fetch immutable review history
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         ref: ${{ github.event.pull_request.base.sha }}
         path: review-history
@@ -42,22 +42,24 @@ jobs:
     - name: Load trusted local review automation
       env:
         EXPECTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        REVIEWER_BOOTSTRAP_SHA: 82c06eb45576649d016c575fd0d0ad9c64878b01
+        REVIEWER_BOOTSTRAP_SHA: e37caa4bdfa363af16a767ab591e5a0938503842
       run: |
         set -euo pipefail
+        [[ "$EXPECTED_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+        [[ "$REVIEWER_BOOTSTRAP_SHA" =~ ^[0-9a-f]{40}$ ]]
         reviewer_revision="$EXPECTED_BASE_SHA"
-        if ! git -C review-history cat-file -e "$reviewer_revision:.github/scripts/security_review.py" 2>/dev/null; then
+        if ! git -c core.hooksPath=/dev/null -C review-history cat-file -e "$reviewer_revision:.github/scripts/security_review.py" 2>/dev/null; then
           # The introducing PR's base predates these files. Use only the
           # explicitly pinned port in this repository, never the PR head.
           reviewer_revision="$REVIEWER_BOOTSTRAP_SHA"
-          if ! git -C review-history cat-file -e "$reviewer_revision^{commit}" 2>/dev/null; then
-            git -C review-history fetch --no-tags origin "$reviewer_revision"
+          if ! git -c core.hooksPath=/dev/null -C review-history cat-file -e "$reviewer_revision^{commit}" 2>/dev/null; then
+            git -c core.hooksPath=/dev/null -C review-history fetch --no-tags origin "$reviewer_revision"
           fi
         fi
         reviewer_dir="$RUNNER_TEMP/trusted-reviewer"
         mkdir -p "$reviewer_dir"
-        for filename in security_review.py security_review_test.py review_diff.py review_diff_test.py; do
-          git -C review-history show "$reviewer_revision:.github/scripts/$filename" > "$reviewer_dir/$filename"
+        for filename in security_review.py security_review_test.py review_diff.py review_diff_test.py security-review-requirements.in security-review-requirements.txt; do
+          git -c core.hooksPath=/dev/null -C review-history show "$reviewer_revision:.github/scripts/$filename" > "$reviewer_dir/$filename"
           test -s "$reviewer_dir/$filename"
         done
         echo "Using repository review automation from $reviewer_revision"
@@ -70,6 +72,8 @@ jobs:
         EXPECTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
       run: |
         set -euo pipefail
+        [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+        [[ "$EXPECTED_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
         metadata_tmp="$(mktemp)"
         diff_tmp="$(mktemp)"
         cleanup() {
@@ -85,9 +89,9 @@ jobs:
           '.state == "open" and .head.sha == $head and .base.sha == $base' "$metadata_tmp" > /dev/null
         # GitHub's diff endpoint has a 300-file limit. Use the exact reviewed
         # commits without checking out or executing any PR application code.
-        git -C review-history fetch --no-tags origin "$EXPECTED_HEAD_SHA"
-        diff_base_sha="$(git -C review-history merge-base "$EXPECTED_BASE_SHA" "$EXPECTED_HEAD_SHA")"
-        git -C review-history diff --no-ext-diff --no-textconv --find-renames \
+        git -c core.hooksPath=/dev/null -C review-history fetch --no-tags origin "$EXPECTED_HEAD_SHA"
+        diff_base_sha="$(git -c core.hooksPath=/dev/null -C review-history merge-base "$EXPECTED_BASE_SHA" "$EXPECTED_HEAD_SHA")"
+        git -c core.hooksPath=/dev/null -C review-history diff --no-ext-diff --no-textconv --find-renames \
           "$diff_base_sha" "$EXPECTED_HEAD_SHA" -- > "$diff_tmp"
 
         jq '{title, body, number, additions, deletions, changed_files, user: {login: .user.login, id: .user.id, type: .user.type}, head: {ref: .head.ref, repo: .head.repo.full_name, sha: .head.sha}}' \
@@ -96,7 +100,7 @@ jobs:
         rm -f "$metadata_tmp"
         trap - EXIT
     - name: Set up Python
-      uses: actions/setup-python@v6
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
       with:
         python-version: '3.12'
     - name: Test security review automation
@@ -125,7 +129,8 @@ jobs:
           --pr-number "$PR_NUMBER" \
           --output previous_security_review.md
     - name: Install Anthropic SDK
-      run: pip install --quiet anthropic==0.97.0
+      run: |
+        pip install --quiet --require-hashes --only-binary=:all: -r "$RUNNER_TEMP/trusted-reviewer/security-review-requirements.txt"
     - name: Run security review
       env:
         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -160,7 +165,8 @@ jobs:
             or result.get('sha256') != manifest.get('sha256')):
             raise RuntimeError('Review result does not match the complete PR input')
         with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-            output.write('complete=' + str(not result['credit_unavailable']).lower() + '\n')
+            # Emit one of two literal lines, never model-supplied output text.
+            output.write('complete=false\n' if result['credit_unavailable'] else 'complete=true\n')
         PYEOF
     - name: Prepare security review comment
       env:
@@ -197,3 +203,9 @@ jobs:
           echo '::error::No complete review: provider credits unavailable'
           exit 1
         fi
+    - name: Clean review inputs and outputs
+      if: always()
+      run: |
+        rm -f pr.diff pr_meta.json pr_current.json input_manifest.json previous_security_review.md
+        rm -f "$RUNNER_TEMP/review.md" "$RUNNER_TEMP/review-result.json" "$RUNNER_TEMP/comment.md"
+        rm -rf "$RUNNER_TEMP/trusted-reviewer"
