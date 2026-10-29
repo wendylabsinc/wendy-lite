@@ -26,6 +26,8 @@ esp_err_t wendy_pki_net_begin(const struct wendy_pki_stream *bio,bool server,con
  int result=pki_tls_net_begin(bio,true,"11111111-1111-4111-8111-111111111111","33333333-3333-4333-8333-333333333333",&prepared,prepared_roots,true,&op->connection);
  if(result){pki_owned_free(op);return ESP_FAIL;}*out=op;return ESP_OK;
 }
+void wendy_net_peer_issuer_snapshot(struct wendy_pki_net_issuers *snapshot){memset(snapshot,0,sizeof *snapshot);}
+void wendy_pki_net_add_issuers(struct wendy_pki_net_setup *op,struct wendy_pki_net_issuers *snapshot){pki_tls_net_add_issuers(op->connection,snapshot);}
 int wendy_pki_net_step(struct wendy_pki_net_setup *op){int r=pki_tls_net_advance(op->connection,true,NULL);if(!r)op->complete=true;return r;}
 wendy_pki_connection *wendy_pki_net_take(struct wendy_pki_net_setup *op,struct wendy_pki_mesh_identity *identity)
 {assert(op->complete);identity->config_generation=generation;wendy_pki_connection *c=op->connection;pki_owned_free(op);return c;}
