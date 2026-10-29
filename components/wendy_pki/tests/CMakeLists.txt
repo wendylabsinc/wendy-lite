@@ -54,7 +54,7 @@ target_link_libraries(cert_bundle PUBLIC tfpsacrypto)
 add_library(net_common STATIC ../../wendy_net_common/src/memory.c ../../wendy_net_common/src/runtime_memory.c ../../wendy_net_common/src/binary.c)
 target_include_directories(net_common PUBLIC ../../wendy_net_common/include)
 target_link_libraries(net_common PUBLIC Threads::Threads)
-add_library(pki STATIC ../src/wendy_pki_work.c ../src/wendy_pki_tls_input.c ../src/wendy_pki_public_read.c ../src/wendy_pki_public_index.c ${PKI_VERIFIER} ../src/wendy_lite_grant.c ../src/wendy_lite_authority.c ../src/wendy_pki_crypto.c ../src/wendy_operator_auth.c ../src/wendy_pki_mesh_crypto.c)
+add_library(pki STATIC ../src/wendy_pki_issuers.c ../src/wendy_pki_work.c ../src/wendy_pki_tls_input.c ../src/wendy_pki_public_read.c ../src/wendy_pki_public_index.c ${PKI_VERIFIER} ../src/wendy_lite_grant.c ../src/wendy_lite_authority.c ../src/wendy_pki_crypto.c ../src/wendy_operator_auth.c ../src/wendy_pki_mesh_crypto.c)
 target_include_directories(pki PUBLIC ../include stubs ../../wendy_conf/include ../../nanopb)
 target_compile_definitions(pki PUBLIC CONFIG_WENDY_MESH_LEAF=1 WENDY_PKI_MEMORY_HOST_SCOPE_TEST=1)
 target_link_libraries(pki PUBLIC net_common cert_bundle mbedtls mbedx509 tfpsacrypto Threads::Threads)
@@ -331,6 +331,28 @@ add_test(NAME pki_normal_der_roots COMMAND verify_test --normal-roots "${CMAKE_C
 
 add_test(NAME pki_own_boot_persistence COMMAND mesh_identity_test
     "${CMAKE_CURRENT_LIST_DIR}/fixtures/device-key.der" --normal-boot-persistence)
+
+# Optional normal interop against the canonical, unchanged WendyOS helpers.
+add_executable(issuer_interop_success_test issuer_interop_success_test.c ${PKI_TLS}
+    "${IDF_COMPONENTS}/http_parser/http_parser.c")
+target_include_directories(issuer_interop_success_test PRIVATE ../src "${IDF_COMPONENTS}/http_parser")
+target_link_libraries(issuer_interop_success_test PRIVATE pki)
+target_compile_definitions(issuer_interop_success_test PRIVATE WENDY_MESH_TEST_LOG=1)
+target_compile_options(issuer_interop_success_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+set(WENDYOS_GO_ROOT "" CACHE PATH "Optional WendyOS module root for issuer ALPN interop")
+if(WENDYOS_GO_ROOT)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME pki_issuer_wos_interop_normal COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_LIST_DIR}/issuer_wos_interop.py" --go "${GO_EXECUTABLE}"
+        --wendyos-root "${WENDYOS_GO_ROOT}" --driver "$<TARGET_FILE:issuer_interop_success_test>")
+    set_tests_properties(pki_issuer_wos_interop_normal PROPERTIES TIMEOUT 120)
+endif()
+
+add_executable(issuer_helpers_test issuer_helpers_test.c)
+target_include_directories(issuer_helpers_test PRIVATE ../src)
+target_link_libraries(issuer_helpers_test PRIVATE pki)
+target_compile_options(issuer_helpers_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME pki_issuer_helpers_normal COMMAND issuer_helpers_test)
 
 # Already-trimmed own DER sources must retain pinned non-root intermediates.
 foreach(profile p256 mldsa65)

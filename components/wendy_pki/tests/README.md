@@ -214,7 +214,7 @@ once, then drive production owned DER sources through independent full-path
 verification and streamed full-chain TLS with Go. The initiating allocation
 scope follows record reads/writes after setup returns; all charged bytes and
 reservations drain at close. The pinned root is omitted after independent trust
-verification. Issuer-omission negotiation is not enabled.
+verification. Issuer omission is optional; these baseline fixtures send the full issuer path because their trust bundle does not independently pin the presented intermediates.
 
 `pki_own_der_cache` verifies full/range public readers and repeated sessions with
 no flash writes. `tls_input_*_ownership` verifies zeroized reuse, management
@@ -238,3 +238,21 @@ certificate changes use the retained RAM counters; later timestamp proofs move
 the RAM high-water without additional flash writes. A simulated reboot skips
 all potentially issued revision values and resumes time verification from the
 first durable advance. This policy does not persist foreign peer/network state.
+
+
+`pki_issuer_helpers_normal` checks the canonical sorted digest and ordinary
+TLS 1.3 ClientHello/Certificate message layouts. With `WENDYOS_GO_ROOT` set,
+`pki_issuer_wos_interop_normal` overlays temporary test files onto the unchanged
+WendyOS issuer helpers. Sixteen real TLS handshakes cover both carrier and app
+ALPNs, both roles, shared/non-shared issuers, no auxiliary hint and partial
+local trust; two pre-handshake cancellations cover early cleanup. All fixture
+material supplied to Lite is binary DER. Actual TLS allocator hooks and an
+explicit owner ledger require zero retained bytes/allocations/reservations on
+close. An issuer hint is an existing short ALPN identifier, not encoded payload.
+
+`pki_owned_der_source_without_root_{p256,mldsa65}` supplies an ordinary local
+chain that already omits its self-signed root. Its trailing intermediate is
+pinned locally, while the independent Go peer trusts only the common root.
+The complete intermediate path must remain present; local trust does not imply
+that a remote peer already holds that intermediate. These fixtures do not
+activate issuer negotiation or require the optional WendyOS checkout.

@@ -16,7 +16,7 @@ if(CONFIG_WENDY_PKI)
             message(FATAL_ERROR "Could not import ${kind} roots as DER")
         endif()
     endforeach()
-    set(pki_backend_sources "src/wendy_pki_verify.c" "src/wendy_pki_tls.c" "src/wendy_pki_public_index.c" "src/wendy_pki_public_read.c" "src/wendy_pki_tls_input.c" "src/wendy_pki_mesh_crypto.c" "src/wendy_pki_der_cache.c" "src/wendy_pki_work.c")
+    set(pki_backend_sources "src/wendy_pki_verify.c" "src/wendy_pki_tls.c" "src/wendy_pki_issuers.c" "src/wendy_pki_public_index.c" "src/wendy_pki_public_read.c" "src/wendy_pki_tls_input.c" "src/wendy_pki_mesh_crypto.c" "src/wendy_pki_der_cache.c" "src/wendy_pki_work.c")
     idf_component_register(SRCS "src/wendy_operator_auth.c" "src/wendy_lite_authority.c" "src/wendy_pki_crypto.c" "src/wendy_lite_grant.c" "src/wendy_pki.c" ${pki_backend_sources}
         INCLUDE_DIRS "include" REQUIRES wendy_net_common mbedtls esp-pqc wendy_conf nvs_flash esp_timer esp_hw_support esp_system http_parser lwip pthread)
     foreach(kind device tsa https)
