@@ -279,7 +279,15 @@ func main() {
 				"operator-percent": "user%31", "operator-nul": "user\x00other",
 			}
 			setRawURIs(peer, tenant+"operator/"+subjects[name])
-			identityValid = false
+			// Operator subjects are opaque serialized URI text, unlike the
+			// restrictive device path grammar used by the device fixtures above.
+			switch name {
+			case "operator-at", "operator-empty-segment", "operator-dot-segment",
+				"operator-parent-segment", "operator-long-segment", "operator-percent":
+				valid = true
+			default:
+				identityValid = false
+			}
 		case "wrong-authority":
 			peer.URIs = uris(strings.Replace(operatorURI, "wendy.sh", "other.sh", 1))
 			identityValid = false
