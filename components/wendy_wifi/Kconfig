@@ -5,6 +5,25 @@ menu "Wendy WiFi Communication"
         help
             Connect to WiFi and enable advertisement via mDNS.
 
+    config WENDY_WIFI_TEST_DISABLE_POWER_SAVE
+        bool "Investigate station operation without modem power saving"
+        depends on WENDY_WIFI_ENABLED
+        default n
+        help
+            Set WIFI_PS_NONE after station startup for controlled lab trials.
+            Compare ordinary ACK/disconnect behavior with the default modem
+            sleep policy. This may increase radio power consumption; no power
+            saving claim is implied. Saved credentials are unchanged.
+
+    config WENDY_WIFI_TEST_MAX_11N
+        bool "Investigate station ACK loss with an 802.11n protocol limit"
+        depends on WENDY_WIFI_ENABLED
+        default n
+        help
+            Limit the station protocol to b/g/n on 2.4GHz and a/n on 5GHz.
+            Compare ordinary connection stability against the default HE mode
+            on the same lab AP. Saved credentials and TLS are unchanged.
+
     config WENDY_WIFI_SSID
         string "WiFi SSID"
         depends on WENDY_WIFI_ENABLED
