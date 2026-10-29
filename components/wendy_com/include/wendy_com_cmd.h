@@ -40,3 +40,6 @@ void wcom_cmd_set_sensor_link_delegate(const struct wcom_sensor_link_delegate *d
 #endif
 
 #endif
+
+/* True when a registered provider can yield a SensorLink manifest. */
+bool wcom_cmd_sensor_link_available(void);

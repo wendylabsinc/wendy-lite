@@ -391,6 +391,7 @@ static int accept_manifest(struct wnd_directory *d, const void *data, size_t siz
     if (m.revision == e->revision && e->deadline_us > 0 &&
         deadline > e->deadline_us)
         deadline = e->deadline_us;
+    if(m.revision>e->revision)e->pending_receipt=true;
     e->revision = m.revision;
     memcpy(e->body_hash, hash, 32);
     e->manifest = m;
