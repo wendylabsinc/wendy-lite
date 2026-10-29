@@ -41,9 +41,11 @@ static int io_wait(void *context,bool write,int64_t deadline)
     int64_t remain=deadline-esp_timer_get_time();if(remain<=0)return -1;
     struct pollfd p={.fd=*(int*)context,.events=write ? POLLOUT:POLLIN};return poll(&p,1,(int)(remain/1000+1));
 }
+static unsigned cached_releases;
+static void release_cached_der(void *context){cached_releases++;free(context);}
 int main(int argc,char **argv)
 {
-    assert(argc==13);signal(SIGPIPE,SIG_IGN);
+    assert(argc==14);signal(SIGPIPE,SIG_IGN);
     assert(!mbedtls_platform_set_calloc_free(wendy_net_memory_scoped_calloc,wendy_net_memory_scoped_free));
     assert(!wendy_pki_crypto_init());
     size_t kn,cn,rn;uint8_t *key=load(argv[1],&kn),*cert=load(argv[2],&cn),*roots=load(argv[3],&rn);
@@ -63,8 +65,14 @@ int main(int argc,char **argv)
     wendy_net_memory_scope_t previous=wendy_net_memory_scope_enter(&memory,WENDY_NET_MEMORY_EXTERNAL);
     wendy_pki_connection *c=NULL;
     assert(!pki_tls_net_begin(&stream,server,argv[7],argv[8],&own,(struct wendy_conf_span){roots,rn},application,&c));
+    if(strcmp(argv[13],"-")){
+        size_t size=0;uint8_t *der=load(argv[13],&size);
+        struct wendy_pki_net_issuers snapshot={.count=1,.der={der},.sizes={size},
+            .context=der,.release=release_cached_der};
+        pki_tls_net_add_issuers(c,&snapshot);assert(!snapshot.count && !snapshot.release);
+    }
     if(!strcmp(argv[10],"-"))assert(!c->issuers);
-    else assert(c->issuers && !strcmp(c->issuers->hint,argv[10]));
+    else assert(c->issuers && c->issuers->chain_count==(unsigned)atoi(argv[10]));
     if(atoi(argv[12]))goto done;
     int result=1;unsigned steps=0;
     while(result && ++steps<10000){
@@ -76,6 +84,7 @@ int main(int argc,char **argv)
     fprintf(stderr,"native completed role=%s omit=%u wire_count=%u hint=%s\n",argv[4],c->issuers && c->issuers->omit,
         c->issuers ? c->issuers->peer_presented_certificates:0,c->issuers ? c->issuers->hint:"(none)");
     assert((c->issuers && c->issuers->omit)==(atoi(argv[6])==1));
+    if(strcmp(argv[13],"-"))assert(c->issuers->peer_presented_certificates==1);
     assert(!strcmp(mbedtls_ssl_get_alpn_protocol(&c->ssl),application ? "wendy-app-mesh-tls/1":"wendy-local-mesh-ble/2"));
     printf("native role=%s omit=%u received_count=%u hint=%s\n",argv[4],c->issuers && c->issuers->omit,c->issuers ? c->issuers->peer_presented_certificates:0,c->issuers ? c->issuers->hint:"(none)");
     const char message[]="hello";size_t sent=0,received=0;char reply[sizeof message];
@@ -84,6 +93,7 @@ int main(int argc,char **argv)
     assert(!memcmp(reply,message,sizeof reply));
 done:
     wendy_pki_close(c);close(fd);
+    assert(cached_releases==(unsigned)(strcmp(argv[13],"-")!=0));
     wendy_net_memory_scope_leave(previous);
     wendy_net_memory_snapshot_t snapshot;wendy_net_memory_snapshot(&memory,&snapshot);
     fprintf(stderr,"issuer scoped peak=%zu retained=%zu allocations=%zu reservations=%zu\n",

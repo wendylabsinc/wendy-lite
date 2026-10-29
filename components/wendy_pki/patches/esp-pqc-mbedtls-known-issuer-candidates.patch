@@ -30,7 +30,7 @@
      /* In case we tried to reuse a session but it failed */
      if (ssl->session_negotiate->peer_cert != NULL) {
          mbedtls_x509_crt_free(ssl->session_negotiate->peer_cert);
-@@ -787,20 +791,27 @@
+@@ -787,20 +791,34 @@
  #endif /* MBEDTLS_SSL_CLI_C */
      }
  
@@ -42,14 +42,21 @@
 +     * undergo normal verification against the unchanged configured anchors. */
      mbedtls_x509_crt *tail=ssl->session_negotiate->peer_cert;
 -    mbedtls_x509_crt *saved[8];
-+    mbedtls_x509_crt *saved[8], *candidates[8];
++    mbedtls_x509_crt *saved[24], *candidates[24];
      size_t count=ssl->handshake->wendy_peer_issuer_count;
 +    memcpy(candidates, ssl->handshake->wendy_peer_issuer_refs,
 +           count * sizeof candidates[0]);
-+    if (count == 0 && ssl->conf->f_wendy_untrusted_issuers != NULL) {
-+        count=ssl->conf->f_wendy_untrusted_issuers(
-+            ssl->conf->p_wendy_peer_issuers, tail, candidates, 8);
-+        if (count > 8) return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
++    if (ssl->conf->f_wendy_untrusted_issuers != NULL) {
++        mbedtls_x509_crt *local[16];
++        size_t added=ssl->conf->f_wendy_untrusted_issuers(
++            ssl->conf->p_wendy_peer_issuers, tail, local, 16);
++        if (added > 16) return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
++        for (size_t i=0;i<added;i++) {
++            int duplicate=0;
++            for (size_t j=0;j<count;j++)
++                if (candidates[j]==local[i]) duplicate=1;
++            if (!duplicate) candidates[count++]=local[i];
++        }
 +    }
      if (tail && count) {
          while (tail->next) tail=tail->next;
@@ -66,7 +73,7 @@
      }
      int ret=mbedtls_ssl_verify_certificate(ssl, authmode,
                                           ssl->session_negotiate->peer_cert,
-@@ -809,7 +820,7 @@
+@@ -809,7 +827,7 @@
      if (tail && count) {
          tail->next=NULL;
          for (size_t i=0;i<count;i++)

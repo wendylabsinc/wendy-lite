@@ -1479,7 +1479,7 @@ struct wendy_pki_net_setup {
     wendy_pki_connection *connection;
     struct wendy_pki_mesh_identity identity;
     struct pki_der_source source;
-    bool source_open,application,complete;
+    bool source_open,application,complete,started;
     char expected[37];
 };
 static esp_err_t mesh_connect(const char* host, unsigned port, const char* router,
@@ -1727,9 +1727,15 @@ esp_err_t wendy_pki_net_begin(const struct wendy_pki_stream *stream,bool server,
     if(r!=ESP_OK){wendy_pki_net_dispose(op);return r;}
     *out=op;return ESP_OK;
 }
+void wendy_pki_net_add_issuers(struct wendy_pki_net_setup *op,struct wendy_pki_net_issuers *snapshot)
+{
+    if(!op || op->complete || op->started){wendy_pki_net_release_issuers(snapshot);return;}
+    pki_tls_net_add_issuers(op->connection,snapshot);
+}
 int wendy_pki_net_step(struct wendy_pki_net_setup *op)
 {
     if(!op || op->complete || !op->connection)return -1;
+    op->started=true;
     if(!wendy_conf_snapshot_current(op->identity.config_generation) || wendy_pki_reset_in_progress())return -1;
     int r=pki_tls_net_advance(op->connection,op->application,op->expected[0] ? op->expected:NULL);
     if(r)return r;
