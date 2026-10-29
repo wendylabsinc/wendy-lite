@@ -27,12 +27,14 @@ func TestLiteIssuerInteropNormal(t *testing.T) {
 	} {
 		shared, pinned, legacy,partial := fixture.shared, fixture.pinned, fixture.legacy,fixture.partial
 		for _, nativeServer := range []bool{false, true} {
-			for _, application := range []bool{false, true} {
+			for _, profile := range []int{0,1,2} {
+                if profile==2 && !nativeServer { continue }
+                application:=profile!=0
 				for _, cancel := range []bool{false, true} {
 					if cancel && !(shared && pinned && !legacy && !application && !partial) {
 						continue
 					}
-					t.Run(fmt.Sprintf("shared=%v/pinned=%v/legacy=%v/partial=%v/cached=%v/nativeServer=%v/application=%v/cancel=%v", shared, pinned, legacy,partial, fixture.cached,nativeServer, application, cancel), func(t *testing.T) {
+					t.Run(fmt.Sprintf("shared=%v/pinned=%v/legacy=%v/partial=%v/cached=%v/nativeServer=%v/profile=%v/cancel=%v", shared, pinned, legacy,partial, fixture.cached,nativeServer, profile, cancel), func(t *testing.T) {
 						native, remote := liteIssuerCredentialsPaths(t, shared, partial,liteIssuerECDSA)
 						known := shared && !legacy
 						dir := t.TempDir()
@@ -95,7 +97,7 @@ func TestLiteIssuerInteropNormal(t *testing.T) {
 						command := exec.Command(binary, key, cert, roots, role, fmt.Sprint(listener.Addr().(*net.TCPAddr).Port), expected,
 							native.Device.Tenant().String(), native.Device.UUID().String(), remote.Device.UUID().String(), func() string {
 								return "4"
-							}(), fmt.Sprint(map[bool]int{false: 0, true: 1}[application]), fmt.Sprint(map[bool]int{false: 0, true: 1}[cancel]),cachedFile)
+							}(), fmt.Sprint(profile), fmt.Sprint(map[bool]int{false: 0, true: 1}[cancel]),cachedFile)
 						output := &synchronizedOutput{}
 						command.Stdout = output
 						command.Stderr = output
@@ -127,6 +129,7 @@ func TestLiteIssuerInteropNormal(t *testing.T) {
 						if application {
 							protocol = "wendy-app-mesh-tls/1"
 						}
+                        if profile==2 { protocol="wendy-com/2" }
 						config := &tls.Config{MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13, NextProtos: []string{protocol},
 							InsecureSkipVerify: true, ClientAuth: tls.RequireAnyClientCert, SessionTicketsDisabled: true}
 						config.VerifyConnection = func(state tls.ConnectionState) error {

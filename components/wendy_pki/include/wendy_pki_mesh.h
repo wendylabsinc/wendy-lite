@@ -237,6 +237,8 @@ struct wendy_pki_agent_info {
     int64_t session_deadline_us;
 };
 esp_err_t wendy_pki_agent_begin(const struct wendy_pki_stream *,struct wendy_pki_agent_setup **);
+/* Worker consumes an actor snapshot before the first agent step. */
+void wendy_pki_agent_add_issuers(struct wendy_pki_agent_setup *,struct wendy_pki_net_issuers *);
 int wendy_pki_agent_step(struct wendy_pki_agent_setup *);
 wendy_pki_connection *wendy_pki_agent_take(struct wendy_pki_agent_setup *,struct wendy_pki_agent_info *);
 void wendy_pki_agent_dispose(struct wendy_pki_agent_setup *);

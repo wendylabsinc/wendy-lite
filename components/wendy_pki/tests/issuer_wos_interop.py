@@ -23,7 +23,7 @@ def run():
     if (module / 'go/internal/agent/bleprovider').is_dir():
         module = module / 'go'
     package = module / 'internal/agent/bleprovider'
-    helper_path = module / 'internal/agent/localmesh/tls_issuers.go'
+    helper_path = module / 'internal/shared/meshalpn/config.go'
     fixture_path = package / 'tls_issuers_linux_test.go'
     helper = helper_path.read_text()
     fixture = fixture_path.read_text()

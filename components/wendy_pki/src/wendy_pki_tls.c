@@ -2108,6 +2108,8 @@ static int accept_peer(int fd, const uint8_t *key, size_t key_size, struct wendy
     stage="TLS configuration";
     if (configure(c, 1, key, key_size, cert, roots, owned, principal, verify_at,
                   owned!=NULL,owned && owned->read_der)) goto fail;
+    static const char *const wendycom_alpn[]={"wendy-com/2",NULL};
+    if(configure_mesh_alpn(c,wendycom_alpn))goto fail;
     /* Parsed DER anchors borrow the owned trust bundle through handshake. */
     int r;
     stage="TLS handshake";
@@ -2335,6 +2337,8 @@ int pki_tls_agent_begin(const struct wendy_pki_stream *stream,const char *tenant
         owned,principal,owned->verify_at,true,owned->read_der!=NULL);
     /* Native WendyCom is not an app/carrier ALPN and can accept a device or
      * operator. Do not use finish_mesh or reinterpret its peer as a UUID. */
+    static const char *const wendycom_alpn[]={"wendy-com/2",NULL};
+    if(!r)r=configure_mesh_alpn(c,wendycom_alpn);
     release_identity_input(owned);
     if(r){wendy_pki_close(c);return -1;}
     *out=c;return 0;
