@@ -1,4 +1,4 @@
-# Review large PRs in complete batches using immutable, hash-verified shared automation.
+# Review large PRs in complete batches using repository-owned automation.
 # Trigger scope, model and post-only finding policy are unchanged.
 name: AI Security Review
 'on':
@@ -22,28 +22,6 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-    - name: Obtain immutable trusted review automation
-      run: |
-        set -euo pipefail
-        reviewer_dir="$RUNNER_TEMP/trusted-reviewer"
-        mkdir -p "$reviewer_dir"
-        # Fetch public, immutable automation without sending repository credentials.
-        # Verify every byte before import; no PR application code is executed.
-        curl -q --fail --location --silent --show-error --retry 3 \
-          'https://raw.githubusercontent.com/wendylabsinc/WendyOS/fc767c7d44da07ff4b14732b98059e1acd8e27b0/.github/scripts/security_review.py' --output "$reviewer_dir/security_review.py"
-        curl -q --fail --location --silent --show-error --retry 3 \
-          'https://raw.githubusercontent.com/wendylabsinc/WendyOS/fc767c7d44da07ff4b14732b98059e1acd8e27b0/.github/scripts/review_diff.py' --output "$reviewer_dir/review_diff.py"
-        curl -q --fail --location --silent --show-error --retry 3 \
-          'https://raw.githubusercontent.com/wendylabsinc/WendyOS/fc767c7d44da07ff4b14732b98059e1acd8e27b0/.github/scripts/security_review_test.py' --output "$reviewer_dir/security_review_test.py"
-        curl -q --fail --location --silent --show-error --retry 3 \
-          'https://raw.githubusercontent.com/wendylabsinc/WendyOS/fc767c7d44da07ff4b14732b98059e1acd8e27b0/.github/scripts/review_diff_test.py' --output "$reviewer_dir/review_diff_test.py"
-        cd "$reviewer_dir"
-        sha256sum --check <<'HASHES'
-        ad8d0686509e34c6625fd1af8416f2066b3179a1f9b1a81e34ce29cf4af18f6e  security_review.py
-        9a629c6b598e1d4951f12041657a7fdfef6964d0dc8d542d9a2f38ff96cdac92  review_diff.py
-        97d894c3ba04ab29b62449a100a41d462b7faf1f6f1b69553a678f2fb8fddaba  security_review_test.py
-        7aba252332ce5a83ddb58f4b825b4018051473aa51f82b5518889d2329871772  review_diff_test.py
-        HASHES
     - name: Verify origin repo
       env:
         HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
@@ -61,6 +39,28 @@ jobs:
         fetch-depth: 0
         sparse-checkout: .github/scripts
         persist-credentials: false
+    - name: Load trusted local review automation
+      env:
+        EXPECTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        REVIEWER_BOOTSTRAP_SHA: 82c06eb45576649d016c575fd0d0ad9c64878b01
+      run: |
+        set -euo pipefail
+        reviewer_revision="$EXPECTED_BASE_SHA"
+        if ! git -C review-history cat-file -e "$reviewer_revision:.github/scripts/security_review.py" 2>/dev/null; then
+          # The introducing PR's base predates these files. Use only the
+          # explicitly pinned port in this repository, never the PR head.
+          reviewer_revision="$REVIEWER_BOOTSTRAP_SHA"
+          if ! git -C review-history cat-file -e "$reviewer_revision^{commit}" 2>/dev/null; then
+            git -C review-history fetch --no-tags origin "$reviewer_revision"
+          fi
+        fi
+        reviewer_dir="$RUNNER_TEMP/trusted-reviewer"
+        mkdir -p "$reviewer_dir"
+        for filename in security_review.py security_review_test.py review_diff.py review_diff_test.py; do
+          git -C review-history show "$reviewer_revision:.github/scripts/$filename" > "$reviewer_dir/$filename"
+          test -s "$reviewer_dir/$filename"
+        done
+        echo "Using repository review automation from $reviewer_revision"
     - name: Fetch PR metadata and diff
       env:
         GH_TOKEN: ${{ github.token }}
