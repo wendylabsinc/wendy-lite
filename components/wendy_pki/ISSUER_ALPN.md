@@ -1,37 +1,43 @@
-# Optional exact-anchor issuer omission
+# Known CA certificates during TLS setup
 
-The carrier and application service ALPNs remain unchanged. A client may also
-advertise `wendy-net-issuers/<digest>`, naming the sorted hashes of its presented
-non-leaf certificates. Every named certificate must already be an exact,
-independently provisioned local trust anchor. No hint is advertised when that
-condition is absent, hashing fails, or optional state cannot be allocated.
+Fresh carrier, guest VIP and native WendyCom TLS handshakes transmit the leaf
+and only the missing CA certificates. Locally held intermediates remain untrusted
+path candidates: ordinary verification must still reach the configured anchors
+and enforce the original identity, tenant and validity checks.
 
-A server omits its issuers only when the client's offered digest exactly
-matches its own eligible issuer set. A client omits its issuers only after
-verifying the server's certificate, CertificateVerify and Finished, observing
-that the server sent one certificate, and matching its issuer name and authority
-key identifier to the client's own leaf. The server still selects the real
-service ALPN. Every peer undergoes the ordinary complete trust, identity and
-validity checks; the hint adds no trust material.
+The wire format matches WendyOS. Each application protocol variant is:
 
-Wire certificate count is retained before the TLS library compacts its parsed
-peer chain. Own certificates continue to stream as binary DER through the
-existing verified source callback; omission changes only where that callback
-reports the end of its chain. Hint state and its ALPN pointers belong to one TLS
-connection and are freed on both cancelled and established closes. There is no
-new global cache, task, flash write or OFF allocation.
+```
+application protocol | 00 57 43 49 01 | CA fingerprints
+```
 
-Automatic tail omission is limited to a provably self-signed CA exactly in local
-trust. A non-root intermediate stays in an already-root-omitted source even
-when it is locally pinned: another peer may trust only the common root.
+A fingerprint is the first 16 bytes of SHA-256 over the complete certificate DER.
+The client's own path is ordered root first through its intermediates, excluding
+the leaf. It offers the longest prefix first, shorter prefixes, then the ordinary
+application protocol. The server selects the longest prefix it holds, explicitly
+acknowledging which client CAs it can omit. The server independently omits its own
+CA certificates advertised by the client. Paths contain at most eight CA hashes;
+each ALPN name stays within 255 bytes.
 
-The digest uses WendyOS's existing base64url representation of 16 hash bytes
-(22 characters). This is an ALPN identifier, not encoded certificate or payload
-material. Actual certificate, manifest and application bytes remain binary.
+Other resident cached CAs use auxiliary names beginning with `wendy-net-cached`,
+a zero byte and up to eight concatenated fingerprints. These names are never
+selected as an application. Lite advertises at most 24 available CA hashes,
+including its own material, with at most eight loans from the existing RAM
+certificate store. There is no base64 encoding.
 
-Current lab enrollment lacks the exact shared issuer anchors required for this
-optimization, so no radio timing or RAM saving is claimed for those boards.
-Normal host interop covers both TLS roles and both service ALPNs, shared issuers,
-different issuer branches, an ordinary peer without the hint, partial local
-trust, and cancellation before handshake. Fixtures use direct DER files and
-verify complete ledger drain with the actual TLS allocation hooks installed.
+The actor loans immutable resident CA bytes before handing a TLS context to the
+crypto worker. The TLS library parses cached DER without copying it, and the
+store cannot evict an actively loaned part. Loans survive cache shutdown and
+release after verification or connection cleanup. Missing or evicted blobs are
+not fetched just to prepare a handshake. Optional allocation failure uses an
+ordinary certificate exchange.
+
+Own certificates continue to stream as DER through the verified source callback.
+A partial chain can omit common parents while retaining a different final issuing
+CA. Nothing assumes that an entire tenant has the same issuing path. State and
+ALPN buffers belong to the connection and drain on cancellation or close; there
+are no new flash writes or allocations while Wendy Net is off.
+
+The tracked Mbed TLS patches support opaque ALPN names with explicit lengths and
+untrusted issuer candidates. They preserve normal certificate validation. Lite
+TLS session resumption remains disabled; see the separate resumption follow-up.
