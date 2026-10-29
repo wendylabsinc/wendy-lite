@@ -2,6 +2,11 @@
 #define CONFIG_WENDY_DEVICE_NAME_BUF_SIZE 64
 #define CONFIG_WENDY_DEVICE_NAME_DEFAULT_PREFIX "wendy"
 #include "../../wendy_conf/src/wendy_conf.c"
+/* Keep persistence tests over opaque encoded fixtures without exposing a
+ * legacy encoded public API. Real-certificate tests below check DER adoption. */
+static esp_err_t test_copy_enrollment_encoded(WendyConfEnrollment *config,
+    struct wendy_conf_enrollment_data *data)
+{return copy_enrollment(config,data,ENROLLMENT_ALL,false);}
 #include "pb_encode.h"
 #include <assert.h>
 
@@ -365,7 +370,7 @@ static void test_retired_credentials(void)
     assert(wendy_conf_has_enrollment());
     WendyConfEnrollment cfg;
     struct wendy_conf_enrollment_data data;
-    assert(wendy_conf_copy_enrollment(&cfg, &data) == ESP_ERR_INVALID_STATE);
+    assert(test_copy_enrollment_encoded(&cfg, &data) == ESP_ERR_INVALID_STATE);
     assert(!data.storage);
     unsigned erases = erase_calls, writes = write_calls;
     assert(wendy_conf_write(retired, sizeof retired, WENDY_CONF_WRITE_MODE_REPLACE) == ESP_ERR_INVALID_ARG);
@@ -448,13 +453,13 @@ static void test_der_snapshots(const char *fixtures)
     _load_conf();
     WendyConfEnrollment cfg;
     struct wendy_conf_enrollment_data encoded, full, device, time[4], next;
-    assert(wendy_conf_copy_enrollment(&cfg, &encoded) == ESP_OK);
+    assert(test_copy_enrollment_encoded(&cfg, &encoded) == ESP_OK);
     assert_span(encoded.device_roots, pem, pem_size);
     assert_span(encoded.tsa_roots, pem, pem_size);
     assert_span(encoded.https_roots, pem, pem_size);
     assert_span(encoded.signed_time, "seed", 4);
     assert(!encoded.generation);
-    assert(wendy_conf_copy_enrollment_der(&cfg, &full) == ESP_OK);
+    assert(wendy_conf_copy_enrollment(&cfg, &full) == ESP_OK);
     assert(cfg.provision_trust && !cfg.device_roots.arg && !cfg.signed_time.arg);
     assert_span(full.device_roots, der, der_size);
     assert_span(full.tsa_roots, der, der_size);
@@ -518,7 +523,7 @@ static void test_der_snapshots(const char *fixtures)
     _load_conf();
     assert(wendy_conf_copy_enrollment_der(&cfg, &next) == ESP_ERR_INVALID_ARG);
     assert(!next.storage && !next.generation && !next.device_roots.data);
-    assert(wendy_conf_copy_enrollment(&cfg, &next) == ESP_OK);
+    assert(test_copy_enrollment_encoded(&cfg, &next) == ESP_OK);
     assert_span(next.device_roots, der, der_size - 1);
     free(next.storage);
 
@@ -554,11 +559,11 @@ int main(int argc, char **argv)
     assert(!public_tenant[0] && !public_device[0]);
     WendyConfEnrollment cfg;
     struct wendy_conf_enrollment_data first, next;
-    assert(wendy_conf_copy_enrollment(&cfg, &first) == ESP_ERR_INVALID_STATE);
+    assert(test_copy_enrollment_encoded(&cfg, &first) == ESP_ERR_INVALID_STATE);
     assert(!first.storage);
     assert(write_config("first-root", 10, "seed", 4) == ESP_OK);
     _load_conf(); /* Simulate restart and remapping the persisted partition. */
-    assert(wendy_conf_copy_enrollment(&cfg, &first) == ESP_OK);
+    assert(test_copy_enrollment_encoded(&cfg, &first) == ESP_OK);
     wendy_conf_enrollment_identity(public_tenant, public_device);
     assert(!strcmp(public_tenant, cfg.tenant_id) && !strcmp(public_device, cfg.device_id));
     assert(cfg.provision_trust && !cfg.device_roots.arg && !cfg.signed_time.arg);
@@ -571,7 +576,7 @@ int main(int argc, char **argv)
     assert(!public_tenant[0] && !public_device[0]);
     assert(!memcmp(first.device_roots.data, "first-root", 10));
     _load_conf();
-    assert(wendy_conf_copy_enrollment(&cfg, &next) == ESP_OK);
+    assert(test_copy_enrollment_encoded(&cfg, &next) == ESP_OK);
     assert(next.device_roots.size == 11 && !memcmp(next.device_roots.data, "second-root", 11));
     free(first.storage);
     free(next.storage);
@@ -596,7 +601,7 @@ int main(int argc, char **argv)
     /* A second upload before reboot must not erase the now-unmapped identity. */
     assert(wendy_conf_write(update, update_stream.bytes_written, WENDY_CONF_WRITE_MODE_WIFI_ONLY) == ESP_ERR_INVALID_STATE);
     _load_conf();
-    assert(wendy_conf_copy_enrollment(&cfg, &next) == ESP_OK);
+    assert(test_copy_enrollment_encoded(&cfg, &next) == ESP_OK);
     assert(cfg.provision_trust && next.device_roots.size == 11);
     free(next.storage);
     uint8_t *large = calloc(1, 60000);
@@ -606,12 +611,12 @@ int main(int argc, char **argv)
     /* Rejected uploads leave the previous enrollment intact. */
     _invalidate_cache();
     _load_conf();
-    assert(wendy_conf_copy_enrollment(&cfg, &next) == ESP_OK);
+    assert(test_copy_enrollment_encoded(&cfg, &next) == ESP_OK);
     assert(next.device_roots.size == 11 && !memcmp(next.device_roots.data, "second-root", 11));
     free(next.storage);
     /* Corrupted/oversized persisted data still fails the read-side bound. */
     s_cache.device_roots.size = WENDY_CONF_MAX_TRUST_BUNDLE + 1;
-    assert(wendy_conf_copy_enrollment(&cfg, &next) == ESP_ERR_INVALID_SIZE && !next.storage);
+    assert(test_copy_enrollment_encoded(&cfg, &next) == ESP_ERR_INVALID_SIZE && !next.storage);
     free(large);
     test_clear_enrollment();
     test_clear_enrollment_journal();
