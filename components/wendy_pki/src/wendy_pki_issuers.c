@@ -174,3 +174,16 @@ bool pki_certificate_message_last(const uint8_t *p,size_t left,const uint8_t **l
     }
     return *last!=NULL;
 }
+
+size_t pki_certificate_message_der_bytes(const uint8_t *p,size_t left)
+{
+    if(!pki_certificate_message_count(p,left) || !message_body(&p,&left,11))return 0;
+    size_t context=*p;if(!skip(&p,&left,1+context) || !skip(&p,&left,3))return 0;
+    size_t bytes=0;
+    while(left){
+        if(left<3)return 0;
+        size_t n=u24(p);if(!skip(&p,&left,3) || !skip(&p,&left,n) || left<2)return 0;
+        bytes+=n;n=u16(p);if(!skip(&p,&left,2+n))return 0;
+    }
+    return bytes;
+}

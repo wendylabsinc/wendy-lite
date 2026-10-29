@@ -81,6 +81,18 @@ static void release_presented_chain(wendy_pki_connection *c)
 {
     c->config.MBEDTLS_PRIVATE(f_wendy_certificate_der)=NULL;
     c->config.MBEDTLS_PRIVATE(p_wendy_certificate_der)=NULL;
+#if ESP_PLATFORM && CONFIG_WENDY_NET_PEER
+    if(c->presented_chain && c->issuers && mbedtls_ssl_is_handshake_over(&c->ssl)){
+        unsigned sent=0;size_t bytes=0;
+        for(unsigned i=0;i<c->presented_chain->count;i++){
+            if(i && (c->issuers->omit_mask&(1u<<i)))continue;
+            sent++;bytes+=c->presented_chain->part[i].size;
+        }
+        ESP_LOGI("wendy_pki","TLS certificate exchange: role=%s sent=%u DERbytes=%u received=%u DERbytes=%u",
+            c->config.MBEDTLS_PRIVATE(endpoint)==MBEDTLS_SSL_IS_SERVER ? "server":"client",
+            sent,(unsigned)bytes,c->issuers->peer_presented_certificates,(unsigned)c->issuers->peer_der_bytes);
+    }
+#endif
     pki_owned_free(c->presented_chain);c->presented_chain=NULL;
 }
 /* Callback lives only within the synchronous TLS constructor. Hash-check the
@@ -251,6 +263,7 @@ static void peer_chain_begin(void *context,const unsigned char *message,size_t s
     if(!c || !c->issuers)return;
     unsigned count=pki_certificate_message_count(message,size);
     c->issuers->peer_presented_certificates=count;
+    c->issuers->peer_der_bytes=pki_certificate_message_der_bytes(message,size);
     const uint8_t *last=NULL;size_t length=0;
     if(!pki_certificate_message_last(message,size,&last,&length))return;
     mbedtls_x509_crt *top=pki_owned_calloc(1,sizeof *top);if(!top)return;

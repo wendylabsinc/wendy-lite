@@ -18,6 +18,7 @@ struct pki_issuer_state {
     size_t hint_length;
     unsigned char cached_hint[3][17+PKI_ISSUER_CHAIN_MAX*16];
     unsigned peer_presented_certificates;
+    size_t peer_der_bytes;
     bool omit;
     unsigned known_count;
     struct mbedtls_x509_crt *known[16], *owned[16];
@@ -38,3 +39,5 @@ bool pki_issuer_peer_has(const uint8_t *,size_t,const char *,const uint8_t[16]);
 bool pki_issuer_ack_has(const uint8_t *,size_t,const char *,const uint8_t[16]);
 
 bool pki_certificate_message_last(const uint8_t *,size_t,const uint8_t **,size_t *);
+
+size_t pki_certificate_message_der_bytes(const uint8_t *,size_t);

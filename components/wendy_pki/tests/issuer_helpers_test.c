@@ -44,6 +44,7 @@ int main(void)
             message[at++]=0x30;message[at++]=1;message[at++]=0;message[at++]=0;message[at++]=0;}
         size_t length=at-8;message[5]=(uint8_t)(length>>16);message[6]=(uint8_t)(length>>8);message[7]=(uint8_t)length;
         header(message,11,at-4);assert(pki_certificate_message_count(message,at)==n);
+        assert(pki_certificate_message_der_bytes(message,at)==3*n);
     }
     return 0;
 }
