@@ -411,6 +411,10 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
         return;
     }
     switch (cmd->which_params) {
+    case WendyComCommand_net_topology_tag:
+        resp->which_data=WendyComResponse_net_topology_tag;
+        resp->result=wcom_cmd_net_topology(&cmd->params.net_topology,&resp->data.net_topology);
+        break;
     case WendyComCommand_net_get_tag:
         resp->which_data=WendyComResponse_net_status_tag;
         resp->result=wcom_cmd_net_get(&resp->data.net_status);
@@ -532,6 +536,10 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
     }
 
     _send_message(link, &out);
+    /* _send_message finishes both protobuf passes before returning, including
+     * sizing/allocation/encoding failures. Async transport owns encoded bytes. */
+    if(resp->which_data==WendyComResponse_net_topology_tag)
+        wcom_cmd_net_topology_release(&resp->data.net_topology);
 }
 
 // Host -> device events carry no response, so every non-reply path must
