@@ -141,6 +141,7 @@ For a specific board, select its overlay from `boards/` before `set-target`:
 ```bash
 idf.py @boards/waveshare_lcd_4b.cfg          set-target esp32p4  # Waveshare ESP32-P4-WIFI6-Touch-LCD-4B (32 MB flash)
 idf.py @boards/dfr1172_firebeetle.cfg        set-target esp32p4  # DFRobot FireBeetle 2 ESP32-P4 (DFR1172) (16 MB flash)
+idf.py @boards/dfr1172_firebeetle_native.cfg set-target esp32p4  # DFRobot FireBeetle 2 ESP32-P4 (DFR1172) (16 MB flash, OTA app slots)
 idf.py @boards/seeed_xiao_esp32s3_native.cfg set-target esp32s3  # Seeed Studio XIAO ESP32S3 (8 MB flash, OTA app slots)
 idf.py @boards/m5_stamp_s3_native.cfg        set-target esp32s3  # M5Stack StampS3 (8 MB flash, no PSRAM, OTA app slots)
 ```
@@ -393,6 +394,9 @@ idf.py @boards/waveshare_lcd_4b.cfg set-target esp32p4
 
 # DFRobot DFR1172 FireBeetle 2 ESP32-P4 (16 MB flash, headless)
 idf.py @boards/dfr1172_firebeetle.cfg set-target esp32p4
+
+# Same board, native apps only (no WASM, two OTA app slots)
+idf.py @boards/dfr1172_firebeetle_native.cfg set-target esp32p4
 ```
 
 #### Other P4 boards
