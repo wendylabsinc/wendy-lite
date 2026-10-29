@@ -1,0 +1,77 @@
+--- a/include/mbedtls/ssl.h
++++ b/include/mbedtls/ssl.h
+@@ -1377,6 +1377,16 @@
+     int (*MBEDTLS_PRIVATE(f_wendy_certificate_der))(void *, unsigned, size_t,
+                                                    unsigned char *, size_t);
+     void *MBEDTLS_PRIVATE(p_wendy_certificate_der);
++#if defined(MBEDTLS_X509_CRT_PARSE_C)
++    /* Optional connection-owned untrusted intermediates. The begin callback
++     * may release speculative candidates before a full wire chain is parsed.
++     * Candidate objects survive validation/restarts and are never anchors. */
++    void (*MBEDTLS_PRIVATE(f_wendy_peer_chain_begin))(void *,
++                                                      const unsigned char *, size_t);
++    size_t (*MBEDTLS_PRIVATE(f_wendy_untrusted_issuers))(void *,
++                          const mbedtls_x509_crt *, mbedtls_x509_crt **, size_t);
++    void *MBEDTLS_PRIVATE(p_wendy_peer_issuers);
++#endif
+     /* needed even with renego disabled for LEGACY_BREAK_HANDSHAKE          */
+     uint8_t MBEDTLS_PRIVATE(allow_legacy_renegotiation); /*!< MBEDTLS_LEGACY_XXX   */
+ #if defined(MBEDTLS_SSL_MAX_FRAGMENT_LENGTH)
+--- a/library/ssl_tls13_generic.c
++++ b/library/ssl_tls13_generic.c
+@@ -564,6 +564,10 @@
+         return MBEDTLS_ERR_SSL_DECODE_ERROR;
+     }
+ 
++    if (ssl->conf->f_wendy_peer_chain_begin != NULL)
++        ssl->conf->f_wendy_peer_chain_begin(ssl->conf->p_wendy_peer_issuers,
++                                           ssl->in_msg, ssl->in_hslen);
++
+     /* In case we tried to reuse a session but it failed */
+     if (ssl->session_negotiate->peer_cert != NULL) {
+         mbedtls_x509_crt_free(ssl->session_negotiate->peer_cert);
+@@ -787,20 +791,27 @@
+ #endif /* MBEDTLS_SSL_CLI_C */
+     }
+ 
+-    /* The connection exclusively owns its local CA objects. Temporarily link
+-     * only exact wire matches as untrusted candidates; never append omitted or
+-     * modified intermediates from the rest of the configured local chain. */
++    /* Temporarily borrow connection-owned intermediates as untrusted path
++     * candidates. Wire matches and explicitly supplied local candidates both
++     * undergo normal verification against the unchanged configured anchors. */
+     mbedtls_x509_crt *tail=ssl->session_negotiate->peer_cert;
+-    mbedtls_x509_crt *saved[8];
++    mbedtls_x509_crt *saved[8], *candidates[8];
+     size_t count=ssl->handshake->wendy_peer_issuer_count;
++    memcpy(candidates, ssl->handshake->wendy_peer_issuer_refs,
++           count * sizeof candidates[0]);
++    if (count == 0 && ssl->conf->f_wendy_untrusted_issuers != NULL) {
++        count=ssl->conf->f_wendy_untrusted_issuers(
++            ssl->conf->p_wendy_peer_issuers, tail, candidates, 8);
++        if (count > 8) return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
++    }
+     if (tail && count) {
+         while (tail->next) tail=tail->next;
+         for (size_t i=0;i<count;i++) {
+-            mbedtls_x509_crt *ca=ssl->handshake->wendy_peer_issuer_refs[i];
++            mbedtls_x509_crt *ca=candidates[i];
+             saved[i]=ca->next;
+-            ca->next=i+1<count ? ssl->handshake->wendy_peer_issuer_refs[i+1] : NULL;
+-        }
+-        tail->next=ssl->handshake->wendy_peer_issuer_refs[0];
++            ca->next=i+1<count ? candidates[i+1] : NULL;
++        }
++        tail->next=candidates[0];
+     }
+     int ret=mbedtls_ssl_verify_certificate(ssl, authmode,
+                                          ssl->session_negotiate->peer_cert,
+@@ -809,7 +820,7 @@
+     if (tail && count) {
+         tail->next=NULL;
+         for (size_t i=0;i<count;i++)
+-            ssl->handshake->wendy_peer_issuer_refs[i]->next=saved[i];
++            candidates[i]->next=saved[i];
+     }
+     if (ret==0) {
+         memset(ssl->handshake->wendy_peer_issuer_refs,0,

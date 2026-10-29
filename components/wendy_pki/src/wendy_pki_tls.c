@@ -162,37 +162,105 @@ static int issuer_identity(const mbedtls_x509_crt *leaf,uint8_t output[32])
     return wendy_pki_sha256(parts,sizeof parts,output);
 }
 
+/* Roots already parsed by this connection can be borrowed. Missing own
+ * intermediates have one hash-pinned DER allocation and a no-copy parse, all
+ * charged to the initiating mesh owner. No global or persistent peer cache. */
+static void release_known_issuers(struct pki_issuer_state *state)
+{
+    if(!state)return;
+    for(unsigned i=0;i<7;i++){
+        if(state->owned[i]){
+            mbedtls_x509_crt_free(state->owned[i]);
+            pki_owned_free(state->owned[i]);state->owned[i]=NULL;
+        }
+        pki_owned_free(state->der[i]);state->der[i]=NULL;state->known[i]=NULL;
+    }
+    state->known_count=0;
+}
+
 static struct pki_issuer_state *prepare_issuer_hint(wendy_pki_connection *c)
 {
     struct pki_presented_chain *source=c->presented_chain;
     uint8_t hashes[7][32],identity[32];
     if(!source || source->count<2 || source->count>8 ||
        issuer_identity(&c->certificate,identity))return NULL;
+    struct pki_issuer_state *state=pki_owned_calloc(1,sizeof *state);
+    if(!state)return NULL;
     for(unsigned i=1;i<source->count;i++){
-        bool pinned=false;
-        for(const mbedtls_x509_crt *root=&c->roots;root && root->raw.len;root=root->next){
+        unsigned n=i-1;
+        for(mbedtls_x509_crt *root=&c->roots;root && root->raw.len;root=root->next){
             uint8_t hash[32];
             if(root->raw.len==source->part[i].size &&
                !wendy_pki_sha256(root->raw.p,root->raw.len,hash) &&
-               !memcmp(hash,source->part[i].hash,32)){pinned=true;break;}
+               !memcmp(hash,source->part[i].hash,32)){state->known[n]=root;break;}
         }
-        if(!pinned)return NULL;
-        memcpy(hashes[i-1],source->part[i].hash,32);
+        if(!state->known[n]){
+            size_t size=0;uint8_t hash[32];
+            int loaded=-1;
+            if(source->read)loaded=source->read(source->context,i,&state->der[n],&size);
+            else if(source->read_range){
+                size=source->part[i].size;state->der[n]=pki_owned_malloc(size);
+                if(state->der[n] && source->read_range(source->context,i,0,
+                   state->der[n],size,source->part[i].hash)==(int)size)loaded=1;
+            }
+            if(loaded!=1 || !state->der[n] || size!=source->part[i].size ||
+               wendy_pki_sha256(state->der[n],size,hash) ||
+               memcmp(hash,source->part[i].hash,32))goto fallback;
+            state->owned[n]=pki_owned_calloc(1,sizeof *state->owned[n]);
+            if(!state->owned[n])goto fallback;
+            mbedtls_x509_crt_init(state->owned[n]);
+            if(mbedtls_x509_crt_parse_der_nocopy(state->owned[n],state->der[n],size) ||
+               !state->owned[n]->MBEDTLS_PRIVATE(ca_istrue))goto fallback;
+            state->known[n]=state->owned[n];
+        }
+        memcpy(hashes[n],source->part[i].hash,32);state->known_count++;
     }
-    /* Optional optimization: admission failure preserves ordinary full-chain
-     * TLS, with no allocation or persistent global cache while mesh is off. */
-    struct pki_issuer_state *state=pki_owned_calloc(1,sizeof *state);
-    if(!state)return NULL;
-    if(pki_issuer_hint(hashes,source->count-1,state->hint)){pki_owned_free(state);return NULL;}
+    if(pki_issuer_hint(hashes,source->count-1,state->hint))goto fallback;
     memcpy(state->own_issuer_identity,identity,32);return state;
+fallback:
+    /* Admission failure preserves the ordinary full-chain handshake. */
+    release_known_issuers(state);pki_owned_free(state);return NULL;
+}
+
+/* Called before the incoming message allocates/parses a full remote chain.
+ * Drop speculative own intermediates in that case, avoiding two live chains. */
+static void peer_chain_begin(void *context,const unsigned char *message,size_t size)
+{
+    wendy_pki_connection *c=context;
+    if(!c || !c->issuers)return;
+    unsigned count=pki_certificate_message_count(message,size);
+    c->issuers->peer_presented_certificates=count;
+    if(count!=1)release_known_issuers(c->issuers);
+}
+static size_t known_peer_issuers(void *context,const mbedtls_x509_crt *peer,
+    mbedtls_x509_crt **candidates,size_t capacity)
+{
+    wendy_pki_connection *c=context;uint8_t identity[32];
+    if(!c || !c->issuers)return 0;
+    if(c->issuers->peer_presented_certificates!=1 ||
+       issuer_identity(peer,identity) ||
+       memcmp(identity,c->issuers->own_issuer_identity,32)){
+        release_known_issuers(c->issuers);return 0;
+    }
+    size_t count=c->issuers->known_count;
+    if(count>capacity)return 0;
+    size_t unique=0;
+    for(size_t i=0;i<count;i++){
+        mbedtls_x509_crt *candidate=c->issuers->known[i];bool duplicate=false;
+        for(size_t j=0;j<unique;j++)if(candidates[j]==candidate)duplicate=true;
+        if(!duplicate)candidates[unique++]=candidate;
+    }
+    return unique;
 }
 
 static int select_server_issuers(mbedtls_ssl_context *ssl)
 {
     wendy_pki_connection *c=ssl->MBEDTLS_PRIVATE(p_bio);
-    if(c && c->issuers)
+    if(c && c->issuers){
         c->issuers->omit=pki_client_hello_offers(ssl->MBEDTLS_PRIVATE(in_msg),
             ssl->MBEDTLS_PRIVATE(in_hslen),c->issuers->hint);
+        if(!c->issuers->omit)release_known_issuers(c->issuers);
+    }
     return 0;
 }
 
@@ -202,6 +270,9 @@ static int configure_mesh_alpn(wendy_pki_connection *c,const char *const *protoc
     c->issuers=prepare_issuer_hint(c);
     wendy_net_memory_scope_leave(previous);
     if(c->issuers){
+        c->config.MBEDTLS_PRIVATE(f_wendy_peer_chain_begin)=peer_chain_begin;
+        c->config.MBEDTLS_PRIVATE(f_wendy_untrusted_issuers)=known_peer_issuers;
+        c->config.MBEDTLS_PRIVATE(p_wendy_peer_issuers)=c;
         c->issuers->protocols[0]=protocols[0];
         if(c->config.MBEDTLS_PRIVATE(endpoint)==MBEDTLS_SSL_IS_CLIENT){
             c->issuers->protocols[1]=c->issuers->hint;
@@ -274,6 +345,7 @@ void wendy_pki_close(wendy_pki_connection *c)
     pki_tls_input_return(c->setup_input_reservation,c->setup_input_capacity);
     wendy_pki_handshake_release(c);
     mbedtls_ssl_free(&c->ssl);
+    release_known_issuers(c->issuers);
     mbedtls_ssl_config_free(&c->config);
     mbedtls_x509_crt_free(&c->roots);
     mbedtls_x509_crt_free(&c->certificate);
@@ -446,6 +518,13 @@ static int handshake_step_direct(wendy_pki_connection *c,bool compact_server)
        c->ssl.MBEDTLS_PRIVATE(state)==MBEDTLS_SSL_CERTIFICATE_VERIFY)
         issuers->peer_presented_certificates=pki_certificate_message_count(
             c->ssl.MBEDTLS_PRIVATE(in_msg),c->ssl.MBEDTLS_PRIVATE(in_hslen));
+    if(!result && issuers &&
+       ((state==MBEDTLS_SSL_SERVER_CERTIFICATE &&
+         c->config.MBEDTLS_PRIVATE(endpoint)==MBEDTLS_SSL_IS_CLIENT) ||
+        (state==MBEDTLS_SSL_CLIENT_CERTIFICATE &&
+         c->config.MBEDTLS_PRIVATE(endpoint)==MBEDTLS_SSL_IS_SERVER)) &&
+       c->ssl.MBEDTLS_PRIVATE(state)==MBEDTLS_SSL_CERTIFICATE_VERIFY)
+        release_known_issuers(issuers);
     return result;
 }
 

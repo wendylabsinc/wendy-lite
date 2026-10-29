@@ -33,7 +33,7 @@ func TestLiteIssuerInteropNormal(t *testing.T) {
 					}
 					t.Run(fmt.Sprintf("shared=%v/pinned=%v/legacy=%v/nativeServer=%v/application=%v/cancel=%v", shared, pinned, legacy, nativeServer, application, cancel), func(t *testing.T) {
 						native, remote := liteIssuerCredentials(t, shared, liteIssuerECDSA)
-						known := shared && pinned && !legacy
+						known := shared && !legacy
 						dir := t.TempDir()
 						put := func(name string, bytes []byte) string {
 							p := filepath.Join(dir, name)
@@ -91,10 +91,7 @@ func TestLiteIssuerInteropNormal(t *testing.T) {
 						}
 						command := exec.Command(binary, key, cert, roots, role, fmt.Sprint(listener.Addr().(*net.TCPAddr).Port), expected,
 							native.Device.Tenant().String(), native.Device.UUID().String(), remote.Device.UUID().String(), func() string {
-								if pinned {
-									return issuerHintPrefix + native.IssuerDigest()
-								}
-								return "-"
+								return issuerHintPrefix + native.IssuerDigest()
 							}(), fmt.Sprint(map[bool]int{false: 0, true: 1}[application]), fmt.Sprint(map[bool]int{false: 0, true: 1}[cancel]))
 						output := &synchronizedOutput{}
 						command.Stdout = output
