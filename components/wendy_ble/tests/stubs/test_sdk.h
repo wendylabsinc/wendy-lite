@@ -127,6 +127,8 @@ struct ble_gatt_svc_def {
 #define BLE_HS_FOREVER INT32_MAX
 #define BLE_HS_EALREADY 2
 #define BLE_HS_ENOMEM 6
+#define BLE_HS_EBUSY 15
+static inline int ble_gap_adv_stop(void) { return 0; }
 #define BLE_HS_ENOTCONN 7
 #define BLE_ERR_REM_USER_CONN_TERM 19
 #define CONFIG_BT_NIMBLE_MAX_CONNECTIONS 3

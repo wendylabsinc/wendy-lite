@@ -786,6 +786,8 @@ func resultToError(result wendypb.WendyComResult) error {
 		return errors.New("bad protocol version")
 	case wendypb.WendyComResult_WENDY_COM_RESULT_BAD_STATE:
 		return errors.New("bad state")
+	case wendypb.WendyComResult_WENDY_COM_RESULT_NET_BLE_PROFILE_UNSUPPORTED:
+		return fmt.Errorf("the requested BLE radio profile is not supported by this device")
 	case wendypb.WendyComResult_WENDY_COM_RESULT_BUSY:
 		return errors.New("device busy")
 	case wendypb.WendyComResult_WENDY_COM_RESULT_BAD_APP_TYPE:

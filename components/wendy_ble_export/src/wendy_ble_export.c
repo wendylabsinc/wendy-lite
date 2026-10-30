@@ -5,9 +5,7 @@
 #include "wasm_export.h"
 #include "wendy_safety.h"
 
-#if CONFIG_WENDY_BLE
 #include "wendy_ble.h"
-#endif
 
 #if CONFIG_WENDY_CALLBACK
 #include "wendy_callback.h"
@@ -16,6 +14,11 @@
 #if CONFIG_BT_ENABLED && CONFIG_BT_NIMBLE_ENABLED
 #include "host/ble_hs.h"
 #include "host/ble_gap.h"
+#if CONFIG_BT_NIMBLE_EXT_ADV
+#include "host/ble_hs_adv.h"
+#include "host/ble_hs_mbuf.h"
+#define GUEST_ADV_INSTANCE 1
+#endif
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 #endif
@@ -32,28 +35,24 @@ static uint32_t s_connect_handler_id = 0;
 
 /* ── GAP event callback ───────────────────────────────────────────────── */
 
-static int ble_gap_event(struct ble_gap_event *event, void *arg)
-{
+static int ble_gap_event(struct ble_gap_event *event, void *arg) {
     switch (event->type) {
     case BLE_GAP_EVENT_CONNECT:
-        ESP_LOGI(TAG, "connect event: status=%d handle=%d",
-                 event->connect.status, event->connect.conn_handle);
+        ESP_LOGI(TAG, "connect event: status=%d handle=%d", event->connect.status,
+                 event->connect.conn_handle);
 #if CONFIG_WENDY_CALLBACK
         if (s_connect_handler_id) {
-            wendy_callback_post(s_connect_handler_id,
-                                event->connect.status,
+            wendy_callback_post(s_connect_handler_id, event->connect.status,
                                 event->connect.conn_handle, 0);
         }
 #endif
         break;
 
     case BLE_GAP_EVENT_DISCONNECT:
-        ESP_LOGI(TAG, "disconnect event: reason=%d",
-                 event->disconnect.reason);
+        ESP_LOGI(TAG, "disconnect event: reason=%d", event->disconnect.reason);
 #if CONFIG_WENDY_CALLBACK
         if (s_connect_handler_id) {
-            wendy_callback_post(s_connect_handler_id,
-                                event->disconnect.reason,
+            wendy_callback_post(s_connect_handler_id, event->disconnect.reason,
                                 event->disconnect.conn.conn_handle, 1);
         }
 #endif
@@ -63,13 +62,22 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
 #if CONFIG_WENDY_CALLBACK
         if (s_scan_handler_id) {
             /* Post RSSI and addr type as args */
-            wendy_callback_post(s_scan_handler_id,
-                                (uint32_t)(int8_t)event->disc.rssi,
+            wendy_callback_post(s_scan_handler_id, (uint32_t)(int8_t)event->disc.rssi,
                                 event->disc.addr.type, 0);
         }
 #endif
         break;
 
+#if CONFIG_BT_NIMBLE_EXT_ADV
+    case BLE_GAP_EVENT_EXT_DISC:
+#if CONFIG_WENDY_CALLBACK
+        if (s_scan_handler_id &&
+            event->ext_disc.data_status == BLE_GAP_EXT_ADV_DATA_STATUS_COMPLETE)
+            wendy_callback_post(s_scan_handler_id, (uint32_t)(int8_t)event->ext_disc.rssi,
+                                event->ext_disc.addr.type, 0);
+#endif
+        break;
+#endif
     case BLE_GAP_EVENT_ADV_COMPLETE:
         ESP_LOGI(TAG, "advertise complete");
         break;
@@ -87,8 +95,7 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
  * Brings up the shared NimBLE stack through wendy_ble, which owns it. The
  * transport normally started it at boot already, in which case this is a
  * no-op that just marks the guest API usable. */
-static int ble_init_wrapper(wasm_exec_env_t exec_env)
-{
+static int ble_init_wrapper(wasm_exec_env_t exec_env) {
     if (wendy_ble_host_init() != ESP_OK)
         return -1;
     s_ble_initialized = true;
@@ -96,41 +103,88 @@ static int ble_init_wrapper(wasm_exec_env_t exec_env)
 }
 
 /* ble_advertise_start(name_ptr, name_len) -> 0 ok */
-static int ble_advertise_start_wrapper(wasm_exec_env_t exec_env,
-                                        const char *name, int name_len)
-{
-    if (!s_ble_initialized) return -1;
+static int ble_advertise_start_wrapper(wasm_exec_env_t exec_env, const char *name, int name_len) {
+    if (!s_ble_initialized)
+        return -1;
 
-    char dev_name[32];
-    int len = (name_len < 31) ? name_len : 31;
-    memcpy(dev_name, name, len);
+    if (!name || name_len < 0)
+        return -1;
+    /* Flags and name headers leave 26 bytes in a 31-byte payload. */
+    char dev_name[27];
+    int len = name_len < 26 ? name_len : 26;
+    memcpy(dev_name, name, (size_t)len);
     dev_name[len] = '\0';
 
-    ble_svc_gap_device_name_set(dev_name);
-
-    struct ble_gap_adv_params adv_params = {
-        .conn_mode = BLE_GAP_CONN_MODE_UND,
-        .disc_mode = BLE_GAP_DISC_MODE_GEN,
-    };
-
-    struct ble_hs_adv_fields fields = { 0 };
+    struct ble_hs_adv_fields fields = {0};
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     fields.name = (const uint8_t *)dev_name;
     fields.name_len = len;
-    fields.name_is_complete = 1;
-    fields.tx_pwr_lvl = BLE_HS_ADV_TX_PWR_LVL_AUTO;
-    fields.tx_pwr_lvl_is_present = 1;
+    fields.name_is_complete = len == name_len;
+    /* Do not publish a fixed TX-power AD field: device policy can change the
+     * controller power in place while this payload remains unchanged. */
 
-    int rc = ble_gap_adv_set_fields(&fields);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "ble_gap_adv_set_fields failed: %d", rc);
+    int rc;
+#if CONFIG_BT_NIMBLE_EXT_ADV
+#if CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES > GUEST_ADV_INSTANCE
+    /* Guest advertisements never borrow or overwrite management/mesh set 0. */
+    if (ble_gap_ext_adv_active(GUEST_ADV_INSTANCE))
         return -1;
+    uint8_t own_type;
+    if (ble_hs_id_infer_auto(0, &own_type))
+        return -1;
+    struct ble_gap_ext_adv_params params = {.connectable = 1,
+                                            .scannable = 1,
+                                            .legacy_pdu = 1,
+                                            .own_addr_type = own_type,
+                                            .primary_phy = 1,
+                                            .secondary_phy = 1,
+                                            .sid = GUEST_ADV_INSTANCE,
+#if CONFIG_WENDY_BLE
+                                            .tx_power = wendy_ble_power_advertising_request()
+#else
+                                            .tx_power = 127
+#endif
+    };
+    rc = ble_gap_ext_adv_configure(GUEST_ADV_INSTANCE, &params, NULL, ble_gap_event, NULL);
+    if (rc)
+        return -1;
+    uint8_t data[31], size = 0;
+    rc = ble_hs_adv_set_fields(&fields, data, &size, sizeof data);
+    if (!rc) {
+        struct os_mbuf *buffer = ble_hs_mbuf_from_flat(data, size);
+        rc = buffer ? ble_gap_ext_adv_set_data(GUEST_ADV_INSTANCE, buffer) : BLE_HS_ENOMEM;
     }
-
-    rc = ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, NULL, BLE_HS_FOREVER,
-                            &adv_params, ble_gap_event, NULL);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "ble_gap_adv_start failed: %d", rc);
+#if CONFIG_WENDY_BLE
+    if (!rc)
+        rc = wendy_ble_power_advertising_add(GUEST_ADV_INSTANCE);
+#endif
+    if (!rc)
+        rc = ble_gap_ext_adv_start(GUEST_ADV_INSTANCE, 0, 0);
+    if (rc) {
+        ble_gap_ext_adv_remove(GUEST_ADV_INSTANCE);
+#if CONFIG_WENDY_BLE
+        wendy_ble_power_advertising_remove(GUEST_ADV_INSTANCE);
+#endif
+    }
+#else
+    (void)fields;
+    ESP_LOGE(TAG, "Guest advertising requires a separate extended advertising set");
+    return -1;
+#endif
+#else
+    struct ble_gap_adv_params params = {.conn_mode = BLE_GAP_CONN_MODE_UND,
+                                        .disc_mode = BLE_GAP_DISC_MODE_GEN};
+    rc = ble_gap_adv_set_fields(&fields);
+#if CONFIG_WENDY_BLE
+    if (!rc)
+        rc = wendy_ble_power_apply_advertising();
+#endif
+    if (!rc)
+        rc = ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, NULL, BLE_HS_FOREVER, &params, ble_gap_event,
+                               NULL);
+#endif
+    if (rc) {
+        ESP_LOGE(TAG, "Guest advertisement failed: %d", rc);
         return -1;
     }
 
@@ -139,18 +193,27 @@ static int ble_advertise_start_wrapper(wasm_exec_env_t exec_env,
 }
 
 /* ble_advertise_stop() -> 0 ok */
-static int ble_advertise_stop_wrapper(wasm_exec_env_t exec_env)
-{
-    if (!s_ble_initialized) return -1;
+static int ble_advertise_stop_wrapper(wasm_exec_env_t exec_env) {
+    if (!s_ble_initialized)
+        return -1;
+#if CONFIG_BT_NIMBLE_EXT_ADV
+    int rc = ble_gap_ext_adv_stop(GUEST_ADV_INSTANCE);
+    if (!rc || rc == BLE_HS_EALREADY) {
+        rc = ble_gap_ext_adv_remove(GUEST_ADV_INSTANCE);
+#if CONFIG_WENDY_BLE
+        wendy_ble_power_advertising_remove(GUEST_ADV_INSTANCE);
+#endif
+    }
+#else
     int rc = ble_gap_adv_stop();
-    return (rc == 0) ? 0 : -1;
+#endif
+    return (rc == 0 || rc == BLE_HS_EALREADY) ? 0 : -1;
 }
 
 /* ble_scan_start(duration_ms, handler_id) -> 0 ok */
-static int ble_scan_start_wrapper(wasm_exec_env_t exec_env,
-                                   int duration_ms, int handler_id)
-{
-    if (!s_ble_initialized) return -1;
+static int ble_scan_start_wrapper(wasm_exec_env_t exec_env, int duration_ms, int handler_id) {
+    if (!s_ble_initialized)
+        return -1;
 
     s_scan_handler_id = (uint32_t)handler_id;
 
@@ -162,25 +225,23 @@ static int ble_scan_start_wrapper(wasm_exec_env_t exec_env,
     };
 
     int rc = ble_gap_disc(BLE_OWN_ADDR_PUBLIC,
-                           duration_ms / 10, /* in 10ms units */
-                           &disc_params, ble_gap_event, NULL);
+                          duration_ms, /* SDK legacy wrapper accepts milliseconds too. */
+                          &disc_params, ble_gap_event, NULL);
     return (rc == 0) ? 0 : -1;
 }
 
 /* ble_scan_stop() -> 0 ok */
-static int ble_scan_stop_wrapper(wasm_exec_env_t exec_env)
-{
-    if (!s_ble_initialized) return -1;
+static int ble_scan_stop_wrapper(wasm_exec_env_t exec_env) {
+    if (!s_ble_initialized)
+        return -1;
     int rc = ble_gap_disc_cancel();
     s_scan_handler_id = 0;
     return (rc == 0 || rc == BLE_HS_EALREADY) ? 0 : -1;
 }
 
 /* ble_connect(addr_type, addr_ptr, addr_len, handler_id) -> 0 ok */
-static int ble_connect_wrapper(wasm_exec_env_t exec_env,
-                                int addr_type, const char *addr, int addr_len,
-                                int handler_id)
-{
+static int ble_connect_wrapper(wasm_exec_env_t exec_env, int addr_type, const char *addr,
+                               int addr_len, int handler_id) {
     if (!s_ble_initialized || !addr || addr_len < 6) return -1;
 
     s_connect_handler_id = (uint32_t)handler_id;

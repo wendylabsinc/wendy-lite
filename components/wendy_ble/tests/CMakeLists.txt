@@ -70,3 +70,16 @@ add_test(NAME mesh_connection_claim COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURREN
 add_test(NAME physical_rx_rearm COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/physical_rx_rearm_success_test.py)
 
 add_test(NAME mesh_output_drain COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/mesh_output_drain_success_test.py)
+
+get_property(transport_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(target IN LISTS transport_test_targets)
+    target_sources(${target} PRIVATE power_stub.c)
+endforeach()
+
+add_executable(power_policy_test power_policy_test.c ../src/wendy_ble_power.c)
+target_include_directories(power_policy_test PRIVATE power_stubs ../include
+    ../../wendy_com/include ../../nanopb)
+target_compile_definitions(power_policy_test PRIVATE CONFIG_IDF_TARGET_ESP32C6=1)
+target_link_libraries(power_policy_test PRIVATE Threads::Threads)
+target_compile_options(power_policy_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+add_test(NAME bluetooth_power_policy COMMAND power_policy_test)

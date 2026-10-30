@@ -3,6 +3,7 @@
  * host event queue. Owners exchange bounded buffers, never channel pointers.
  */
 #include "wendy_ble_mesh.h"
+#include "wendy_ble.h"
 #include "wendy_ble_l2cap.h"
 #include "wendy_net_alloc.h"
 #include "wendy_net_profile.h"
@@ -551,7 +552,7 @@ static int coc_event(struct ble_l2cap_event *event, void *context)
                        !ble_gap_conn_find(event->connect.conn_handle, &desc) &&
                        !ble_l2cap_get_chan_info(event->connect.chan, &info);
         if(info_ok){
-            int dle=ble_gap_set_data_len(event->connect.conn_handle,251,2120);
+            int dle=ble_gap_set_data_len(event->connect.conn_handle,251,wble_mesh_profile() ? 17040:2120);
             if(dle)ESP_LOGD(TAG,"data length request: %d",dle);
         }
         /* The pre-reserved outgoing spare must be lent before this callback
@@ -680,6 +681,7 @@ static int coc_event(struct ble_l2cap_event *event, void *context)
 static int gap_event(struct ble_gap_event *event, void *context)
 {
     if(!atomic_load(&ready))return 0;
+    wble_mesh_profile_event(event);
     if (event->type == BLE_GAP_EVENT_DISCONNECT)
     {
         wble_gap_retiring_done(stopping_acls,MYNEWT_VAL(BLE_MAX_CONNECTIONS),event->disconnect.conn.conn_handle);
@@ -707,6 +709,25 @@ static int gap_event(struct ble_gap_event *event, void *context)
             wble_report_release(&report_lifetime);
         }
     }
+#if CONFIG_BT_NIMBLE_EXT_ADV
+    else if(event->type==BLE_GAP_EVENT_EXT_DISC){
+        const struct ble_gap_ext_disc_desc *d=&event->ext_disc;
+        /* Incomplete/truncated PDUs cannot enter the tenant candidate parser.
+         * Both payloads are <=31 bytes, no unbounded reassembly is needed. */
+        if(d->data_status!=BLE_GAP_EXT_ADV_DATA_STATUS_COMPLETE)return 0;
+        static int64_t next_report;
+        int64_t now=esp_timer_get_time();
+        if(now>=next_report){
+            next_report=now+INT64_C(5000000);
+            ESP_LOGI(TAG,"observed advertising peer=%02x:%02x:%02x:%02x:%02x:%02x primary=%u secondary=%u legacy=%u rssi=%d",
+                d->addr.val[5],d->addr.val[4],d->addr.val[3],d->addr.val[2],d->addr.val[1],d->addr.val[0],
+                d->prim_phy,d->sec_phy,!!(d->props & BLE_HCI_ADV_LEGACY_MASK),d->rssi);
+        }
+        lock();wble_mesh_report callback=report;void *ctx=report_context;
+        bool borrowed=callback && wble_report_acquire(&report_lifetime);unlock();
+        if(borrowed){callback(ctx,d->addr.val,d->addr.type,d->data,d->length_data,d->rssi);wble_report_release(&report_lifetime);}
+    }
+#endif
     else if (event->type == BLE_GAP_EVENT_DISC_COMPLETE)
     {
         lock();
@@ -719,6 +740,7 @@ static int gap_event(struct ble_gap_event *event, void *context)
     else if (event->type == BLE_GAP_EVENT_CONNECT)
     {
         uint16_t handle = event->connect.conn_handle;
+        if(!event->connect.status){wble_mesh_profile_connected(handle);}
         if(atomic_load(&quiescing)){
             lock();dialing=false;dial_gap_pending=false;unlock();
             if(!event->connect.status && !context)terminate_unclaimed(handle);
@@ -854,9 +876,16 @@ static int start_scan(void)
         if(!atomic_load(&quiescing))wble_gap_retry_failed(&scan_retry,esp_timer_get_time());
         return BLE_HS_EBUSY;
     }
+#if CONFIG_BT_NIMBLE_EXT_ADV
+    struct ble_gap_ext_disc_params params={.passive=1,.itvl=160,.window=48};
+    bool coded=wble_mesh_profile()!=0;
+    int rc=ble_gap_ext_disc(own_type,0,0,0,0,0,coded ? NULL:&params,coded ? &params:NULL,gap_event,NULL);
+    if(!rc)ESP_LOGI(TAG,"scan profile=%s uncoded=%u coded=%u",wble_mesh_profile_name(),!coded,coded);
+#else
     struct ble_gap_disc_params params = {
         .passive = 1, .filter_duplicates = 0, .itvl = 160, .window = 48};
     int rc = ble_gap_disc(own_type, BLE_HS_FOREVER, &params, gap_event, NULL);
+#endif
     /* A competing baseline caller can start discovery between our active
      * check and this command. EALREADY did not transfer its callback to us. */
     if(rc==BLE_HS_EALREADY)rc=BLE_HS_EBUSY;
@@ -982,13 +1011,15 @@ static int initialize_host(void)
     ESP_LOGI(TAG,"mesh BLE mode=%s; peer PSM=%u time PSM=%u channel cap=%u MTU=%u; buffers allocated on demand",
         WENDY_NET_NON_TRANSIT ? "scan/dial only":"scan/dial/listen",
         CONFIG_WENDY_NET_BLE_PSM,WBLE_MESH_TIME_PSM,CHANNELS,MTU);
+    unsigned selected_profile=wble_mesh_profile();
     ESP_LOGI(TAG,"mesh BLE profile: GAP=%u CoC=%u SDUs=%u pool_bytes=%u MPS=%u initial_credits=%u rx_slots=%u central_interval_us=%u max_ce_us=%u",
         (unsigned)MYNEWT_VAL(BLE_MAX_CONNECTIONS),(unsigned)MYNEWT_VAL(BLE_L2CAP_COC_MAX_NUM),
         (unsigned)SDUS,(unsigned)(OS_MEMPOOL_SIZE(SDUS,BLOCK)*sizeof *pool_memory),
         (unsigned)MYNEWT_VAL(BLE_L2CAP_COC_MPS),
         (unsigned)((MTU+MYNEWT_VAL(BLE_L2CAP_COC_MPS)-1)/MYNEWT_VAL(BLE_L2CAP_COC_MPS)),
         (unsigned)MYNEWT_VAL(BLE_L2CAP_COC_SDU_BUFF_COUNT),
-        (unsigned)INTERVAL_UNITS*1250,(unsigned)MAX_CE_UNITS*625);
+        (unsigned)(selected_profile==2 ? 96:selected_profile==1 ? 48:INTERVAL_UNITS)*1250,
+        (unsigned)(selected_profile==2 ? 64:selected_profile==1 ? 24:MAX_CE_UNITS)*625);
     return ESP_OK;
 }
 void wble_mesh_scan_interest(bool available)
@@ -1103,19 +1134,28 @@ static int dial_host(const struct wble_gap_dial *command)
         ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &existing_event);
         return ESP_OK;
     }
+    unsigned profile=wble_mesh_profile();
     struct ble_gap_conn_params params = {.scan_itvl = 160,
                                          .scan_window = 80,
-                                         .itvl_min = INTERVAL_UNITS,
-                                         .itvl_max = INTERVAL_UNITS,
+                                         .itvl_min = profile==2 ? 96:profile==1 ? 48:INTERVAL_UNITS,
+                                         .itvl_max = profile==2 ? 96:profile==1 ? 48:INTERVAL_UNITS,
                                          .latency = 0,
-                                         .supervision_timeout = 400,
+                                         .supervision_timeout = profile ? 800:400,
                                          .min_ce_len = 0,
-                                         .max_ce_len = MAX_CE_UNITS};
+                                         .max_ce_len = profile==2 ? 64:profile==1 ? 24:MAX_CE_UNITS};
     lock();
     dial_gap_pending = true;
     unlock();
+#if CONFIG_BT_NIMBLE_EXT_ADV
+    uint8_t mask=profile ? BLE_GAP_LE_PHY_CODED_MASK:BLE_GAP_LE_PHY_1M_MASK;
+    int rc=ble_gap_ext_connect(own_type,&peer,15000,mask,profile ? NULL:&params,NULL,
+        profile ? &params:NULL,dial_gap_event,(void *)(uintptr_t)command->epoch);
+    ESP_LOGI(TAG,"initiate profile=%s phy_mask=%u interval=%u ce=%u timeout=%u rc=%d",
+        wble_mesh_profile_name(),mask,params.itvl_min,params.max_ce_len,params.supervision_timeout,rc);
+#else
     int rc = ble_gap_connect(own_type, &peer, 15000, &params, dial_gap_event,
                              (void *)(uintptr_t)command->epoch);
+#endif
     if (rc)
     {
         lock();

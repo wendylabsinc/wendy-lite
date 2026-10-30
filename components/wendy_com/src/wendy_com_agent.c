@@ -41,6 +41,7 @@ struct _agent_link {
     enum wcom_link_permission permission;
     bool handshake_done;
     uint32_t net_reply_token;
+    uint32_t bluetooth_power_reply_token;
     uint32_t rx_channel; // channel of the inbound message currently being handled
     struct wcom_agent_msg_header header;
     struct wcom_rx_chunk rx_chunk;
@@ -187,6 +188,11 @@ static void _done_sending_msg(int link_id, const struct wcom_tx_chunk *chunk, bo
     if(token){
         if(success)wcom_link_reply_barrier(link_id,token,wcom_cmd_net_reply_complete);
         else wcom_cmd_net_reply_complete(token);
+    }
+    token=link->bluetooth_power_reply_token;link->bluetooth_power_reply_token=0;
+    if(token){
+        if(success)wcom_link_reply_barrier(link_id,token,wcom_cmd_bluetooth_power_reply_complete);
+        else wcom_cmd_bluetooth_power_reply_complete(token);
     }
     if(success)_start_recv_header(link);
 }
@@ -411,6 +417,16 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
         return;
     }
     switch (cmd->which_params) {
+    case WendyComCommand_bluetooth_power_get_tag:
+        resp->which_data=WendyComResponse_bluetooth_power_tag;
+        resp->result=wcom_cmd_bluetooth_power_get(&resp->data.bluetooth_power);
+        break;
+    case WendyComCommand_bluetooth_power_set_tag:
+        resp->which_data=WendyComResponse_bluetooth_power_tag;
+        resp->result=cmd->params.bluetooth_power_set.has_config ?
+            wcom_cmd_bluetooth_power_set(&cmd->params.bluetooth_power_set.config,&resp->data.bluetooth_power,&link->bluetooth_power_reply_token):
+            WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+        break;
     case WendyComCommand_net_get_tag:
         resp->which_data=WendyComResponse_net_status_tag;
         resp->result=wcom_cmd_net_get(&resp->data.net_status);
@@ -746,6 +762,7 @@ static void _on_link_state_changed(
                 (void)wcom_link_get_buffer_allocator(link_id, &ch->buffer_allocator);
                 ch->handshake_done = false;
                 ch->net_reply_token = 0;
+                ch->bluetooth_power_reply_token = 0;
                 ch->rx_channel = 0;
                 for (int i = 0; i < _CHANNELS_PER_LINK_COUNT; i++) {
                     ch->channels[i].client_id = 0;
@@ -763,6 +780,8 @@ static void _on_link_state_changed(
             if (link->link_id == link_id) {
                 uint32_t token=link->net_reply_token;link->net_reply_token=0;
                 if(token)wcom_cmd_net_reply_complete(token);
+                token=link->bluetooth_power_reply_token;link->bluetooth_power_reply_token=0;
+                if(token)wcom_cmd_bluetooth_power_reply_complete(token);
                 for (int j = 0; j < _CHANNELS_PER_LINK_COUNT; j++) {
                     if (link->channels[j].client_id != 0) {
                         wcom_cmd_client_disconnected(link->channels[j].client_id);

@@ -2,6 +2,7 @@
 #define WENDY_BLE_H
 
 #include "esp_err.h"
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -35,6 +36,20 @@ esp_err_t wendy_ble_host_init(void);
 /// in a build without PKI support, or when an unenrolled device requires
 /// mTLS. Nothing is advertised on initial startup in those cases.
 esp_err_t wendy_ble_start(void);
+
+/* Independent Bluetooth radio policy; no Wendy Net task/heap is required. */
+void wendy_ble_power_init(void);
+int wendy_ble_power_host_sync(void);
+void wendy_ble_power_host_reset(void);
+void wendy_ble_power_connected(uint16_t);
+void wendy_ble_power_disconnected(uint16_t);
+void wendy_ble_power_phy_updated(uint16_t handle, uint8_t tx, uint8_t rx);
+int wendy_ble_power_apply_advertising(void);
+int wendy_ble_power_advertising_add(uint8_t instance);
+void wendy_ble_power_advertising_remove(uint8_t instance);
+int8_t wendy_ble_power_advertising_request(void);
+void wendy_ble_power_advertising_selected(int8_t);
+void wendy_ble_power_advertising_started(void);
 
 #ifdef __cplusplus
 }

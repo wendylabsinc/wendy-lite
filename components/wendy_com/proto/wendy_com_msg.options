@@ -13,3 +13,7 @@ WendyComSyncTimeParams.response type:FT_CALLBACK
 
 WendyComEnrollmentResetParams.expected_device_id max_size:13
 WendyComEnrollmentResetParams.nonce_hex max_size:65
+
+WendyComBluetoothPowerStatus.supported_levels_dbm max_count:13
+WendyComBluetoothPowerStatus.connections max_count:8
+WendyComBluetoothPowerStatus.error max_size:128

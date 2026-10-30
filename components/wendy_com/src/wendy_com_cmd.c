@@ -15,6 +15,20 @@ static const char *TAG = "wcom_cmd";
 static const struct wcom_app_delegate *_app_delegate;
 static const struct wcom_net_delegate *net_delegate;
 void wcom_cmd_set_net_delegate(const struct wcom_net_delegate *delegate){net_delegate=delegate;}
+static const struct wcom_bluetooth_power_delegate *bluetooth_power;
+void wcom_cmd_set_bluetooth_power_delegate(const struct wcom_bluetooth_power_delegate *delegate){bluetooth_power=delegate;}
+WendyComResult wcom_cmd_bluetooth_power_get(WendyComBluetoothPowerStatus *out)
+{
+    *out=(WendyComBluetoothPowerStatus)WendyComBluetoothPowerStatus_init_zero;
+    return bluetooth_power && bluetooth_power->get ? bluetooth_power->get(out):WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+}
+WendyComResult wcom_cmd_bluetooth_power_set(const WendyComBluetoothPowerConfig *config,WendyComBluetoothPowerStatus *out,uint32_t *token)
+{
+    *token=0;*out=(WendyComBluetoothPowerStatus)WendyComBluetoothPowerStatus_init_zero;
+    return bluetooth_power && bluetooth_power->set ? bluetooth_power->set(config,out,token):WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+}
+void wcom_cmd_bluetooth_power_reply_complete(uint32_t token)
+{if(token && bluetooth_power && bluetooth_power->reply_complete)bluetooth_power->reply_complete(token);}
 WendyComResult wcom_cmd_net_get(WendyComNetStatus *status)
 {return net_delegate && net_delegate->get ? net_delegate->get(status):WendyComResult_WENDY_COM_RESULT_BAD_STATE;}
 WendyComResult wcom_cmd_net_set(const WendyComNetConfig *config,WendyComNetStatus *status,uint32_t *token)

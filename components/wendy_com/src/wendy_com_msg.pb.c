@@ -48,6 +48,24 @@ PB_BIND(WendyComGetDeviceIdentityParams, WendyComGetDeviceIdentityParams, AUTO)
 PB_BIND(WendyComDeviceIdentity, WendyComDeviceIdentity, AUTO)
 
 
+PB_BIND(WendyComBluetoothPowerSetting, WendyComBluetoothPowerSetting, AUTO)
+
+
+PB_BIND(WendyComBluetoothPowerConfig, WendyComBluetoothPowerConfig, AUTO)
+
+
+PB_BIND(WendyComBluetoothConnectionPower, WendyComBluetoothConnectionPower, AUTO)
+
+
+PB_BIND(WendyComBluetoothPowerStatus, WendyComBluetoothPowerStatus, 2)
+
+
+PB_BIND(WendyComBluetoothPowerGetParams, WendyComBluetoothPowerGetParams, AUTO)
+
+
+PB_BIND(WendyComBluetoothPowerSetParams, WendyComBluetoothPowerSetParams, AUTO)
+
+
 PB_BIND(WendyComNetConfig, WendyComNetConfig, AUTO)
 
 

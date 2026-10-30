@@ -25,6 +25,22 @@ typedef enum _WendyComConfPushMode {
     WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE = 1
 } WendyComConfPushMode;
 
+/* Device-wide LE transmit policy, independent of Wendy Net participation. */
+typedef enum _WendyComBluetoothPowerMode {
+    WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_DEFAULT = 0,
+    WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_MAXIMUM = 1,
+    WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_DBM = 2
+} WendyComBluetoothPowerMode;
+
+/* Native Wendy Net policy. Disabled by default; carrier choices are retained
+ independently. Limits are local resource policy, never a special leaf role.
+ A single radio profile covers advertising, discovery and connected data. */
+typedef enum _WendyComBleProfile {
+    WendyComBleProfile_WENDY_COM_BLE_NORMAL = 0,
+    WendyComBleProfile_WENDY_COM_BLE_CODED_S2 = 1,
+    WendyComBleProfile_WENDY_COM_BLE_CODED_S8 = 2
+} WendyComBleProfile;
+
 typedef enum _WendyComNetState {
     WendyComNetState_WENDY_COM_NET_OFF = 0,
     WendyComNetState_WENDY_COM_NET_STARTING = 1,
@@ -52,7 +68,8 @@ typedef enum _WendyComResult {
     WendyComResult_WENDY_COM_RESULT_NET_NO_WIFI = 9,
     WendyComResult_WENDY_COM_RESULT_NET_NO_BLE = 10,
     WendyComResult_WENDY_COM_RESULT_NET_NO_NAN = 11,
-    WendyComResult_WENDY_COM_RESULT_NET_ONE_CARRIER_ONLY = 12
+    WendyComResult_WENDY_COM_RESULT_NET_ONE_CARRIER_ONLY = 12,
+    WendyComResult_WENDY_COM_RESULT_NET_BLE_PROFILE_UNSUPPORTED = 13
 } WendyComResult;
 
 typedef enum _WendyComChannelErrorReason {
@@ -148,8 +165,56 @@ typedef struct _WendyComDeviceIdentity {
     pb_callback_t enrolled_device_id;
 } WendyComDeviceIdentity;
 
-/* Native Wendy Net policy. Disabled by default; carrier choices are retained
- independently. Limits are local resource policy, never a special leaf role. */
+typedef struct _WendyComBluetoothPowerSetting {
+    WendyComBluetoothPowerMode mode;
+    int32_t dbm;
+} WendyComBluetoothPowerSetting;
+
+typedef struct _WendyComBluetoothPowerConfig {
+    bool has_advertising;
+    WendyComBluetoothPowerSetting advertising;
+    /* Also applies to controller-default, scan-request and initiation traffic. */
+    bool has_connections;
+    WendyComBluetoothPowerSetting connections;
+} WendyComBluetoothPowerConfig;
+
+typedef struct _WendyComBluetoothConnectionPower {
+    uint32_t handle;
+    bool current_known;
+    int32_t current_dbm;
+    uint32_t tx_phy;
+    uint32_t rx_phy;
+} WendyComBluetoothConnectionPower;
+
+typedef struct _WendyComBluetoothPowerStatus {
+    bool has_desired;
+    WendyComBluetoothPowerConfig desired;
+    bool has_applied;
+    WendyComBluetoothPowerConfig applied;
+    bool available;
+    bool pending;
+    bool advertising_set_supported;
+    bool connections_set_supported;
+    pb_size_t supported_levels_dbm_count;
+    int32_t supported_levels_dbm[13];
+    bool advertising_known;
+    int32_t advertising_dbm;
+    bool connection_default_known;
+    int32_t connection_default_dbm;
+    pb_size_t connections_count;
+    WendyComBluetoothConnectionPower connections[8];
+    char error[128];
+} WendyComBluetoothPowerStatus;
+
+typedef struct _WendyComBluetoothPowerGetParams {
+    char dummy_field;
+} WendyComBluetoothPowerGetParams;
+
+typedef struct _WendyComBluetoothPowerSetParams {
+    bool has_config;
+    WendyComBluetoothPowerConfig config;
+} WendyComBluetoothPowerSetParams;
+
 typedef struct _WendyComNetConfig {
     bool enabled;
     bool ble;
@@ -159,6 +224,7 @@ typedef struct _WendyComNetConfig {
     uint32_t ble_links;
     uint32_t wifi_links;
     uint32_t nan_links;
+    WendyComBleProfile ble_profile;
 } WendyComNetConfig;
 
 typedef struct _WendyComNetGetParams {
@@ -187,7 +253,8 @@ typedef struct _WendyComNetStatus {
     uint32_t internal_bytes;
     uint32_t active_links;
     uint32_t error_code;
-    bool restarting; /* saved carrier change; reboot is pending */
+    bool restarting; /* saved carrier/profile change; reboot is pending */
+    uint32_t ble_profiles_supported; /* bit N corresponds to WendyComBleProfile N */
 } WendyComNetStatus;
 
 typedef struct _WendyComGetDeviceInfoParams {
@@ -210,7 +277,7 @@ typedef struct _WendyComEnrollmentChallenge {
     bool has_cloud_enrollment_supported;
     bool cloud_enrollment_supported; /* absent on older firmware */
     bool has_mldsa_verification_supported;
-    bool mldsa_verification_supported; /* ML-DSA-65 CA and peer certificate verification */
+    bool mldsa_verification_supported; /* wolfSSL ML-DSA CA and peer certificate verification */
     char device_id[65]; /* configured PKI identity; distinct from the USB hardware ID */
     char tenant_id[37];
     bool uuid_enrollment_supported; /* UUID discovery and enrollment identity reporting */
@@ -308,6 +375,8 @@ typedef struct _WendyComCommand {
         WendyComEnrollmentResetParams enrollment_reset;
         WendyComNetGetParams net_get;
         WendyComNetSetParams net_set;
+        WendyComBluetoothPowerGetParams bluetooth_power_get;
+        WendyComBluetoothPowerSetParams bluetooth_power_set;
     } params;
 } WendyComCommand;
 
@@ -323,6 +392,7 @@ typedef struct _WendyComResponse {
         WendyComEnrollmentChallenge enrollment_challenge;
         WendyComSyncTimeResult sync_time;
         WendyComNetStatus net_status;
+        WendyComBluetoothPowerStatus bluetooth_power;
     } data;
 } WendyComResponse;
 
@@ -411,6 +481,14 @@ extern "C" {
 #define _WendyComConfPushMode_MAX WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE
 #define _WendyComConfPushMode_ARRAYSIZE ((WendyComConfPushMode)(WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE+1))
 
+#define _WendyComBluetoothPowerMode_MIN WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_DEFAULT
+#define _WendyComBluetoothPowerMode_MAX WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_DBM
+#define _WendyComBluetoothPowerMode_ARRAYSIZE ((WendyComBluetoothPowerMode)(WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_DBM+1))
+
+#define _WendyComBleProfile_MIN WendyComBleProfile_WENDY_COM_BLE_NORMAL
+#define _WendyComBleProfile_MAX WendyComBleProfile_WENDY_COM_BLE_CODED_S8
+#define _WendyComBleProfile_ARRAYSIZE ((WendyComBleProfile)(WendyComBleProfile_WENDY_COM_BLE_CODED_S8+1))
+
 #define _WendyComNetState_MIN WendyComNetState_WENDY_COM_NET_OFF
 #define _WendyComNetState_MAX WendyComNetState_WENDY_COM_NET_FAILED
 #define _WendyComNetState_ARRAYSIZE ((WendyComNetState)(WendyComNetState_WENDY_COM_NET_FAILED+1))
@@ -420,8 +498,8 @@ extern "C" {
 #define _WendyComConsoleIo_ARRAYSIZE ((WendyComConsoleIo)(WendyComConsoleIo_WENDY_COM_CONSOLE_IO_STANDARD_ERROR+1))
 
 #define _WendyComResult_MIN WendyComResult_WENDY_COM_RESULT_OK
-#define _WendyComResult_MAX WendyComResult_WENDY_COM_RESULT_NET_ONE_CARRIER_ONLY
-#define _WendyComResult_ARRAYSIZE ((WendyComResult)(WendyComResult_WENDY_COM_RESULT_NET_ONE_CARRIER_ONLY+1))
+#define _WendyComResult_MAX WendyComResult_WENDY_COM_RESULT_NET_BLE_PROFILE_UNSUPPORTED
+#define _WendyComResult_ARRAYSIZE ((WendyComResult)(WendyComResult_WENDY_COM_RESULT_NET_BLE_PROFILE_UNSUPPORTED+1))
 
 #define _WendyComChannelErrorReason_MIN WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_NOT_OPEN
 #define _WendyComChannelErrorReason_MAX WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_REJECTED
@@ -443,6 +521,14 @@ extern "C" {
 
 
 
+#define WendyComBluetoothPowerSetting_mode_ENUMTYPE WendyComBluetoothPowerMode
+
+
+
+
+
+
+#define WendyComNetConfig_ble_profile_ENUMTYPE WendyComBleProfile
 
 
 
@@ -490,10 +576,16 @@ extern "C" {
 #define WendyComConfPushEndParams_init_default   {0}
 #define WendyComGetDeviceIdentityParams_init_default {0}
 #define WendyComDeviceIdentity_init_default      {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
-#define WendyComNetConfig_init_default           {0, 0, 0, 0, 0, 0, 0, 0}
+#define WendyComBluetoothPowerSetting_init_default {_WendyComBluetoothPowerMode_MIN, 0}
+#define WendyComBluetoothPowerConfig_init_default {false, WendyComBluetoothPowerSetting_init_default, false, WendyComBluetoothPowerSetting_init_default}
+#define WendyComBluetoothConnectionPower_init_default {0, 0, 0, 0, 0}
+#define WendyComBluetoothPowerStatus_init_default {false, WendyComBluetoothPowerConfig_init_default, false, WendyComBluetoothPowerConfig_init_default, 0, 0, 0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 0, 0, 0, 0, 0, {WendyComBluetoothConnectionPower_init_default, WendyComBluetoothConnectionPower_init_default, WendyComBluetoothConnectionPower_init_default, WendyComBluetoothConnectionPower_init_default, WendyComBluetoothConnectionPower_init_default, WendyComBluetoothConnectionPower_init_default, WendyComBluetoothConnectionPower_init_default, WendyComBluetoothConnectionPower_init_default}, ""}
+#define WendyComBluetoothPowerGetParams_init_default {0}
+#define WendyComBluetoothPowerSetParams_init_default {false, WendyComBluetoothPowerConfig_init_default}
+#define WendyComNetConfig_init_default           {0, 0, 0, 0, 0, 0, 0, 0, _WendyComBleProfile_MIN}
 #define WendyComNetGetParams_init_default        {0}
 #define WendyComNetSetParams_init_default        {false, WendyComNetConfig_init_default}
-#define WendyComNetStatus_init_default           {false, WendyComNetConfig_init_default, false, WendyComNetConfig_init_default, _WendyComNetState_MIN, 0, 0, 0, 0, 0, false, 0, false, 0, 0, 0, 0}
+#define WendyComNetStatus_init_default           {false, WendyComNetConfig_init_default, false, WendyComNetConfig_init_default, _WendyComNetState_MIN, 0, 0, 0, 0, 0, false, 0, false, 0, 0, 0, 0, 0}
 #define WendyComGetDeviceInfoParams_init_default {0}
 #define WendyComEnrollmentChallengeParams_init_default {0}
 #define WendyComEnrollmentChallenge_init_default {"", 0, 0, 0, 0, 0, 0, false, 0, false, 0, "", "", 0}
@@ -531,10 +623,16 @@ extern "C" {
 #define WendyComConfPushEndParams_init_zero      {0}
 #define WendyComGetDeviceIdentityParams_init_zero {0}
 #define WendyComDeviceIdentity_init_zero         {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
-#define WendyComNetConfig_init_zero              {0, 0, 0, 0, 0, 0, 0, 0}
+#define WendyComBluetoothPowerSetting_init_zero  {_WendyComBluetoothPowerMode_MIN, 0}
+#define WendyComBluetoothPowerConfig_init_zero   {false, WendyComBluetoothPowerSetting_init_zero, false, WendyComBluetoothPowerSetting_init_zero}
+#define WendyComBluetoothConnectionPower_init_zero {0, 0, 0, 0, 0}
+#define WendyComBluetoothPowerStatus_init_zero   {false, WendyComBluetoothPowerConfig_init_zero, false, WendyComBluetoothPowerConfig_init_zero, 0, 0, 0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 0, 0, 0, 0, 0, {WendyComBluetoothConnectionPower_init_zero, WendyComBluetoothConnectionPower_init_zero, WendyComBluetoothConnectionPower_init_zero, WendyComBluetoothConnectionPower_init_zero, WendyComBluetoothConnectionPower_init_zero, WendyComBluetoothConnectionPower_init_zero, WendyComBluetoothConnectionPower_init_zero, WendyComBluetoothConnectionPower_init_zero}, ""}
+#define WendyComBluetoothPowerGetParams_init_zero {0}
+#define WendyComBluetoothPowerSetParams_init_zero {false, WendyComBluetoothPowerConfig_init_zero}
+#define WendyComNetConfig_init_zero              {0, 0, 0, 0, 0, 0, 0, 0, _WendyComBleProfile_MIN}
 #define WendyComNetGetParams_init_zero           {0}
 #define WendyComNetSetParams_init_zero           {false, WendyComNetConfig_init_zero}
-#define WendyComNetStatus_init_zero              {false, WendyComNetConfig_init_zero, false, WendyComNetConfig_init_zero, _WendyComNetState_MIN, 0, 0, 0, 0, 0, false, 0, false, 0, 0, 0, 0}
+#define WendyComNetStatus_init_zero              {false, WendyComNetConfig_init_zero, false, WendyComNetConfig_init_zero, _WendyComNetState_MIN, 0, 0, 0, 0, 0, false, 0, false, 0, 0, 0, 0, 0}
 #define WendyComGetDeviceInfoParams_init_zero    {0}
 #define WendyComEnrollmentChallengeParams_init_zero {0}
 #define WendyComEnrollmentChallenge_init_zero    {"", 0, 0, 0, 0, 0, 0, false, 0, false, 0, "", "", 0}
@@ -578,6 +676,29 @@ extern "C" {
 #define WendyComDeviceIdentity_name_tag          2
 #define WendyComDeviceIdentity_display_name_tag  3
 #define WendyComDeviceIdentity_enrolled_device_id_tag 4
+#define WendyComBluetoothPowerSetting_mode_tag   1
+#define WendyComBluetoothPowerSetting_dbm_tag    2
+#define WendyComBluetoothPowerConfig_advertising_tag 1
+#define WendyComBluetoothPowerConfig_connections_tag 2
+#define WendyComBluetoothConnectionPower_handle_tag 1
+#define WendyComBluetoothConnectionPower_current_known_tag 2
+#define WendyComBluetoothConnectionPower_current_dbm_tag 3
+#define WendyComBluetoothConnectionPower_tx_phy_tag 4
+#define WendyComBluetoothConnectionPower_rx_phy_tag 5
+#define WendyComBluetoothPowerStatus_desired_tag 1
+#define WendyComBluetoothPowerStatus_applied_tag 2
+#define WendyComBluetoothPowerStatus_available_tag 3
+#define WendyComBluetoothPowerStatus_pending_tag 4
+#define WendyComBluetoothPowerStatus_advertising_set_supported_tag 5
+#define WendyComBluetoothPowerStatus_connections_set_supported_tag 6
+#define WendyComBluetoothPowerStatus_supported_levels_dbm_tag 7
+#define WendyComBluetoothPowerStatus_advertising_known_tag 8
+#define WendyComBluetoothPowerStatus_advertising_dbm_tag 9
+#define WendyComBluetoothPowerStatus_connection_default_known_tag 10
+#define WendyComBluetoothPowerStatus_connection_default_dbm_tag 11
+#define WendyComBluetoothPowerStatus_connections_tag 12
+#define WendyComBluetoothPowerStatus_error_tag   13
+#define WendyComBluetoothPowerSetParams_config_tag 1
 #define WendyComNetConfig_enabled_tag            1
 #define WendyComNetConfig_ble_tag                2
 #define WendyComNetConfig_infrastructure_wifi_tag 3
@@ -586,6 +707,7 @@ extern "C" {
 #define WendyComNetConfig_ble_links_tag          6
 #define WendyComNetConfig_wifi_links_tag         7
 #define WendyComNetConfig_nan_links_tag          8
+#define WendyComNetConfig_ble_profile_tag        9
 #define WendyComNetSetParams_config_tag          1
 #define WendyComNetStatus_desired_tag            1
 #define WendyComNetStatus_applied_tag            2
@@ -600,6 +722,7 @@ extern "C" {
 #define WendyComNetStatus_active_links_tag       11
 #define WendyComNetStatus_error_code_tag         12
 #define WendyComNetStatus_restarting_tag         13
+#define WendyComNetStatus_ble_profiles_supported_tag 14
 #define WendyComEnrollmentChallengeParams_status_only_tag 1
 #define WendyComEnrollmentChallenge_nonce_hex_tag 1
 #define WendyComEnrollmentChallenge_enrolled_tag 2
@@ -656,6 +779,8 @@ extern "C" {
 #define WendyComCommand_enrollment_reset_tag     21
 #define WendyComCommand_net_get_tag              22
 #define WendyComCommand_net_set_tag              23
+#define WendyComCommand_bluetooth_power_get_tag  25
+#define WendyComCommand_bluetooth_power_set_tag  26
 #define WendyComResponse_request_id_tag          1
 #define WendyComResponse_result_tag              2
 #define WendyComResponse_device_identity_tag     3
@@ -664,6 +789,7 @@ extern "C" {
 #define WendyComResponse_enrollment_challenge_tag 6
 #define WendyComResponse_sync_time_tag           7
 #define WendyComResponse_net_status_tag          8
+#define WendyComResponse_bluetooth_power_tag     10
 #define WendyComEvent_event_id_tag               1
 #define WendyComEvent_console_begin_tag          2
 #define WendyComEvent_console_data_tag           3
@@ -764,6 +890,60 @@ X(a, CALLBACK, SINGULAR, STRING,   enrolled_device_id,   4)
 #define WendyComDeviceIdentity_CALLBACK pb_default_field_callback
 #define WendyComDeviceIdentity_DEFAULT NULL
 
+#define WendyComBluetoothPowerSetting_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UENUM,    mode,              1) \
+X(a, STATIC,   SINGULAR, SINT32,   dbm,               2)
+#define WendyComBluetoothPowerSetting_CALLBACK NULL
+#define WendyComBluetoothPowerSetting_DEFAULT NULL
+
+#define WendyComBluetoothPowerConfig_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  advertising,       1) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  connections,       2)
+#define WendyComBluetoothPowerConfig_CALLBACK NULL
+#define WendyComBluetoothPowerConfig_DEFAULT NULL
+#define WendyComBluetoothPowerConfig_advertising_MSGTYPE WendyComBluetoothPowerSetting
+#define WendyComBluetoothPowerConfig_connections_MSGTYPE WendyComBluetoothPowerSetting
+
+#define WendyComBluetoothConnectionPower_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   handle,            1) \
+X(a, STATIC,   SINGULAR, BOOL,     current_known,     2) \
+X(a, STATIC,   SINGULAR, SINT32,   current_dbm,       3) \
+X(a, STATIC,   SINGULAR, UINT32,   tx_phy,            4) \
+X(a, STATIC,   SINGULAR, UINT32,   rx_phy,            5)
+#define WendyComBluetoothConnectionPower_CALLBACK NULL
+#define WendyComBluetoothConnectionPower_DEFAULT NULL
+
+#define WendyComBluetoothPowerStatus_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  desired,           1) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  applied,           2) \
+X(a, STATIC,   SINGULAR, BOOL,     available,         3) \
+X(a, STATIC,   SINGULAR, BOOL,     pending,           4) \
+X(a, STATIC,   SINGULAR, BOOL,     advertising_set_supported,   5) \
+X(a, STATIC,   SINGULAR, BOOL,     connections_set_supported,   6) \
+X(a, STATIC,   REPEATED, SINT32,   supported_levels_dbm,   7) \
+X(a, STATIC,   SINGULAR, BOOL,     advertising_known,   8) \
+X(a, STATIC,   SINGULAR, SINT32,   advertising_dbm,   9) \
+X(a, STATIC,   SINGULAR, BOOL,     connection_default_known,  10) \
+X(a, STATIC,   SINGULAR, SINT32,   connection_default_dbm,  11) \
+X(a, STATIC,   REPEATED, MESSAGE,  connections,      12) \
+X(a, STATIC,   SINGULAR, STRING,   error,            13)
+#define WendyComBluetoothPowerStatus_CALLBACK NULL
+#define WendyComBluetoothPowerStatus_DEFAULT NULL
+#define WendyComBluetoothPowerStatus_desired_MSGTYPE WendyComBluetoothPowerConfig
+#define WendyComBluetoothPowerStatus_applied_MSGTYPE WendyComBluetoothPowerConfig
+#define WendyComBluetoothPowerStatus_connections_MSGTYPE WendyComBluetoothConnectionPower
+
+#define WendyComBluetoothPowerGetParams_FIELDLIST(X, a) \
+
+#define WendyComBluetoothPowerGetParams_CALLBACK NULL
+#define WendyComBluetoothPowerGetParams_DEFAULT NULL
+
+#define WendyComBluetoothPowerSetParams_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  config,            1)
+#define WendyComBluetoothPowerSetParams_CALLBACK NULL
+#define WendyComBluetoothPowerSetParams_DEFAULT NULL
+#define WendyComBluetoothPowerSetParams_config_MSGTYPE WendyComBluetoothPowerConfig
+
 #define WendyComNetConfig_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, BOOL,     enabled,           1) \
 X(a, STATIC,   SINGULAR, BOOL,     ble,               2) \
@@ -772,7 +952,8 @@ X(a, STATIC,   SINGULAR, BOOL,     nan,               4) \
 X(a, STATIC,   SINGULAR, UINT32,   max_links,         5) \
 X(a, STATIC,   SINGULAR, UINT32,   ble_links,         6) \
 X(a, STATIC,   SINGULAR, UINT32,   wifi_links,        7) \
-X(a, STATIC,   SINGULAR, UINT32,   nan_links,         8)
+X(a, STATIC,   SINGULAR, UINT32,   nan_links,         8) \
+X(a, STATIC,   SINGULAR, UENUM,    ble_profile,       9)
 #define WendyComNetConfig_CALLBACK NULL
 #define WendyComNetConfig_DEFAULT NULL
 
@@ -800,7 +981,8 @@ X(a, STATIC,   OPTIONAL, UINT32,   allocated_bytes,   9) \
 X(a, STATIC,   OPTIONAL, UINT32,   internal_bytes,   10) \
 X(a, STATIC,   SINGULAR, UINT32,   active_links,     11) \
 X(a, STATIC,   SINGULAR, UINT32,   error_code,       12) \
-X(a, STATIC,   SINGULAR, BOOL,     restarting,       13)
+X(a, STATIC,   SINGULAR, BOOL,     restarting,       13) \
+X(a, STATIC,   SINGULAR, UINT32,   ble_profiles_supported,  14)
 #define WendyComNetStatus_CALLBACK NULL
 #define WendyComNetStatus_DEFAULT NULL
 #define WendyComNetStatus_desired_MSGTYPE WendyComNetConfig
@@ -913,7 +1095,9 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (params,enrollment_challenge,params.enrollmen
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,sync_time,params.sync_time),  20) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,enrollment_reset,params.enrollment_reset),  21) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,net_get,params.net_get),  22) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (params,net_set,params.net_set),  23)
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,net_set,params.net_set),  23) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,bluetooth_power_get,params.bluetooth_power_get),  25) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,bluetooth_power_set,params.bluetooth_power_set),  26)
 #define WendyComCommand_CALLBACK NULL
 #define WendyComCommand_DEFAULT NULL
 #define WendyComCommand_params_ping_MSGTYPE WendyComPingParams
@@ -938,6 +1122,8 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (params,net_set,params.net_set),  23)
 #define WendyComCommand_params_enrollment_reset_MSGTYPE WendyComEnrollmentResetParams
 #define WendyComCommand_params_net_get_MSGTYPE WendyComNetGetParams
 #define WendyComCommand_params_net_set_MSGTYPE WendyComNetSetParams
+#define WendyComCommand_params_bluetooth_power_get_MSGTYPE WendyComBluetoothPowerGetParams
+#define WendyComCommand_params_bluetooth_power_set_MSGTYPE WendyComBluetoothPowerSetParams
 
 #define WendyComResponse_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   request_id,        1) \
@@ -947,7 +1133,8 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (data,device_info,data.device_info),   4) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,sensor_link_manifest,data.sensor_link_manifest),   5) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,enrollment_challenge,data.enrollment_challenge),   6) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,sync_time,data.sync_time),   7) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (data,net_status,data.net_status),   8)
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,net_status,data.net_status),   8) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,bluetooth_power,data.bluetooth_power),  10)
 #define WendyComResponse_CALLBACK NULL
 #define WendyComResponse_DEFAULT NULL
 #define WendyComResponse_data_device_identity_MSGTYPE WendyComDeviceIdentity
@@ -956,6 +1143,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (data,net_status,data.net_status),   8)
 #define WendyComResponse_data_enrollment_challenge_MSGTYPE WendyComEnrollmentChallenge
 #define WendyComResponse_data_sync_time_MSGTYPE WendyComSyncTimeResult
 #define WendyComResponse_data_net_status_MSGTYPE WendyComNetStatus
+#define WendyComResponse_data_bluetooth_power_MSGTYPE WendyComBluetoothPowerStatus
 
 #define WendyComEvent_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   event_id,          1) \
@@ -1043,6 +1231,12 @@ extern const pb_msgdesc_t WendyComConfPushDataParams_msg;
 extern const pb_msgdesc_t WendyComConfPushEndParams_msg;
 extern const pb_msgdesc_t WendyComGetDeviceIdentityParams_msg;
 extern const pb_msgdesc_t WendyComDeviceIdentity_msg;
+extern const pb_msgdesc_t WendyComBluetoothPowerSetting_msg;
+extern const pb_msgdesc_t WendyComBluetoothPowerConfig_msg;
+extern const pb_msgdesc_t WendyComBluetoothConnectionPower_msg;
+extern const pb_msgdesc_t WendyComBluetoothPowerStatus_msg;
+extern const pb_msgdesc_t WendyComBluetoothPowerGetParams_msg;
+extern const pb_msgdesc_t WendyComBluetoothPowerSetParams_msg;
 extern const pb_msgdesc_t WendyComNetConfig_msg;
 extern const pb_msgdesc_t WendyComNetGetParams_msg;
 extern const pb_msgdesc_t WendyComNetSetParams_msg;
@@ -1086,6 +1280,12 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComConfPushEndParams_fields &WendyComConfPushEndParams_msg
 #define WendyComGetDeviceIdentityParams_fields &WendyComGetDeviceIdentityParams_msg
 #define WendyComDeviceIdentity_fields &WendyComDeviceIdentity_msg
+#define WendyComBluetoothPowerSetting_fields &WendyComBluetoothPowerSetting_msg
+#define WendyComBluetoothPowerConfig_fields &WendyComBluetoothPowerConfig_msg
+#define WendyComBluetoothConnectionPower_fields &WendyComBluetoothConnectionPower_msg
+#define WendyComBluetoothPowerStatus_fields &WendyComBluetoothPowerStatus_msg
+#define WendyComBluetoothPowerGetParams_fields &WendyComBluetoothPowerGetParams_msg
+#define WendyComBluetoothPowerSetParams_fields &WendyComBluetoothPowerSetParams_msg
 #define WendyComNetConfig_fields &WendyComNetConfig_msg
 #define WendyComNetGetParams_fields &WendyComNetGetParams_msg
 #define WendyComNetSetParams_fields &WendyComNetSetParams_msg
@@ -1125,11 +1325,17 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 /* WendyComResponse_size depends on runtime parameters */
 /* WendyComEvent_size depends on runtime parameters */
 /* WendyComMessage_size depends on runtime parameters */
-#define WENDY_COM_MSG_PB_H_MAX_SIZE              WendyComEnrollmentChallenge_size
+#define WENDY_COM_MSG_PB_H_MAX_SIZE              WendyComBluetoothPowerStatus_size
 #define WendyComAppPushBeginParams_size          8
 #define WendyComAppPushEndParams_size            0
 #define WendyComAppStartParams_size              0
 #define WendyComAppStopParams_size               0
+#define WendyComBluetoothConnectionPower_size    26
+#define WendyComBluetoothPowerConfig_size        20
+#define WendyComBluetoothPowerGetParams_size     0
+#define WendyComBluetoothPowerSetParams_size     22
+#define WendyComBluetoothPowerSetting_size       8
+#define WendyComBluetoothPowerStatus_size        500
 #define WendyComChannelClose_size                0
 #define WendyComChannelError_size                2
 #define WendyComChannelOpen_size                 0
@@ -1147,10 +1353,10 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComGetDeviceIdentityParams_size     0
 #define WendyComGetDeviceInfoParams_size         0
 #define WendyComHandshake_size                   20
-#define WendyComNetConfig_size                   32
+#define WendyComNetConfig_size                   34
 #define WendyComNetGetParams_size                0
-#define WendyComNetSetParams_size                34
-#define WendyComNetStatus_size                   110
+#define WendyComNetSetParams_size                36
+#define WendyComNetStatus_size                   120
 #define WendyComOpenChannel_size                 0
 #define WendyComPingParams_size                  0
 #define WendyComProtocolVersion_size             12

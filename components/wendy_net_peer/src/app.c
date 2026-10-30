@@ -1,6 +1,9 @@
 #include "wendy_net_alloc.h"
 /* One bounded, device-authenticated app stream per TCP/TLS connection. */
 #include "wendy_net_peer.h"
+#if CONFIG_WENDY_NET_BLE
+#include "wendy_ble_mesh.h"
+#endif
 #include "wendy_net_peer_protocol.h"
 #include "wendy_pki_mesh.h"
 #include "wendy_pki_work.h"
@@ -214,6 +217,13 @@ static void close_flow(struct app_flow *flow)
     wendy_net_memory_release(&flow->datagram_out_charge);wendy_net_free(flow);
     atomic_fetch_sub(outbound ? &outbound_flows : &inbound_flows,1);
 }
+static int64_t app_handshake_budget(void)
+{
+#if CONFIG_WENDY_NET_BLE
+    if(wble_mesh_profile()==2)return INT64_C(240000000);
+#endif
+    return INT64_C(120000000);
+}
 #if CONFIG_WENDY_NET
 struct guest_connect {int handle;char peer[37];uint16_t port;bool datagram;int64_t deadline;};
 
@@ -251,7 +261,7 @@ static int guest_mesh_begin(int handle,const char *host,uint16_t port,bool datag
     struct guest_connect *request=wendy_net_calloc(1,sizeof *request);
     if(request){
         request->handle=handle;request->port=port;request->datagram=datagram;
-        request->deadline=esp_timer_get_time()+INT64_C(120000000);
+        request->deadline=esp_timer_get_time()+app_handshake_budget();
         memcpy(request->peer,peer,sizeof peer);
         pthread_mutex_lock(&request_lock);
         bool accepted=atomic_load(&ready) && pending_guest==NULL;
@@ -269,7 +279,7 @@ static struct app_flow *new_flow(int fd,bool outbound)
     struct app_flow *f=&d->flow;
     f->fd=fd;f->outbound=outbound;f->backend=f->pair_listener=f->pair_guest=-1;
     atomic_init(&f->job_done,false);
-    f->state=(struct wna_session){.phase=WNA_PREPARE,.deadline=(uint64_t)esp_timer_get_time()+UINT64_C(120000000)};
+    f->state=(struct wna_session){.phase=WNA_PREPARE,.deadline=(uint64_t)esp_timer_get_time()+(uint64_t)app_handshake_budget()};
     f->wanted=6;return f;
 }
 static void app_actor_add(struct app_flow *flow)
@@ -407,7 +417,9 @@ static int negotiate(struct app_flow *f)
     }
     if(!f->datagram_max && !f->buffers){f->buffers=wendy_net_calloc(2,sizeof *f->buffers);if(!f->buffers)return -1;}
     f->negotiated=true;((struct datagram_flow *)f)->activity=esp_timer_get_time();
-    ESP_LOGI(TAG,"actor VIP ready: peer=%s port=%u udp=%u heap=%u",f->expected,(unsigned)f->service_port,(unsigned)f->datagram_max,(unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT));
+    ESP_LOGI(TAG,"actor VIP ready: peer=%s port=%u udp=%u heap=%u internal_min=%u internal_largest=%u",f->expected,(unsigned)f->service_port,(unsigned)f->datagram_max,(unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+        (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
     return 0;
 }
 static int relay_step(struct app_flow *f)

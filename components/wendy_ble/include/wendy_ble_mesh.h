@@ -8,6 +8,15 @@
 
 #define WBLE_MESH_TIME_PSM 130
 
+/* Boot-only selection: 0 normal, 1 Coded S2, 2 Coded S8. Runtime changes
+ * use the management reply/reboot fence; a live host never changes profile. */
+void wble_mesh_set_profile(unsigned profile);
+unsigned wble_mesh_profile(void);
+const char *wble_mesh_profile_name(void);
+int wble_mesh_profile_sync(void); /* host only, after synchronization */
+void wble_mesh_profile_connected(uint16_t handle); /* host only */
+void wble_mesh_profile_event(const void *gap_event); /* host only */
+
 struct wble_mesh_pipe;
 struct wble_mesh_peer
 {
