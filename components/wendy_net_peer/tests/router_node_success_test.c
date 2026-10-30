@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-struct wendy_pki_connection {struct wendy_pki_mesh_peer peer;};
+struct wendy_pki_connection {struct wendy_pki_mesh_peer peer;const struct wendy_pki_operator_peer *operator;};
 /* Fixture implementation of the boot-owned publication counter. */
 esp_err_t wendy_pki_mesh_revision_next(uint64_t *);
 #include "../src/router_session.c"
@@ -22,6 +22,8 @@ int wncs_open_limits(struct wncs_store *s,size_t limit,unsigned parts,unsigned c
 void *wncs_retain(void *s,const uint8_t hash[32]){(void)s;(void)hash;return NULL;}
 void wncs_release(void *loan){assert(!loan);}
 void wncs_close(struct wncs_store *s){(void)s;}
+struct wncs_loan *wncs_issuer_loan(struct wncs_store *s,int64_t now){(void)s;(void)now;return NULL;}
+void wncs_issuer_loan_free(void *loan){assert(!loan);}
 size_t wncs_trim(struct wncs_store *s){(void)s;certificate_trims++;return 0;}
 void wncs_set_baseline(struct wncs_store *s,void *context,
     int (*read)(void *,const uint8_t[32],size_t,uint8_t[WNCF_CHUNK],size_t *))
@@ -113,6 +115,8 @@ esp_err_t nvs_set_blob(nvs_handle_t handle,const char *name,const void *bytes,si
 }
 esp_err_t nvs_commit(nvs_handle_t handle){assert(handle==1);commits++;return ESP_OK;}
 bool wendy_net_app_ready(void){return true;}
+const struct wendy_pki_operator_peer *wendy_pki_mesh_authenticated_operator(wendy_pki_connection *c)
+{return c->operator;}
 int wendy_pki_mesh_authenticated_peer(wendy_pki_connection *c,struct wendy_pki_mesh_peer *out)
 {*out=c->peer;return 0;}
 int wendy_pki_mesh_describe(wendy_pki_connection *c,char *out,size_t size)
@@ -445,6 +449,42 @@ static void large_manifest_repair_fixture(void)
     assert(!strcmp(node.pending->principal,principal));
     wendy_net_free(node.pending);wnd_deinit(&node.core.directory);free(body);free(wire);free(value);
 }
+static int discard_operator_frame(void *ctx,const void *bytes,size_t size,bool control)
+{(void)ctx;(void)bytes;(void)size;(void)control;return 0;}
+static void operator_attachment_fixture(void)
+{
+    struct wendy_pki_operator_peer primary={.expires=1800003600};
+    snprintf(primary.principal,sizeof primary.principal,"spiffe://wendy.sh/tenant/%s/operator/alice",tenant);
+    wendy_pki_connection tls={.operator=&primary};
+    struct wendy_pki_mesh_identity identity={.verified_seconds=1800000000,
+        .verified_monotonic_us=clock_us,.certificate_expires=1800003600,.config_generation=1};
+    strcpy(identity.tenant,tenant);strcpy(identity.device,ids[0]);
+    struct wnrs_node *owner=NULL;struct wnrs *first=NULL;
+    uint8_t installation[16]={1};
+    assert(wnrs_open_operator(&first,&owner,&tls,&identity,(uint8_t[16]){0},128,discard_operator_frame,NULL));
+    assert(!first && !owner);
+#if WENDY_NET_SMALL_RESOURCES || CONFIG_WENDY_NET_ENDPOINT_GATEWAY
+    assert(wnrs_open_operator(&first,&owner,&tls,&identity,installation,128,discard_operator_frame,NULL));
+    assert(!first && !owner);
+#else
+    struct wnrs *second=NULL;
+    assert(!wnrs_open_operator(&first,&owner,&tls,&identity,installation,128,discard_operator_frame,NULL));
+    assert(first->operator_peer==&primary && !owner->core.directory.count);
+    assert(owner->core.babel.links[0].config.local[15]==1 && owner->core.babel.links[0].config.peer[15]==2);
+    struct wb_route route;assert(!wnr_lookup(&owner->core,first->peer_address,clock_us,&route));
+    /* TLS plus hello creates no route authority. Separate installations of
+     * one operator have distinct addresses and typed topology ownership. */
+    installation[0]=2;
+    assert(!wnrs_open_operator(&second,&owner,&tls,&identity,installation,128,discard_operator_frame,NULL));
+    assert(memcmp(first->peer_address,second->peer_address,16));
+    struct wnt_record_view row={.record=WendyComNetTopologyRecord_init_zero};
+    assert(topology_record(owner,0,clock_us,&row));
+    assert(row.record.owner_role==WNT_TOPOLOGY_OPERATOR && !row.record.device.size);
+    assert(row.principal==primary.principal && row.record.owner_instance.bytes[0]==2);
+    wnrs_close(first);assert(owner && owner->sessions==second);
+    wnrs_close(second);assert(!owner);
+#endif
+}
 int main(int argc,char **argv)
 {
     assert(argc==2 && !wendy_pki_crypto_init());
@@ -587,6 +627,7 @@ int main(int argc,char **argv)
     wnrs_close(peers[0].session);peers[0].session=NULL;assert(!node);drain();
     assert(!opens && !closes && !commits && !journal_size && !service_journal_size);
     for(unsigned i=0;i<2;i++)wb_deinit(&peers[i].remote);
+    operator_attachment_fixture();
     mbedtls_pk_free(&key);
 #if defined(WENDY_NET_MEMORY_HOST_BUDGET_TEST)
     wendy_net_runtime_memory_close();assert(wendy_net_runtime_memory_drained());

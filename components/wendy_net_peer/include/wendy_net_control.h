@@ -3,6 +3,10 @@
 #include "wendy_net_gossip.h"
 #include "wendy_net_peer_protocol.h"
 
+#define WN_OPERATOR_HELLO_MAX 128
+int wn_operator_hello_read(const void *,size_t,uint8_t instance[16]);
+int wn_operator_ready_write(void *,size_t);
+
 int wn_router_hello_write(const char *self, const char *peer, char *, size_t);
 int wn_router_hello_check(const void *, size_t, const char *self,
                           const char *peer);

@@ -19,6 +19,25 @@ static void roundtrip(const struct wg_message *message)
 }
 int main(void)
 {
+    /* Exact Go operator-router CBOR envelope; bytes deliberately independent
+     * of the production writer so aliases or framing drift cannot roundtrip. */
+    uint8_t hello[]={0xa2,0x61,'k',0x75,'o','p','e','r','a','t','o','r','-','r','o','u','t','e','r','-','h','e','l','l','o',0x61,'n',0x50,
+        1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16};
+    /* The hello text is21 bytes (CBOR0x75). */
+    uint8_t installation[16];
+    assert(!wn_operator_hello_read(hello,sizeof hello,installation));
+    assert(!memcmp(installation,hello+sizeof hello-16,16));
+    for(size_t n=0;n<sizeof hello;n++)assert(wn_operator_hello_read(hello,n,installation));
+    uint8_t extended[128];memcpy(extended,hello,sizeof hello);extended[0]=0xa3;
+    memcpy(extended+sizeof hello,(uint8_t[]){0x61,'z',0xf5},3);
+    assert(!wn_operator_hello_read(extended,sizeof hello+3,installation));
+    memcpy(extended+sizeof hello,(uint8_t[]){0x61,'n',0x41,1},4);
+    assert(wn_operator_hello_read(extended,sizeof hello+4,installation));
+    memset(hello+sizeof hello-16,0,16);assert(wn_operator_hello_read(hello,sizeof hello,installation));
+    hello[4]='X';assert(wn_operator_hello_read(hello,sizeof hello,installation));
+    uint8_t ready[64];int ready_size=wn_operator_ready_write(ready,sizeof ready);
+    assert(ready_size==25 && !memcmp(ready,"\xa1\x61k\x75operator-router-ready",25));
+    assert(wn_operator_ready_write(ready,24)<0);
     /* A future peer's optional operation has its own body schema. Skip it
      * without attempting to decode that schema as today's DATA format. */
     uint8_t future[256];struct wn_writer writer={.data=future,.capacity=sizeof future,.maximum=sizeof future};

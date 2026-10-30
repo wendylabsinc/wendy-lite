@@ -32,8 +32,8 @@ static void execute(void *context)
     if(want->enabled && !o->applied.enabled){
         mdns_txt_item_t txt[]={ {"version","1"},{"protocol","tls-v1"},
             {"principal",want->principal},{"mesh",want->mesh},{"role","embedded-router"},
-            {"platform","Lite"},{"ble",want->radio},{"ble_psm",want->psm} };
-        if(mdns_service_add(want->instance,"_wendy-net","_tcp",43024,txt,want->radio[0] ? 8:6)==ESP_OK)
+            {"platform","Lite"},{"operator_router",want->operator_router ? "1":"0"},{"ble",want->radio},{"ble_psm",want->psm} };
+        if(mdns_service_add(want->instance,"_wendy-net","_tcp",43024,txt,want->radio[0] ? 9:7)==ESP_OK)
             o->applied=*want;
     }
     if(o->search && !o->finished){
