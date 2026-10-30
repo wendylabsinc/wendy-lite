@@ -44,6 +44,24 @@ struct native_flow {
 };
 static struct native_flow *flows;
 static unsigned flow_count;
+static int native_socket_options(int fd)
+{
+    /* A userspace operator router can disappear without sending TCP FIN/RST.
+     * Without probes, two such sessions exhaust a C5's management capacity
+     * until certificate expiry. Reclaim a silent dead transport in about 30s;
+     * an idle but reachable operator simply acknowledges the TCP probes. */
+    int enabled=1,idle=15,interval=5,probes=3;
+#ifdef TCP_KEEPIDLE
+    int idle_option=TCP_KEEPIDLE; /* lwIP/Linux: seconds, unlike lwIP TCP_KEEPALIVE. */
+#else
+    int idle_option=TCP_KEEPALIVE; /* Darwin's seconds-based spelling. */
+#endif
+    return setsockopt(fd,IPPROTO_TCP,TCP_NODELAY,&enabled,sizeof enabled) ||
+        setsockopt(fd,SOL_SOCKET,SO_KEEPALIVE,&enabled,sizeof enabled) ||
+        setsockopt(fd,IPPROTO_TCP,idle_option,&idle,sizeof idle) ||
+        setsockopt(fd,IPPROTO_TCP,TCP_KEEPINTVL,&interval,sizeof interval) ||
+        setsockopt(fd,IPPROTO_TCP,TCP_KEEPCNT,&probes,sizeof probes);
+}
 static int ending(struct native_flow *f,const char *reason,int64_t now)
 {
     ESP_LOGI("net-native-agent","native VIP closed: reason=%s phase=%u result=%d",reason,(unsigned)f->state.phase,f->result);
@@ -215,9 +233,10 @@ int wendy_net_agent_poll(void)
     int progress=0,fd=take_pending();
     if(fd>=0){
         struct native_flow *f=flow_count<CONFIG_WENDY_NET_APP_MAX_FLOWS ? wendy_net_calloc(1,sizeof *f):NULL;
-        int yes=1,flags=fcntl(fd,F_GETFL,0);
+        if(!f)ESP_LOGD("net-native-agent","native VIP admission unavailable: live=%u limit=%u",flow_count,(unsigned)CONFIG_WENDY_NET_APP_MAX_FLOWS);
+        int flags=fcntl(fd,F_GETFL,0);
         if(!f || fd>=FD_SETSIZE || flags<0 || fcntl(fd,F_SETFL,flags|O_NONBLOCK)<0 ||
-           setsockopt(fd,IPPROTO_TCP,TCP_NODELAY,&yes,sizeof yes)){
+           native_socket_options(fd)){
             close(fd);wendy_net_free(f);
         }else{
             f->fd=fd;f->state.phase=WNA_PREPARE;
