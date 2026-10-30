@@ -440,3 +440,18 @@ target_include_directories(operator_app_composed_test PRIVATE ../src ../../wendy
 target_compile_definitions(operator_app_composed_test PRIVATE WENDY_MESH_TEST_LOG=1 WENDY_NET_MEMORY_HOST_BUDGET_TEST=1 CONFIG_WENDY_NET=1 CONFIG_WENDY_NET_TCP_RELAY_BUFFER_SIZE=256)
 target_compile_options(operator_app_composed_test PRIVATE -UNDEBUG -Wall -Wextra -Werror -Wno-unused-parameter -Wno-unused-function)
 target_link_libraries(operator_app_composed_test PRIVATE pki)
+
+add_executable(native_operator_router_test native_operator_router_test.c ${PKI_TLS}
+    ../../wendy_net_gossip/src/gossip.c
+    ../../wendy_net_peer/src/carrier.c ../../wendy_net_peer/src/control.c
+    ../../wendy_net_peer/src/protocol.c ../../wendy_net_peer/src/binary.c
+    ../../wendy_net_peer/src/packet.c "${IDF_COMPONENTS}/http_parser/http_parser.c")
+target_include_directories(native_operator_router_test PRIVATE ../src ../../wendy_net_peer/include ../../wendy_net_gossip/include "${IDF_COMPONENTS}/http_parser")
+target_compile_options(native_operator_router_test PRIVATE -UNDEBUG -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter)
+target_compile_definitions(native_operator_router_test PRIVATE WENDY_MESH_TEST_LOG=1)
+target_link_libraries(native_operator_router_test PRIVATE pki)
+foreach(profile p256 mldsa65)
+    add_test(NAME native_operator_router_${profile} COMMAND "${GO_EXECUTABLE}" run
+        "${CMAKE_CURRENT_LIST_DIR}/native_operator_router_driver.go" "$<TARGET_FILE:native_operator_router_test>" "${profile}")
+    set_tests_properties(native_operator_router_${profile} PROPERTIES TIMEOUT 120)
+endforeach()

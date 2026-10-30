@@ -6,6 +6,23 @@
 #include <stdio.h>
 #include <string.h>
 
+int wn_operator_hello_read(const void *data,size_t size,uint8_t instance[16])
+{
+    struct wn_doc d;size_t n=0;uint8_t id[16],nonzero=0;
+    if(!instance || size>WN_OPERATOR_HELLO_MAX || wn_doc_parse(&d,data,size) ||
+       !wn_doc_equal(&d,wn_doc_member(&d,0,"k"),"operator-router-hello") ||
+       wn_doc_copy_bytes(&d,wn_doc_member(&d,0,"n"),id,sizeof id,&n) || n!=16)return -1;
+    for(unsigned i=0;i<16;i++)nonzero|=id[i];
+    if(!nonzero)return -1;
+    memcpy(instance,id,16);return 0;
+}
+int wn_operator_ready_write(void *out,size_t cap)
+{
+    if(!out)return -1;
+    struct wn_writer w={.data=out,.capacity=cap,.maximum=WN_OPERATOR_HELLO_MAX};
+    wn_map(&w,1);wn_key(&w,"k");wn_text(&w,"operator-router-ready");return wn_finish(&w);
+}
+
 int wn_router_hello_write(const char *self,const char *peer,char *out,size_t cap)
 {
     uint8_t uuid[16];if(!out || wn_uuid_parse(self,uuid) || wn_uuid_parse(peer,uuid) || !strcmp(self,peer))return -1;

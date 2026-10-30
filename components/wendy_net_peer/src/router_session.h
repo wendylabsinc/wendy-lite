@@ -9,6 +9,8 @@ typedef int (*wnrs_send)(void *, const void *, size_t, bool control);
 int wnrs_open(struct wnrs **, struct wnrs_node **owner, wendy_pki_connection *,
               const struct wendy_pki_mesh_identity *, const char *peer, uint16_t cost,
               wnrs_send, void *);
+int wnrs_open_operator(struct wnrs **,struct wnrs_node **,wendy_pki_connection *,
+    const struct wendy_pki_mesh_identity *,const uint8_t instance[16],uint16_t,wnrs_send,void *);
 /* The outer owner must keep its TLS connection alive while
  * wncrypto_borrowed(connection) is true, including after protocol cancellation.
  * Close removes node/session state; independent verification loans self-drain. */

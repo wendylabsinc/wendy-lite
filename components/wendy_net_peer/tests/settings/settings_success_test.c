@@ -46,6 +46,11 @@ int main(void)
  WendyComNetTopologyParams query=WendyComNetTopologyParams_init_zero;
  WendyComNetTopologyPage page=WendyComNetTopologyPage_init_zero;
  assert(delegate->topology(&query,&page)==WendyComResult_WENDY_COM_RESULT_OK&&!page.runtime_available&&!writes);
+#if !WENDY_NET_NON_TRANSIT
+ assert(status.desired.max_links==8 && status.desired.wifi_links==8);
+ WendyComNetConfig too_many=status.desired;too_many.max_links=9;
+ assert(delegate->set(&too_many,&status,&token)==WendyComResult_WENDY_COM_RESULT_BAD_STATE);
+#endif
  WendyComNetConfig config=status.desired;
  config.enabled=true;
  if(!config.ble&&!config.infrastructure_wifi){config.ble=CONFIG_WENDY_NET_BLE;config.infrastructure_wifi=CONFIG_WENDY_WIFI_ENABLED;}

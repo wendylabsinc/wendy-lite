@@ -42,10 +42,10 @@ static esp_err_t normalize(WendyComNetConfig *c)
 {
     if(!c->max_links)c->max_links=WENDY_NET_NON_TRANSIT ? 1:CONFIG_WENDY_NET_MAX_LINKS;
     if(!c->ble_links)c->ble_links=c->max_links<CONFIG_WENDY_NET_BLE_CHANNELS ? c->max_links:CONFIG_WENDY_NET_BLE_CHANNELS;
-    if(!c->wifi_links)c->wifi_links=c->max_links<3 ? c->max_links:3;
+    if(!c->wifi_links)c->wifi_links=c->max_links;
     if(!c->nan_links)c->nan_links=1;
     if(c->max_links>CONFIG_WENDY_NET_MAX_LINKS || c->ble_links>CONFIG_WENDY_NET_BLE_CHANNELS ||
-       c->wifi_links>3 || c->nan_links>1)return ESP_ERR_INVALID_ARG;
+       c->wifi_links>CONFIG_WENDY_NET_MAX_LINKS || c->nan_links>1)return ESP_ERR_INVALID_ARG;
     if(WENDY_NET_NON_TRANSIT &&
        (c->max_links!=1 || c->ble_links>1 || c->wifi_links>1 || c->nan_links>1 ||
         (unsigned)c->ble+(unsigned)c->infrastructure_wifi+(unsigned)c->nan>1))return ESP_ERR_NOT_SUPPORTED;

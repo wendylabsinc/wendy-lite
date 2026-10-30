@@ -137,17 +137,18 @@ menu "Wendy Net native peer"
     config WENDY_NET_MAX_LINKS
         int "Maximum simultaneous authenticated carriers"
         depends on WENDY_NET_ROUTER
-        range 1 6
+        range 1 8
         default 1 if WENDY_NET_CONSTRAINED_PROFILE
-        default 6 if SPIRAM
+        default 8 if SPIRAM
         default 2
         help
             An allocation bound, not a measured hardware maximum.
             Additional carrier state is allocated on demand. TLS setup is
             serialized on the existing worker while packet handling continues.
             The native Babel link bound follows this setting on ESP targets.
-            Six is the PSRAM configuration target (three BLE plus three IP);
-            it is not a qualified SRAM-only profile.
+            Eight total carriers is the PSRAM configuration target; BLE retains
+            its separately configured physical channel ceiling. This limit
+            is not a qualified SRAM-only profile.
     config WENDY_NET_ROUTING_QUEUE_FRAMES
         int "Bounded Babel frames per carrier"
         depends on WENDY_NET_ROUTER

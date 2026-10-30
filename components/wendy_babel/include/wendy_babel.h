@@ -32,7 +32,7 @@
 #if defined(ESP_PLATFORM) && CONFIG_WENDY_NET_CONSTRAINED_PROFILE
 #define WB_CANDIDATES 64
 #else
-#define WB_CANDIDATES 768
+#define WB_CANDIDATES (WB_ROUTES * (WB_LINKS > 6 ? WB_LINKS : 6))
 #endif
 #endif
 #ifndef WB_SOURCES
@@ -53,10 +53,10 @@
 #if defined(ESP_PLATFORM) && CONFIG_WENDY_NET_CONSTRAINED_PROFILE
 #define WB_MESSAGES 96
 #else
-/* A 64-origin dump across six carriers needs more than 256 queued TLVs.
+/* A 64-origin dump across full-router carriers needs more than 256 queued TLVs.
  * This is a growth ceiling, not an allocated array. The constrained profile
  * keeps 96 above. */
-#define WB_MESSAGES 1024
+#define WB_MESSAGES (WB_LINKS > 6 ? 1536 : 1024)
 #endif
 #endif
 #define WB_INFINITY UINT16_MAX

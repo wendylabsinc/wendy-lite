@@ -1,0 +1,113 @@
+--- a/src/ble_l2cap_coc.c
++++ b/src/ble_l2cap_coc.c
+@@ -67,15 +67,14 @@
+ #define max(a, b) ((a) > (b) ? (a) : (b))
+ #endif
+ 
+-#if BLE_L2CAP_SDU_BUFF_CNT > 1
+-/* Remote short SDUs can consume one parked buffer per PDU. Bound a deferred
+- * initial refill by the ACTUAL contiguous buffers still armed now, not the
+- * target remembered before old credits/partial bytes were received. */
+-static uint16_t
+-ble_l2cap_coc_credit_target(struct ble_l2cap_chan *chan)
++/* A peer may spend each credit on a separate short SDU. Initial grants and
++ * later refills therefore need one contiguous armed buffer per credit, even
++ * when the advertised MTU would need several PDUs for a single long SDU. */
++uint16_t
++ble_l2cap_coc_backed_credits(struct ble_l2cap_chan *chan)
+ {
+     struct ble_l2cap_coc_endpoint *rx = &chan->coc_rx;
+-    uint16_t armed = 0, target = 0;
++    uint16_t armed = 0;
+     for (unsigned i = 0; i < BLE_L2CAP_SDU_BUFF_CNT; i++) {
+         unsigned index = (rx->current_sdu_idx + i) % BLE_L2CAP_SDU_BUFF_CNT;
+         if (rx->sdus[index] == NULL) {
+@@ -83,15 +82,23 @@
+         }
+         armed++;
+     }
++    return chan->initial_credits < armed ? chan->initial_credits : armed;
++}
++
++static uint16_t
++ble_l2cap_coc_credit_target(struct ble_l2cap_chan *chan)
++{
++    struct ble_l2cap_coc_endpoint *rx = &chan->coc_rx;
+     if (rx->flags & BLE_L2CAP_COC_RX_CREDITS_INITIAL) {
+-        target = chan->initial_credits;
+-    } else if ((rx->flags & BLE_L2CAP_COC_RX_CREDITS_PARTIAL) && armed &&
+-               rx->data_offset > OS_MBUF_PKTLEN(rx->sdus[rx->current_sdu_idx])) {
+-        target = 1;
+-    }
+-    return target < armed ? target : armed;
+-}
+-#endif
++        return ble_l2cap_coc_backed_credits(chan);
++    }
++    if ((rx->flags & BLE_L2CAP_COC_RX_CREDITS_PARTIAL) &&
++        rx->sdus[rx->current_sdu_idx] &&
++        rx->data_offset > OS_MBUF_PKTLEN(rx->sdus[rx->current_sdu_idx])) {
++        return 1;
++    }
++    return 0;
++}
+ 
+ /* Credit notifications share the ordinary signaling pool. Keep only intent
+  * when that pool is busy; accepting an RX SDU still transfers ownership once.
+@@ -110,12 +117,7 @@
+         rx->flags &= ~BLE_L2CAP_COC_RX_CREDITS_PENDING;
+         return;
+     }
+-#if BLE_L2CAP_SDU_BUFF_CNT > 1
+     target = ble_l2cap_coc_credit_target(chan);
+-#else
+-    target = (rx->flags & BLE_L2CAP_COC_RX_CREDITS_INITIAL) ?
+-        chan->initial_credits : 1;
+-#endif
+     if (rx->credits >= target) {
+         rx->flags &= ~BLE_L2CAP_COC_RX_CREDITS_PENDING;
+         return;
+@@ -562,6 +564,12 @@
+     }
+ 
+     chan->initial_credits = chan->coc_rx.credits;
++    /* An outgoing request can only grant the SDU already lent by its caller.
++     * Incoming channels are capped after ACCEPT has armed their buffers;
++     * keeping the provisional ceiling here prevents pre-response top-ups. */
++    if (sdu_rx != NULL) {
++        chan->coc_rx.credits = ble_l2cap_coc_backed_credits(chan);
++    }
+     return chan;
+ }
+ 
+--- a/src/ble_l2cap_sig.c
++++ b/src/ble_l2cap_sig.c
+@@ -764,7 +764,16 @@
+     event.accept.conn_handle = chan->conn_handle;
+     event.accept.peer_sdu_size = peer_sdu_size;
+ 
+-    return chan->cb(&event, chan->cb_arg);
++    int rc = chan->cb(&event, chan->cb_arg);
++    if (rc == 0) {
++        /* ACCEPT runs synchronously before the connection response publishes
++         * its initial grant. The application may have armed fewer buffers
++         * than ceil(MTU/MPS), including the one-buffer management adapter. */
++        ble_hs_lock();
++        chan->coc_rx.credits = ble_l2cap_coc_backed_credits(chan);
++        ble_hs_unlock();
++    }
++    return rc;
+ }
+ 
+ static void
+--- a/src/ble_l2cap_coc_priv.h
++++ b/src/ble_l2cap_coc_priv.h
+@@ -82,6 +82,8 @@
+ void ble_l2cap_coc_le_credits_update(uint16_t conn_handle, uint16_t dcid,
+                                     uint16_t credits);
+ int32_t ble_l2cap_coc_credit_timer(void);
++/* Host-serialized count of credits backed by the currently armed RX ring. */
++uint16_t ble_l2cap_coc_backed_credits(struct ble_l2cap_chan *chan);
+ int ble_l2cap_coc_recv_ready(struct ble_l2cap_chan *chan,
+                              struct os_mbuf *sdu_rx);
+ int ble_l2cap_coc_send(struct ble_l2cap_chan *chan, struct os_mbuf *sdu_tx);
