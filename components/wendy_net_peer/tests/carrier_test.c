@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
+static bool operator_mode;
 struct port
 {
     struct port *peer;
@@ -48,6 +49,7 @@ static ssize_t write_bytes(void *ctx, const void *data, size_t size)
 {
     struct port *p = ctx, *q = p->peer;
     p->writes++;
+    if(p->writes==1)assert(((const uint8_t *)data)[0]==(operator_mode ? 4:2) || ((const uint8_t *)data)[0]==(operator_mode ? 5:1));
     if (p->retry)
     {
         assert(data == p->retry && size == p->retry_size);
@@ -78,6 +80,7 @@ static void init(struct endpoint *e, unsigned owner)
         .context = &e->port, .read = read_bytes, .write = write_bytes};
     assert(
         !wnc_init(&e->carrier, &io, e->buffer, sizeof e->buffer, 8192, 65536));
+    if(operator_mode)assert(!wnc_operator_router(&e->carrier));
 }
 static void fill(uint8_t *bytes, size_t size, unsigned seq, unsigned owner)
 {
@@ -142,8 +145,9 @@ static int pressure_receive(void *ctx, const void *data, size_t size,
     }
     return 0;
 }
-int main(void)
+int main(int argc,char **argv)
 {
+    operator_mode=argc==2 && !strcmp(argv[1],"--operator");
     struct endpoint a, b;
     init(&a, 0);
     init(&b, 1);
@@ -219,7 +223,7 @@ int main(void)
     a.port.peer = &b.port;
     b.port.peer = &a.port;
     /* Reject the control length before attempting a large allocation. */
-    a.port.ring[0] = 1;
+    a.port.ring[0] = operator_mode ? 5:1;
     wn_put32(a.port.ring + 1, 65541);
     a.port.size = 5;
     assert(wnc_pump(&a.carrier, 0, unexpected, NULL) == WNC_INVALID &&
@@ -227,7 +231,7 @@ int main(void)
     wnc_deinit(&a.carrier);
     init(&a, 0);
     a.port.peer = &b.port;
-    a.port.ring[0] = 1;
+    a.port.ring[0] = operator_mode ? 5:1;
     wn_put32(a.port.ring + 1, 5);
     wn_put32(a.port.ring + 5, 2);
     a.port.ring[9] = 'x';
@@ -237,7 +241,7 @@ int main(void)
     wnc_deinit(&a.carrier);
     init(&a, 0);
     a.port.peer = &b.port;
-    a.port.ring[0] = 1;
+    a.port.ring[0] = operator_mode ? 5:1;
     a.port.size = 1;
     assert(wnc_pump(&a.carrier, 0, unexpected, NULL) == 1);
     assert(wnc_pump(&a.carrier, 5000000, unexpected, NULL) == WNC_TIMEOUT);

@@ -220,6 +220,12 @@ void wendy_pki_net_release_issuers(struct wendy_pki_net_issuers *);
 struct wendy_pki_net_setup;
 esp_err_t wendy_pki_net_begin(const struct wendy_pki_stream *,bool server,
     const char *expected_peer,bool application,struct wendy_pki_net_setup **);
+/* Opt-in only for incoming PSRAM full-router carriers, before the first step.
+ * Unavailable profiles retain their device-only protocol. */
+esp_err_t wendy_pki_net_allow_operator_routers(struct wendy_pki_net_setup *);
+struct wendy_pki_operator_peer;
+/* Borrowed until connection close; caller must own the completed TLS context. */
+const struct wendy_pki_operator_peer *wendy_pki_mesh_authenticated_operator(wendy_pki_connection *);
 /* Worker-only, immediately after begin and before the first handshake step. */
 void wendy_pki_net_add_issuers(struct wendy_pki_net_setup *,struct wendy_pki_net_issuers *);
 int wendy_pki_net_step(struct wendy_pki_net_setup *);

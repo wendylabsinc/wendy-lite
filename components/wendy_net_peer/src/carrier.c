@@ -45,6 +45,11 @@ int wnc_fair_scheduler(struct wnc_carrier *c,unsigned frames)
        c->limit<3U*WNC_CLASS_RESERVE)return WNC_INVALID;
     c->fair=true;c->routing_limit=frames;return 0;
 }
+int wnc_operator_router(struct wnc_carrier *c)
+{
+    if(!c || !c->io.write || c->head || c->header_have || c->body)return WNC_INVALID;
+    c->operator_router=true;return 0;
+}
 /* All bookkeeping is actor-owned. The three class queues and one global
  * ownership chain make enqueue/selection/removal O(1); no payload moves. */
 static void choose_frame(struct wnc_carrier *c)
@@ -118,7 +123,7 @@ static int enqueue(struct wnc_carrier *c,const void *data,size_t size,
         return WNC_NOMEM;
     f->size = prefix + size;
     f->priority=priority;f->category=(uint8_t)category;
-    f->data[0] = control ? 1 : 2;
+    f->data[0] = c->operator_router ? (control ? 5 : 4) : (control ? 1 : 2);
     wn_put32(f->data + 1, (uint32_t)(size + (control ? 4 : 0)));
     if (control)
         wn_put32(f->data + 5, (uint32_t)size);
@@ -249,7 +254,7 @@ static int pump_write(struct wnc_carrier *c, int64_t now)
 }
 static int deliver_frame(struct wnc_carrier *c,wnc_receive receive,void *ctx)
 {
-    bool control=c->header[0]==1;
+    bool control=c->header[0]==(c->operator_router ? 5 : 1);
     if(control && wn_get32(c->body)!=c->body_size-4)return WNC_INVALID;
     int r=receive(ctx,c->body+(control ? 4:0),c->body_size-(control ? 4:0),control);
     if(r>0){c->rx_paused=true;return 0;}
@@ -283,10 +288,11 @@ static int pump_read(struct wnc_carrier *c, int64_t now, wnc_receive receive,
         if (c->header_have == 5)
         {
             size_t size = wn_get32(c->header + 1);
-            if ((c->header[0] == 1 &&
+            uint8_t control=c->operator_router ? 5 : 1,packet=c->operator_router ? 4 : 2;
+            if ((c->header[0] == control &&
                  (size < 5 || size > c->control_limit + 4)) ||
-                (c->header[0] == 2 && (!size || size > WN_DATAGRAM_MAX)) ||
-                (c->header[0] != 1 && c->header[0] != 2))
+                (c->header[0] == packet && (!size || size > WN_DATAGRAM_MAX)) ||
+                (c->header[0] != control && c->header[0] != packet))
                 return WNC_INVALID;
             c->body_size = size;
             c->body = size <= c->small_size ? c->small : wendy_net_malloc(size);

@@ -76,6 +76,9 @@ int wnr_manifest(struct wnr_core *, const void *, size_t, int64_t unix_ms,
 /* Call attach only after same-tenant TLS and exact peer hello validation. */
 int wnr_attach(struct wnr_core *, const char *peer, uint16_t cost,
                int64_t unix_ms, int64_t monotonic_us, uint64_t *link);
+/* Caller has authenticated a primary operator plus its nonzero installation.
+ * Only full routers accept this attachment. No prefix is authorized by TLS. */
+int wnr_attach_operator(struct wnr_core *,uint16_t,int64_t,int64_t,uint64_t *);
 int wnr_detach(struct wnr_core *, uint64_t link, int64_t unix_ms,
                int64_t monotonic_us);
 int wnr_receive(struct wnr_core *, uint64_t link, const void *, size_t,

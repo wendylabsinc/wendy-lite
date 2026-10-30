@@ -15,7 +15,7 @@ static void run(void)
 {assert(queued);void (*fn)(void *)=queued;void *ctx=argument;queued=NULL;worker=true;fn(ctx);worker=false;}
 int mdns_service_add(const char *instance,const char *service,const char *protocol,uint16_t port,mdns_txt_item_t *txt,size_t count)
 {
-    assert(worker && instance && !strcmp(service,"_wendy-net") && !strcmp(protocol,"_tcp") && port==43024 && count==6);
+    assert(worker && instance && !strcmp(service,"_wendy-net") && !strcmp(protocol,"_tcp") && port==43024 && count==7);
     assert(!advertised);advertised=true;strcpy(published,txt[2].value);adds++;return ESP_OK;
 }
 int mdns_service_remove(const char *service,const char *protocol)

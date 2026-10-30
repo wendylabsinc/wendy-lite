@@ -30,6 +30,7 @@
 #endif
 #include "wendy_pki_verify.h"
 #include "wendy_pki_operator.h"
+#include "wendy_net_alloc.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -1733,6 +1734,17 @@ esp_err_t wendy_pki_net_begin(const struct wendy_pki_stream *stream,bool server,
     if(r!=ESP_OK){wendy_pki_net_dispose(op);return r;}
     *out=op;return ESP_OK;
 }
+esp_err_t wendy_pki_net_allow_operator_routers(struct wendy_pki_net_setup *op)
+{
+    if(!op || op->complete || op->started || op->application || op->expected[0])return ESP_ERR_INVALID_STATE;
+#if !CONFIG_WENDY_NET_ROUTER || CONFIG_WENDY_NET_CONSTRAINED_PROFILE || CONFIG_WENDY_NET_ENDPOINT_GATEWAY
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    wendy_net_memory_snapshot_t memory;wendy_net_runtime_memory_snapshot(&memory);
+    if(!memory.accepting || !memory.external_enabled)return ESP_ERR_NOT_SUPPORTED;
+    return pki_tls_net_allow_operators(op->connection) ? ESP_FAIL:ESP_OK;
+#endif
+}
 void wendy_pki_net_add_issuers(struct wendy_pki_net_setup *op,struct wendy_pki_net_issuers *snapshot)
 {
     if(!op || op->complete || op->started){wendy_pki_net_release_issuers(snapshot);return;}
@@ -1749,6 +1761,19 @@ int wendy_pki_net_step(struct wendy_pki_net_setup *op)
     if(!wendy_conf_snapshot_current(op->identity.config_generation) || wendy_pki_reset_in_progress() ||
        c->operator_expires<=time(NULL) ||
        esp_timer_get_time()-op->identity.verified_monotonic_us>=INT64_C(300000000))return -1;
+    if(c->peer_role==WENDY_PEER_ROLE_OPERATOR){
+        const uint8_t *der[8];size_t sizes[8],count=0;
+        for(const mbedtls_x509_crt *cert=mbedtls_ssl_get_peer_cert(&c->ssl);cert && cert->raw.len;cert=cert->next){
+            if(count==8)return -1;
+            der[count]=cert->raw.p;sizes[count++]=cert->raw.len;
+        }
+        c->authenticated_operator=pki_owned_calloc(1,sizeof *c->authenticated_operator);
+        if(!c->authenticated_operator || wendy_pki_operator_verify_snapshot(&op->identity,
+            der,sizes,count,c->authenticated_operator))return -1;
+        if(c->authenticated_operator->expires<c->operator_expires)c->operator_expires=c->authenticated_operator->expires;
+        if(pki_limit_session(c,time(NULL),esp_timer_get_time()))return -1;
+        pki_tls_net_operator_verified(c);
+    }
     if(c->operator_expires<op->identity.certificate_expires)op->identity.certificate_expires=c->operator_expires;
     memcpy(op->identity.peer,c->mesh_peer,37);
     c->device_expires=op->identity.certificate_expires;

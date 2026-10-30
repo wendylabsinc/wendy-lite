@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 struct wnm_advertisement {
-    bool enabled;
+    bool enabled,operator_router;
     char instance[56],principal[106],mesh[17],radio[40],psm[6];
 };
 struct wnm_intent {

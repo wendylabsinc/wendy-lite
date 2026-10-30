@@ -37,7 +37,7 @@ struct wnc_carrier
     struct wnc_frame *class_head[WNC_CLASSES],*class_tail[WNC_CLASSES];
     size_t class_bytes[WNC_CLASSES];
     unsigned class_frames[WNC_CLASSES],routing_limit;
-    bool fair,last_routing,last_metadata;
+    bool fair,last_routing,last_metadata,operator_router;
     uint8_t *small, *body;
     size_t small_size, limit, control_limit, priority_reserve, queued, body_size, body_have;
     uint8_t header[5];
@@ -52,6 +52,9 @@ bool wnc_timeout_snapshot(const struct wnc_carrier *,int64_t,struct wnc_timeout 
 int wnc_init(struct wnc_carrier *, const struct wnc_io *, void *small,
              size_t small_size, size_t queue_limit, size_t control_limit);
 void wnc_deinit(struct wnc_carrier *);
+/* Select the operator-router mux before any frame has been queued/read.
+ * Its datagram/control kinds are4/5; payloads and all bounds stay identical. */
+int wnc_operator_router(struct wnc_carrier *);
 /* Enable on an empty carrier. At frame boundaries Babel alternates with
  * another eligible class; metadata and IP alternate independently. Preserve
  * one maximum datagram/whole fragmented IP's unused admission capacity in
