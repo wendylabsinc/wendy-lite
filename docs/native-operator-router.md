@@ -38,3 +38,11 @@ accept operator router attachments. In particular, C6 remains a leaf. PSRAM
 routers advertise `operator_router=1` in LAN discovery; this is only a connection
 hint. Clients must support the operator handshake and bootstrap from signed
 routing state rather than requiring a first-hop WendyOS gRPC agent.
+
+The build-local NimBLE patches also bound initial CoC credits and subsequent
+refills to contiguous armed receive buffers, including the single-buffer
+management adapter. The 512-byte management MTU needs three PDUs for one long
+SDU, but three credits would also permit three separate short SDUs. Outgoing
+channels initially grant only their lent buffer; a router's reserved spare
+adds the second credit after connection. Segmented long SDUs still receive
+continuation credits without publishing an unbacked short-SDU window.
