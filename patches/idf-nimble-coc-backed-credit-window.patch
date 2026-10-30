@@ -46,17 +46,3 @@
      if (rx->credits >= target) {
          rx->flags &= ~BLE_L2CAP_COC_RX_CREDITS_PENDING;
          return;
-@@ -363,7 +393,11 @@
-          * ble_l2cap_recv_ready). This is a credit/buffer asymmetry — disconnect
-          * rather than dereference a NULL pointer.
-          */
--        BLE_HS_LOG(ERROR, "CoC RX: no SDU buffer armed (idx=%d), disconnecting\n",
--                   chan->coc_rx.current_sdu_idx);
-+        BLE_HS_LOG(ERROR, "CoC RX: no SDU buffer armed "
-+                   "(handle=%u cid=%u psm=%u idx=%u alloc=%u credits=%u "
-+                   "flags=%u), disconnecting\n",
-+                   chan->conn_handle, chan->scid, chan->psm,
-+                   rx->current_sdu_idx, rx->next_sdu_alloc_idx,
-+                   rx->credits, rx->flags);
-         ble_l2cap_disconnect(chan);
-         return BLE_HS_ENOMEM;
