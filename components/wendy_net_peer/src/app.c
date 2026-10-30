@@ -217,7 +217,6 @@ static void close_flow(struct app_flow *flow)
     wendy_net_memory_release(&flow->datagram_out_charge);wendy_net_free(flow);
     atomic_fetch_sub(outbound ? &outbound_flows : &inbound_flows,1);
 }
-#if CONFIG_WENDY_NET
 static int64_t app_handshake_budget(void)
 {
 #if CONFIG_WENDY_NET_BLE
@@ -225,6 +224,7 @@ static int64_t app_handshake_budget(void)
 #endif
     return INT64_C(120000000);
 }
+#if CONFIG_WENDY_NET
 struct guest_connect {int handle;char peer[37];uint16_t port;bool datagram;int64_t deadline;};
 
 /* A loopback pair lets the existing guest socket task retain its buffers,

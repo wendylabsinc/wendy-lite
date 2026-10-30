@@ -24,30 +24,29 @@ int wble_mesh_profile_sync(void) {
     unsigned p = wble_mesh_profile();
     if (p > 2)
         return BLE_HS_ENOTSUP;
-#if !CONFIG_BT_NIMBLE_EXT_ADV_V2 || !(CONFIG_IDF_TARGET_ESP32C5 || CONFIG_IDF_TARGET_ESP32C6)
+#if !CONFIG_BT_NIMBLE_EXT_ADV_V2
     if (p)
         return BLE_HS_ENOTSUP;
 #endif
 #if !(CONFIG_IDF_TARGET_ESP32C5 || CONFIG_IDF_TARGET_ESP32C6)
-    /* Older 1M-only controllers need no PHY command, and may reject it. */
-    if (!p)
-        return 0;
-#endif
+    /* Other targets support only the normal profile and do not expose the
+     * C5/C6 host-feature API in every supported SDK. */
+    return p ? BLE_HS_ENOTSUP : 0;
+#else
     /* Core 5.4 Advertising Coding Selection (Host Support), feature bit 40.
      * Enables separate S2/S8 values in received extended advertising reports. */
     int feature = ble_gap_set_host_feat(40, 1);
     uint8_t phy = p ? BLE_GAP_LE_PHY_CODED_MASK : BLE_GAP_LE_PHY_1M_MASK;
     int rc = ble_gap_set_prefered_default_le_phy(phy, phy);
-#if CONFIG_IDF_TARGET_ESP32C5 || CONFIG_IDF_TARGET_ESP32C6
     if (!rc && p)
         esp_ble_switch_phy_coded(p == 1);
-#endif
     ESP_LOGI(TAG, "profile=%s host_coding_selection=%d default_phy=%u result=%d",
              wble_mesh_profile_name(), feature, phy, rc);
     /* Coding-specific report metadata is optional in this experimental
      * controller. Required transmit coding is independently enforced by the
      * extended advertising command; discovery still uses only Coded PHY. */
     return rc;
+#endif
 }
 void wble_mesh_profile_connected(uint16_t handle) {
     unsigned p = wble_mesh_profile();
