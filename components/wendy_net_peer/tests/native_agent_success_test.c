@@ -119,7 +119,21 @@ static void socket_pair(int fds[2])
 static int begin(void)
 {
     int fds[2];socket_pair(fds);wendy_net_agent_start();wendy_net_agent_accept(fds[0]);wendy_net_agent_poll();
-    assert(flows && flows->state.lent && cpu_callback);return fds[1];
+    assert(flows && flows->state.lent && cpu_callback);
+    /* An operator can disappear without a TCP FIN when its userspace mesh
+     * router exits. Such peers must not retain every native management slot
+     * until certificate expiry. Healthy idle peers still answer TCP probes. */
+    int enabled=0,idle=0,interval=0,probes=0;socklen_t size=sizeof enabled;
+    assert(!getsockopt(flows->fd,SOL_SOCKET,SO_KEEPALIVE,&enabled,&size) && enabled);
+#ifdef TCP_KEEPIDLE
+    assert(!getsockopt(flows->fd,IPPROTO_TCP,TCP_KEEPIDLE,&idle,&size));
+#else
+    assert(!getsockopt(flows->fd,IPPROTO_TCP,TCP_KEEPALIVE,&idle,&size));
+#endif
+    assert(!getsockopt(flows->fd,IPPROTO_TCP,TCP_KEEPINTVL,&interval,&size));
+    assert(!getsockopt(flows->fd,IPPROTO_TCP,TCP_KEEPCNT,&probes,&size));
+    assert(idle>0 && interval>0 && probes>0 && idle+interval*probes<=30);
+    return fds[1];
 }
 static void handshake(void)
 {
