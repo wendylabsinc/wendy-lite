@@ -11,6 +11,12 @@
 extern "C" {
 #endif
 
+struct wcom_bluetooth_power_delegate {
+    WendyComResult (*get)(WendyComBluetoothPowerStatus *);
+    WendyComResult (*set)(const WendyComBluetoothPowerConfig *,WendyComBluetoothPowerStatus *,uint32_t *);
+    void (*reply_complete)(uint32_t);
+};
+
 struct wcom_net_delegate {
     WendyComResult (*get)(WendyComNetStatus *);
     /* A changed configuration returns one nonzero receipt token. The delegate

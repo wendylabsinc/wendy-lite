@@ -34,6 +34,10 @@ WendyComResult wcom_cmd_sensor_link_unsubscribe(int client_id, const uint32_t *c
 void wcom_cmd_client_disconnected(int client_id);
 
 void wcom_cmd_set_app_delegate(const struct wcom_app_delegate *delegate);
+void wcom_cmd_set_bluetooth_power_delegate(const struct wcom_bluetooth_power_delegate *);
+WendyComResult wcom_cmd_bluetooth_power_get(WendyComBluetoothPowerStatus *);
+WendyComResult wcom_cmd_bluetooth_power_set(const WendyComBluetoothPowerConfig *,WendyComBluetoothPowerStatus *,uint32_t *);
+void wcom_cmd_bluetooth_power_reply_complete(uint32_t);
 void wcom_cmd_set_net_delegate(const struct wcom_net_delegate *);
 WendyComResult wcom_cmd_net_get(WendyComNetStatus *);
 WendyComResult wcom_cmd_net_set(const WendyComNetConfig *,WendyComNetStatus *,uint32_t *reply_token);

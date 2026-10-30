@@ -1,6 +1,9 @@
 #include "wendy_core.h"
 #include "wendy_pki_crypto.h"
 #include "esp_log.h"
+#if CONFIG_WENDY_BLE
+#include "wendy_ble.h"
+#endif
 #if CONFIG_WENDY_NET_PEER
 #include "wendy_net_peer.h"
 #endif
@@ -31,12 +34,17 @@ void app_main(void)
                  esp_err_to_name(err));
     }
 #endif
-#if CONFIG_WENDY_NET_SELECT_RADIO_AT_BOOT
+#if CONFIG_WENDY_NET_PEER
     bool boot_ble,boot_wifi;
     ESP_ERROR_CHECK(wendy_net_peer_boot_radios(&boot_ble,&boot_wifi));
+#if CONFIG_WENDY_NET_SELECT_RADIO_AT_BOOT
     ESP_ERROR_CHECK(wendy_core_set_boot_radios(boot_ble,boot_wifi));
 #endif
+#endif
     ESP_ERROR_CHECK(wendy_core_init());
+#if CONFIG_WENDY_BLE
+    wendy_ble_power_init();
+#endif
 #if CONFIG_WENDY_NET_PEER
     ESP_ERROR_CHECK(wendy_net_peer_start());
 #endif

@@ -2148,6 +2148,20 @@ int pki_tls_agent_begin(const struct wendy_pki_stream *stream,const char *tenant
     if(r){wendy_pki_close(c);return -1;}
     *out=c;return 0;
 }
+/* Preserve the actual failure before the nonblocking API maps it to -1.
+ * No certificate, key or record contents are logged. */
+static void tls_setup_failure(wendy_pki_connection *c,int error,const char *role)
+{
+#if ESP_PLATFORM
+    ESP_LOGW("wendy_pki","%s TLS setup failed: state=%d error=%d hex=-0x%04x internal_free=%u internal_largest=%u heap_free=%u",
+        role,c->ssl.MBEDTLS_PRIVATE(state),error,(unsigned)-error,
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT));
+#else
+    (void)c;(void)error;(void)role;
+#endif
+}
 int pki_tls_agent_advance(wendy_pki_connection *c)
 {
     if(!c)return -1;
@@ -2158,6 +2172,7 @@ int pki_tls_agent_advance(wendy_pki_connection *c)
         if(r==MBEDTLS_ERR_SSL_WANT_READ){result=-2;goto done;}
         if(r==MBEDTLS_ERR_SSL_WANT_WRITE){result=-3;goto done;}
         if(r){
+            tls_setup_failure(c,r,"native management");
             result=-1;goto done;
         }
     }
@@ -2199,7 +2214,10 @@ static int net_advance(wendy_pki_connection *c,bool application,const char *peer
         int r=handshake_step(c,application);
         if(r==MBEDTLS_ERR_SSL_WANT_READ)return -2;
         if(r==MBEDTLS_ERR_SSL_WANT_WRITE)return -3;
-        if(r)return -1;
+        if(r){
+            tls_setup_failure(c,r,application ? "VIP":"carrier");
+            return -1;
+        }
         if(c->ssl.MBEDTLS_PRIVATE(state)!=MBEDTLS_SSL_HANDSHAKE_OVER)return 1;
     }
     release_presented_chain(c);
