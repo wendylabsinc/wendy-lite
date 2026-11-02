@@ -411,9 +411,11 @@ void wendy_ble_power_connected(uint16_t handle)
                                                                   .tx_phy = tx,
                                                                   .rx_phy = rx};
     }
-    if (result != ESP_OK || actual != target)
+    if (result != ESP_OK || actual != target) {
+        state.has_applied = false;
         snprintf(state.error, sizeof state.error, "Connection power update failed: handle %u",
                  handle);
+    }
     pthread_mutex_unlock(&lock);
 #else
     (void)handle;

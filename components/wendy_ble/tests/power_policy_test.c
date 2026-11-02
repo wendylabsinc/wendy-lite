@@ -231,7 +231,10 @@ int main(void)
     wendy_ble_power_advertising_remove(1);
     c = config(9, 9);
     unknown_role = ESP_BLE_ENHANCED_PWR_TYPE_CONN;
+    assert(status().has_applied);
     wendy_ble_power_connected(1);
+    s = status();
+    assert(!s.has_applied && s.error[0]);
     assert(api->set(&c, &s, &token) == 0);
     api->reply_complete(token);
     pump();
