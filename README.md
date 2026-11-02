@@ -774,3 +774,6 @@ Mesh remains off until enabled over WendyCom. C5 permits a 5 MiB guest and up to
 three carriers per transport; C6 permits a 64 KiB guest and one selected BLE or
 Wi-Fi carrier. See [Wendy Net configuration](docs/wendy-net.md) for enable/disable
 commands, connection limits and hardware requirements.
+
+See [Bluetooth radio settings](docs/bluetooth-radio.md) to select a mesh BLE
+profile or configure device-wide transmit power on ESP32-C5/C6.

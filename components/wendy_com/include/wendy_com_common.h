@@ -11,6 +11,13 @@
 extern "C" {
 #endif
 
+struct wcom_bluetooth_power_delegate {
+    WendyComResult (*get)(WendyComBluetoothPowerStatus *);
+    WendyComResult (*set)(const WendyComBluetoothPowerConfig *, WendyComBluetoothPowerStatus *,
+                          uint32_t *);
+    void (*reply_complete)(uint32_t);
+};
+
 struct wcom_net_delegate {
     WendyComResult (*topology)(const WendyComNetTopologyParams *, WendyComNetTopologyPage *);
     /* Releases selected-row public metadata after synchronous response encoding. */

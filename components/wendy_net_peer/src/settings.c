@@ -1,5 +1,8 @@
 #include "settings.h"
 #include "topology_record.h"
+#if CONFIG_WENDY_NET_BLE
+#include "wendy_ble_mesh.h"
+#endif
 #include "settings_apply.h"
 #include "wendy_net_profile.h"
 #include "wendy_com_cmd.h"
@@ -18,12 +21,21 @@
 #ifndef CONFIG_WENDY_WIFI_ENABLED
 #define CONFIG_WENDY_WIFI_ENABLED 0
 #endif
+#ifndef CONFIG_BT_NIMBLE_EXT_ADV_V2
+#define CONFIG_BT_NIMBLE_EXT_ADV_V2 0
+#endif
+#if CONFIG_BT_NIMBLE_EXT_ADV_V2 && (CONFIG_IDF_TARGET_ESP32C5 || CONFIG_IDF_TARGET_ESP32C6)
+#define CODED_PROFILES_SUPPORTED 1
+#else
+#define CODED_PROFILES_SUPPORTED 0
+#endif
 #ifndef CONFIG_WENDY_NET_BLE_CHANNELS
 #define CONFIG_WENDY_NET_BLE_CHANNELS 1
 #endif
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static bool loaded;
 static bool boot_selected, boot_ble, boot_wifi;
+static unsigned boot_profile;
 static atomic_bool restarting, restart_ready, awaiting_reply;
 static struct wnsa apply;
 static atomic_uint receipt;
@@ -42,10 +54,13 @@ static bool same(const WendyComNetConfig *a, const WendyComNetConfig *b)
     return a->enabled == b->enabled && a->ble == b->ble && a->nan == b->nan &&
            a->infrastructure_wifi == b->infrastructure_wifi && a->max_links == b->max_links &&
            a->ble_links == b->ble_links && a->wifi_links == b->wifi_links &&
-           a->nan_links == b->nan_links;
+           a->nan_links == b->nan_links && a->ble_profile == b->ble_profile;
 }
 static esp_err_t normalize(WendyComNetConfig *c)
 {
+    if ((unsigned)c->ble_profile > WendyComBleProfile_WENDY_COM_BLE_CODED_S8 ||
+        (c->ble_profile && !CODED_PROFILES_SUPPORTED))
+        return ESP_ERR_NOT_SUPPORTED;
     if (!c->max_links)
         c->max_links = WENDY_NET_NON_TRANSIT ? 1 : CONFIG_WENDY_NET_MAX_LINKS;
     if (!c->ble_links)
@@ -82,6 +97,8 @@ static WendyComResult get(WendyComNetStatus *status)
     status->has_desired = true;
     status->desired = wn_settings_get();
     status->ble_supported = CONFIG_WENDY_NET_BLE;
+    status->ble_profiles_supported =
+        CONFIG_WENDY_NET_BLE ? (CODED_PROFILES_SUPPORTED ? 7u : 1u) : 0u;
     status->wifi_supported = CONFIG_WENDY_WIFI_ENABLED;
     /* NAN runtime has not joined the two-task driver in this delivery. */
     status->nan_supported = false;
@@ -120,6 +137,9 @@ static WendyComResult set(const WendyComNetConfig *input, WendyComNetStatus *sta
         rejected = WendyComResult_WENDY_COM_RESULT_NET_NO_WIFI;
     else if (config.ble && !status->ble_supported)
         rejected = WendyComResult_WENDY_COM_RESULT_NET_NO_BLE;
+    else if ((unsigned)config.ble_profile > WendyComBleProfile_WENDY_COM_BLE_CODED_S8 ||
+             (config.ble_profile && !CODED_PROFILES_SUPPORTED))
+        rejected = WendyComResult_WENDY_COM_RESULT_NET_BLE_PROFILE_UNSUPPORTED;
     else if (config.nan)
         rejected = WendyComResult_WENDY_COM_RESULT_NET_NO_NAN;
     else if (WENDY_NET_NON_TRANSIT &&
@@ -145,7 +165,8 @@ static WendyComResult set(const WendyComNetConfig *input, WendyComNetStatus *sta
     if (!same(&config, &saved)) {
         struct record r = {SETTINGS_MAGIC,
                            (config.enabled ? 1u : 0) | (config.ble ? 2u : 0) |
-                               (config.infrastructure_wifi ? 4u : 0),
+                               (config.infrastructure_wifi ? 4u : 0) |
+                               ((unsigned)config.ble_profile << 4),
                            config.max_links,
                            config.ble_links,
                            config.wifi_links,
@@ -160,8 +181,10 @@ static WendyComResult set(const WendyComNetConfig *input, WendyComNetStatus *sta
         }
         if (result == ESP_OK) {
             saved = config;
-            atomic_store(&restarting, boot_selected && (config.ble != boot_ble ||
-                                                        config.infrastructure_wifi != boot_wifi));
+            atomic_store(&restarting,
+                         boot_selected &&
+                             (config.ble != boot_ble || config.infrastructure_wifi != boot_wifi ||
+                              (unsigned)config.ble_profile != boot_profile));
             *token = wnsa_begin(&apply, esp_timer_get_time());
             atomic_store(&receipt, *token << 1);
             atomic_store(&awaiting_reply, true);
@@ -221,11 +244,12 @@ esp_err_t wn_settings_init(void)
             struct record r;
             size_t size = sizeof r;
             if (nvs_get_blob(h, "config", &r, &size) == ESP_OK && size == sizeof r &&
-                r.magic == SETTINGS_MAGIC && !(r.flags & ~15u)) {
+                r.magic == SETTINGS_MAGIC && !(r.flags & ~63u)) {
                 WendyComNetConfig c = {.enabled = (r.flags & 1) != 0,
                                        .ble = (r.flags & 2) != 0,
                                        .infrastructure_wifi = (r.flags & 4) != 0,
                                        .nan = (r.flags & 8) != 0,
+                                       .ble_profile = (WendyComBleProfile)(r.flags >> 4),
                                        .max_links = r.links,
                                        .ble_links = r.ble,
                                        .wifi_links = r.wifi,
@@ -260,8 +284,13 @@ esp_err_t wendy_net_peer_boot_radios(bool *ble, bool *wifi)
     boot_ble = saved.ble;
     boot_wifi = saved.infrastructure_wifi;
     boot_selected = true;
+    boot_profile = (unsigned)saved.ble_profile;
+#if CONFIG_WENDY_NET_BLE
+    wble_mesh_set_profile(boot_profile);
+#endif
     *ble = boot_ble;
-    *wifi = boot_wifi;
+    /* Management Wi-Fi is independent of its mesh carrier setting. */
+    *wifi = CONFIG_WENDY_WIFI_ENABLED;
     pthread_mutex_unlock(&lock);
     return ESP_OK;
 }

@@ -21,3 +21,6 @@ WendyComNetTopologyRecord.address max_size:16
 WendyComNetTopologyRecord.next_hop_device max_size:16
 WendyComNetTopologyRecord.owner_principal type:FT_CALLBACK
 WendyComNetTopologyRecord.owner_instance max_size:16
+WendyComBluetoothPowerStatus.supported_levels_dbm max_count:13
+WendyComBluetoothPowerStatus.connections max_count:8
+WendyComBluetoothPowerStatus.error max_size:128

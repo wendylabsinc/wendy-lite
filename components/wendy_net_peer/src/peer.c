@@ -419,7 +419,11 @@ void wendy_net_peer_maintain(void)
     pthread_mutex_unlock(&state_lock);
     wendy_net_memory_scope_t previous = wendy_net_runtime_scope_enter();
     esp_err_t result;
-    if (!wendy_wifi_is_connected())
+    /* A constrained endpoint already has an encrypted path to a more capable
+     * neighbour. Keeping Wi-Fi up for management must not force a second HTTPS
+     * handshake beside its live VIP. The signed reply is verified locally as
+     * before; only the fetch transport changes. */
+    if (WENDY_NET_NON_TRANSIT || !wendy_wifi_is_connected())
         result = control_clock(s, &fresh);
     else
         result = wendy_pki_net_refresh_time(&fresh, relay[0] ? relay : NULL);
@@ -1751,8 +1755,18 @@ static void begin_setup(struct peer_state *link, const struct wn_candidate *cand
     memset(link->operator_instance, 0, 16);
     int index = reserve_candidate(link, candidate);
     link->tls_channel = index >= 0 ? wendy_net_calloc(1, sizeof *link->tls_channel) : NULL;
-    link->tls_state = (struct wna_session){
-        .phase = WNA_PREPARE, .deadline = (uint64_t)esp_timer_get_time() + UINT64_C(60000000)};
+    uint64_t budget = UINT64_C(60000000);
+#if CONFIG_WENDY_NET_BLE
+    /* S8 took 58 seconds for a valid cold handshake on the bench. Leave
+     * airtime/retransmission margin without changing bounded setup ownership. */
+    if (candidate->medium == WN_BLE) {
+        unsigned profile = wble_mesh_profile();
+        if (profile)
+            budget = profile == 2 ? UINT64_C(180000000) : UINT64_C(90000000);
+    }
+#endif
+    link->tls_state = (struct wna_session){.phase = WNA_PREPARE,
+                                           .deadline = (uint64_t)esp_timer_get_time() + budget};
     link->hello_started = false;
     link->hello_in = link->hello_out = link->hello_size = 0;
     link->setup_connecting = false;
