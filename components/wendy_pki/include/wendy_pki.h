@@ -65,3 +65,11 @@ enum wendy_pki_relay_result {
  * transfers the detached fd to the caller independently of connection. */
 int wendy_pki_relay_upgrade(wendy_pki_connection *, struct wendy_lite_trust *);
 esp_err_t wendy_pki_accept_relay(int fd, const struct wendy_lite_trust *, wendy_pki_connection **);
+
+/* Optional active-mesh TLS workspace experiment; false releases cached RAM. */
+void wendy_pki_input_workspace_active(bool active);
+size_t wendy_pki_input_workspace_cached_bytes(void);
+/* Borrow only existing zeroed storage for short PKI work; never allocates.
+ * The caller owns it until release, including if the mesh stops meanwhile. */
+uint8_t *wendy_pki_input_workspace_borrow(size_t *capacity);
+void wendy_pki_input_workspace_release(uint8_t *);

@@ -98,3 +98,6 @@ int main(int argc, char **argv)
     puts("P-256 persisted key and CSR compatibility passed");
     return 0;
 }
+
+/* Classical TLS keys must not reserve an ML-DSA-87 public key inline. */
+_Static_assert(sizeof(mbedtls_pk_context) < 1952, "PQC keys must allocate only on demand");

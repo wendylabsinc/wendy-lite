@@ -8,8 +8,8 @@ Set `IDF_PATH` to ESP-IDF 6.0.3, and install Go 1.27 or newer before configuring
 
 ```sh
 cmake -S components/wendy_pki/tests -B build-pki
-cmake --build build-pki
-ctest --test-dir build-pki --output-on-failure
+cmake --build build-pki -j4
+GOTOOLCHAIN=go1.27.3 GOMAXPROCS=2 GOFLAGS=-p=1 ctest --test-dir build-pki --output-on-failure -j2
 ```
 
 `dependency_patches_in_checkout` reproduces a build directory inside a Git
@@ -89,6 +89,12 @@ refresh deadline and return the planned-renewal result. Early heartbeat timeout,
 EOF, invalid or partial headers, stalled writes, reset and socket errors retain
 the failure result even at that deadline. Successful handoff preserves the
 detached fd and its trust data for the caller.
+`relay_stream_wait_test` additionally checks the scoped DER/TLS read wrapper.
+Stream errors remain failures even when their callback reaches the deadline;
+successful retry hints preserve read versus write direction, partial frames and
+reset, including a readiness hint immediately before the loop crosses its deadline.
+A spurious hint cannot hide a subsequent EOF. The initiating TLS allocation
+scope is restored before the caller waits on its transport.
 The operator-only accept path rejects device clients, including relay clients.
 Callback stream cases exercise the PKI stream API used by BLE through fragmented reads and
 writes with forced retry responses. A valid operator exchanges application data;
@@ -166,8 +172,8 @@ to 32 KiB while TLS records remain bounded to 16 KiB. A valid chain exceeding th
 handshake limit is rejected.
 Firmware disables IDF dynamic buffers because their allocation can follow the
 current record's size while the bundled library bounds reassembly against the
-configured input size. The fixed-buffer host tests cover the chosen allocation
-model; they do not validate the disabled dynamic-buffer wrappers on hardware.
+configured input size. The host tests use variable-sized buffers from the patched fixed-record backend;
+they do not validate the disabled IDF dynamic-buffer wrappers on hardware.
 
 The outbound server uses Go's default session-ticket settings. Firmware performs
 a fresh certificate handshake. The outbound regression checks application data
@@ -195,6 +201,43 @@ profiles report an explicit false enrollment capability while retaining local
 identity recovery wherever PKI is available. They also check that ML-DSA support
 is advertised only when both PKI and ML-DSA-65 verification are enabled and that false values
 survive protobuf encoding.
+
+
+The direct DER/memory layer retains synchronous baseline PKI execution. Its
+worker API is inactive, creates no task, and provides no serialized admission;
+native actor activation is rejected until the later worker layer is present.
+The optional own ML-DSA private-key backend is off by default and is not qualified
+by this suite.
+
+`pki_owned_der_stream_p256` and `pki_owned_der_stream_mldsa65` import fixture PEM
+once, then drive production owned DER sources through independent full-path
+verification and streamed full-chain TLS with Go. The initiating allocation
+scope follows record reads/writes after setup returns; all charged bytes and
+reservations drain at close. The pinned root is omitted after independent trust
+verification. Issuer-omission negotiation is not enabled.
+
+`pki_own_der_cache` verifies full/range public readers and repeated sessions with
+no flash writes. `tls_input_*_ownership` verifies zeroized reuse, management
+loans, shutdown, and overlapping service epochs. `psa_global_table_ownership`
+keeps a baseline key live while temporary scoped keys retire. Record tests cover
+preallocated input adoption, bounded reassembly, input recycling, and pending
+ciphertext surviving input compaction and repeated partial flushes.
+`native_artifact_domain_with_legacy_leaf` independently checks v4 native signing
+while the existing leaf flag retains its v3 manifest contract and JSON bundle.
+
+The SDK startup hook installs one allocation/free ABI before PSA initialization;
+app_main enables task ownership before networking. Host scope fixtures initialize
+PSA outside task scopes to match that startup order. These host checks do not
+establish hardware heap headroom, radio behavior, or native actor/worker timing.
+
+
+`pki_own_boot_persistence` covers the own identity/time boundary retained in this
+layer: reserve one durable publication range per boot and persist only the first
+verified timestamp-floor advance. Reconnect, service OFF/ON, configuration and
+certificate changes use the retained RAM counters; later timestamp proofs move
+the RAM high-water without additional flash writes. A simulated reboot skips
+all potentially issued revision values and resumes time verification from the
+first durable advance. This policy does not persist foreign peer/network state.
 
 `pki_time_nonce_normal` covers seven ordinary 256-bit nonce shapes: low/high
 leading bit, all-ones, leading zeroes before low/high bits, one, and zero.

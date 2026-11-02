@@ -1,0 +1,193 @@
+--- a/library/ssl_misc.h
++++ b/library/ssl_misc.h
+@@ -992,7 +992,13 @@
+     unsigned char *certificate_request_context;
+     /* Bytes already hashed and queued for a fragmented TLS 1.3 Certificate. */
+     size_t certificate_out_offset;
++#if defined(MBEDTLS_MLDSA65_PRIVATE_KEY)
++    /* One complete MLDSA65 CertificateVerify; crypto is never resumed. Only
++     * record framing resumes after output backpressure. Allocated on demand. */
++    unsigned char *certificate_verify_out;
++    size_t certificate_verify_out_offset;
+ #endif
++#endif
+ 
+     /** TLS 1.3 transform for encrypted handshake messages. */
+     mbedtls_ssl_transform *transform_handshake;
+@@ -1302,6 +1308,17 @@
+  * \param ssl       SSL context
+  */
+ void mbedtls_ssl_handshake_free(mbedtls_ssl_context *ssl);
++#if defined(MBEDTLS_MLDSA65_PRIVATE_KEY) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
++#define MBEDTLS_SSL_MLDSA65_CV_SIZE (4 + 4 + 3309)
++void mbedtls_ssl_tls13_free_certificate_verify(mbedtls_ssl_handshake_params *handshake);
++#if defined(WENDY_TLS_CV_TRACE)
++/* Host-only positive-fixture counters. No production allocation/RNG hooks. */
++extern unsigned long wendy_test_cv_signs, wendy_test_cv_fragments;
++extern unsigned long wendy_test_cv_hashed, wendy_test_cv_releases;
++extern unsigned long wendy_test_cv_wants, wendy_test_cv_max_fragment;
++extern void *wendy_test_cv_allocation;
++#endif
++#endif
+ 
+ /* set inbound transform of ssl context */
+ void mbedtls_ssl_set_inbound_transform(mbedtls_ssl_context *ssl,
+--- a/library/ssl_tls.c
++++ b/library/ssl_tls.c
+@@ -4593,6 +4593,30 @@
+ }
+ #endif /* MBEDTLS_SSL_RENEGOTIATION */
+ 
++#if defined(MBEDTLS_MLDSA65_PRIVATE_KEY) && defined(MBEDTLS_SSL_PROTO_TLS1_3)
++#if defined(WENDY_TLS_CV_TRACE)
++unsigned long wendy_test_cv_signs, wendy_test_cv_fragments;
++unsigned long wendy_test_cv_hashed, wendy_test_cv_releases, wendy_test_cv_wants;
++unsigned long wendy_test_cv_max_fragment;
++void *wendy_test_cv_allocation;
++#endif
++void mbedtls_ssl_tls13_free_certificate_verify(mbedtls_ssl_handshake_params *handshake)
++{
++    if (handshake->certificate_verify_out != NULL) {
++        mbedtls_platform_zeroize(handshake->certificate_verify_out, MBEDTLS_SSL_MLDSA65_CV_SIZE);
++        mbedtls_free(handshake->certificate_verify_out);
++        handshake->certificate_verify_out = NULL;
++#if defined(WENDY_TLS_CV_TRACE)
++        wendy_test_cv_allocation = NULL;
++#endif
++#if defined(WENDY_TLS_CV_TRACE)
++        wendy_test_cv_releases++;
++#endif
++    }
++    handshake->certificate_verify_out_offset = 0;
++}
++#endif
++
+ void mbedtls_ssl_handshake_free(mbedtls_ssl_context *ssl)
+ {
+     mbedtls_ssl_handshake_params *handshake = ssl->handshake;
+@@ -4606,6 +4630,9 @@
+     if (ssl->handshake->certificate_request_context) {
+         mbedtls_free((void *) handshake->certificate_request_context);
+     }
++#if defined(MBEDTLS_MLDSA65_PRIVATE_KEY)
++    mbedtls_ssl_tls13_free_certificate_verify(handshake);
++#endif
+ #endif /* MBEDTLS_SSL_PROTO_TLS1_3 */
+ #endif /* MBEDTLS_SSL_HANDSHAKE_WITH_CERT_ENABLED */
+ 
+--- a/library/ssl_tls13_generic.c
++++ b/library/ssl_tls13_generic.c
+@@ -1282,6 +1282,20 @@
+             return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+         }
+ 
++#if defined(MBEDTLS_MLDSA65_PRIVATE_KEY)
++        if (*sig_alg == MBEDTLS_TLS1_3_SIG_MLDSA65) {
++            /* Pure MLDSA signs the complete TLS-defined verify structure,
++             * including its context string and transcript digest. */
++            ret = mbedtls_pk_sign_ext(pk_type, own_key, MBEDTLS_MD_NONE,
++                                      verify_buffer, verify_buffer_len,
++                                      p + 4, (size_t)(end - (p + 4)), &signature_len);
++            if (ret != 0) return ret;
++#if defined(WENDY_TLS_CV_TRACE)
++            wendy_test_cv_signs++;
++#endif
++            break;
++        }
++#endif
+         /* Hash verify buffer with indicated hash function */
+         psa_algorithm = mbedtls_md_psa_alg_from_type(md_alg);
+         status = psa_hash_compute(psa_algorithm,
+@@ -1331,6 +1345,61 @@
+     return 0;
+ }
+ 
++#if defined(MBEDTLS_MLDSA65_PRIVATE_KEY)
++/* Keep the one computed signature until all encrypted output is accepted.
++ * As with Certificate fragmentation, the outer handshake step flushes pending
++ * ciphertext before re-entering. Offset includes each span already hashed and
++ * queued, even when that record returns WANT_READ/WRITE. */
++static int ssl_tls13_write_mldsa65_certificate_verify(mbedtls_ssl_context *ssl)
++{
++    mbedtls_ssl_handshake_params *handshake = ssl->handshake;
++    int maximum = mbedtls_ssl_get_max_out_record_payload(ssl);
++    if (maximum <= 0) return maximum < 0 ? maximum : MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
++    if (handshake->certificate_verify_out == NULL) {
++        size_t length = 0;
++        handshake->certificate_verify_out = mbedtls_calloc(1, MBEDTLS_SSL_MLDSA65_CV_SIZE);
++        if (handshake->certificate_verify_out == NULL) return MBEDTLS_ERR_SSL_ALLOC_FAILED;
++#if defined(WENDY_TLS_CV_TRACE)
++        wendy_test_cv_allocation = handshake->certificate_verify_out;
++#endif
++        unsigned char *message = handshake->certificate_verify_out;
++        int ret = ssl_tls13_write_certificate_verify_body(ssl, message + 4,
++            message + MBEDTLS_SSL_MLDSA65_CV_SIZE, &length);
++        if (ret != 0 || length != MBEDTLS_SSL_MLDSA65_CV_SIZE - 4) {
++            mbedtls_ssl_tls13_free_certificate_verify(handshake);
++            return ret != 0 ? ret : MBEDTLS_ERR_SSL_INTERNAL_ERROR;
++        }
++        message[0] = MBEDTLS_SSL_HS_CERTIFICATE_VERIFY;
++        MBEDTLS_PUT_UINT24_BE(length, message, 1);
++    }
++    while (handshake->certificate_verify_out_offset < MBEDTLS_SSL_MLDSA65_CV_SIZE) {
++        size_t offset = handshake->certificate_verify_out_offset;
++        size_t length = MBEDTLS_SSL_MLDSA65_CV_SIZE - offset;
++        if (length > (size_t)maximum) length = (size_t)maximum;
++        memcpy(ssl->out_msg, handshake->certificate_verify_out + offset, length);
++        int ret = handshake->update_checksum(ssl, ssl->out_msg, length);
++        if (ret != 0) return ret;
++        ssl->out_msgtype = MBEDTLS_SSL_MSG_HANDSHAKE;
++        ssl->out_msglen = length;
++        handshake->certificate_verify_out_offset += length;
++#if defined(WENDY_TLS_CV_TRACE)
++        wendy_test_cv_fragments++;wendy_test_cv_hashed += length;
++        if (length > wendy_test_cv_max_fragment) wendy_test_cv_max_fragment = length;
++#endif
++        ret = mbedtls_ssl_write_record(ssl, 1);
++        if (ret != 0) {
++#if defined(WENDY_TLS_CV_TRACE)
++            if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE)
++                wendy_test_cv_wants++;
++#endif
++            return ret;
++        }
++    }
++    mbedtls_ssl_tls13_free_certificate_verify(handshake);
++    return 0;
++}
++#endif
++
+ int mbedtls_ssl_tls13_write_certificate_verify(mbedtls_ssl_context *ssl)
+ {
+     int ret = 0;
+@@ -1338,6 +1407,10 @@
+     size_t buf_len, msg_len;
+ 
+     MBEDTLS_SSL_DEBUG_MSG(2, ("=> write certificate verify"));
++#if defined(MBEDTLS_MLDSA65_PRIVATE_KEY)
++    if (mbedtls_pk_get_type(mbedtls_ssl_own_key(ssl)) == MBEDTLS_PK_MLDSA65)
++        return ssl_tls13_write_mldsa65_certificate_verify(ssl);
++#endif
+ 
+     MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_start_handshake_msg(
+                              ssl, MBEDTLS_SSL_HS_CERTIFICATE_VERIFY,
+--- a/library/ssl_tls13_server.c
++++ b/library/ssl_tls13_server.c
+@@ -1155,6 +1155,17 @@
+                                    "check signature algorithm %s [%04x]",
+                                    mbedtls_ssl_sig_alg_to_str(*sig_alg),
+                                    *sig_alg));
++#if defined(MBEDTLS_MLDSA65_PRIVATE_KEY)
++            /* MLDSA's pure-message backend is not a PSA VERIFY_HASH key. The
++             * certificate's ordinary usage checks above still apply; require
++             * the configured matching private seed key before selecting it. */
++            if (*sig_alg == MBEDTLS_TLS1_3_SIG_MLDSA65 &&
++                mbedtls_pk_get_type(&key_cert->cert->pk) == MBEDTLS_PK_MLDSA65 &&
++                mbedtls_pk_check_pair(&key_cert->cert->pk, key_cert->key) == 0) {
++                ssl->handshake->key_cert = key_cert;
++                return 0;
++            }
++#endif
+             psa_alg = ssl_tls13_iana_sig_alg_to_psa_alg(*sig_alg);
+ 
+             if (mbedtls_ssl_tls13_check_sig_alg_cert_key_match(

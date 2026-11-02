@@ -1,0 +1,34 @@
+diff --git a/library/ssl_tls.c b/library/ssl_tls.c
+--- a/library/ssl_tls.c
++++ b/library/ssl_tls.c
+@@ -2858,13 +2858,18 @@
+ #if defined(MBEDTLS_SSL_PROTO_TLS1_2)
+     /* Use the configured MFL for the client if we're past SERVER_HELLO_DONE */
+     if (ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT &&
+-        ssl->state >= MBEDTLS_SSL_SERVER_HELLO_DONE) {
++        ssl->state >= MBEDTLS_SSL_SERVER_HELLO_DONE &&
++        ssl->conf->mfl_code != MBEDTLS_SSL_MAX_FRAG_LEN_NONE) {
+         return ssl_mfl_code_to_length(ssl->conf->mfl_code);
+     }
+ #endif
+ 
++    /* NONE means the peer did not negotiate MFL. The conversion helper's
++     * default is min(input, output), for advertising a symmetric extension;
++     * it must not cap the independent receive limit when MFL is unused. */
+     /* Check if a smaller max length was negotiated */
+-    if (ssl->session_out != NULL) {
++    if (ssl->session_out != NULL &&
++        ssl->session_out->mfl_code != MBEDTLS_SSL_MAX_FRAG_LEN_NONE) {
+         read_mfl = ssl_mfl_code_to_length(ssl->session_out->mfl_code);
+         if (read_mfl < max_len) {
+             max_len = read_mfl;
+@@ -2872,7 +2877,8 @@
+     }
+ 
+     /* During a handshake, use the value being negotiated */
+-    if (ssl->session_negotiate != NULL) {
++    if (ssl->session_negotiate != NULL &&
++        ssl->session_negotiate->mfl_code != MBEDTLS_SSL_MAX_FRAG_LEN_NONE) {
+         read_mfl = ssl_mfl_code_to_length(ssl->session_negotiate->mfl_code);
+         if (read_mfl < max_len) {
+             max_len = read_mfl;

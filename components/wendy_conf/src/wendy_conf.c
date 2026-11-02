@@ -662,7 +662,7 @@ static esp_err_t copy_enrollment(WendyConfEnrollment *config,
         struct wendy_conf_span spans[] = {s_cache.enrollment_time, s_cache.device_roots,
                                          s_cache.tsa_roots, s_cache.https_roots};
         struct wendy_conf_span *copies[] = {&data->signed_time, &data->device_roots,
-                                            &data->tsa_roots, &data->https_roots};
+                                          &data->tsa_roots, &data->https_roots};
         /* Partial snapshots must not hide forbidden runtime trust in another
          * domain. The encoded API keeps its existing import policy. */
         if (der && !s_cache.conf.enrollment.provision_trust &&
@@ -742,19 +742,19 @@ done:
 }
 
 esp_err_t wendy_conf_copy_enrollment(WendyConfEnrollment *config,
-                                     struct wendy_conf_enrollment_data *data)
+    struct wendy_conf_enrollment_data *data)
 {
-    return copy_enrollment(config, data, ENROLLMENT_ALL, false);
+    return copy_enrollment(config, data, ENROLLMENT_ALL, true);
 }
 
 esp_err_t wendy_conf_copy_enrollment_der(WendyConfEnrollment *config,
-                                         struct wendy_conf_enrollment_data *data)
+    struct wendy_conf_enrollment_data *data)
 {
     return copy_enrollment(config, data, ENROLLMENT_ALL, true);
 }
 
 esp_err_t wendy_conf_copy_device_trust(WendyConfEnrollment *config,
-                                       struct wendy_conf_enrollment_data *data)
+    struct wendy_conf_enrollment_data *data)
 {
     return copy_enrollment(config, data, ENROLLMENT_DEVICE_ROOTS, true);
 }

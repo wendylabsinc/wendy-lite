@@ -1,4 +1,5 @@
 #include "wendy_core.h"
+#include "wendy_pki_crypto.h"
 #include "esp_log.h"
 
 #if CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3 || CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1
@@ -13,6 +14,7 @@
 
 void app_main(void)
 {
+    ESP_ERROR_CHECK(wendy_pki_memory_init() ? ESP_FAIL : ESP_OK);
 #if CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3 || CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1
     // Reserve sensor DMA memory before networking fragments the internal heap.
     esp_err_t err = wendy_sensor_link_init();
