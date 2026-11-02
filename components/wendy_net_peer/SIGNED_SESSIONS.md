@@ -77,9 +77,15 @@ verify and retain the exact signed principal/body bytes, including unknown body
 fields; they must not reconstruct a signed body from their understood fields.
 Optional capabilities may be added to `caps`. A change that affects how a route
 or service must be interpreted belongs in the manifest's `requires` mechanism
-or a new body version. Unsupported versions, required extensions and endpoint
-transports leave the artifact unavailable without closing the carrier or
-advancing its accepted revision.
+or a new body version. Unsupported versions and required extensions leave the
+artifact unavailable without closing the carrier or advancing its accepted
+revision. Unknown optional endpoint transports and service/system kinds omit
+only that local projection; supported siblings, the signed route and the exact
+raw relay artifact remain available. Unknown agent protocols expose no usable
+agent endpoint and never fall back to a known protocol. Common service identity,
+uniqueness and overall entry bounds still apply; known entries retain their
+full schema validation. Endpoint arrays permit at most 16 total entries, with
+only understood transports consuming the two current endpoint slots.
 
 Additive fields use the current bounded CBOR profile: definite maps/arrays,
 text/byte strings, integers, booleans and null. Adding a new CBOR representation
