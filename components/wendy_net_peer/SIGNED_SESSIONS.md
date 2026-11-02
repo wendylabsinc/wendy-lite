@@ -60,6 +60,34 @@ one extra retry. Identity repair retains metadata only in the async runtime,
 while the completed gossip download owns the full body; the old copied-body
 8 KiB limit does not reject a PSRAM node's larger valid manifest.
 
+## Protocol evolution
+
+The routing-session hello version covers its framed control messages, including
+identity/manifest requests and certificate exchange. Gossip additionally carries
+its own version and operation in each envelope. Babel packets carry version 2
+and length-delimited TLVs; unknown optional TLVs and sub-TLVs are skipped. An
+unknown mandatory sub-TLV suppresses its enclosing message according to Babel's
+rules. These scopes can evolve independently from management and application
+sessions.
+
+Complete device/operator manifests carry body version 4, which also scopes the
+nested route, owner, app-endpoint and service structures. Unknown optional map
+fields are ignored, including fields in the outer signature envelope. Receivers
+verify and retain the exact signed principal/body bytes, including unknown body
+fields; they must not reconstruct a signed body from their understood fields.
+Optional capabilities may be added to `caps`. A change that affects how a route
+or service must be interpreted belongs in the manifest's `requires` mechanism
+or a new body version. Unsupported versions, required extensions and endpoint
+transports leave the artifact unavailable without closing the carrier or
+advancing its accepted revision.
+
+Additive fields use the current bounded CBOR profile: definite maps/arrays,
+text/byte strings, integers, booleans and null. Adding a new CBOR representation
+(such as a tag or floating-point field) is a profile change rather than an
+optional field understood by these readers. Existing size, token and nesting
+bounds still apply. The local WASM JSON publication ABI validates its own input;
+it is not a network envelope or a separate signed service protocol.
+
 ## Component validation
 
 The host suite covers routing, coalescing, backpressure, allocation retry, upload
