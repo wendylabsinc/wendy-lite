@@ -26,7 +26,8 @@ static void vTaskDelay(TickType_t ticks)
     assert(ticks > 0);
     elapsed += ticks;
     /* A higher-priority task can prevent execution after the block expires. */
-    if (elapsed < busy_until) elapsed = busy_until;
+    if (elapsed < busy_until)
+        elapsed = busy_until;
     delay_calls++;
     if (stop_at && elapsed >= stop_at) {
         terminating = true;
