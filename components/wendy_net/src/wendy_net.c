@@ -43,7 +43,7 @@ static const char *TAG = "wendy_net";
 #define WENDYNET_MAX_SOCKETS       CONFIG_WENDY_NET_MAX_SOCKETS
 #define WENDYNET_MAX_LISTENERS     CONFIG_WENDY_NET_MAX_LISTENERS
 #define WENDYNET_BUFFER_SIZE       CONFIG_WENDY_NET_BUFFER_SIZE
-#define WENDYNET_DATAGRAM_MAX      CONFIG_WENDY_NET_DATAGRAM_MAX
+#define WENDYNET_DATAGRAM_MAX CONFIG_WENDY_NET_DATAGRAM_MAX
 #define WENDYNET_ACCEPT_QUEUE_SIZE CONFIG_WENDY_NET_ACCEPT_QUEUE_SIZE
 
 #if CONFIG_WENDY_NET_BUFFERS_IN_PSRAM
@@ -88,13 +88,13 @@ typedef struct {
     bool closing;
     bool closed;
     bool error;
-    bool rx_datagram,tx_datagram;
-    bool native_datagram;        /* native TLS owns packet transfer; no lwIP fd */
+    bool rx_datagram, tx_datagram;
+    bool native_datagram; /* native TLS owns packet transfer; no lwIP fd */
     bool tx_deferred;
     TickType_t tx_started;
     uint8_t rx_retries;
     uint16_t pending_port;
-    uint16_t datagram_limit;      /* negotiated native app maximum; otherwise0 */
+    uint16_t datagram_limit; /* negotiated native app maximum; otherwise0 */
     uint8_t *rx;
     size_t rx_len;
     wendy_net_packet_release_fn rx_release; /* NULL for ordinary LAN buffers */
@@ -149,8 +149,10 @@ static uint32_t s_service_epoch;
 static WENDYNET_BSS_ATTR wendynet_socket_t s_wendynet_sockets[WENDYNET_MAX_SOCKETS];
 static WENDYNET_BSS_ATTR wendynet_listener_t s_wendynet_listeners[WENDYNET_MAX_LISTENERS];
 static WENDYNET_BSS_ATTR struct wn_raw_socket s_raw_slots[WENDYNET_MAX_SOCKETS];
-static struct wn_raw_set s_raw={.sockets=s_raw_slots,.capacity=WENDYNET_MAX_SOCKETS,
-    .stopping=wendy_wasm_is_terminating,.now_us=esp_timer_get_time};
+static struct wn_raw_set s_raw = {.sockets = s_raw_slots,
+                                  .capacity = WENDYNET_MAX_SOCKETS,
+                                  .stopping = wendy_wasm_is_terminating,
+                                  .now_us = esp_timer_get_time};
 
 /* eventfd used to wake the task's select() when other threads mutate state
  * (close marks, queued sends, new sockets/listeners, guest reset). */
@@ -264,7 +266,7 @@ static int wendynet_alloc_handle_locked(void)
 static void *wendynet_buffer_alloc(size_t size)
 {
 #if CONFIG_WENDY_NET_BUFFERS_IN_PSRAM
-    return heap_caps_malloc(size,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    return heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 #else
     return malloc(size);
 #endif
@@ -274,10 +276,13 @@ static int wendynet_socket_buffers_locked(wendynet_socket_t *sock)
 {
     /* TCP keeps its stream buffers. UDP owns only the actual pending
      * packets, allocated independently on receive/send and released on drain. */
-    if(sock->sock_type!=WENDYNET_SOCK_TCP || sock->rx)return 0;
-    uint8_t *buffers=wendynet_buffer_alloc(2U*WENDYNET_BUFFER_SIZE);
-    if(!buffers)return -1;
-    sock->rx=buffers;sock->tx=buffers+WENDYNET_BUFFER_SIZE;
+    if (sock->sock_type != WENDYNET_SOCK_TCP || sock->rx)
+        return 0;
+    uint8_t *buffers = wendynet_buffer_alloc(2U * WENDYNET_BUFFER_SIZE);
+    if (!buffers)
+        return -1;
+    sock->rx = buffers;
+    sock->tx = buffers + WENDYNET_BUFFER_SIZE;
     return 0;
 }
 
@@ -289,8 +294,8 @@ static wendynet_socket_t *wendynet_alloc_socket_locked(int fd)
             s_wendynet_sockets[i].used = true;
             s_wendynet_sockets[i].handle = wendynet_alloc_handle_locked();
             s_wendynet_sockets[i].fd = fd;
-            if(fd>=0 && wendynet_socket_buffers_locked(&s_wendynet_sockets[i])){
-                memset(&s_wendynet_sockets[i],0,sizeof(s_wendynet_sockets[i]));
+            if (fd >= 0 && wendynet_socket_buffers_locked(&s_wendynet_sockets[i])) {
+                memset(&s_wendynet_sockets[i], 0, sizeof(s_wendynet_sockets[i]));
                 return NULL;
             }
             return &s_wendynet_sockets[i];
@@ -301,11 +306,16 @@ static wendynet_socket_t *wendynet_alloc_socket_locked(int fd)
 
 static void wendynet_release_rx_locked(wendynet_socket_t *sock)
 {
-    if(sock->rx){
-        if(sock->rx_release)sock->rx_release(sock->rx);
-        else free(sock->rx);
+    if (sock->rx) {
+        if (sock->rx_release)
+            sock->rx_release(sock->rx);
+        else
+            free(sock->rx);
     }
-    sock->rx=NULL;sock->rx_len=0;sock->rx_datagram=false;sock->rx_release=NULL;
+    sock->rx = NULL;
+    sock->rx_len = 0;
+    sock->rx_datagram = false;
+    sock->rx_release = NULL;
 }
 
 static void wendynet_release_socket_locked(wendynet_socket_t *sock)
@@ -318,41 +328,41 @@ static void wendynet_release_socket_locked(wendynet_socket_t *sock)
         close(sock->fd);
     }
     wendynet_release_rx_locked(sock);
-    if(sock->sock_type!=WENDYNET_SOCK_TCP)free(sock->tx);
+    if (sock->sock_type != WENDYNET_SOCK_TCP)
+        free(sock->tx);
     memset(sock, 0, sizeof(*sock));
     sock->fd = -1;
 }
 
 static bool wendynet_sockaddr_equal(const struct sockaddr_storage *a,
-                                     const struct sockaddr_storage *b)
+                                    const struct sockaddr_storage *b)
 {
-    if (a->ss_family != b->ss_family) return false;
+    if (a->ss_family != b->ss_family)
+        return false;
     if (a->ss_family == AF_INET) {
-        const struct sockaddr_in *x=(const struct sockaddr_in *)a;
-        const struct sockaddr_in *y=(const struct sockaddr_in *)b;
+        const struct sockaddr_in *x = (const struct sockaddr_in *)a;
+        const struct sockaddr_in *y = (const struct sockaddr_in *)b;
         return x->sin_port == y->sin_port && x->sin_addr.s_addr == y->sin_addr.s_addr;
     }
 #if LWIP_IPV6
     if (a->ss_family == AF_INET6) {
-        const struct sockaddr_in6 *x=(const struct sockaddr_in6 *)a;
-        const struct sockaddr_in6 *y=(const struct sockaddr_in6 *)b;
+        const struct sockaddr_in6 *x = (const struct sockaddr_in6 *)a;
+        const struct sockaddr_in6 *y = (const struct sockaddr_in6 *)b;
         return x->sin6_port == y->sin6_port && x->sin6_scope_id == y->sin6_scope_id &&
-            !memcmp(&x->sin6_addr,&y->sin6_addr,sizeof x->sin6_addr);
+               !memcmp(&x->sin6_addr, &y->sin6_addr, sizeof x->sin6_addr);
     }
 #endif
     return false;
 }
 
 static wendynet_socket_t *wendynet_find_udp_peer_locked(int listener_handle,
-                                                         const struct sockaddr_storage *addr)
+                                                        const struct sockaddr_storage *addr)
 {
     for (int i = 0; i < WENDYNET_MAX_SOCKETS; i++) {
         wendynet_socket_t *sock = &s_wendynet_sockets[i];
-        if (sock->used
-            && sock->sock_type == WENDYNET_SOCK_UDP_PEER
-            && !sock->closing && !sock->closed && !sock->error
-            && sock->listener_handle == listener_handle
-            && wendynet_sockaddr_equal(&sock->peer_addr, addr)) {
+        if (sock->used && sock->sock_type == WENDYNET_SOCK_UDP_PEER && !sock->closing &&
+            !sock->closed && !sock->error && sock->listener_handle == listener_handle &&
+            wendynet_sockaddr_equal(&sock->peer_addr, addr)) {
             return sock;
         }
     }
@@ -473,14 +483,13 @@ static void wendynet_kick_resolve(void *arg)
 {
     wendynet_dns_request_t *req = (wendynet_dns_request_t *)arg;
     ip_addr_t addr;
-    err_t err = dns_gethostbyname_addrtype(req->hostname, &addr,
-                                   wendynet_dns_found, req,
+    err_t err = dns_gethostbyname_addrtype(req->hostname, &addr, wendynet_dns_found, req,
 #if LWIP_IPV4 && LWIP_IPV6
-                                   LWIP_DNS_ADDRTYPE_IPV4_IPV6
+                                           LWIP_DNS_ADDRTYPE_IPV4_IPV6
 #else
-                                   LWIP_DNS_ADDRTYPE_DEFAULT
+                                           LWIP_DNS_ADDRTYPE_DEFAULT
 #endif
-                                   );
+    );
     if (err == ERR_OK) {
         /* Literal IP or cache hit — lwIP does not invoke the callback in
          * this case, so synthesize one to keep the result path uniform. */
@@ -499,9 +508,9 @@ static void wendynet_start_resolved_connect_locked(wendynet_socket_t *sock,
 {
     sock->resolving = false;
 
-    if(wendynet_socket_buffers_locked(sock)){
-        sock->closed=sock->error=true;
-        wendynet_notify_locked(WENDYNET_EVENT_ERROR|WENDYNET_EVENT_CLOSED);
+    if (wendynet_socket_buffers_locked(sock)) {
+        sock->closed = sock->error = true;
+        wendynet_notify_locked(WENDYNET_EVENT_ERROR | WENDYNET_EVENT_CLOSED);
         return;
     }
 
@@ -509,9 +518,10 @@ static void wendynet_start_resolved_connect_locked(wendynet_socket_t *sock,
     int sock_kind = is_udp ? SOCK_DGRAM : SOCK_STREAM;
     int proto = is_udp ? IPPROTO_UDP : IPPROTO_IP;
 
-    int family=AF_INET;
+    int family = AF_INET;
 #if LWIP_IPV6
-    if (IP_IS_V6(ipaddr)) family=AF_INET6;
+    if (IP_IS_V6(ipaddr))
+        family = AF_INET6;
 #endif
     int fd = socket(family, sock_kind, proto);
     if (fd < 0) {
@@ -528,22 +538,24 @@ static void wendynet_start_resolved_connect_locked(wendynet_socket_t *sock,
         return;
     }
 
-    struct sockaddr_storage addr={0};
+    struct sockaddr_storage addr = {0};
     socklen_t addr_size;
 #if LWIP_IPV6
     if (family == AF_INET6) {
-        struct sockaddr_in6 *v6=(struct sockaddr_in6 *)&addr;
-        v6->sin6_family=AF_INET6; v6->sin6_port=htons(sock->pending_port);
-        memcpy(&v6->sin6_addr,ip_2_ip6(ipaddr)->addr,sizeof v6->sin6_addr);
-        v6->sin6_scope_id=ip6_addr_zone(ip_2_ip6(ipaddr));
-        addr_size=sizeof *v6;
+        struct sockaddr_in6 *v6 = (struct sockaddr_in6 *)&addr;
+        v6->sin6_family = AF_INET6;
+        v6->sin6_port = htons(sock->pending_port);
+        memcpy(&v6->sin6_addr, ip_2_ip6(ipaddr)->addr, sizeof v6->sin6_addr);
+        v6->sin6_scope_id = ip6_addr_zone(ip_2_ip6(ipaddr));
+        addr_size = sizeof *v6;
     } else
 #endif
     {
-        struct sockaddr_in *v4=(struct sockaddr_in *)&addr;
-        v4->sin_family=AF_INET; v4->sin_port=htons(sock->pending_port);
-        v4->sin_addr.s_addr=ip4_addr_get_u32(ip_2_ip4(ipaddr));
-        addr_size=sizeof *v4;
+        struct sockaddr_in *v4 = (struct sockaddr_in *)&addr;
+        v4->sin_family = AF_INET;
+        v4->sin_port = htons(sock->pending_port);
+        v4->sin_addr.s_addr = ip4_addr_get_u32(ip_2_ip4(ipaddr));
+        addr_size = sizeof *v4;
     }
 
     sock->fd = fd;
@@ -624,8 +636,8 @@ static void wendynet_task_main(void *arg)
          * select(); each UDP slot holds at most one datagram. */
         for (int i = 0; i < WENDYNET_MAX_SOCKETS; i++) {
             wendynet_socket_t *sock = &s_wendynet_sockets[i];
-            if (!sock->used || !sock->tx_datagram || sock->native_datagram
-                || sock->closed || sock->error) {
+            if (!sock->used || !sock->tx_datagram || sock->native_datagram || sock->closed ||
+                sock->error) {
                 continue;
             }
             /* Resolve the egress fd and (for peers) the destination address. */
@@ -655,8 +667,9 @@ static void wendynet_task_main(void *arg)
                     ? sendto(out_fd, sock->tx, sock->tx_len, 0, dest, dest_len)
                     : send(out_fd, sock->tx, sock->tx_len, 0);
                 int send_error = n < 0 ? errno : 0;
-                if (n < 0 && (send_error == ENOMEM || send_error == ENOBUFS ||
-                              send_error == EAGAIN || send_error == EWOULDBLOCK) &&
+                if (n < 0 &&
+                    (send_error == ENOMEM || send_error == ENOBUFS || send_error == EAGAIN ||
+                     send_error == EWOULDBLOCK) &&
                     xTaskGetTickCount() - sock->tx_started < pdMS_TO_TICKS(1000)) {
                     /* A lower-priority local sender may still own the original
                      * packet while this task is already sending its reply.
@@ -664,8 +677,8 @@ static void wendynet_task_main(void *arg)
                      * retrying requires no further queue or payload allocation. */
                     if (!sock->tx_deferred)
                         ESP_LOGI(TAG, "UDP send deferred: bytes=%u errno=%d heap=%u largest=%u",
-                                 (unsigned)sock->tx_len, send_error,
-                                 (unsigned)send_free, (unsigned)send_largest);
+                                 (unsigned)sock->tx_len, send_error, (unsigned)send_free,
+                                 (unsigned)send_largest);
                     sock->tx_deferred = true;
                     udp_retry = true;
                     continue;
@@ -675,11 +688,12 @@ static void wendynet_task_main(void *arg)
                              (unsigned)sock->tx_len,
                              (unsigned)(xTaskGetTickCount() - sock->tx_started));
                 if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                    ESP_LOGW(TAG, "UDP send failed: bytes=%u errno=%d heap_before=%u largest_before=%u heap_after=%u largest_after=%u",
-                             (unsigned)sock->tx_len, errno, (unsigned)send_free,
-                             (unsigned)send_largest,
-                             (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-                             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+                    ESP_LOGW(
+                        TAG,
+                        "UDP send failed: bytes=%u errno=%d heap_before=%u largest_before=%u heap_after=%u largest_after=%u",
+                        (unsigned)sock->tx_len, errno, (unsigned)send_free, (unsigned)send_largest,
+                        (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
                     sock->error = true;
                     wendynet_notify_locked(WENDYNET_EVENT_ERROR | WENDYNET_EVENT_CLOSED);
                 }
@@ -688,7 +702,8 @@ static void wendynet_task_main(void *arg)
              * or a retired listener. UDP still has no delivery guarantee. */
             sock->tx_len = 0;
             sock->tx_datagram = false;
-            free(sock->tx);sock->tx=NULL;
+            free(sock->tx);
+            sock->tx = NULL;
             wendynet_notify_locked(WENDYNET_EVENT_WRITE_READY);
         }
 
@@ -721,8 +736,8 @@ static void wendynet_task_main(void *arg)
              * datagram, so only select for read while the slot is empty —
              * otherwise select() would spin on a readable fd we won't drain. */
             bool rx_has_space = (sock->sock_type == WENDYNET_SOCK_TCP)
-                ? (sock->rx_len < WENDYNET_BUFFER_SIZE)
-                : !sock->rx_datagram;
+                                    ? (sock->rx_len < WENDYNET_BUFFER_SIZE)
+                                    : !sock->rx_datagram;
             if (!sock->connecting && !sock->closed && !sock->closing &&
                 !sock->error && rx_has_space) {
                 FD_SET(sock->fd, &readfds);
@@ -744,8 +759,7 @@ static void wendynet_task_main(void *arg)
         // Normally wait for an fd event; temporary UDP allocation pressure
         // gets a bounded retry without spinning or retaining another packet.
         struct timeval retry_wait = {.tv_usec = 10000};
-        int rc = select(max_fd + 1, &readfds, &writefds, NULL,
-                        udp_retry ? &retry_wait : NULL);
+        int rc = select(max_fd + 1, &readfds, &writefds, NULL, udp_retry ? &retry_wait : NULL);
         if (rc < 0) {
             // Errors here are typically transient (e.g. EBADF if a fd was
             // closed concurrently). The next iteration rebuilds the fd_set
@@ -783,52 +797,62 @@ static void wendynet_task_main(void *arg)
                  * Drain/drop full or unadmitted sources as before so they do
                  * not starve established peers behind them in the UDP queue. */
                 for (;;) {
-                    struct sockaddr_storage src={0};
+                    struct sockaddr_storage src = {0};
                     socklen_t src_len = sizeof(src);
                     uint8_t preview;
-                    int n=wendy_net_datagram_peek(listener->fd,&src,&src_len);
-                    if(n<0){
-                        if(errno!=EAGAIN && errno!=EWOULDBLOCK)
+                    int n = wendy_net_datagram_peek(listener->fd, &src, &src_len);
+                    if (n < 0) {
+                        if (errno != EAGAIN && errno != EWOULDBLOCK)
                             wendynet_notify_locked(WENDYNET_EVENT_ERROR);
                         break;
                     }
-                    wendynet_socket_t *peer=
-                        wendynet_find_udp_peer_locked(listener->handle,&src);
-                    if(!peer && listener->accepted_count<WENDYNET_ACCEPT_QUEUE_SIZE){
-                        peer=wendynet_alloc_socket_locked(-1);
-                        if(peer){
-                            peer->sock_type=WENDYNET_SOCK_UDP_PEER;
-                            peer->listener_handle=listener->handle;
-                            peer->peer_addr=src;peer->peer_addr_size=src_len;
-                            if(!wendynet_listener_enqueue_locked(listener,peer->handle)){
-                                wendynet_release_socket_locked(peer);peer=NULL;
-                            }else wendynet_notify_locked(WENDYNET_EVENT_ACCEPT_READY);
+                    wendynet_socket_t *peer = wendynet_find_udp_peer_locked(listener->handle, &src);
+                    if (!peer && listener->accepted_count < WENDYNET_ACCEPT_QUEUE_SIZE) {
+                        peer = wendynet_alloc_socket_locked(-1);
+                        if (peer) {
+                            peer->sock_type = WENDYNET_SOCK_UDP_PEER;
+                            peer->listener_handle = listener->handle;
+                            peer->peer_addr = src;
+                            peer->peer_addr_size = src_len;
+                            if (!wendynet_listener_enqueue_locked(listener, peer->handle)) {
+                                wendynet_release_socket_locked(peer);
+                                peer = NULL;
+                            } else
+                                wendynet_notify_locked(WENDYNET_EVENT_ACCEPT_READY);
                         }
                     }
-                    bool deliver=peer && !peer->rx_datagram;
-                    size_t capacity=(size_t)n<WENDYNET_DATAGRAM_MAX ? (size_t)n:WENDYNET_DATAGRAM_MAX;
-                    if(deliver){
-                        peer->rx=wendynet_buffer_alloc(capacity ? capacity:1);
-                        if(!peer->rx){
-                            if(!listener->rx_retries)
-                                ESP_LOGI(TAG,"UDP receive deferred: bytes=%u heap=%u largest=%u",
-                                    (unsigned)capacity,(unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                    bool deliver = peer && !peer->rx_datagram;
+                    size_t capacity =
+                        (size_t)n < WENDYNET_DATAGRAM_MAX ? (size_t)n : WENDYNET_DATAGRAM_MAX;
+                    if (deliver) {
+                        peer->rx = wendynet_buffer_alloc(capacity ? capacity : 1);
+                        if (!peer->rx) {
+                            if (!listener->rx_retries)
+                                ESP_LOGI(
+                                    TAG, "UDP receive deferred: bytes=%u heap=%u largest=%u",
+                                    (unsigned)capacity,
+                                    (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
                                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-                            if(++listener->rx_retries<=100){udp_rx_pressure=true;break;}
-                            deliver=false;
+                            if (++listener->rx_retries <= 100) {
+                                udp_rx_pressure = true;
+                                break;
+                            }
+                            deliver = false;
                         }
                     }
-                    listener->rx_retries=0;
-                    n=recvfrom(listener->fd,deliver ? peer->rx:&preview,
-                               deliver ? capacity:1,0,NULL,NULL);
-                    if(n<0){
-                        if(deliver)wendynet_release_rx_locked(peer);
-                        if(errno!=EAGAIN && errno!=EWOULDBLOCK)
+                    listener->rx_retries = 0;
+                    n = recvfrom(listener->fd, deliver ? peer->rx : &preview,
+                                 deliver ? capacity : 1, 0, NULL, NULL);
+                    if (n < 0) {
+                        if (deliver)
+                            wendynet_release_rx_locked(peer);
+                        if (errno != EAGAIN && errno != EWOULDBLOCK)
                             wendynet_notify_locked(WENDYNET_EVENT_ERROR);
                         break;
                     }
-                    if(deliver){
-                        peer->rx_len=(size_t)n;peer->rx_datagram=true;
+                    if (deliver) {
+                        peer->rx_len = (size_t)n;
+                        peer->rx_datagram = true;
                         wendynet_notify_locked(WENDYNET_EVENT_READ_READY);
                     }
                 }
@@ -878,22 +902,25 @@ static void wendynet_task_main(void *arg)
                 /* UDP standalone (connected client): one datagram per recv,
                  * read only while the slot is empty. Sends were drained
                  * eagerly before select(). */
-                if (!sock->closed && !sock->error
-                    && !sock->rx_datagram
-                    && FD_ISSET(sock->fd, &readfds)) {
-                    int n=wendy_net_datagram_peek(sock->fd,NULL,NULL);
-                    if(n>=0){
-                        size_t capacity=(size_t)n<WENDYNET_DATAGRAM_MAX ? (size_t)n:WENDYNET_DATAGRAM_MAX;
-                        sock->rx=wendynet_buffer_alloc(capacity ? capacity:1);
-                        if(!sock->rx){
-                            if(++sock->rx_retries<=100){udp_rx_pressure=true;continue;}
-                            sock->rx_retries=0;
+                if (!sock->closed && !sock->error && !sock->rx_datagram &&
+                    FD_ISSET(sock->fd, &readfds)) {
+                    int n = wendy_net_datagram_peek(sock->fd, NULL, NULL);
+                    if (n >= 0) {
+                        size_t capacity =
+                            (size_t)n < WENDYNET_DATAGRAM_MAX ? (size_t)n : WENDYNET_DATAGRAM_MAX;
+                        sock->rx = wendynet_buffer_alloc(capacity ? capacity : 1);
+                        if (!sock->rx) {
+                            if (++sock->rx_retries <= 100) {
+                                udp_rx_pressure = true;
+                                continue;
+                            }
+                            sock->rx_retries = 0;
                             unsigned char discarded;
-                            (void)recv(sock->fd,&discarded,1,0);
+                            (void)recv(sock->fd, &discarded, 1, 0);
                             continue;
                         }
-                        sock->rx_retries=0;
-                        n=recv(sock->fd,sock->rx,capacity,0);
+                        sock->rx_retries = 0;
+                        n = recv(sock->fd, sock->rx, capacity, 0);
                     }
                     if (n >= 0) {
                         sock->rx_len = (size_t)n;
@@ -901,7 +928,8 @@ static void wendynet_task_main(void *arg)
                         wendynet_notify_locked(WENDYNET_EVENT_READ_READY);
                     } else {
                         wendynet_release_rx_locked(sock);
-                        if(errno==EAGAIN || errno==EWOULDBLOCK)continue;
+                        if (errno == EAGAIN || errno == EWOULDBLOCK)
+                            continue;
                         sock->error = true;
                         wendynet_notify_locked(WENDYNET_EVENT_ERROR | WENDYNET_EVENT_CLOSED);
                     }
@@ -976,7 +1004,8 @@ static void wendynet_task_main(void *arg)
         /* A readable UDP fd remains readable while its packet is queued.
          * Yield outside the table lock so its lower-priority sender can
          * release original buffers before the bounded receive retry. */
-        if(udp_rx_pressure)vTaskDelay(pdMS_TO_TICKS(10));
+        if (udp_rx_pressure)
+            vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
@@ -1039,12 +1068,11 @@ static int wendynet_listen_common(int port, bool is_udp, int backlog)
         return -1;
     }
 
-    int family=AF_INET;
+    int family = AF_INET;
 #if LWIP_IPV6
-    family=AF_INET6;
+    family = AF_INET6;
 #endif
-    int fd = socket(family, is_udp ? SOCK_DGRAM : SOCK_STREAM,
-                    is_udp ? IPPROTO_UDP : IPPROTO_IP);
+    int fd = socket(family, is_udp ? SOCK_DGRAM : SOCK_STREAM, is_udp ? IPPROTO_UDP : IPPROTO_IP);
     if (fd < 0) {
         return -1;
     }
@@ -1052,9 +1080,10 @@ static int wendynet_listen_common(int port, bool is_udp, int backlog)
     int reuse = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 #if LWIP_IPV6
-    int v6_only=0;
-    if (setsockopt(fd,IPPROTO_IPV6,IPV6_V6ONLY,&v6_only,sizeof v6_only)) {
-        close(fd);return -1;
+    int v6_only = 0;
+    if (setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6_only, sizeof v6_only)) {
+        close(fd);
+        return -1;
     }
 #endif
 
@@ -1063,16 +1092,18 @@ static int wendynet_listen_common(int port, bool is_udp, int backlog)
         return -1;
     }
 
-    struct sockaddr_storage addr={0};
+    struct sockaddr_storage addr = {0};
     socklen_t addr_size;
 #if LWIP_IPV6
-    struct sockaddr_in6 *v6=(struct sockaddr_in6 *)&addr;
-    v6->sin6_family=AF_INET6;v6->sin6_port=htons((uint16_t)port);
-    addr_size=sizeof *v6;
+    struct sockaddr_in6 *v6 = (struct sockaddr_in6 *)&addr;
+    v6->sin6_family = AF_INET6;
+    v6->sin6_port = htons((uint16_t)port);
+    addr_size = sizeof *v6;
 #else
-    struct sockaddr_in *v4=(struct sockaddr_in *)&addr;
-    v4->sin_family=AF_INET;v4->sin_port=htons((uint16_t)port);
-    addr_size=sizeof *v4;
+    struct sockaddr_in *v4 = (struct sockaddr_in *)&addr;
+    v4->sin_family = AF_INET;
+    v4->sin_port = htons((uint16_t)port);
+    addr_size = sizeof *v4;
 #endif
     if (bind(fd, (struct sockaddr *)&addr, addr_size) != 0) {
         close(fd);
@@ -1154,29 +1185,34 @@ static int wendynet_connect_common(const char *host, int host_len, int port,
     wendynet_unlock();
 
     if (mesh_begin) {
-        int dispatched = mesh_begin(handle,req->hostname,(uint16_t)port,sock_type==WENDYNET_SOCK_UDP);
+        int dispatched =
+            mesh_begin(handle, req->hostname, (uint16_t)port, sock_type == WENDYNET_SOCK_UDP);
         if (dispatched) {
             free(req);
-            if (dispatched < 0) wendy_net_mesh_connected(handle, -1);
+            if (dispatched < 0)
+                wendy_net_mesh_connected(handle, -1);
             return handle;
         }
     }
 
 #if LWIP_IPV6
-    if (strchr(req->hostname,':')) {
+    if (strchr(req->hostname, ':')) {
         /* Resolve numeric scoped addresses outside the tcpip thread: lwIP's
          * interface-name lookup can itself call the core. The normal DNS
          * result mailbox remains the sole socket-state completion path. */
-        struct addrinfo hints={.ai_family=AF_INET6,.ai_flags=AI_NUMERICHOST},*address=NULL;
-        ip_addr_t literal;ip_addr_set_zero_ip6(&literal);
-        bool ok=!getaddrinfo(req->hostname,NULL,&hints,&address) && address;
-        if(ok){
-            const struct sockaddr_in6 *v6=(const struct sockaddr_in6 *)address->ai_addr;
-            memcpy(ip_2_ip6(&literal)->addr,&v6->sin6_addr,sizeof v6->sin6_addr);
-            ip6_addr_set_zone(ip_2_ip6(&literal),v6->sin6_scope_id);
+        struct addrinfo hints = {.ai_family = AF_INET6, .ai_flags = AI_NUMERICHOST},
+                        *address = NULL;
+        ip_addr_t literal;
+        ip_addr_set_zero_ip6(&literal);
+        bool ok = !getaddrinfo(req->hostname, NULL, &hints, &address) && address;
+        if (ok) {
+            const struct sockaddr_in6 *v6 = (const struct sockaddr_in6 *)address->ai_addr;
+            memcpy(ip_2_ip6(&literal)->addr, &v6->sin6_addr, sizeof v6->sin6_addr);
+            ip6_addr_set_zone(ip_2_ip6(&literal), v6->sin6_scope_id);
         }
-        if(address)freeaddrinfo(address);
-        wendynet_dns_found(req->hostname,ok ? &literal:NULL,req);
+        if (address)
+            freeaddrinfo(address);
+        wendynet_dns_found(req->hostname, ok ? &literal : NULL, req);
         return handle;
     }
 #endif
@@ -1204,26 +1240,37 @@ static int wendynet_connect_common(const char *host, int host_len, int port,
 
 void wendy_net_set_mesh_connector(wendy_net_mesh_begin_fn begin)
 {
-    wendynet_lock(); s_wendynet_mesh_begin = begin; wendynet_unlock();
+    wendynet_lock();
+    s_wendynet_mesh_begin = begin;
+    wendynet_unlock();
 }
 void wendy_net_set_mesh_resolver(wendy_net_mesh_resolve_fn resolve)
 {
-    wendynet_lock();s_wendynet_mesh_resolve=resolve;wendynet_unlock();
+    wendynet_lock();
+    s_wendynet_mesh_resolve = resolve;
+    wendynet_unlock();
 }
 
 int wendy_net_mesh_connected(int handle, int fd)
 {
     if (fd >= 0 && (fd >= FD_SETSIZE || wendynet_set_nonblocking(fd))) {
-        close(fd); fd = -1;
+        close(fd);
+        fd = -1;
     }
     wendynet_lock();
     wendynet_socket_t *sock = wendynet_find_socket_locked(handle);
     if (!sock || !sock->resolving || sock->closing) {
-        wendynet_unlock(); if (fd >= 0) close(fd); return -1;
+        wendynet_unlock();
+        if (fd >= 0)
+            close(fd);
+        return -1;
     }
     /* For canonical mesh connections, TLS setup completes before allocating
      * guest payload storage. Unused slots and failed handshakes retain none. */
-    if(fd>=0 && wendynet_socket_buffers_locked(sock)){close(fd);fd=-1;}
+    if (fd >= 0 && wendynet_socket_buffers_locked(sock)) {
+        close(fd);
+        fd = -1;
+    }
     sock->resolving = false;
     sock->fd = fd;
     if (fd < 0) {
@@ -1232,40 +1279,66 @@ int wendy_net_mesh_connected(int handle, int fd)
     } else {
         wendynet_notify_locked(WENDYNET_EVENT_WRITE_READY);
     }
-    wendynet_wake_locked(); wendynet_unlock(); return fd < 0 ? -1 : 0;
+    wendynet_wake_locked();
+    wendynet_unlock();
+    return fd < 0 ? -1 : 0;
 }
 
-int wendy_net_mesh_datagram_connected(int handle,unsigned maximum)
+int wendy_net_mesh_datagram_connected(int handle, unsigned maximum)
 {
-    if(!maximum || maximum>WENDYNET_DATAGRAM_MAX)return -1;
-    wendynet_lock();wendynet_socket_t *sock=wendynet_find_socket_locked(handle);
-    if(!sock || sock->sock_type!=WENDYNET_SOCK_UDP || !sock->resolving ||
-       sock->closing || sock->closed || sock->error){wendynet_unlock();return -1;}
-    sock->resolving=false;sock->native_datagram=true;sock->datagram_limit=maximum;
-    wendynet_notify_locked(WENDYNET_EVENT_WRITE_READY);wendynet_wake_locked();
-    wendynet_unlock();return 0;
+    if (!maximum || maximum > WENDYNET_DATAGRAM_MAX)
+        return -1;
+    wendynet_lock();
+    wendynet_socket_t *sock = wendynet_find_socket_locked(handle);
+    if (!sock || sock->sock_type != WENDYNET_SOCK_UDP || !sock->resolving || sock->closing ||
+        sock->closed || sock->error) {
+        wendynet_unlock();
+        return -1;
+    }
+    sock->resolving = false;
+    sock->native_datagram = true;
+    sock->datagram_limit = maximum;
+    wendynet_notify_locked(WENDYNET_EVENT_WRITE_READY);
+    wendynet_wake_locked();
+    wendynet_unlock();
+    return 0;
 }
 
-int wendy_net_mesh_datagram_receive(int handle,uint8_t **packet,size_t size)
+int wendy_net_mesh_datagram_receive(int handle, uint8_t **packet, size_t size)
 {
-    return wendy_net_mesh_datagram_receive_owned(handle,packet,size,NULL);
+    return wendy_net_mesh_datagram_receive_owned(handle, packet, size, NULL);
 }
 
-int wendy_net_mesh_datagram_receive_owned(int handle,uint8_t **packet,size_t size,
-    wendy_net_packet_release_fn release)
+int wendy_net_mesh_datagram_receive_owned(int handle, uint8_t **packet, size_t size,
+                                          wendy_net_packet_release_fn release)
 {
-    if(!packet || !*packet || size>WENDYNET_DATAGRAM_MAX)return -1;
-    wendynet_lock();wendynet_socket_t *sock=wendynet_find_socket_locked(handle);
-    if(!sock || !sock->native_datagram || size>sock->datagram_limit || sock->sock_type!=WENDYNET_SOCK_UDP ||
-       sock->closing || sock->closed || sock->error){wendynet_unlock();return -1;}
-    if(sock->rx_datagram){wendynet_unlock();return 0;}
-    sock->rx=*packet;*packet=NULL;sock->rx_len=size;sock->rx_datagram=true;sock->rx_release=release;
-    wendynet_notify_locked(WENDYNET_EVENT_READ_READY);wendynet_unlock();return 1;
+    if (!packet || !*packet || size > WENDYNET_DATAGRAM_MAX)
+        return -1;
+    wendynet_lock();
+    wendynet_socket_t *sock = wendynet_find_socket_locked(handle);
+    if (!sock || !sock->native_datagram || size > sock->datagram_limit ||
+        sock->sock_type != WENDYNET_SOCK_UDP || sock->closing || sock->closed || sock->error) {
+        wendynet_unlock();
+        return -1;
+    }
+    if (sock->rx_datagram) {
+        wendynet_unlock();
+        return 0;
+    }
+    sock->rx = *packet;
+    *packet = NULL;
+    sock->rx_len = size;
+    sock->rx_datagram = true;
+    sock->rx_release = release;
+    wendynet_notify_locked(WENDYNET_EVENT_READ_READY);
+    wendynet_unlock();
+    return 1;
 }
 
-static int guest_service_connect(uint16_t port,bool datagram,int *owner,bool wait)
+static int guest_service_connect(uint16_t port, bool datagram, int *owner, bool wait)
 {
-    if(owner)*owner=-1;
+    if (owner)
+        *owner = -1;
     int handle = -1;
     wendynet_lock();
     for (unsigned i = 0; i < WENDYNET_MAX_LISTENERS; ++i) {
@@ -1276,40 +1349,51 @@ static int guest_service_connect(uint16_t port,bool datagram,int *owner,bool wai
         }
     }
     wendynet_unlock();
-    if (handle < 0) return -1;
+    if (handle < 0)
+        return -1;
 
-    int family=AF_INET;
+    int family = AF_INET;
 #if LWIP_IPV6
-    family=AF_INET6;
+    family = AF_INET6;
 #endif
 #if LWIP_IPV4
     /* lwIP's pbuf total length includes IP headers in 16 bits. An IPv6
      * loopback packet therefore cannot carry the complete 65507-byte app
      * message ceiling. IPv4 loopback can; the dual-stack guest listener and
      * the external, authenticated mesh endpoint are unchanged. */
-    if(datagram)family=AF_INET;
+    if (datagram)
+        family = AF_INET;
 #endif
-    int fd = socket(family,datagram ? SOCK_DGRAM:SOCK_STREAM,0);
-    if (fd < 0) return -1;
-    if (fd >= FD_SETSIZE || wendynet_set_nonblocking(fd)) goto failed;
-    struct sockaddr_storage address={0};socklen_t address_size;
+    int fd = socket(family, datagram ? SOCK_DGRAM : SOCK_STREAM, 0);
+    if (fd < 0)
+        return -1;
+    if (fd >= FD_SETSIZE || wendynet_set_nonblocking(fd))
+        goto failed;
+    struct sockaddr_storage address = {0};
+    socklen_t address_size;
 #if LWIP_IPV6
-    if(family==AF_INET6){
-        struct sockaddr_in6 *v6=(struct sockaddr_in6 *)&address;
-        v6->sin6_family=AF_INET6;v6->sin6_port=htons(port);
-        v6->sin6_addr.s6_addr[15]=1;address_size=sizeof *v6;
-    }else
+    if (family == AF_INET6) {
+        struct sockaddr_in6 *v6 = (struct sockaddr_in6 *)&address;
+        v6->sin6_family = AF_INET6;
+        v6->sin6_port = htons(port);
+        v6->sin6_addr.s6_addr[15] = 1;
+        address_size = sizeof *v6;
+    } else
 #endif
     {
-        struct sockaddr_in *v4=(struct sockaddr_in *)&address;
-        v4->sin_family=AF_INET;v4->sin_port=htons(port);
-        v4->sin_addr.s_addr=htonl(INADDR_LOOPBACK);address_size=sizeof *v4;
+        struct sockaddr_in *v4 = (struct sockaddr_in *)&address;
+        v4->sin_family = AF_INET;
+        v4->sin_port = htons(port);
+        v4->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address_size = sizeof *v4;
     }
     int result = connect(fd, (struct sockaddr *)&address, address_size);
-    if (result && errno != EINPROGRESS) goto failed;
+    if (result && errno != EINPROGRESS)
+        goto failed;
     if (result && wait) {
         fd_set writing;
-        FD_ZERO(&writing); FD_SET(fd, &writing);
+        FD_ZERO(&writing);
+        FD_SET(fd, &writing);
         struct timeval budget = {.tv_usec = 100000};
         int error = 0;
         socklen_t size = sizeof error;
@@ -1322,151 +1406,240 @@ static int guest_service_connect(uint16_t port,bool datagram,int *owner,bool wai
     wendynet_listener_t *listener = wendynet_find_listener_locked(handle);
     bool current = listener && listener->is_udp == datagram && listener->port == port;
     wendynet_unlock();
-    if (!current) goto failed;
-    if(owner)*owner=handle;
+    if (!current)
+        goto failed;
+    if (owner)
+        *owner = handle;
     return fd;
 failed:
     close(fd);
     return -1;
 }
 
-int wendy_net_guest_service_connect(uint16_t port) {return guest_service_connect(port,false,NULL,true);}
-int wendy_net_guest_datagram_connect(uint16_t port,int *owner) {return guest_service_connect(port,true,owner,true);}
-unsigned wendy_net_guest_datagram_capacity(void) {return WENDYNET_DATAGRAM_MAX;}
-
-int wendy_net_guest_datagram_deliver(int owner,int *association,uint8_t **packet,size_t size,unsigned maximum)
+int wendy_net_guest_service_connect(uint16_t port)
 {
-    return wendy_net_guest_datagram_deliver_owned(owner,association,packet,size,maximum,NULL);
+    return guest_service_connect(port, false, NULL, true);
+}
+int wendy_net_guest_datagram_connect(uint16_t port, int *owner)
+{
+    return guest_service_connect(port, true, owner, true);
+}
+unsigned wendy_net_guest_datagram_capacity(void)
+{
+    return WENDYNET_DATAGRAM_MAX;
 }
 
-int wendy_net_guest_datagram_deliver_owned(int owner,int *association,uint8_t **packet,size_t size,
-    unsigned maximum,wendy_net_packet_release_fn release)
+int wendy_net_guest_datagram_deliver(int owner, int *association, uint8_t **packet, size_t size,
+                                     unsigned maximum)
 {
-    if(!association || !packet || !*packet || !maximum || maximum>WENDYNET_DATAGRAM_MAX || size>maximum)return -1;
+    return wendy_net_guest_datagram_deliver_owned(owner, association, packet, size, maximum, NULL);
+}
+
+int wendy_net_guest_datagram_deliver_owned(int owner, int *association, uint8_t **packet,
+                                           size_t size, unsigned maximum,
+                                           wendy_net_packet_release_fn release)
+{
+    if (!association || !packet || !*packet || !maximum || maximum > WENDYNET_DATAGRAM_MAX ||
+        size > maximum)
+        return -1;
     wendynet_lock();
-    wendynet_listener_t *listener=wendynet_find_listener_locked(owner);
-    if(!listener || !listener->is_udp){wendynet_unlock();return -1;}
-    wendynet_socket_t *sock=wendynet_find_socket_locked(*association);
-    if(sock && (!sock->native_datagram || sock->listener_handle!=owner)){
-        wendynet_unlock();return -1;
+    wendynet_listener_t *listener = wendynet_find_listener_locked(owner);
+    if (!listener || !listener->is_udp) {
+        wendynet_unlock();
+        return -1;
     }
-    if(sock && sock->closing){wendynet_unlock();return 0;}
-    if(!sock || sock->closed || sock->error){
-        if(listener->accepted_count>=WENDYNET_ACCEPT_QUEUE_SIZE){wendynet_unlock();return 0;}
-        sock=wendynet_alloc_socket_locked(-1);
-        if(!sock){wendynet_unlock();return 0;}
-        sock->sock_type=WENDYNET_SOCK_UDP_PEER;
-        sock->native_datagram=true;sock->listener_handle=owner;sock->datagram_limit=maximum;
-        if(!wendynet_listener_enqueue_locked(listener,sock->handle)){
-            wendynet_release_socket_locked(sock);wendynet_unlock();return 0;
+    wendynet_socket_t *sock = wendynet_find_socket_locked(*association);
+    if (sock && (!sock->native_datagram || sock->listener_handle != owner)) {
+        wendynet_unlock();
+        return -1;
+    }
+    if (sock && sock->closing) {
+        wendynet_unlock();
+        return 0;
+    }
+    if (!sock || sock->closed || sock->error) {
+        if (listener->accepted_count >= WENDYNET_ACCEPT_QUEUE_SIZE) {
+            wendynet_unlock();
+            return 0;
         }
-        *association=sock->handle;
+        sock = wendynet_alloc_socket_locked(-1);
+        if (!sock) {
+            wendynet_unlock();
+            return 0;
+        }
+        sock->sock_type = WENDYNET_SOCK_UDP_PEER;
+        sock->native_datagram = true;
+        sock->listener_handle = owner;
+        sock->datagram_limit = maximum;
+        if (!wendynet_listener_enqueue_locked(listener, sock->handle)) {
+            wendynet_release_socket_locked(sock);
+            wendynet_unlock();
+            return 0;
+        }
+        *association = sock->handle;
         wendynet_notify_locked(WENDYNET_EVENT_ACCEPT_READY);
     }
-    if(sock->rx_datagram){wendynet_unlock();return 0;}
-    sock->rx=*packet;*packet=NULL;sock->rx_len=size;sock->rx_datagram=true;sock->rx_release=release;
+    if (sock->rx_datagram) {
+        wendynet_unlock();
+        return 0;
+    }
+    sock->rx = *packet;
+    *packet = NULL;
+    sock->rx_len = size;
+    sock->rx_datagram = true;
+    sock->rx_release = release;
     wendynet_notify_locked(WENDYNET_EVENT_READ_READY);
-    wendynet_unlock();return 1;
+    wendynet_unlock();
+    return 1;
 }
 
-int wendy_net_guest_datagram_take(int association,uint8_t **packet,size_t *size)
+int wendy_net_guest_datagram_take(int association, uint8_t **packet, size_t *size)
 {
-    if(!packet || !size)return -1;
-    *packet=NULL;*size=0;wendynet_lock();
-    wendynet_socket_t *sock=wendynet_find_socket_locked(association);
-    int result=0;
-    if(sock && sock->native_datagram && !sock->closed && !sock->error &&
-       sock->tx_datagram && sock->tx){
-        *packet=sock->tx;*size=sock->tx_len;sock->tx=NULL;result=1;
+    if (!packet || !size)
+        return -1;
+    *packet = NULL;
+    *size = 0;
+    wendynet_lock();
+    wendynet_socket_t *sock = wendynet_find_socket_locked(association);
+    int result = 0;
+    if (sock && sock->native_datagram && !sock->closed && !sock->error && sock->tx_datagram &&
+        sock->tx) {
+        *packet = sock->tx;
+        *size = sock->tx_len;
+        sock->tx = NULL;
+        result = 1;
         /* tx_datagram remains set while the native relay owns this packet. */
     }
-    wendynet_unlock();return result;
+    wendynet_unlock();
+    return result;
 }
 
 void wendy_net_mesh_discard_pending_datagrams(void)
 {
     wendynet_lock();
-    bool released=false;
-    for(unsigned i=0;i<WENDYNET_MAX_SOCKETS;i++){
-        wendynet_socket_t *sock=&s_wendynet_sockets[i];
-        if(sock->used && sock->native_datagram && sock->rx_datagram){
-            wendynet_release_rx_locked(sock);released=true;
+    bool released = false;
+    for (unsigned i = 0; i < WENDYNET_MAX_SOCKETS; i++) {
+        wendynet_socket_t *sock = &s_wendynet_sockets[i];
+        if (sock->used && sock->native_datagram && sock->rx_datagram) {
+            wendynet_release_rx_locked(sock);
+            released = true;
         }
     }
-    if(released)wendynet_wake_locked();
+    if (released)
+        wendynet_wake_locked();
     wendynet_unlock();
 }
 
 void wendy_net_guest_datagram_sent(int association)
 {
-    wendynet_lock();wendynet_socket_t *sock=wendynet_find_socket_locked(association);
-    if(sock && sock->native_datagram && sock->tx_datagram && !sock->tx){
-        sock->tx_datagram=false;sock->tx_len=0;
-        wendynet_notify_locked(WENDYNET_EVENT_WRITE_READY);wendynet_wake_locked();
+    wendynet_lock();
+    wendynet_socket_t *sock = wendynet_find_socket_locked(association);
+    if (sock && sock->native_datagram && sock->tx_datagram && !sock->tx) {
+        sock->tx_datagram = false;
+        sock->tx_len = 0;
+        wendynet_notify_locked(WENDYNET_EVENT_WRITE_READY);
+        wendynet_wake_locked();
     }
     wendynet_unlock();
 }
 
 void wendy_net_guest_datagram_closed(int association)
 {
-    wendynet_lock();wendynet_socket_t *sock=wendynet_find_socket_locked(association);
-    if(sock && sock->native_datagram){
-        free(sock->tx);sock->tx=NULL;sock->tx_len=0;sock->tx_datagram=false;
-        sock->closed=true;wendynet_notify_locked(WENDYNET_EVENT_CLOSED);
-        wendynet_release_drained_closed_socket_locked(sock);wendynet_wake_locked();
+    wendynet_lock();
+    wendynet_socket_t *sock = wendynet_find_socket_locked(association);
+    if (sock && sock->native_datagram) {
+        free(sock->tx);
+        sock->tx = NULL;
+        sock->tx_len = 0;
+        sock->tx_datagram = false;
+        sock->closed = true;
+        wendynet_notify_locked(WENDYNET_EVENT_CLOSED);
+        wendynet_release_drained_closed_socket_locked(sock);
+        wendynet_wake_locked();
     }
     wendynet_unlock();
 }
 
-int wendy_net_guest_listener_owner(uint16_t port,bool datagram)
+int wendy_net_guest_listener_owner(uint16_t port, bool datagram)
 {
-    int handle=-1;wendynet_lock();
-    for(unsigned i=0;i<WENDYNET_MAX_LISTENERS;i++){
-        wendynet_listener_t *listener=&s_wendynet_listeners[i];
-        if(listener->used && listener->is_udp==datagram && listener->port==port){handle=listener->handle;break;}
+    int handle = -1;
+    wendynet_lock();
+    for (unsigned i = 0; i < WENDYNET_MAX_LISTENERS; i++) {
+        wendynet_listener_t *listener = &s_wendynet_listeners[i];
+        if (listener->used && listener->is_udp == datagram && listener->port == port) {
+            handle = listener->handle;
+            break;
+        }
     }
-    wendynet_unlock();return handle;
+    wendynet_unlock();
+    return handle;
 }
 
 int wendy_net_guest_datagram_owner(uint16_t port)
-{return wendy_net_guest_listener_owner(port,true);}
+{
+    return wendy_net_guest_listener_owner(port, true);
+}
 void wendy_net_set_service_catalog(wendy_net_service_fn callback)
 {
     wendynet_lock();
-    if(callback && callback!=s_service_catalog){
-        if(!++s_service_epoch)++s_service_epoch;
+    if (callback && callback != s_service_catalog) {
+        if (!++s_service_epoch)
+            ++s_service_epoch;
     }
-    s_service_catalog=callback;
+    s_service_catalog = callback;
     wendynet_unlock();
 }
 uint32_t wendy_net_service_epoch(void)
 {
-    wendynet_lock();uint32_t epoch=s_service_catalog ? s_service_epoch:0;
-    wendynet_unlock();return epoch;
+    wendynet_lock();
+    uint32_t epoch = s_service_catalog ? s_service_epoch : 0;
+    wendynet_unlock();
+    return epoch;
 }
 static int services_epoch_wrapper(wasm_exec_env_t env)
-{(void)env;return (int)wendy_net_service_epoch();}
-static int catalog_call(unsigned operation,const void *input,int size,char *out,int cap)
 {
-    if(!input || size<=0 || size>8192 || cap<0 || cap>65536 || (!out && cap))return -1;
-    wendynet_lock();wendy_net_service_fn callback=s_service_catalog;wendynet_unlock();
-    return callback ? callback(operation,input,(size_t)size,out,(size_t)cap):-2;
+    (void)env;
+    return (int)wendy_net_service_epoch();
 }
-static int services_publish_wrapper(wasm_exec_env_t env,const void *spec,int size)
-{(void)env;return catalog_call(1,spec,size,NULL,0);}
-static int services_withdraw_wrapper(wasm_exec_env_t env,const void *service,int size)
-{(void)env;return catalog_call(2,service,size,NULL,0);}
-static int services_browse_wrapper(wasm_exec_env_t env,const void *type,int size,char *out,int cap)
-{(void)env;return catalog_call(0,type,size,out,cap);}
-static int services_browse_endpoints_wrapper(wasm_exec_env_t env,const void *type,int size,char *out,int cap)
-{(void)env;return catalog_call(3,type,size,out,cap);}
+static int catalog_call(unsigned operation, const void *input, int size, char *out, int cap)
+{
+    if (!input || size <= 0 || size > 8192 || cap < 0 || cap > 65536 || (!out && cap))
+        return -1;
+    wendynet_lock();
+    wendy_net_service_fn callback = s_service_catalog;
+    wendynet_unlock();
+    return callback ? callback(operation, input, (size_t)size, out, (size_t)cap) : -2;
+}
+static int services_publish_wrapper(wasm_exec_env_t env, const void *spec, int size)
+{
+    (void)env;
+    return catalog_call(1, spec, size, NULL, 0);
+}
+static int services_withdraw_wrapper(wasm_exec_env_t env, const void *service, int size)
+{
+    (void)env;
+    return catalog_call(2, service, size, NULL, 0);
+}
+static int services_browse_wrapper(wasm_exec_env_t env, const void *type, int size, char *out,
+                                   int cap)
+{
+    (void)env;
+    return catalog_call(0, type, size, out, cap);
+}
+static int services_browse_endpoints_wrapper(wasm_exec_env_t env, const void *type, int size,
+                                             char *out, int cap)
+{
+    (void)env;
+    return catalog_call(3, type, size, out, cap);
+}
 
 bool wendy_net_mesh_socket_live(int handle)
 {
-    wendynet_lock();wendynet_socket_t *sock=wendynet_find_socket_locked(handle);
-    bool live=sock && !sock->closed && !sock->error &&
-        (!sock->closing || sock->tx_datagram);
-    wendynet_unlock();return live;
+    wendynet_lock();
+    wendynet_socket_t *sock = wendynet_find_socket_locked(handle);
+    bool live = sock && !sock->closed && !sock->error && (!sock->closing || sock->tx_datagram);
+    wendynet_unlock();
+    return live;
 }
 
 static int wendynet_tcp_listen_wrapper(wasm_exec_env_t exec_env, int port, int backlog)
@@ -1552,10 +1725,12 @@ static int wendynet_listener_port_wrapper(wasm_exec_env_t exec_env, int listener
         wendynet_unlock();
         return -1;
     }
-    int port=-1;
-    if(addr.ss_family==AF_INET)port=ntohs(((struct sockaddr_in *)&addr)->sin_port);
+    int port = -1;
+    if (addr.ss_family == AF_INET)
+        port = ntohs(((struct sockaddr_in *)&addr)->sin_port);
 #if LWIP_IPV6
-    if(addr.ss_family==AF_INET6)port=ntohs(((struct sockaddr_in6 *)&addr)->sin6_port);
+    if (addr.ss_family == AF_INET6)
+        port = ntohs(((struct sockaddr_in6 *)&addr)->sin6_port);
 #endif
     wendynet_unlock();
     return port;
@@ -1577,8 +1752,8 @@ static int wendynet_socket_status_wrapper(wasm_exec_env_t exec_env, int socket_h
     /* TCP can accept bytes whenever there's buffer space. UDP is single-
      * datagram per slot so it's writable iff tx_len == 0. */
     bool tx_has_space = (sock->sock_type == WENDYNET_SOCK_TCP)
-        ? (sock->tx_len < WENDYNET_BUFFER_SIZE)
-        : !sock->tx_datagram;
+                            ? (sock->tx_len < WENDYNET_BUFFER_SIZE)
+                            : !sock->tx_datagram;
     if (tx_has_space && !sock->resolving &&
         !sock->connecting && !sock->closing &&
         !sock->closed && !sock->error) {
@@ -1670,13 +1845,17 @@ static int wendynet_socket_send_wrapper(wasm_exec_env_t exec_env, int socket_han
             return 0;
         }
         if ((size_t)len > WENDYNET_DATAGRAM_MAX ||
-            (sock->native_datagram && (size_t)len>sock->datagram_limit)) {
+            (sock->native_datagram && (size_t)len > sock->datagram_limit)) {
             wendynet_unlock();
             return -1;
         }
-        sock->tx=wendynet_buffer_alloc(len ? (size_t)len:1);
-        if(!sock->tx){wendynet_unlock();return 0;}
-        if(len)memcpy(sock->tx, data, (size_t)len);
+        sock->tx = wendynet_buffer_alloc(len ? (size_t)len : 1);
+        if (!sock->tx) {
+            wendynet_unlock();
+            return 0;
+        }
+        if (len)
+            memcpy(sock->tx, data, (size_t)len);
         sock->tx_len = (size_t)len;
         sock->tx_datagram = true;
         sock->tx_deferred = false;
@@ -1715,8 +1894,10 @@ static int wendynet_socket_close_wrapper(wasm_exec_env_t exec_env, int socket_ha
      * including an empty datagram. UDP_PEER never closes the shared fd. */
     if (sock->sock_type == WENDYNET_SOCK_UDP
         || sock->sock_type == WENDYNET_SOCK_UDP_PEER) {
-        if(sock->tx_datagram)sock->closing=true;
-        else wendynet_release_socket_locked(sock);
+        if (sock->tx_datagram)
+            sock->closing = true;
+        else
+            wendynet_release_socket_locked(sock);
         wendynet_wake_locked();
         wendynet_unlock();
         return 0;
@@ -1868,84 +2049,112 @@ static int wifi_ap_stop_wrapper(wasm_exec_env_t exec_env)
 static int net_socket_wrapper(wasm_exec_env_t exec_env,
                                int domain, int type, int protocol)
 {
-    return wn_raw_socket(&s_raw,domain,type,protocol);
+    return wn_raw_socket(&s_raw, domain, type, protocol);
 }
 
-static int net_nonblocking_wrapper(wasm_exec_env_t env,int fd,int enabled)
-{(void)env;return wn_raw_nonblocking(&s_raw,fd,enabled!=0);}
-static int net_timeout_wrapper(wasm_exec_env_t env,int fd,int milliseconds)
+static int net_nonblocking_wrapper(wasm_exec_env_t env, int fd, int enabled)
 {
-    (void)env;if(milliseconds<0 || milliseconds>300000)return -1;
-    return wn_raw_timeout(&s_raw,fd,(unsigned)milliseconds);
+    (void)env;
+    return wn_raw_nonblocking(&s_raw, fd, enabled != 0);
 }
-static int net_errno_wrapper(wasm_exec_env_t env){(void)env;return errno;}
+static int net_timeout_wrapper(wasm_exec_env_t env, int fd, int milliseconds)
+{
+    (void)env;
+    if (milliseconds < 0 || milliseconds > 300000)
+        return -1;
+    return wn_raw_timeout(&s_raw, fd, (unsigned)milliseconds);
+}
+static int net_errno_wrapper(wasm_exec_env_t env)
+{
+    (void)env;
+    return errno;
+}
 
 /* net_connect(fd, ip_ptr, ip_len, port) -> 0 or -1 */
 static int net_connect_wrapper(wasm_exec_env_t exec_env,
                                 int fd, const char *ip, int ip_len, int port)
 {
-    if (!ip || ip_len <= 0 || ip_len >= 128 || port <= 0 || port > 65535) return -1;
-    if(!wn_raw_owned(&s_raw,fd))return -1;
-    char ip_buf[128],service[6];
-    memcpy(ip_buf,ip,ip_len);ip_buf[ip_len]=0;
-    snprintf(service,sizeof service,"%u",(unsigned)port);
+    if (!ip || ip_len <= 0 || ip_len >= 128 || port <= 0 || port > 65535)
+        return -1;
+    if (!wn_raw_owned(&s_raw, fd))
+        return -1;
+    char ip_buf[128], service[6];
+    memcpy(ip_buf, ip, ip_len);
+    ip_buf[ip_len] = 0;
+    snprintf(service, sizeof service, "%u", (unsigned)port);
     /* AI_NUMERICHOST also resolves scoped IPv6 interface names in lwIP.
      * This raw BSD API never performs mesh-service name translation. */
-    struct addrinfo hints={.ai_family=AF_UNSPEC,.ai_flags=AI_NUMERICHOST},*address=NULL;
-    if(getaddrinfo(ip_buf,service,&hints,&address) || !address)return -1;
-    int result=wn_raw_connect(&s_raw,fd,address->ai_addr,address->ai_addrlen);
-    int error=errno;freeaddrinfo(address);errno=error;return result;
+    struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_flags = AI_NUMERICHOST}, *address = NULL;
+    if (getaddrinfo(ip_buf, service, &hints, &address) || !address)
+        return -1;
+    int result = wn_raw_connect(&s_raw, fd, address->ai_addr, address->ai_addrlen);
+    int error = errno;
+    freeaddrinfo(address);
+    errno = error;
+    return result;
 }
 
 /* net_bind(fd, port) -> 0 or -1 */
 static int net_bind_wrapper(wasm_exec_env_t exec_env, int fd, int port)
 {
-    if(port < 0 || port > 65535)return -1;
-    if(!wn_raw_owned(&s_raw,fd))return -1;
-    struct sockaddr_storage current={0},addr={0};socklen_t size=sizeof current;
-    if(getsockname(fd,(struct sockaddr *)&current,&size))return -1;
+    if (port < 0 || port > 65535)
+        return -1;
+    if (!wn_raw_owned(&s_raw, fd))
+        return -1;
+    struct sockaddr_storage current = {0}, addr = {0};
+    socklen_t size = sizeof current;
+    if (getsockname(fd, (struct sockaddr *)&current, &size))
+        return -1;
 #if LWIP_IPV6
-    if(current.ss_family==AF_INET6){
-        struct sockaddr_in6 *v6=(struct sockaddr_in6 *)&addr;
-        v6->sin6_family=AF_INET6;v6->sin6_port=htons((uint16_t)port);
-        return bind(fd,(struct sockaddr *)v6,sizeof *v6);
+    if (current.ss_family == AF_INET6) {
+        struct sockaddr_in6 *v6 = (struct sockaddr_in6 *)&addr;
+        v6->sin6_family = AF_INET6;
+        v6->sin6_port = htons((uint16_t)port);
+        return bind(fd, (struct sockaddr *)v6, sizeof *v6);
     }
 #endif
-    struct sockaddr_in *v4=(struct sockaddr_in *)&addr;
-    v4->sin_family=AF_INET;v4->sin_port=htons((uint16_t)port);
-    return bind(fd,(struct sockaddr *)v4,sizeof *v4);
+    struct sockaddr_in *v4 = (struct sockaddr_in *)&addr;
+    v4->sin_family = AF_INET;
+    v4->sin_port = htons((uint16_t)port);
+    return bind(fd, (struct sockaddr *)v4, sizeof *v4);
 }
 
 /* Local port after bind(0), for ordinary ephemeral guest listeners. */
-static int net_local_port_wrapper(wasm_exec_env_t env,int fd)
+static int net_local_port_wrapper(wasm_exec_env_t env, int fd)
 {
-    (void)env;if(!wn_raw_owned(&s_raw,fd))return -1;
-    struct sockaddr_storage address={0};socklen_t size=sizeof address;
-    if(getsockname(fd,(struct sockaddr *)&address,&size))return -1;
+    (void)env;
+    if (!wn_raw_owned(&s_raw, fd))
+        return -1;
+    struct sockaddr_storage address = {0};
+    socklen_t size = sizeof address;
+    if (getsockname(fd, (struct sockaddr *)&address, &size))
+        return -1;
 #if LWIP_IPV6
-    if(address.ss_family==AF_INET6)return ntohs(((struct sockaddr_in6 *)&address)->sin6_port);
+    if (address.ss_family == AF_INET6)
+        return ntohs(((struct sockaddr_in6 *)&address)->sin6_port);
 #endif
-    return address.ss_family==AF_INET ? ntohs(((struct sockaddr_in *)&address)->sin_port):-1;
+    return address.ss_family == AF_INET ? ntohs(((struct sockaddr_in *)&address)->sin_port) : -1;
 }
 
 /* net_listen(fd, backlog) -> 0 or -1 */
 static int net_listen_wrapper(wasm_exec_env_t exec_env, int fd, int backlog)
 {
-    return wn_raw_owned(&s_raw,fd) ? listen(fd,backlog):-1;
+    return wn_raw_owned(&s_raw, fd) ? listen(fd, backlog) : -1;
 }
 
 /* net_accept(fd) -> new_fd or -1 */
 static int net_accept_wrapper(wasm_exec_env_t exec_env, int fd)
 {
-    return wn_raw_accept(&s_raw,fd);
+    return wn_raw_accept(&s_raw, fd);
 }
 
 /* net_send(fd, data_ptr, data_len) -> bytes sent */
 static int net_send_wrapper(wasm_exec_env_t exec_env,
                              int fd, const char *data, int len)
 {
-    if ((!data && len>0) || len<0) return -1;
-    return wn_raw_send(&s_raw,fd,data,(size_t)len);
+    if ((!data && len > 0) || len < 0)
+        return -1;
+    return wn_raw_send(&s_raw, fd, data, (size_t)len);
 }
 
 /* net_recv(fd, buf_ptr, buf_len) -> bytes received */
@@ -1953,13 +2162,13 @@ static int net_recv_wrapper(wasm_exec_env_t exec_env,
                              int fd, char *buf, int len)
 {
     if (!buf || len <= 0) return -1;
-    return wn_raw_recv(&s_raw,fd,buf,(size_t)len);
+    return wn_raw_recv(&s_raw, fd, buf, (size_t)len);
 }
 
 /* net_close(fd) -> 0 */
 static int net_close_wrapper(wasm_exec_env_t exec_env, int fd)
 {
-    return wn_raw_close(&s_raw,fd);
+    return wn_raw_close(&s_raw, fd);
 }
 
 /* ── DNS ──────────────────────────────────────────────────────────────── */
@@ -1977,26 +2186,31 @@ static int dns_resolve_wrapper(wasm_exec_env_t exec_env,
     host_buf[l] = '\0';
 
 #if LWIP_IPV6
-    wendynet_lock();wendy_net_mesh_resolve_fn resolve=s_wendynet_mesh_resolve;wendynet_unlock();
+    wendynet_lock();
+    wendy_net_mesh_resolve_fn resolve = s_wendynet_mesh_resolve;
+    wendynet_unlock();
     uint8_t mesh_address[16];
-    int mesh=resolve ? resolve(host_buf,mesh_address):0;
-    if(mesh){
-        return mesh>0 && inet_ntop(AF_INET6,mesh_address,result_buf,result_len)
-            ? (int)strlen(result_buf):-1;
+    int mesh = resolve ? resolve(host_buf, mesh_address) : 0;
+    if (mesh) {
+        return mesh > 0 && inet_ntop(AF_INET6, mesh_address, result_buf, result_len)
+                   ? (int)strlen(result_buf)
+                   : -1;
     }
 #endif
-    struct addrinfo hints = { .ai_family = AF_UNSPEC };
+    struct addrinfo hints = {.ai_family = AF_UNSPEC};
     struct addrinfo *res = NULL;
 
     int rc = getaddrinfo(host_buf, NULL, &hints, &res);
     if (rc != 0 || !res) return -1;
 
-    const void *bytes=NULL;
-    if(res->ai_family==AF_INET)bytes=&((struct sockaddr_in *)res->ai_addr)->sin_addr;
+    const void *bytes = NULL;
+    if (res->ai_family == AF_INET)
+        bytes = &((struct sockaddr_in *)res->ai_addr)->sin_addr;
 #if LWIP_IPV6
-    if(res->ai_family==AF_INET6)bytes=&((struct sockaddr_in6 *)res->ai_addr)->sin6_addr;
+    if (res->ai_family == AF_INET6)
+        bytes = &((struct sockaddr_in6 *)res->ai_addr)->sin6_addr;
 #endif
-    bool ok=bytes && inet_ntop(res->ai_family,bytes,result_buf,result_len);
+    bool ok = bytes && inet_ntop(res->ai_family, bytes, result_buf, result_len);
     freeaddrinfo(res);
     return ok ? (int)strlen(result_buf) : -1;
 }
@@ -2020,52 +2234,52 @@ static int tls_connect_wrapper(wasm_exec_env_t exec_env,
 
 static NativeSymbol s_net_symbols[] = {
     /* WiFi */
-    { "wifi_connect",    (void *)wifi_connect_wrapper,    "(*~*~)i",    NULL },
-    { "wifi_disconnect", (void *)wifi_disconnect_wrapper, "()i",        NULL },
-    { "wifi_status",     (void *)wifi_status_wrapper,     "()i",        NULL },
-    { "wifi_get_ip",     (void *)wifi_get_ip_wrapper,     "(*~)i",      NULL },
-    { "wifi_rssi",       (void *)wifi_rssi_wrapper,       "()i",        NULL },
-    { "wifi_ap_start",   (void *)wifi_ap_start_wrapper,   "(*~*~i)i",   NULL },
-    { "wifi_ap_stop",    (void *)wifi_ap_stop_wrapper,    "()i",        NULL },
+    {"wifi_connect", (void *)wifi_connect_wrapper, "(*~*~)i", NULL},
+    {"wifi_disconnect", (void *)wifi_disconnect_wrapper, "()i", NULL},
+    {"wifi_status", (void *)wifi_status_wrapper, "()i", NULL},
+    {"wifi_get_ip", (void *)wifi_get_ip_wrapper, "(*~)i", NULL},
+    {"wifi_rssi", (void *)wifi_rssi_wrapper, "()i", NULL},
+    {"wifi_ap_start", (void *)wifi_ap_start_wrapper, "(*~*~i)i", NULL},
+    {"wifi_ap_stop", (void *)wifi_ap_stop_wrapper, "()i", NULL},
     /* Sockets */
-    { "net_socket",      (void *)net_socket_wrapper,      "(iii)i",     NULL },
-    { "net_set_nonblocking", (void *)net_nonblocking_wrapper, "(ii)i", NULL },
-    { "net_set_timeout", (void *)net_timeout_wrapper, "(ii)i", NULL },
-    { "net_errno",       (void *)net_errno_wrapper, "()i", NULL },
-    { "net_connect",     (void *)net_connect_wrapper,     "(i*~i)i",    NULL },
-    { "net_bind",        (void *)net_bind_wrapper,        "(ii)i",      NULL },
-    { "net_local_port",  (void *)net_local_port_wrapper,  "(i)i",       NULL },
-    { "net_listen",      (void *)net_listen_wrapper,      "(ii)i",      NULL },
-    { "net_accept",      (void *)net_accept_wrapper,      "(i)i",       NULL },
-    { "net_send",        (void *)net_send_wrapper,        "(i*~)i",     NULL },
-    { "net_recv",        (void *)net_recv_wrapper,        "(i*~)i",     NULL },
-    { "net_close",       (void *)net_close_wrapper,       "(i)i",       NULL },
+    {"net_socket", (void *)net_socket_wrapper, "(iii)i", NULL},
+    {"net_set_nonblocking", (void *)net_nonblocking_wrapper, "(ii)i", NULL},
+    {"net_set_timeout", (void *)net_timeout_wrapper, "(ii)i", NULL},
+    {"net_errno", (void *)net_errno_wrapper, "()i", NULL},
+    {"net_connect", (void *)net_connect_wrapper, "(i*~i)i", NULL},
+    {"net_bind", (void *)net_bind_wrapper, "(ii)i", NULL},
+    {"net_local_port", (void *)net_local_port_wrapper, "(i)i", NULL},
+    {"net_listen", (void *)net_listen_wrapper, "(ii)i", NULL},
+    {"net_accept", (void *)net_accept_wrapper, "(i)i", NULL},
+    {"net_send", (void *)net_send_wrapper, "(i*~)i", NULL},
+    {"net_recv", (void *)net_recv_wrapper, "(i*~)i", NULL},
+    {"net_close", (void *)net_close_wrapper, "(i)i", NULL},
     /* WendyNet async TCP/UDP */
-    { "wendynet_init",           (void *)wendynet_init_wrapper,           "(i)i",    NULL },
-    { "wendynet_drain_events",   (void *)wendynet_drain_events_wrapper,   "()i",     NULL },
-    { "wendynet_tcp_listen",     (void *)wendynet_tcp_listen_wrapper,     "(ii)i",   NULL },
-    { "wendynet_tcp_connect",    (void *)wendynet_tcp_connect_wrapper,    "(*~i)i",  NULL },
-    { "wendynet_udp_listen",     (void *)wendynet_udp_listen_wrapper,     "(i)i",    NULL },
-    { "wendynet_udp_connect",    (void *)wendynet_udp_connect_wrapper,    "(*~i)i",  NULL },
-    { "wendynet_listener_accept",(void *)wendynet_listener_accept_wrapper,"(i)i",    NULL },
-    { "wendynet_listener_close", (void *)wendynet_listener_close_wrapper, "(i)i",    NULL },
-    { "wendynet_listener_port",  (void *)wendynet_listener_port_wrapper,  "(i)i",    NULL },
-    { "wendynet_socket_status",  (void *)wendynet_socket_status_wrapper,  "(i)i",    NULL },
-    { "wendynet_socket_recv",    (void *)wendynet_socket_recv_wrapper,    "(i*~)i",  NULL },
-    { "wendynet_socket_send",    (void *)wendynet_socket_send_wrapper,    "(i*~)i",  NULL },
-    { "wendynet_socket_close",   (void *)wendynet_socket_close_wrapper,   "(i)i",    NULL },
+    {"wendynet_init", (void *)wendynet_init_wrapper, "(i)i", NULL},
+    {"wendynet_drain_events", (void *)wendynet_drain_events_wrapper, "()i", NULL},
+    {"wendynet_tcp_listen", (void *)wendynet_tcp_listen_wrapper, "(ii)i", NULL},
+    {"wendynet_tcp_connect", (void *)wendynet_tcp_connect_wrapper, "(*~i)i", NULL},
+    {"wendynet_udp_listen", (void *)wendynet_udp_listen_wrapper, "(i)i", NULL},
+    {"wendynet_udp_connect", (void *)wendynet_udp_connect_wrapper, "(*~i)i", NULL},
+    {"wendynet_listener_accept", (void *)wendynet_listener_accept_wrapper, "(i)i", NULL},
+    {"wendynet_listener_close", (void *)wendynet_listener_close_wrapper, "(i)i", NULL},
+    {"wendynet_listener_port", (void *)wendynet_listener_port_wrapper, "(i)i", NULL},
+    {"wendynet_socket_status", (void *)wendynet_socket_status_wrapper, "(i)i", NULL},
+    {"wendynet_socket_recv", (void *)wendynet_socket_recv_wrapper, "(i*~)i", NULL},
+    {"wendynet_socket_send", (void *)wendynet_socket_send_wrapper, "(i*~)i", NULL},
+    {"wendynet_socket_close", (void *)wendynet_socket_close_wrapper, "(i)i", NULL},
     /* DNS */
-    { "services_epoch", (void *)services_epoch_wrapper, "()i", NULL },
-    { "services_publish", (void *)services_publish_wrapper, "(*~)i", NULL },
-    { "services_withdraw", (void *)services_withdraw_wrapper, "(*~)i", NULL },
-    { "services_browse", (void *)services_browse_wrapper, "(*~*~)i", NULL },
-    { "services_browse_endpoints", (void *)services_browse_endpoints_wrapper, "(*~*~)i", NULL },
-    { "dns_resolve",     (void *)dns_resolve_wrapper,     "(*~*~)i",    NULL },
+    {"services_epoch", (void *)services_epoch_wrapper, "()i", NULL},
+    {"services_publish", (void *)services_publish_wrapper, "(*~)i", NULL},
+    {"services_withdraw", (void *)services_withdraw_wrapper, "(*~)i", NULL},
+    {"services_browse", (void *)services_browse_wrapper, "(*~*~)i", NULL},
+    {"services_browse_endpoints", (void *)services_browse_endpoints_wrapper, "(*~*~)i", NULL},
+    {"dns_resolve", (void *)dns_resolve_wrapper, "(*~*~)i", NULL},
     /* TLS */
-    { "tls_connect",     (void *)tls_connect_wrapper,     "(*~i)i",     NULL },
-    { "tls_send",        (void *)net_send_wrapper,        "(i*~)i",     NULL },
-    { "tls_recv",        (void *)net_recv_wrapper,        "(i*~)i",     NULL },
-    { "tls_close",       (void *)net_close_wrapper,       "(i)i",       NULL },
+    {"tls_connect", (void *)tls_connect_wrapper, "(*~i)i", NULL},
+    {"tls_send", (void *)net_send_wrapper, "(i*~)i", NULL},
+    {"tls_recv", (void *)net_recv_wrapper, "(i*~)i", NULL},
+    {"tls_close", (void *)net_close_wrapper, "(i)i", NULL},
 };
 
 int wendy_net_export_init(void)
@@ -2089,4 +2303,7 @@ int wendy_net_export_init(void)
     return 0;
 }
 
-int wendy_net_guest_service_begin(uint16_t port) {return guest_service_connect(port,false,NULL,false);}
+int wendy_net_guest_service_begin(uint16_t port)
+{
+    return guest_service_connect(port, false, NULL, false);
+}

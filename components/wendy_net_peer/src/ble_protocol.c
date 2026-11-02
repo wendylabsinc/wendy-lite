@@ -5,16 +5,17 @@
 #include <stdio.h>
 #include <string.h>
 
-int wn_ble_default_scope_init(struct wn_ble_scope *scope,const char *tenant)
+int wn_ble_default_scope_init(struct wn_ble_scope *scope, const char *tenant)
 {
-    uint8_t uuid[16];char canonical[37],network[64];
-    if(!tenant || wn_uuid_parse(tenant,uuid))return -1;
-    wn_uuid_format(uuid,canonical);
-    snprintf(network,sizeof network,"tenant:%s:default",canonical);
-    return wn_ble_scope_init(scope,canonical,network);
+    uint8_t uuid[16];
+    char canonical[37], network[64];
+    if (!tenant || wn_uuid_parse(tenant, uuid))
+        return -1;
+    wn_uuid_format(uuid, canonical);
+    snprintf(network, sizeof network, "tenant:%s:default", canonical);
+    return wn_ble_scope_init(scope, canonical, network);
 }
-int wn_ble_scope_init(struct wn_ble_scope *scope, const char *tenant,
-                      const char *network)
+int wn_ble_scope_init(struct wn_ble_scope *scope, const char *tenant, const char *network)
 {
     uint8_t uuid[16], hash[32], nonzero = 0;
     if (!scope || !tenant || !network || !network[0] || strlen(network) > 128 ||
@@ -30,17 +31,18 @@ int wn_ble_scope_init(struct wn_ble_scope *scope, const char *tenant,
     memcpy(scope->network_hash, hash, 2);
     return 0;
 }
-int wn_ble_adv_write(const struct wn_ble_scope *scope, const char *device,
-                     uint16_t psm, uint8_t out[WN_BLE_ADVERTISEMENT_SIZE])
+int wn_ble_adv_write(const struct wn_ble_scope *scope, const char *device, uint16_t psm,
+                     uint8_t out[WN_BLE_ADVERTISEMENT_SIZE])
 {
-    return wn_ble_adv_write_capabilities(scope,device,psm,WN_BLE_NATIVE_ACCEPTING|WN_BLE_TIME_RELAY,out);
+    return wn_ble_adv_write_capabilities(scope, device, psm,
+                                         WN_BLE_NATIVE_ACCEPTING | WN_BLE_TIME_RELAY, out);
 }
-int wn_ble_adv_write_capabilities(const struct wn_ble_scope *scope,const char *device,
-    uint16_t psm,uint8_t capabilities,uint8_t out[WN_BLE_ADVERTISEMENT_SIZE])
+int wn_ble_adv_write_capabilities(const struct wn_ble_scope *scope, const char *device,
+                                  uint16_t psm, uint8_t capabilities,
+                                  uint8_t out[WN_BLE_ADVERTISEMENT_SIZE])
 {
     uint8_t uuid[16], nonzero = 0;
-    if (!scope || !device || !out || psm < 128 || psm > 255 ||
-        wn_uuid_parse(device, uuid))
+    if (!scope || !device || !out || psm < 128 || psm > 255 || wn_uuid_parse(device, uuid))
         return -1;
     for (unsigned i = 0; i < 16; i++)
         nonzero |= uuid[i];
@@ -59,8 +61,8 @@ int wn_ble_adv_write_capabilities(const struct wn_ble_scope *scope,const char *d
     memcpy(out + 27, uuid, 4);
     return WN_BLE_ADVERTISEMENT_SIZE;
 }
-bool wn_ble_adv_read(const struct wn_ble_scope *scope, const void *bytes,
-                     size_t size, struct wn_ble_hint *hint)
+bool wn_ble_adv_read(const struct wn_ble_scope *scope, const void *bytes, size_t size,
+                     struct wn_ble_hint *hint)
 {
     if (!hint)
         return false;
@@ -70,8 +72,7 @@ bool wn_ble_adv_read(const struct wn_ble_scope *scope, const void *bytes,
     const uint8_t *data = bytes;
     struct wn_ble_hint result = {0};
     bool found = false;
-    while (size)
-    {
+    while (size) {
         unsigned n = *data++;
         size--;
         if (!n)
@@ -81,12 +82,10 @@ bool wn_ble_adv_read(const struct wn_ble_scope *scope, const void *bytes,
         uint8_t type = data[0];
         if ((type == 0x06 || type == 0x07) && (n - 1) % 16)
             return false;
-        if (type == 0x21)
-        {
+        if (type == 0x21) {
             if (n < 17)
                 return false;
-            if (!memcmp(data + 1, scope->tenant_wire, 16))
-            {
+            if (!memcmp(data + 1, scope->tenant_wire, 16)) {
                 if (found || n != 27 || data[17] != WN_BLE_ADVERTISEMENT_VERSION ||
                     memcmp(data + 21, scope->network_hash, 2))
                     return false;
@@ -94,7 +93,7 @@ bool wn_ble_adv_read(const struct wn_ble_scope *scope, const void *bytes,
                 if (psm < 128 || psm > 255)
                     return false;
                 result.psm = psm;
-                result.capabilities=data[18];
+                result.capabilities = data[18];
                 memcpy(result.device_hint, data + 23, 4);
                 found = true;
             }

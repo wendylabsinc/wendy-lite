@@ -23,8 +23,8 @@ typedef enum {
 
 typedef struct {
     size_t limit_bytes;
-    size_t current_bytes;       /* Allocations (including prefix) + reservations. */
-    size_t high_water_bytes;    /* Includes admitted allocations still in flight. */
+    size_t current_bytes;    /* Allocations (including prefix) + reservations. */
+    size_t high_water_bytes; /* Includes admitted allocations still in flight. */
     size_t internal_bytes;
     size_t external_bytes;
     size_t allocation_count;
@@ -48,9 +48,9 @@ typedef struct wendy_net_memory {
 } wendy_net_memory_t;
 
 #ifdef ESP_PLATFORM
-#define WENDY_NET_MEMORY_INITIALIZER { .lock = portMUX_INITIALIZER_UNLOCKED }
+#define WENDY_NET_MEMORY_INITIALIZER {.lock = portMUX_INITIALIZER_UNLOCKED}
 #else
-#define WENDY_NET_MEMORY_INITIALIZER { .lock = PTHREAD_MUTEX_INITIALIZER }
+#define WENDY_NET_MEMORY_INITIALIZER {.lock = PTHREAD_MUTEX_INITIALIZER}
 #endif
 
 /* Caller owns each token exclusively; initialize to {0}, do not copy a live
@@ -66,11 +66,9 @@ typedef struct {
  * EXTERNAL support also requires a registered SPIRAM heap. Host emulates it.
  * Closing blocks new allocations/reservations but permits outstanding frees.
  * Do not reopen until all users of the previous generation have stopped. */
-bool wendy_net_memory_open(wendy_net_memory_t *memory, size_t limit_bytes,
-                           bool external_enabled);
+bool wendy_net_memory_open(wendy_net_memory_t *memory, size_t limit_bytes, bool external_enabled);
 void wendy_net_memory_close(wendy_net_memory_t *memory);
-void wendy_net_memory_snapshot(wendy_net_memory_t *memory,
-                               wendy_net_memory_snapshot_t *out);
+void wendy_net_memory_snapshot(wendy_net_memory_t *memory, wendy_net_memory_snapshot_t *out);
 bool wendy_net_memory_drained(wendy_net_memory_t *memory);
 
 /* Requested payload plus max_align_t-aligned ownership prefix is charged.
@@ -80,16 +78,16 @@ bool wendy_net_memory_drained(wendy_net_memory_t *memory);
  * Caller must exclusively own the pointer while resizing/freeing it. */
 size_t wendy_net_memory_charge(size_t payload_bytes);
 void *wendy_net_memory_malloc(wendy_net_memory_t *memory, size_t bytes,
-                             wendy_net_memory_placement_t placement);
-void *wendy_net_memory_calloc(wendy_net_memory_t *memory, size_t count,
-                             size_t bytes, wendy_net_memory_placement_t placement);
+                              wendy_net_memory_placement_t placement);
+void *wendy_net_memory_calloc(wendy_net_memory_t *memory, size_t count, size_t bytes,
+                              wendy_net_memory_placement_t placement);
 void wendy_net_memory_free(void *ptr);
 /* Both old and new blocks count during copy; failure leaves old unchanged.
  * NULL uses malloc and explicit placement; non-NULL preserves its original
  * owner and placement, requiring memory to match its original owner.
  * size=0 frees ptr (even after close). No fallback or uncharged realloc path. */
 void *wendy_net_memory_realloc(wendy_net_memory_t *memory, void *ptr, size_t bytes,
-                              wendy_net_memory_placement_t placement);
+                               wendy_net_memory_placement_t placement);
 
 /* Optional universal calloc/free callbacks for context-less library hooks.
  * Install once before any library allocations; never swap hooks at mesh off.
@@ -103,8 +101,8 @@ typedef struct {
     wendy_net_memory_t *owner;
     wendy_net_memory_placement_t placement;
 } wendy_net_memory_scope_t;
-wendy_net_memory_scope_t wendy_net_memory_scope_enter(
-    wendy_net_memory_t *owner, wendy_net_memory_placement_t placement);
+wendy_net_memory_scope_t wendy_net_memory_scope_enter(wendy_net_memory_t *owner,
+                                                      wendy_net_memory_placement_t placement);
 void wendy_net_memory_scope_leave(wendy_net_memory_scope_t previous);
 wendy_net_memory_scope_t wendy_net_memory_scope_current(void);
 /* Universal uncharged allocation for pre-scheduler library startup: no task-local
@@ -113,12 +111,11 @@ void *wendy_net_memory_unscoped_calloc(size_t count, size_t bytes);
 /* Explicit uncharged pool selection, with the same prefix and no fallback.
  * Intended for library baseline policy; never use to bypass a charged scope. */
 void *wendy_net_memory_unscoped_calloc_in(size_t count, size_t bytes,
-                                        wendy_net_memory_placement_t placement);
+                                          wendy_net_memory_placement_t placement);
 void *wendy_net_memory_scoped_calloc(size_t count, size_t bytes);
 void wendy_net_memory_scoped_free(void *ptr);
 
-bool wendy_net_memory_reserve(wendy_net_memory_t *memory,
-                              wendy_net_memory_reservation_t *token,
+bool wendy_net_memory_reserve(wendy_net_memory_t *memory, wendy_net_memory_reservation_t *token,
                               size_t bytes, wendy_net_memory_placement_t placement);
 void wendy_net_memory_release(wendy_net_memory_reservation_t *token);
 
