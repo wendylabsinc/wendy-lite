@@ -26,7 +26,8 @@ int wn_ble_adv_write(const struct wn_ble_scope *, const char *device, uint16_t p
 int wn_ble_adv_write_capabilities(const struct wn_ble_scope *, const char *device, uint16_t psm,
                                   uint8_t capabilities, uint8_t out[WN_BLE_ADVERTISEMENT_SIZE]);
 /* Decode only this live report, never merge fields with cached advertisements.
- * Accept bounded concatenated AD fields; reject duplicate matching ServiceData.
+ * Accept bounded concatenated AD fields and append-only fields in the v1
+ * ServiceData payload. Skip unsupported versions; reject duplicate v1 records.
  * The returned UUID prefix is advisory. TLS must authenticate the full UUID.
  */
 bool wn_ble_adv_read(const struct wn_ble_scope *, const void *, size_t, struct wn_ble_hint *);

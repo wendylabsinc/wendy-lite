@@ -39,7 +39,7 @@ struct wnc_carrier {
     size_t small_size, limit, control_limit, priority_reserve, queued, body_size, body_have;
     uint8_t header[5];
     unsigned header_have;
-    bool rx_paused;
+    bool rx_paused, rx_discard;
     int64_t rx_started, rx_progress;
     int64_t stall_timeout_us, frame_timeout_us;
 };
@@ -79,6 +79,8 @@ typedef int (*wnc_receive)(void *, const void *, size_t, bool control);
 /* Service both directions once.1 progress,0 would block,negative error.
  * receive may enqueue replies; it must not call pump/deinit recursively.
  * A pending write keeps exactly the same pointer/length until TLS accepts it.
+ * Unsupported outer kinds are discarded within control_limit+4 bytes using
+ * the existing scratch buffer; known frame bounds and validation still apply.
  * Partial frames default to5s without progress or30s total. Owners may raise
  * the two timeout fields for a constrained carrier; routing timers are separate. */
 int wnc_pump(struct wnc_carrier *, int64_t monotonic_us, wnc_receive, void *);

@@ -62,20 +62,17 @@ static int number(const struct wn_doc *d, unsigned object, const char *name, uin
 }
 int wn_router_hello_check(const void *data, size_t size, const char *self, const char *peer)
 {
-    static const char *const fields[] = {"kind", "hello", NULL};
-    static const char *const hello_fields[] = {"version", "role",     "device", "peer",
-                                               "mtu",     "datagram", NULL};
     struct wn_doc d;
     uint8_t uuid[16];
     uint64_t version, mtu, datagram;
     if (wn_uuid_parse(self, uuid) || wn_uuid_parse(peer, uuid) || !strcmp(self, peer) ||
-        wn_doc_parse(&d, data, size) || !wn_doc_fields(&d, 0, fields) ||
-        !wn_doc_equal(&d, wn_doc_member(&d, 0, "kind"), "hello"))
+        wn_doc_parse(&d, data, size) || !wn_doc_equal(&d, wn_doc_member(&d, 0, "kind"), "hello"))
         return -1;
     int h = wn_doc_member(&d, 0, "hello");
-    if (h < 0 || !wn_doc_fields(&d, h, hello_fields) || number(&d, h, "version", &version) ||
-        version != 1 || number(&d, h, "mtu", &mtu) || mtu != WN_MTU ||
-        number(&d, h, "datagram", &datagram) || datagram != WN_DATAGRAM_MAX ||
+    /* The negotiated version owns the required fields; optional additions do
+     * not change this peer's existing identity and capacity requirements. */
+    if (h < 0 || number(&d, h, "version", &version) || version != 1 || number(&d, h, "mtu", &mtu) ||
+        mtu != WN_MTU || number(&d, h, "datagram", &datagram) || datagram != WN_DATAGRAM_MAX ||
         !wn_doc_equal(&d, wn_doc_member(&d, h, "device"), peer) ||
         !wn_doc_equal(&d, wn_doc_member(&d, h, "peer"), self))
         return -1;
