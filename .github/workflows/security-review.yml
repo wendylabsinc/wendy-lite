@@ -42,7 +42,7 @@ jobs:
     - name: Load trusted local review automation
       env:
         EXPECTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        REVIEWER_BOOTSTRAP_SHA: e37caa4bdfa363af16a767ab591e5a0938503842
+        REVIEWER_BOOTSTRAP_SHA: 0eb18976af76ac5f5090b8882e08535e29cc32ac
       run: |
         set -euo pipefail
         [[ "$EXPECTED_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
