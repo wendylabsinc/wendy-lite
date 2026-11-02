@@ -25,7 +25,7 @@ static void report_heap(void)
     const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     const uint32_t external = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
     const uint32_t dma = MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA;
-    ESP_LOGI(TAG, "WENDY_BENCH {\"test\":\"heap\",\"time_us\":%" PRId64
+    ESP_LOGI(TAG, "WENDY_BENCH {\"version\":1,\"test\":\"heap\",\"time_us\":%" PRId64
              ",\"internal_free\":%zu,\"internal_min\":%zu,\"internal_largest\":%zu"
              ",\"dma_largest\":%zu,\"psram_free\":%zu,\"psram_largest\":%zu"
              ",\"benchmark_stack_free\":%u}",
@@ -40,7 +40,7 @@ static void report_heap(void)
         struct wendy_sensor_link_stats stats;
         if (wendy_sensor_link_get_stats(channel, &stats) != ESP_OK)
             continue;
-        ESP_LOGI(TAG, "WENDY_BENCH {\"test\":\"sensor\",\"channel\":%" PRIu32
+        ESP_LOGI(TAG, "WENDY_BENCH {\"version\":1,\"test\":\"sensor\",\"channel\":%" PRIu32
                  ",\"time_us\":%" PRId64 ",\"frames_submitted\":%" PRIu64
                  ",\"frames_completed\":%" PRIu64 ",\"bytes_submitted\":%" PRIu64
                  ",\"capture_errors\":%" PRIu64 ",\"queue_rejected\":%" PRIu64
@@ -69,7 +69,7 @@ static bool benchmark_copy(const char *memory, uint32_t caps, size_t bytes)
     uint8_t *dst = heap_caps_aligned_alloc(64, bytes, caps | MALLOC_CAP_8BIT);
     bool ok = false;
     if (!src || !dst) {
-        ESP_LOGE(TAG, "WENDY_BENCH {\"test\":\"memcpy\",\"memory\":\"%s\","
+        ESP_LOGE(TAG, "WENDY_BENCH {\"version\":1,\"test\":\"memcpy\",\"memory\":\"%s\","
                  "\"ok\":false,\"error\":\"allocation\"}", memory);
         goto done;
     }
@@ -81,7 +81,7 @@ static bool benchmark_copy(const char *memory, uint32_t caps, size_t bytes)
         copy_block(dst, src, bytes);
     int64_t elapsed = esp_timer_get_time() - started;
     ok = elapsed > 0 && memcmp(dst, src, bytes) == 0;
-    ESP_LOGI(TAG, "WENDY_BENCH {\"test\":\"memcpy\",\"memory\":\"%s\","
+    ESP_LOGI(TAG, "WENDY_BENCH {\"version\":1,\"test\":\"memcpy\",\"memory\":\"%s\","
              "\"block_bytes\":%zu,\"iterations\":%d,\"elapsed_us\":%" PRId64
              ",\"ok\":%s}", memory, bytes, ITERATIONS, elapsed, ok ? "true" : "false");
 done:
@@ -112,7 +112,7 @@ static bool benchmark_convolution(void)
     void *scratch = scratch_size > 0 ? heap_caps_aligned_alloc(16, scratch_size, caps) : NULL;
     bool ok = false;
     if (!input || !filter || !reference || !optimized || scratch_size < 0 || (scratch_size && !scratch)) {
-        ESP_LOGE(TAG, "WENDY_BENCH {\"test\":\"conv_int8_1x1\",\"ok\":false,\"error\":\"allocation\"}");
+        ESP_LOGE(TAG, "WENDY_BENCH {\"version\":1,\"test\":\"conv_int8_1x1\",\"ok\":false,\"error\":\"allocation\"}");
         goto done;
     }
     for (int i = 0; i < INPUT_BYTES; ++i)
@@ -130,7 +130,7 @@ static bool benchmark_convolution(void)
     esp_nn_conv_s8(&input_dims, input, &filter_dims, filter, bias,
                    &output_dims, optimized, &params, &quant);
     if (memcmp(reference, optimized, INPUT_BYTES) != 0) {
-        ESP_LOGE(TAG, "WENDY_BENCH {\"test\":\"conv_int8_1x1\",\"ok\":false,\"error\":\"output_mismatch\"}");
+        ESP_LOGE(TAG, "WENDY_BENCH {\"version\":1,\"test\":\"conv_int8_1x1\",\"ok\":false,\"error\":\"output_mismatch\"}");
         goto done;
     }
 
@@ -147,7 +147,7 @@ static bool benchmark_convolution(void)
                        &output_dims, optimized, &params, &quant);
     int64_t pie_us = esp_timer_get_time() - started;
     ok = ansi_us > 0 && pie_us > 0 && memcmp(reference, optimized, INPUT_BYTES) == 0;
-    ESP_LOGI(TAG, "WENDY_BENCH {\"test\":\"conv_int8_1x1\",\"core\":%d,"
+    ESP_LOGI(TAG, "WENDY_BENCH {\"version\":1,\"test\":\"conv_int8_1x1\",\"core\":%d,"
              "\"iterations\":%d,\"ansi_us\":%" PRId64 ",\"pie_us\":%" PRId64
              ",\"ok\":%s}", xPortGetCoreID(), ITERATIONS, ansi_us, pie_us, ok ? "true" : "false");
 done:
@@ -170,7 +170,7 @@ static void benchmark_task(void *unused)
     bool psram_ok = benchmark_copy("psram", MALLOC_CAP_SPIRAM, 256 * 1024);
     vTaskDelay(1);
     bool convolution_ok = benchmark_convolution();
-    ESP_LOGI(TAG, "WENDY_BENCH {\"test\":\"complete\",\"ok\":%s}",
+    ESP_LOGI(TAG, "WENDY_BENCH {\"version\":1,\"test\":\"complete\",\"ok\":%s}",
              internal_ok && psram_ok && convolution_ok ? "true" : "false");
     for (;;) {
         report_heap();
