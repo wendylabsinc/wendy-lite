@@ -2702,8 +2702,16 @@ int pki_tls_agent_begin(const struct wendy_pki_stream *stream, const char *tenan
     /* Native WendyCom is not an app/carrier ALPN and can accept a device or
      * operator. Do not use finish_mesh or reinterpret its peer as a UUID. */
     static const char *const wendycom_alpn[] = {"wendy-com/2", NULL};
-    if (!r)
+    if (!r) {
+#if CONFIG_WENDY_NET_CONSTRAINED_PROFILE
+        /* Native management shares the constrained mesh ledger. Keeping
+         * speculative issuer candidates can crowd out signature-verification
+         * scratch even for one client; request ordinary full presentations. */
+        r = mbedtls_ssl_conf_alpn_protocols(&c->config, wendycom_alpn);
+#else
         r = configure_mesh_alpn(c, wendycom_alpn);
+#endif
+    }
     release_identity_input(owned);
     if (r) {
         wendy_pki_close(c);

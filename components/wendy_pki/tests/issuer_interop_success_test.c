@@ -137,10 +137,18 @@ int main(int argc, char **argv)
     unsigned profile = (unsigned)atoi(argv[11]);
     bool server = !strcmp(argv[4], "server"), application = profile == 1, agent = profile == 2;
     assert(!agent || server);
+    size_t resident_bytes = agent && getenv("WENDY_LITE_ISSUER_RESIDENT_BYTES")
+                                ? strtoul(getenv("WENDY_LITE_ISSUER_RESIDENT_BYTES"), NULL, 10)
+                                : 0;
     wendy_net_memory_t memory = WENDY_NET_MEMORY_INITIALIZER;
-    assert(wendy_net_memory_open(&memory, 1024 * 1024, true));
-    wendy_net_memory_scope_t previous =
-        wendy_net_memory_scope_enter(&memory, WENDY_NET_MEMORY_EXTERNAL);
+    assert(wendy_net_memory_open(&memory, resident_bytes ? 160 * 1024 : 1024 * 1024,
+                                  !resident_bytes));
+    wendy_net_memory_reservation_t resident = {0};
+    if (resident_bytes)
+        assert(wendy_net_memory_reserve(&memory, &resident, resident_bytes,
+                                         WENDY_NET_MEMORY_INTERNAL));
+    wendy_net_memory_scope_t previous = wendy_net_memory_scope_enter(
+        &memory, resident_bytes ? WENDY_NET_MEMORY_INTERNAL : WENDY_NET_MEMORY_EXTERNAL);
     if (argc == 15) {
         assert(!strcmp(argv[14], "cooldown"));
         assert(pki_issuer_recovery_failed(&pki_issuer_process_recovery, esp_timer_get_time()));
@@ -209,7 +217,7 @@ int main(int argc, char **argv)
             c->issuers ? c->issuers->peer_presented_certificates : 0,
             c->issuers ? c->issuers->hint : "(none)");
     assert((c->issuers && c->issuers->omit) == (atoi(argv[6]) == 1));
-    if (strcmp(argv[13], "-"))
+    if (strcmp(argv[13], "-") && c->issuers)
         assert(c->issuers->peer_presented_certificates == 1);
     assert(!strcmp(mbedtls_ssl_get_alpn_protocol(&c->ssl), agent ? "wendy-com/2"
                                                            : application
@@ -245,6 +253,7 @@ done:
     close(fd);
     assert(cached_releases == (unsigned)(strcmp(argv[13], "-") != 0));
     wendy_net_memory_scope_leave(previous);
+    wendy_net_memory_release(&resident);
     wendy_net_memory_snapshot_t snapshot;
     wendy_net_memory_snapshot(&memory, &snapshot);
     fprintf(stderr, "issuer scoped peak=%zu retained=%zu allocations=%zu reservations=%zu\n",
