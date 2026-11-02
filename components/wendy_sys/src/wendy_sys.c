@@ -6,6 +6,7 @@
 #include "esp_system.h"
 #include "esp_log.h"
 #include "wendy_conf.h"
+#include "wendy_wasm.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "wasm_export.h"
@@ -87,7 +88,23 @@ static void sys_sleep_ms_wrapper(wasm_exec_env_t exec_env, int ms)
         if (ticks == 0) {
             ticks = 1;
         }
-        vTaskDelay(ticks);
+        /* A native sleep must return promptly after APP_STOP so WAMR can
+         * observe termination. A guest may sleep for minutes; the control
+         * thread has a finite join budget before replacing its flash image. */
+        TickType_t quantum = pdMS_TO_TICKS(25);
+        if (quantum == 0) {
+            quantum = 1;
+        }
+        TickType_t started = xTaskGetTickCount();
+        TickType_t remaining = ticks;
+        while (remaining && !wendy_wasm_is_terminating()) {
+            TickType_t part = remaining < quantum ? remaining : quantum;
+            vTaskDelay(part);
+            /* Time spent ready but not scheduled counts toward the sleep.
+             * Unsigned subtraction also handles the tick counter wrapping. */
+            TickType_t elapsed = xTaskGetTickCount() - started;
+            remaining = elapsed < ticks ? ticks - elapsed : 0;
+        }
     }
 }
 
