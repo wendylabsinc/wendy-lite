@@ -1,0 +1,9 @@
+dependencies:
+  espressif/cjson:
+    version: "^1.7.19"
+  wendy_conf:
+    override_path: "../wendy_conf"
+  wendy_net_common:
+    override_path: "../wendy_net_common"
+  wendy_pki:
+    override_path: "../wendy_pki"

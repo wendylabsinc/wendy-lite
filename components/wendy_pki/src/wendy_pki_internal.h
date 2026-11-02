@@ -3,6 +3,7 @@
 #include "wendy_pki_alloc.h"
 #include "wendy_net_memory.h"
 #include "wendy_pki_tls_input.h"
+#include "wendy_pki_issuers.h"
 #include "wendy_pki_public_index.h"
 #include "wendy_conf.h"
 #include "wendy_pki_mesh.h"
@@ -52,6 +53,7 @@ struct wendy_pki_connection
     mbedtls_x509_crt roots, certificate;
     mbedtls_pk_context key;
     int fd;
+    struct pki_issuer_state *issuers;
     wendy_net_memory_scope_t allocation_scope;
     wendy_net_memory_reservation_t raw_roots_reservation;
     bool mesh_roots_prefixed;
@@ -143,7 +145,7 @@ int pki_http_post_enrollment(const char *url, const char *type, const char *toke
                              size_t body_size, const uint8_t *key, size_t key_size,
                              struct wendy_conf_span cert, struct wendy_conf_span roots,
                              uint8_t **response, size_t *response_size,
-                             char **lite_authority_header);
+                  char **lite_authority_header);
 
 int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, struct wendy_conf_span cert,
                    struct wendy_conf_span roots, const char *tenant, wendy_pki_connection **out,
@@ -156,13 +158,13 @@ int pki_tls_accept_lan(int fd, const uint8_t *key, size_t key_size, struct wendy
                        struct wendy_conf_span roots, const char *tenant, wendy_pki_connection **out,
                        int64_t deadline);
 int pki_tls_accept_lite(int fd, const uint8_t *key, size_t key_size, struct wendy_conf_span cert,
-                        struct wendy_conf_span roots, const char *tenant,
-                        wendy_pki_connection **out, int64_t deadline);
+                       struct wendy_conf_span roots, const char *tenant,
+                       wendy_pki_connection **out, int64_t deadline);
 /* LAN management consumes NVS copies, verifies the parsed local identity and
  * releases issuer/anchor storage after full mutual authentication. */
 int pki_tls_accept_owned(int *fd, struct pki_tls_owned_identity *owned,
-                         struct wendy_conf_span roots, const char *tenant, const char *device,
-                         wendy_pki_connection **out, int64_t deadline);
+    struct wendy_conf_span roots, const char *tenant, const char *device,
+    wendy_pki_connection **out, int64_t deadline);
 /* Same complete-path, streamed-DER setup over a caller-owned radio stream.
  * Management BLE remains operator-only; it gains no router/device authority. */
 int pki_tls_accept_owned_stream(const struct wendy_pki_stream *, struct pki_tls_owned_identity *,
@@ -241,8 +243,8 @@ int pki_tls_net_connect(const char *host, unsigned port, const char *tenant, con
 /* Consumes both fd and identity inputs on all returns. Peer UUID comes only
  * from the authenticated same-tenant device certificate. */
 int pki_tls_net_accept(int *fd, const char *tenant, const char *device,
-                       struct pki_tls_owned_identity *owned, struct wendy_conf_span roots,
-                       const char *protocol, wendy_pki_connection **out);
+    struct pki_tls_owned_identity *owned, struct wendy_conf_span roots,
+    const char *protocol, wendy_pki_connection **out);
 /* Full-router TLS over caller-owned BLE/L2CAP bytes. A missing expected UUID
  * permits discovery by short hint; full chain, tenant, device role and ALPN
  * remain mandatory and the authenticated full UUID is available afterward. */
