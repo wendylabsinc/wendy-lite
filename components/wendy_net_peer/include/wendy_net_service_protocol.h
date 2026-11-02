@@ -38,5 +38,8 @@ bool wns_type_valid(const char *);
 int wns_spec_from_json(const void *, size_t, char **, size_t *);
 int wns_record_json(const struct wns_record *, char *, size_t);
 
+/* A well-formed optional service whose transport/system kind is unavailable.
+ * Its identity still participates in whole-manifest duplicate/count checks. */
+#define WNS_UNSUPPORTED 1
 int wns_manifest_service_read(const struct wn_doc *, struct wns_record *);
 int wns_manifest_services_validate(const struct wn_doc *, unsigned);
