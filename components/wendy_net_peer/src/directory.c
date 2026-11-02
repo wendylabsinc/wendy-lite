@@ -261,17 +261,17 @@ static int app_endpoints(const struct wn_doc *d, unsigned body, struct wnd_manif
     for (unsigned i = endpoints + 1; i < d->storage[endpoints].next; i = d->storage[i].next) {
         uint64_t port;
         uint16_t *slot;
-        if (++count > 2 || d->storage[i].type != '{' || number(d, i, "port", &port) || !port ||
-            port > 65535)
+        char transport[65];
+        if (++count > 16 || d->storage[i].type != '{' ||
+            wn_doc_string(d, wn_doc_member(d, i, "transport"), transport, sizeof transport) <= 0)
             return -1;
-        int transport = wn_doc_member(d, i, "transport");
-        if (wn_doc_equal(d, transport, "tls-v1"))
+        if (!strcmp(transport, "tls-v1"))
             slot = &m->tls_app_port;
-        else if (wn_doc_equal(d, transport, "quic-v1"))
+        else if (!strcmp(transport, "quic-v1"))
             slot = &m->quic_app_port;
         else
-            return WND_UNSUPPORTED;
-        if (*slot)
+            continue; /* Optional future endpoint owns its remaining schema. */
+        if (number(d, i, "port", &port) || !port || port > 65535 || *slot)
             return -1;
         *slot = (uint16_t)port;
     }
@@ -333,10 +333,14 @@ int wnd_manifest_read(const struct wn_doc *d, unsigned body, struct wnd_manifest
     if (!m->withdraw && !port)
         return -1;
     if (agent >= 0) {
-        if (wn_doc_equal(d, agent, "mtls-v1") && port)
-            m->agent_mtls = true;
-        else if (!wn_doc_equal(d, agent, ""))
-            return WND_UNSUPPORTED;
+        char transport[65];
+        if (wn_doc_string(d, agent, transport, sizeof transport) < 0)
+            return -1;
+        /* Unknown agent transports are unavailable locally, never a fallback
+         * to today's protocol and never a reason to discard the route. */
+        m->agent_mtls = !strcmp(transport, "mtls-v1") && port;
+        if (*transport && strcmp(transport, "mtls-v1"))
+            port = 0; /* Do not expose an opaque protocol as a usable endpoint. */
     }
     m->agent_port = (uint16_t)port;
     int platform = wn_doc_member(d, body, "platform");
