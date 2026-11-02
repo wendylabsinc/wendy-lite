@@ -2,7 +2,13 @@
 #include <string.h>
 int wn_assemble(struct wn_assembler *s, const uint8_t *p, size_t n, int64_t now)
 {
-    if (n < 10 || n > WN_DATAGRAM_MAX || p[0] != 1)
+    if (!p || !n || n > WN_DATAGRAM_MAX)
+        return -1;
+    /* The enclosing datagram already supplies its boundary. Future packet
+     * kinds must not close the carrier or disturb a partial IPv6 packet. */
+    if (p[0] != 1)
+        return 0;
+    if (n < 10)
         return -1;
     uint32_t id = wn_get32(p + 1);
     uint16_t total = wn_get16(p + 5), offset = wn_get16(p + 7);

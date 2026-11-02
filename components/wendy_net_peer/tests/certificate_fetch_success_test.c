@@ -52,6 +52,20 @@ static int store_part(void *ctx, const uint8_t hash[32], const void *bytes, size
     part->size = size;
     return 0;
 }
+static int future_field(char *wire, int size, const struct wn_doc *d, int object)
+{
+    const struct wn_token *t = wn_doc_token(d, object);
+    assert(t && t->type == '{' && t->end == (unsigned)size);
+    assert((uint8_t)wire[t->start] < 0xb7);
+    wire[t->start]++;
+    struct wn_writer w = {
+        .data = (uint8_t *)wire, .capacity = 2048, .maximum = 2048, .size = (size_t)size};
+    wn_text(&w, "z");
+    wn_map(&w, 1);
+    wn_text(&w, "future");
+    wn_bool(&w, true);
+    return wn_finish(&w);
+}
 int main(void)
 {
     struct cache cache = {0};
@@ -78,6 +92,8 @@ int main(void)
     assert(envelope >= 0);
     int value = wn_doc_member(&document, (unsigned)envelope, "chain");
     assert(value >= 0);
+    length = future_field(wire, length, &document, value);
+    assert(length > 0 && !wn_doc_parse(&document, wire, (size_t)length));
     assert(!wncf_chain_read(&document, (unsigned)value, "2558fd76-afc7-466e-9613-6b715296a526",
                             &decoded));
     assert(!strcmp(decoded.principal, chain.principal) && decoded.count == chain.count &&
@@ -109,6 +125,8 @@ int main(void)
         assert(envelope >= 0);
         value = wn_doc_member(&document, (unsigned)envelope, "request");
         assert(value >= 0);
+        length = future_field(wire, length, &document, value);
+        assert(length > 0 && !wn_doc_parse(&document, wire, (size_t)length));
         assert(!wncf_request_read(&document, (unsigned)value, &again));
         assert(again.offset == request.offset && !memcmp(again.hash, request.hash, 32));
         wncf_sent(&fetch, now++);
@@ -126,6 +144,8 @@ int main(void)
         assert(value >= 0);
         struct wncf_chunk received;
         uint8_t payload[WNCF_CHUNK];
+        length = future_field(wire, length, &document, value);
+        assert(length > 0 && !wn_doc_parse(&document, wire, (size_t)length));
         assert(!wncf_chunk_read(&document, (unsigned)value, &received, payload));
         assert(received.offset == chunk.offset && received.total == chunk.total &&
                received.size == chunk.size && !memcmp(received.hash, chunk.hash, 32) &&
@@ -174,6 +194,8 @@ int main(void)
         assert(envelope >= 0);
         value = wn_doc_member(&document, (unsigned)envelope, "missing");
         assert(value >= 0);
+        length = future_field(wire, length, &document, value);
+        assert(length > 0 && !wn_doc_parse(&document, wire, (size_t)length));
         struct wncf_request decoded_missing;
         assert(!wncf_request_read(&document, (unsigned)value, &decoded_missing));
         assert(decoded_missing.offset == missing.offset &&

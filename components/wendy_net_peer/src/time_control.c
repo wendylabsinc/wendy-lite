@@ -46,7 +46,9 @@ int wnt_request_write(const struct wnt_job *job, char *out, size_t cap)
     wn_key(&w, "kind");
     wn_text(&w, "time");
     wn_key(&w, "time");
-    wn_map(&w, 3);
+    wn_map(&w, 4);
+    wn_key(&w, "v");
+    wn_uint(&w, 1);
     wn_key(&w, "id");
     wn_uint(&w, job->id);
     wn_key(&w, "op");
@@ -72,7 +74,9 @@ int wnt_reply_write(const struct wnt_job *job, char *out, size_t cap)
     wn_key(&w, "kind");
     wn_text(&w, "time");
     wn_key(&w, "time");
-    wn_map(&w, job->result ? 2 : 5);
+    wn_map(&w, job->result ? 3 : 6);
+    wn_key(&w, "v");
+    wn_uint(&w, 1);
     wn_key(&w, "id");
     wn_uint(&w, job->id);
     wn_key(&w, "op");
@@ -95,12 +99,19 @@ static int decoded(const struct wn_doc *doc, unsigned at, uint8_t *out, size_t c
 {
     return wn_doc_copy_bytes(doc, wn_doc_member(doc, at, "data"), out, cap, size);
 }
+bool wnt_version_supported(const struct wn_doc *doc, unsigned at)
+{
+    int field = wn_doc_member(doc, at, "v");
+    uint64_t version;
+    return field < 0 || (!wn_doc_u64(doc, field, &version) && version <= 1);
+}
 struct wnt_job *wnt_request_read(const struct wn_doc *doc, unsigned at, int64_t deadline)
 {
     uint64_t id;
     uint8_t bytes[128];
     size_t size;
-    if (number(doc, at, "id", &id) || decoded(doc, at, bytes, sizeof bytes, &size))
+    if (!wnt_version_supported(doc, at) || number(doc, at, "id", &id) ||
+        decoded(doc, at, bytes, sizeof bytes, &size))
         return NULL;
     return wnt_new(id, bytes, size, deadline);
 }
@@ -109,6 +120,17 @@ int wnt_reply_read(struct wnt_job *job, const struct wn_doc *doc, unsigned at)
     uint64_t id, total, offset;
     uint8_t bytes[1024];
     size_t size;
+    if (!wnt_version_supported(doc, at))
+        return 0;
+    int op = wn_doc_member(doc, at, "op");
+    const struct wn_token *operation = wn_doc_token(doc, op);
+    if (!operation || operation->type != '"' ||
+        operation->end <= operation->start + operation->header)
+        return -1;
+    /* Future operations have independent schemas and must not fail an
+     * outstanding request merely because they omit today's reply fields. */
+    if (!wn_doc_equal(doc, op, "reply") && !wn_doc_equal(doc, op, "error"))
+        return 0;
     if (number(doc, at, "id", &id))
         return -1;
     if (id != job->id || atomic_load(&job->done))
