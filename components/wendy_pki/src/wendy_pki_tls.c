@@ -259,8 +259,8 @@ static struct pki_issuer_state *prepare_issuer_hint(wendy_pki_connection *c)
                 !memcmp(hash, source->part[i].hash, 32)) {
                 state->known[n] = root;
                 break;
-            }
         }
+            }
         if (!state->known[n]) {
             size_t size = 0;
             uint8_t hash[32];
@@ -337,7 +337,7 @@ static void peer_chain_begin(void *context, const unsigned char *message, size_t
             if (matching_issuer(top, root)) {
                 complete = true;
                 break;
-            }
+    }
     }
     mbedtls_x509_crt_free(top);
     pki_owned_free(top);
@@ -601,6 +601,7 @@ void wendy_pki_close(wendy_pki_connection *c)
     release_mesh_roots(c);
     pki_public_chain_free(c->public_chain);
     pki_owned_free(c->authenticated_peer);
+    pki_owned_free(c->authenticated_operator);
     pki_owned_free(c->issuers);
     if (c->fd >= 0) close(c->fd);
     pki_owned_free(c);
@@ -1478,16 +1479,21 @@ static int finish_mesh(wendy_pki_connection *c, const char *tenant, const char *
         /* A primary operator terminates the ordinary incoming app protocol.
          * It has no enrolled UUID: keep its typed role and never put its URI in
          * mesh_peer. Carrier and outgoing device pins remain device-only. */
+        bool operator_router = role == WENDY_PEER_ROLE_OPERATOR && c->allow_operator_router &&
+                               !gateway && !router && protocol &&
+                               !strcmp(protocol, "wendy-net-operator-router/1") &&
+                               c->config.MBEDTLS_PRIVATE(endpoint) == MBEDTLS_SSL_IS_SERVER;
         bool operator_app = role == WENDY_PEER_ROLE_OPERATOR && !gateway && !router && protocol &&
                             !strcmp(protocol, "wendy-app-mesh-tls/1") &&
                             c->config.MBEDTLS_PRIVATE(endpoint) == MBEDTLS_SSL_IS_SERVER;
         if (!alpn || !protocol || strcmp(alpn, protocol) || !peer ||
             wendy_pki_certificate_policy(peer, false) ||
-            (role != WENDY_PEER_ROLE_DEVICE && !operator_app))
+            (role != WENDY_PEER_ROLE_DEVICE && !operator_app && !operator_router) ||
+            (protocol && !strcmp(protocol, "wendy-net-operator-router/1") && !operator_router))
             goto fail;
         unsigned count = 0;
         for (const mbedtls_x509_sequence *a = &peer->subject_alt_names;
-             !operator_app && a && a->buf.p; a = a->next) {
+             !operator_app && !operator_router && a && a->buf.p; a = a->next) {
             mbedtls_x509_subject_alternative_name san;
             if (mbedtls_x509_parse_subject_alt_name(&a->buf, &san) ||
                 san.type != MBEDTLS_X509_SAN_UNIFORM_RESOURCE_IDENTIFIER)
@@ -1502,7 +1508,7 @@ static int finish_mesh(wendy_pki_connection *c, const char *tenant, const char *
                 goto fail;
             count++;
         }
-        if (!operator_app && count != 1)
+        if (!operator_app && !operator_router && count != 1)
             goto fail;
         time_t now = time(NULL);
         if (!c->operator_expires || c->operator_expires <= now)
@@ -1543,7 +1549,7 @@ static int finish_mesh(wendy_pki_connection *c, const char *tenant, const char *
         if (protocol && !strcmp(protocol, "wendy-app-mesh-tls/1")) {
             release_verified_paths(c);
         } else if (native_router) {
-            if (c->public_chain) {
+            if (c->public_chain && !operator_router) {
                 struct wendy_pki_mesh_peer verified;
                 if (wendy_pki_mesh_authenticated_peer(c, &verified))
                     goto fail;
@@ -2787,6 +2793,33 @@ int pki_tls_net_begin(const struct wendy_pki_stream *stream, bool server, const 
     release_identity_input(owned);
     return result ? -1 : 0;
 }
+int pki_tls_net_allow_operators(wendy_pki_connection *c)
+{
+    if (!c || c->config.MBEDTLS_PRIVATE(endpoint) != MBEDTLS_SSL_IS_SERVER)
+        return -1;
+    static const char *const protocols[] = {"wendy-local-mesh-ble/2", "wendy-net-operator-router/1",
+                                            NULL};
+    int r = mbedtls_ssl_conf_alpn_protocols(&c->config, protocols);
+    if (!r)
+        c->allow_operator_router = true;
+    return r;
+}
+void pki_tls_net_operator_verified(wendy_pki_connection *c)
+{
+    /* Public proof bytes/key remain owned separately from transient TLS paths. */
+    if (c->public_chain && c->public_chain->load_trust) {
+        release_verified_paths(c);
+        c->lazy_trust = true;
+    } else
+        release_session_certificates(c);
+}
+const struct wendy_pki_operator_peer *wendy_pki_mesh_authenticated_operator(wendy_pki_connection *c)
+{
+    return c && c->peer_role == WENDY_PEER_ROLE_OPERATOR && c->session_deadline_us &&
+                   esp_timer_get_time() < c->session_deadline_us && !wendy_pki_reset_in_progress()
+               ? c->authenticated_operator
+               : NULL;
+}
 static int net_advance(wendy_pki_connection *c, bool application, const char *peer)
 {
     if (c->ssl.MBEDTLS_PRIVATE(state) != MBEDTLS_SSL_HANDSHAKE_OVER) {
@@ -2803,9 +2836,14 @@ static int net_advance(wendy_pki_connection *c, bool application, const char *pe
     release_presented_chain(c);
     if (mbedtls_ssl_get_verify_result(&c->ssl))
         return -1;
-    return finish_mesh(c, c->mesh_tenant, c->mesh_device, peer, false,
-                       application ? "wendy-app-mesh-tls/1" : "wendy-local-mesh-ble/2",
-                       c->device_expires, (struct wendy_conf_span){0}, !application);
+    const char *protocol = application ? "wendy-app-mesh-tls/1" : "wendy-local-mesh-ble/2";
+    if (!application && c->allow_operator_router) {
+        const char *chosen = mbedtls_ssl_get_alpn_protocol(&c->ssl);
+        if (chosen && !strcmp(chosen, "wendy-net-operator-router/1"))
+            protocol = chosen;
+    }
+    return finish_mesh(c, c->mesh_tenant, c->mesh_device, peer, false, protocol, c->device_expires,
+                       (struct wendy_conf_span){0}, !application);
 }
 
 int pki_tls_net_advance(wendy_pki_connection *c, bool application, const char *peer)

@@ -134,6 +134,23 @@ Incoming mesh management and SensorLink share one client slot, alongside one gue
 flow in each direction. Applications should close idle connections and retry
 resource-unavailable results.
 
+Constrained native management negotiates the ordinary WendyCom ALPN and exchanges
+full certificate presentations. It declines optional cached-issuer hints so that
+signature verification has headroom within the mesh memory limit. Certificate,
+identity and trust checks remain the same.
+
+These slot counts bound admission; they do not guarantee memory for every
+combination of guest traffic and a new TLS exchange. A cold full-chain exchange
+needs temporary certificate and record-buffer headroom. On C6, a new management
+or SensorLink connection can therefore be unavailable while a guest is active,
+even with a free client slot. Warm exchanges also depend on available headroom.
+
+USB remains a physical management option for inspecting status or reading
+SensorLink samples without creating another TLS session. Network connections
+retain their ordinary certificate validation, protocol versions and configured
+resource bounds. USB reports the connected board's identity; it does not provide
+the authenticated network-peer proof of an mTLS connection.
+
 Learned peer records, keys, services and packet queues stay in RAM. Flash holds
 the device's own enrollment material, explicit management settings and
 once-per-boot publication/time metadata, rather than other peers' changing data.

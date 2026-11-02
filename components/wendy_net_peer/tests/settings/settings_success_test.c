@@ -17,7 +17,7 @@ size_t heap_caps_get_total_size(unsigned caps)
 #ifdef TEST_PSRAM
     return 8 * 1024 * 1024;
 #else
-    return 0;
+ return 0;
 #endif
 }
 void wn_peer_runtime_status(WendyComNetStatus *s)
@@ -106,6 +106,12 @@ int main(void)
     WendyComNetTopologyPage page = WendyComNetTopologyPage_init_zero;
     assert(delegate->topology(&query, &page) == WendyComResult_WENDY_COM_RESULT_OK &&
            !page.runtime_available && !writes);
+#if !WENDY_NET_NON_TRANSIT
+    assert(status.desired.max_links == 8 && status.desired.wifi_links == 8);
+    WendyComNetConfig too_many = status.desired;
+    too_many.max_links = 9;
+    assert(delegate->set(&too_many, &status, &token) == WendyComResult_WENDY_COM_RESULT_BAD_STATE);
+#endif
     WendyComNetConfig config = status.desired;
     config.enabled = true;
     if (!config.ble && !config.infrastructure_wifi) {
@@ -132,7 +138,7 @@ int main(void)
     config.enabled = false;
     assert(delegate->set(&config, &status, &token) == WendyComResult_WENDY_COM_RESULT_OK && token &&
            writes == 2);
-    /* Old callbacks cannot complete a later settings generation. */
+ /* Old callbacks cannot complete a later settings generation. */
     delegate->reply_complete(first);
     wn_settings_poll(true);
     assert(changes == 1);
@@ -180,7 +186,7 @@ int main(void)
     applied(token, true);
     assert(wn_settings_restart_due());
 #else
-    /* A client that vanishes before responding cannot stall settings forever. */
+ /* A client that vanishes before responding cannot stall settings forever. */
     assert(delegate->set(&config, &status, &token) == WendyComResult_WENDY_COM_RESULT_OK && token);
     unsigned before = changes;
     now += 45000000;

@@ -50,11 +50,12 @@ static void init(struct wnc_carrier *c, struct input *in, uint8_t *scratch, bool
 {
     struct wnc_io io = {.context = in, .read = read_bytes, .write = no_write};
     assert(!wnc_init(c, &io, scratch, WN_DATAGRAM_MAX, 8192, 8192));
-    (void)operator;
+    if (operator)
+        assert(!wnc_operator_router(c));
 }
 int main(void)
 {
-    for (unsigned operator = 0; operator < 1; operator++) {
+    for (unsigned operator = 0; operator < 2; operator++) {
         struct input in = {0};
         uint8_t scratch[WN_DATAGRAM_MAX];
         struct wnc_carrier carrier;

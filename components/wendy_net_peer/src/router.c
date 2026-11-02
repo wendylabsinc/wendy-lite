@@ -166,8 +166,8 @@ static int persist(struct wnr_core *c)
             if (!result) {
                 memcpy(c->saved_hash, hash, 32);
                 c->saved = true;
-            }
         }
+    }
     }
     c->durable = result == 0;
     if (c->durable)
@@ -191,7 +191,7 @@ static int finish(struct wnr_core *c, int result)
     if (links(c)) {
         if ((!c->published || c->publication_pending || c->publication_dirty ||
              c->published_seqno != c->babel.seqno ||
-             c->now_us - c->published_us >= INT64_C(300000000)) &&
+            c->now_us - c->published_us >= INT64_C(300000000)) &&
             (!c->published || c->publication_pending ||
              c->now_us - c->published_us >= INT64_C(1000000))) {
             struct wn_origin origin = {.router_id = c->babel.config.router,
@@ -374,12 +374,10 @@ int wnr_operator_manifest_verified(struct wnr_core *c, const struct wno_manifest
         return WB_STOPPED;
     return r;
 }
-int wnr_attach(struct wnr_core *c, const char *peer, uint16_t cost, int64_t unix_ms, int64_t now,
-               uint64_t *id)
+static int attach(struct wnr_core *c, bool first, uint16_t cost, int64_t unix_ms, int64_t now,
+                  uint64_t *id)
 {
-    uint8_t uuid[16];
-    if (!id || wn_uuid_parse(peer, uuid) || !c || !memcmp(uuid, c->directory.self, 16) || !cost ||
-        cost == WB_INFINITY)
+    if (!c || !id || !cost || cost == WB_INFINITY)
         return WB_INVALID;
     int r = clock_at(c, unix_ms, now);
     if (r)
@@ -397,13 +395,28 @@ int wnr_attach(struct wnr_core *c, const char *peer, uint16_t cost, int64_t unix
                            .peer = {0xfe, 0x80},
                            .cost = cost,
                            .max_packet = WB_PACKET_MAX};
-    bool first = memcmp(c->directory.self, uuid, 16) < 0;
     link.local[15] = first ? 1 : 2;
     link.peer[15] = first ? 2 : 1;
     r = finish(c, wb_add_link(&c->babel, babel_now(c), &link));
     if (!r)
         *id = link.id;
     return r;
+}
+int wnr_attach(struct wnr_core *c, const char *peer, uint16_t cost, int64_t unix_ms, int64_t now,
+               uint64_t *id)
+{
+    uint8_t uuid[16];
+    if (!c || wn_uuid_parse(peer, uuid) || !memcmp(uuid, c->directory.self, 16))
+        return WB_INVALID;
+    return attach(c, memcmp(c->directory.self, uuid, 16) < 0, cost, unix_ms, now, id);
+}
+int wnr_attach_operator(struct wnr_core *c, uint16_t cost, int64_t unix_ms, int64_t now,
+                        uint64_t *id)
+{
+    if (!c || c->config.non_transit || c->config.endpoint_gateway)
+        return WB_INVALID;
+    /* meshid.Compare orders the same-tenant device principal before operator. */
+    return attach(c, true, cost, unix_ms, now, id);
 }
 int wnr_detach(struct wnr_core *c, uint64_t link, int64_t unix_ms, int64_t now)
 {
@@ -417,7 +430,7 @@ int wnr_detach(struct wnr_core *c, uint64_t link, int64_t unix_ms, int64_t now)
             if (!c->detaching[i] || c->detaching[i] == link) {
                 c->detaching[i] = link;
                 return 0;
-            }
+    }
         return stop(c, "detach-bound", WB_LIMIT);
     }
     return finish(c, wb_remove_link(&c->babel, babel_now(c), link));
@@ -472,7 +485,7 @@ bool wnr_lookup(const struct wnr_core *c, const uint8_t address[16], int64_t now
                 if (gateway)
                     return false;
                 gateway = c->babel.links + i;
-            }
+        }
         if (!gateway)
             return false;
         *out = (struct wb_route){.prefix = host,

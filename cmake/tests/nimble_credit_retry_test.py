@@ -52,6 +52,7 @@ def copy_patched_host(project, idf, work):
                   'idf-nimble-coc-credit-retry.patch',
                   refill,
                   'idf-nimble-coc-backed-credit-window.patch',
+                  'idf-nimble-coc-initial-backed-credits.patch',
                   'idf-nimble-acl-queued-retry.patch'):
         subprocess.run(['git', 'apply', '--no-index', str(project / 'patches' / patch)],
                        cwd=host, env=env, check=True, timeout=30)
@@ -80,19 +81,20 @@ def main():
             ('ble_l2cap.c', ['ble_l2cap_tx']),
             ('ble_l2cap_sig.c', ['ble_l2cap_sig_le_credits_locked',
                                  'ble_l2cap_sig_le_credits']),
-            ('ble_l2cap_coc.c', ['ble_l2cap_coc_credit_target',
+            ('ble_l2cap_coc.c', ['ble_l2cap_coc_backed_credits',
+                                 'ble_l2cap_coc_credit_target',
                                  'ble_l2cap_coc_credit_flush',
                                  'ble_l2cap_coc_credit_request',
                                  'ble_l2cap_coc_credit_timer',
                                  'ble_l2cap_coc_recv_ready',
-                                 'ble_l2cap_coc_rx_fn']),
-            ('ble_l2cap_sig.c', ['ble_l2cap_sig_timer']),
+                                 'ble_l2cap_coc_rx_fn',
+                                 'ble_l2cap_coc_chan_alloc']),
+            ('ble_l2cap_sig.c', ['ble_l2cap_event_coc_accept',
+                                 'ble_l2cap_sig_timer']),
         ]:
             text = (host / 'src' / source).read_text()
             for name in names:
                 body = function(text, name)
-                if name == 'ble_l2cap_coc_credit_target':
-                    body = '#if BLE_L2CAP_SDU_BUFF_CNT > 1\n' + body + '#endif\n'
                 functions.append(body)
         (work / 'nimble_credit_production.inc').write_text('\n'.join(functions))
         compiler = os.environ.get('CC', 'cc')

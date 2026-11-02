@@ -11,6 +11,7 @@
 #include <string.h>
 struct wendy_pki_connection {
     struct wendy_pki_mesh_peer peer;
+    const struct wendy_pki_operator_peer *operator;
 };
 /* Fixture implementation of the boot-owned publication counter. */
 esp_err_t wendy_pki_mesh_revision_next(uint64_t *);
@@ -42,6 +43,16 @@ void wncs_release(void *loan)
 void wncs_close(struct wncs_store *s)
 {
     (void)s;
+}
+struct wncs_loan *wncs_issuer_loan(struct wncs_store *s, int64_t now)
+{
+    (void)s;
+    (void)now;
+    return NULL;
+}
+void wncs_issuer_loan_free(void *loan)
+{
+    assert(!loan);
 }
 size_t wncs_trim(struct wncs_store *s)
 {
@@ -82,7 +93,7 @@ int wendy_pki_mesh_public_index_snapshot(wendy_pki_connection *connection,
     return 0;
 }
 bool wendy_pki_mesh_public_index_current(const struct wendy_pki_mesh_public_index *index,
-    const struct wendy_pki_mesh_identity *identity)
+                                         const struct wendy_pki_mesh_identity *identity)
 {
     return index->count == 1 && index->certificate_epoch == 1 &&
            index->config_generation == identity->config_generation;
@@ -181,8 +192,8 @@ void wnop_job_release(struct wnop_job *job)
 #define FIRST_LINK_COST WNR_LAN_COST
 static const char tenant[] = "2558fd76-afc7-466e-9613-6b715296a526";
 static const char *ids[] = {"00000000-0000-4000-8000-000000000004",
-                         "00000000-0000-4000-8000-000000000005",
-                         "00000000-0000-4000-8000-000000000006"};
+                            "00000000-0000-4000-8000-000000000005",
+                            "00000000-0000-4000-8000-000000000006"};
 static int64_t clock_us = 1000000;
 static mbedtls_pk_context key;
 static unsigned opens, closes, commits;
@@ -261,6 +272,10 @@ esp_err_t nvs_commit(nvs_handle_t handle)
 bool wendy_net_app_ready(void)
 {
     return true;
+}
+const struct wendy_pki_operator_peer *wendy_pki_mesh_authenticated_operator(wendy_pki_connection *c)
+{
+    return c->operator;
 }
 int wendy_pki_mesh_authenticated_peer(wendy_pki_connection *c, struct wendy_pki_mesh_peer *out)
 {
@@ -831,6 +846,61 @@ static void large_manifest_repair_fixture(void)
     free(wire);
     free(value);
 }
+static int discard_operator_frame(void *ctx, const void *bytes, size_t size, bool control)
+{
+    (void)ctx;
+    (void)bytes;
+    (void)size;
+    (void)control;
+    return 0;
+}
+static void operator_attachment_fixture(void)
+{
+    struct wendy_pki_operator_peer primary = {.expires = 1800003600};
+    snprintf(primary.principal, sizeof primary.principal,
+             "spiffe://wendy.sh/tenant/%s/operator/alice", tenant);
+    wendy_pki_connection tls = {.operator = &primary};
+    struct wendy_pki_mesh_identity identity = {.verified_seconds = 1800000000,
+                                               .verified_monotonic_us = clock_us,
+                                               .certificate_expires = 1800003600,
+                                               .config_generation = 1};
+    strcpy(identity.tenant, tenant);
+    strcpy(identity.device, ids[0]);
+    struct wnrs_node *owner = NULL;
+    struct wnrs *first = NULL;
+    uint8_t installation[16] = {1};
+    assert(wnrs_open_operator(&first, &owner, &tls, &identity, (uint8_t[16]){0}, 128,
+                              discard_operator_frame, NULL));
+    assert(!first && !owner);
+#if WENDY_NET_SMALL_RESOURCES || CONFIG_WENDY_NET_ENDPOINT_GATEWAY
+    assert(wnrs_open_operator(&first, &owner, &tls, &identity, installation, 128,
+                              discard_operator_frame, NULL));
+    assert(!first && !owner);
+#else
+    struct wnrs *second = NULL;
+    assert(!wnrs_open_operator(&first, &owner, &tls, &identity, installation, 128,
+                               discard_operator_frame, NULL));
+    assert(first->operator_peer == &primary && !owner->core.directory.count);
+    assert(owner->core.babel.links[0].config.local[15] == 1 &&
+           owner->core.babel.links[0].config.peer[15] == 2);
+    struct wb_route route;
+    assert(!wnr_lookup(&owner->core, first->peer_address, clock_us, &route));
+    /* TLS plus hello creates no route authority. Separate installations of
+     * one operator have distinct addresses and typed topology ownership. */
+    installation[0] = 2;
+    assert(!wnrs_open_operator(&second, &owner, &tls, &identity, installation, 128,
+                               discard_operator_frame, NULL));
+    assert(memcmp(first->peer_address, second->peer_address, 16));
+    struct wnt_record_view row = {.record = WendyComNetTopologyRecord_init_zero};
+    assert(topology_record(owner, 0, clock_us, &row));
+    assert(row.record.owner_role == WNT_TOPOLOGY_OPERATOR && !row.record.device.size);
+    assert(row.principal == primary.principal && row.record.owner_instance.bytes[0] == 2);
+    wnrs_close(first);
+    assert(owner && owner->sessions == second);
+    wnrs_close(second);
+    assert(!owner);
+#endif
+}
 /* Optional future records must not suppress the signed route, supported
  * siblings, immutable relay payload, or subsequent controls on this carrier. */
 static int optional_send(void *context, const void *bytes, size_t size, bool control)
@@ -1217,7 +1287,7 @@ int main(int argc, char **argv)
             assert(peers[i].session->own_descriptor_pending);
             assert(!wnrs_tick(peers[i].session));
             assert(!peers[i].session->own_descriptor_pending);
-    }
+        }
     }
     assert(node->core.directory.count == 2);
     const char exact_type[16] = {'_', 's', 'e', 'n', 's', 'o', 'r', 'l',
@@ -1368,6 +1438,7 @@ int main(int argc, char **argv)
         wb_deinit(&peers[i].remote);
     topology_clock_fixture();
     optional_projection_fixture();
+    operator_attachment_fixture();
     mbedtls_pk_free(&key);
 #if defined(WENDY_NET_MEMORY_HOST_BUDGET_TEST)
     wendy_net_runtime_memory_close();
