@@ -1,0 +1,384 @@
+menu "Wendy Net native peer prototype"
+    config WENDY_NET_PEER
+        bool "Enable native Wendy Net prototype"
+        default n
+        depends on WENDY_PKI && LWIP_IPV6 && WENDY_WIFI_ENABLED
+        depends on !WENDY_MESH_LEAF && LWIP_HOOK_IP6_ROUTE_CUSTOM
+        depends on FREERTOS_THREAD_LOCAL_STORAGE_POINTERS >= 2
+        select FREERTOS_TLSP_DELETION_CALLBACKS
+        select LWIP_IP6_FRAG
+        select LWIP_IP6_REASSEMBLY
+        help
+            Native TLS/IP carrier using the enrolled device UUID identity.
+            Requires at least two FreeRTOS thread-local storage slots so task
+            reservations remain charged through actual stack/TCB reaping.
+            IPv6 receive reassembly is required for ordinary UDP packets larger
+            than the mesh MTU. Fragment storage is allocated on demand and
+            bounded by the existing lwIP reassembly pbuf limit.
+    config WENDY_NET_INTERNAL_MEMORY_LIMIT_KIB
+        int "Managed mesh allocation ceiling without PSRAM (KiB)"
+        depends on WENDY_NET_PEER
+        range 128 1024
+        default 160 if IDF_TARGET_ESP32C6 && WENDY_NET_CONSTRAINED_PROFILE
+        default 1024
+        help
+            Includes mesh allocations, task reservations and active loans, not
+            a preallocated arena. Exhaustion defers admission and applies
+            bounded queue backpressure. The C6 endpoint ceiling leaves margin
+            above measured one-carrier/native/guest TLS peaks while preventing
+            learned state from consuming the entire physical heap. SDK and
+            nonmesh allocations still need their independent headroom checks.
+            PSRAM nodes retain their separate two-MiB ceiling unchanged.
+
+    config WENDY_NET_MAX_CANDIDATES
+        int "Bounded discovery candidate/history entries"
+        depends on WENDY_NET_PEER
+        range 8 64
+        default 32 if SPIRAM
+        default 8
+        help
+            Shared bounded LAN and BLE discovery hints and recent failure
+            history. Physical setup/live owners and cooldowns are protected;
+            other hints use oldest-first replacement. PSRAM devices retain
+            more alternatives for multiple simultaneous carriers. At 144 bytes
+            per entry, 32 entries cost 3456 bytes more than the SRAM default 8.
+            The table is allocated only while mesh is enabled.
+    config WENDY_NET_TASK_PRIORITY
+        int "Mesh actor task priority"
+        range 1 6
+        default 4
+        help
+            Crypto runs exactly one priority lower. A value of 1 lets its
+            complete CPU operations share priority 0 with FreeRTOS IDLE while
+            this nonblocking actor still preempts them. Existing profiles use 4.
+
+    config WENDY_NET_TASK_STACK_SIZE
+        int "Native Wendy Net actor task stack (bytes)"
+        depends on WENDY_NET_PEER
+        range 14336 65536
+        default 20480
+        help
+            Packet, control, Babel, gossip and established TLS actor stack.
+            Heavy TLS and signature jobs use the lower-priority crypto task.
+            Measure both task high-water marks on each supported chip.
+    config WENDY_NET_CRYPTO_TASK_STACK_SIZE
+        int "Serialized Wendy Net crypto worker stack (bytes)"
+        depends on WENDY_NET_PEER
+        range 10240 65536
+        default 10240
+        help
+            One preemptible lower-priority worker for whole TLS setup/steps,
+            signature jobs and bounded storage effects. C5/C6 pilot maximum
+            observed use was below 6.5 KiB with the enrolled four-part chain;
+            10 KiB leaves more than 3.5 KiB measured margin. Requalify against
+            other certificate profiles before reducing this budget.
+    config WENDY_NET_ROUTER
+        bool
+        default y if WENDY_NET_PEER
+        depends on WENDY_NET_PEER
+        help
+            Uses WendyOS StreamALPN and the native sparse Babel engine with
+            independently signed route authorizations and bounded RAM state.
+            Multiple authenticated LAN/BLE streams share one sparse node.
+            Certificate relay and service projection share the bounded native
+            session; the later runtime layer owns public activation.
+    config WENDY_NET_CONSTRAINED_PROFILE
+        bool "Use a single-carrier, non-transit mesh profile"
+        depends on WENDY_NET_ROUTER
+        default n if SPIRAM
+        default y
+        help
+            SRAM-only devices may choose one BLE or infrastructure Wi-Fi
+            carrier at a time. Both radio implementations can remain compiled;
+            management selects the enabled medium. Physical Wi-Fi used for
+            management is independent of Wi-Fi mesh carrier support.
+            The device uses the ordinary peer protocol, with bounded learned
+            keys and demand-driven remote service discovery. PSRAM devices
+            retain the multi-carrier router profile. Constrained BLE and
+            infrastructure carriers scan and dial available peers, without
+            publishing a mesh advertisement or accepting inbound carriers.
+            Physical management and VIP services keep their normal listeners.
+    config WENDY_NET_RETAIN_TLS_INPUT
+        bool "Retain one active-mesh TLS input workspace"
+        depends on WENDY_NET_ROUTER
+        default n
+        help
+            Retains one zeroized 26 KiB input allocation during mesh handshakes,
+            active routing and the bounded logical-address recovery window
+            to avoid repeated large allocations in fragmented SRAM. TLS borrows
+            the workspace; compaction/free returns it for the next handshake.
+            The allocation is released when the node becomes quiescent. This trades mesh
+            RAM headroom for reliable contiguous handshake storage.
+
+    config WENDY_NET_RECLAIM_PAYLOADS_FOR_TLS
+        bool "Reclaim optional FIFO payloads before low-memory TLS handshakes"
+        depends on WENDY_NET_ROUTER
+        default n
+        help
+            When app or management TLS begins below 144 KiB free and a 48 KiB largest block,
+            ask the routing actor to retire up to 12 KiB of optional payloads.
+            Active uploads and the local route proof stay protected; endpoint
+            summaries remain usable and GONE prevents exact-digest refills.
+            No RAM is reserved while idle. Measure before choosing a default.
+
+    config WENDY_NET_PACKET_QUEUE
+        int "Maximum queued complete outbound IPv6 packets"
+        depends on WENDY_NET_PEER
+        range 1 64
+        default 64 if SPIRAM
+        default 16
+        help
+            Queued packets allocate only their actual size plus a small node;
+            an empty queue owns no payload RAM. A full queue applies ERR_MEM
+            backpressure. IPv6 UDP fragmentation emits a synchronous burst;
+            allow enough entries for the actual datagram/MTU, because lwIP's
+            fragmenter does not propagate individual fragment output errors.
+            Measure peak storage and burst latency with the real workload.
+    config WENDY_NET_MAX_LINKS
+        int "Prototype simultaneous authenticated carriers"
+        depends on WENDY_NET_ROUTER
+        range 1 6
+        default 1 if WENDY_NET_CONSTRAINED_PROFILE
+        default 6 if SPIRAM
+        default 2
+        help
+            A prototype allocation bound, not a measured hardware maximum.
+            Additional carrier state is allocated on demand. TLS setup is
+            serialized on the existing worker while packet handling continues.
+            The native Babel link bound follows this setting on ESP targets.
+            Six is the PSRAM investigation target (three BLE plus three IP);
+            it is not a qualified SRAM-only profile.
+    config WENDY_NET_ROUTING_QUEUE_FRAMES
+        int "Bounded Babel frames per carrier"
+        depends on WENDY_NET_ROUTER
+        range 1 32
+        default 8 if SPIRAM
+        default 4
+        help
+            Sparse frames share the existing eight-KiB carrier ceiling.
+            Dedicated class admission reserves are logical unused space, not
+            allocated buffers. Babel alternates with waiting metadata/IP,
+            while metadata and IP alternate at complete frame boundaries.
+    config WENDY_NET_CATALOG_BYTES
+        int "Retained service directory byte budget"
+        depends on WENDY_NET_ROUTER
+        range 4096 32768
+        default 32768
+        help
+            Bounds the local verified endpoint index and referenced service
+            bodies, independently of the gossip payload FIFO quotas. A smaller
+            budget can leave more RAM for TLS on targets without PSRAM, at the
+            cost of retaining fewer service details/endpoints. Records outside
+            the bound are deferred; this does not reserve the maximum at idle.
+    config WENDY_NET_KEEP_REDUNDANT_BLE
+        bool "Keep a live BLE backup alongside a cheaper IP carrier"
+        depends on WENDY_NET_ROUTER && WENDY_NET_BLE
+        default n
+        help
+            Normally keep BLE discovery running but release a BLE carrier once
+            a cheaper authenticated IP carrier to the same device is usable,
+            matching WendyOS peer selection. This avoids retaining duplicate
+            TLS/router state and leaves slots available for distinct neighbours.
+            BLE can be dialed again after that IP carrier fails. Enable only
+            when measured handover latency justifies the live backup RAM cost.
+    config WENDY_NET_APP_MAX_FLOWS
+        int "Maximum live native app TLS flows per direction"
+        depends on WENDY_NET_ROUTER
+        range 1 4
+        default 1
+        help
+            Counts pending handshakes and resident relays independently for
+            incoming and outgoing app connections. Payloads, TLS state and
+            relay tasks are allocated on demand; idle nodes reserve no flow
+            buffers. Expensive handshakes remain serialized on the existing
+            certificate worker. One preserves the initial prototype budget;
+            measure larger values with actual guests and concurrent traffic.
+    config WENDY_NET_IO_BYTES
+        int "Buffered TLS actor I/O bytes per direction"
+        depends on WENDY_NET_PEER
+        range 256 512
+        default 512
+        help
+            A live carrier, app or native agent TLS channel owns one input
+            and one output BIO buffer. Experimental 256 byte geometry saves
+            512 bytes per channel compared with the unchanged 512 default,
+            at the cost of more partial-I/O turns. TLS record limits and IP
+            MTUs are independent and remain unchanged. Measure throughput,
+            fairness and memory before selecting a smaller board profile.
+    config WENDY_NET_TCP_RELAY_BUFFER_SIZE
+        int "Native app TCP relay bytes per direction"
+        depends on WENDY_NET_ROUTER
+        range 128 4096
+        default 1024 if SPIRAM
+        default 256
+        help
+            Dynamically allocated only for a live TCP app relay. The smaller
+            SRAM-only default saves 1536 bytes per flow compared with two 1024 byte
+            buffers, at the cost of more actor/TLS read-write calls. Stream
+            operations retain ordinary partial completion and backpressure;
+            this does not reduce TLS record, IP MTU or UDP datagram limits.
+    config WENDY_NET_TCP_RELAY_STACK_SIZE
+        int "Native app TCP relay task stack (bytes)"
+        depends on WENDY_NET_ROUTER
+        range 6144 32768
+        default 8192
+        help
+            Allocated only for a live TCP app flow, after its handshake on the
+            certificate worker. Measure duplex traffic, backpressure and close
+            high-water marks before selecting a smaller per-flow budget.
+    config WENDY_NET_SETUP_FREE_BYTES
+        int "Free heap required before adding a carrier to a live node"
+        depends on WENDY_NET_ROUTER
+        range 0 262144
+        default 0 if SPIRAM
+        default 92160
+        help
+            Resource admission watermark for a new TLS setup alongside live
+            traffic. The C6 prototype's certificate workspace needs roughly
+            90KiB free at this point. Defer setup below this level so repeated
+            allocation peaks do not interrupt existing agent sessions. Initial
+            node attachment is still attempted. Zero disables this watermark;
+            measure it for the actual guest, identity chain and target build.
+    config WENDY_NET_MANAGEMENT_SETUP_FREE_BYTES
+        int "Management handshake headroom while app flows are active"
+        depends on WENDY_NET_PEER
+        range 0 262144
+        default 0
+        help
+            Below this free-heap watermark, leave new management connections
+            in the TCP backlog until existing app relays drain. Existing
+            operator streams and app traffic continue. With no app flows,
+            ordinary management admission is attempted. Zero disables this
+            experimental resource guard; measure startup latency and overlap
+            with the actual identity chain, guest and radio configuration.
+    config WENDY_NET_BLE
+        bool "Prototype native mesh BLE discovery and L2CAP"
+        default n
+        depends on WENDY_NET_ROUTER && WENDY_BLE
+        help
+            Same tenant-scoped discovery and full-router TLS as WendyOS, on
+            a separate PSM from WendyCom management. Buffers are sparse.
+            Requires MSYS1 blocks of at least256bytes, providing MPS>=245
+            so one advertised SDU uses one receive credit and buffer.
+    # No NAN runtime is shipped in this wave. The investigation adapter owned
+    # an extra task and uncharged queues; it must join the outer-effect driver
+    # and be qualified before this can become an enableable carrier.
+    config WENDY_NET_NAN
+        bool
+        depends on n
+        default n
+    config WENDY_NET_PREFER_RTC_PACKET_QUEUE
+        bool "Prefer unused RTC heap for queued packet bytes"
+        depends on WENDY_NET_PEER && ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP
+        default n
+        help
+            Packet queue payloads only need CPU byte access, not DMA. Prefer
+            the existing RTC heap for their storage, falling back to ordinary
+            memory if it cannot fit. Queue control remains in main SRAM and
+            queue capacity is unchanged. Measure placement and throughput.
+    config WENDY_NET_BLE_PSM
+        int "Native mesh dynamic PSM"
+        depends on WENDY_NET_BLE
+        range 128 255
+        default 129
+        help
+            Keep separate from management PSM128 and the fixed encrypted
+            timestamp HTTPS relay PSM130. Both listeners share the existing
+            CoC buffer pool; that pool is allocated only for live channels.
+    config WENDY_NET_BLE_CHANNELS
+        int "Native mesh CoC capacity"
+        depends on WENDY_NET_BLE
+        range 1 4
+        default 2
+        help
+            Prototype bound, not a measured hardware limit. SDK CoC capacity
+            must also include management and the timestamp HTTPS server
+            registration (three server registrations at the standard PSMs).
+    config WENDY_NET_BLE_SDU_BUFFERS
+        int "Shared native mesh CoC SDU buffers"
+        depends on WENDY_NET_BLE
+        range 2 32
+        default 6
+        help
+            Bounded private pool shared by every native mesh and timestamp
+            CoC, allocated only while a pipe is present. Each block holds
+            one native MTU-sized SDU plus mbuf headers and alignment. A live
+            channel can retain its configured receive window and one transmit
+            block; allow that total per simultaneous channel plus spare capacity
+            when measuring multi-link operation. This does not increase the
+            receive-credit grant or the separate shared NimBLE MSYS pools.
+    config WENDY_NET_BLE_RX_SDU_SLOTS
+        int "Experimental native CoC receive window"
+        depends on WENDY_NET_BLE
+        range 1 2
+        default 1
+        help
+            Keep one for the existing MTU245 profile. Two is an explicit
+            experimental profile: MTU490, 980-byte ring and two pre-reserved
+            receive buffers. It also requires SDK L2CAP_COC_SDU_BUFF_COUNT=2
+            and MPS248. TX chunks remain240. For four mesh/time/closing pipes,
+            thirteen private SDU blocks allow two RX plus one TX each and spare.
+            Initialization rejects a two-slot profile unless every configured
+            native channel has that RX+TX capacity plus one shared spare block.
+    config WENDY_NET_ENDPOINT_GATEWAY
+        bool "Single-carrier endpoint uses its authenticated neighbour as gateway"
+        default y
+        depends on WENDY_NET_CONSTRAINED_PROFILE
+        help
+            Advertise the local signed origin and maintain Babel adjacency,
+            without learning remote routes or requesting unrelated router and
+            operator announcements. Forward local mesh traffic through the
+            sole authenticated carrier; accept only locally addressed traffic.
+            Native and guest VIPs retain their end-to-end TLS authentication.
+            Remote service discovery remains bounded and demand-driven.
+    config WENDY_NET_SELECT_RADIO_AT_BOOT
+        bool "Select the constrained endpoint radio from management settings"
+        default n
+        depends on WENDY_NET_CONSTRAINED_PROFILE && WENDY_NET_ENDPOINT_GATEWAY
+        help
+            Keep BLE and infrastructure WiFi in one firmware, but initialize
+            only the carrier selected in saved management settings. Changing
+            the carrier returns APPLIED_RESTARTING and reboots after five
+            seconds. Enabling/disabling the same carrier needs no reboot.
+            The inactive physical management radio is unavailable; USB remains.
+    config WENDY_NET_BLE_ONLY_RADIO
+        bool "C6 SRAM endpoint: omit the Wi-Fi radio"
+        default n
+        depends on IDF_TARGET_ESP32C6 && WENDY_NET_CONSTRAINED_PROFILE && WENDY_NET_BLE
+        depends on !WENDY_NET_NAN && !WENDY_MESH_ESPNOW && !WENDY_CLOUD
+        help
+            Build a BLE-only SRAM endpoint retaining shared IP, native VIPs,
+            the guest runtime and physical BLE management. Never initialize
+            Wi-Fi, its station netif, services task or mDNS. Management reports
+            Wi-Fi unsupported; choose another firmware profile to use it.
+            NAN remains unavailable in this delivery.
+            Mesh remains off by default. Explicit management settings persist
+            normally, unlike the temporary no-radio laboratory experiment.
+            This does not enable transit or additional BLE carriers and does
+            not reduce the independent PSRAM router profile.
+
+    config WENDY_NET_TEST_NO_WIFI_RADIO
+        bool "Integration test: omit WiFi radio initialization for this boot"
+        default n
+        depends on IDF_TARGET_ESP32C6 && WENDY_NET_ROUTER && WENDY_NET_BLE
+        depends on WENDY_WIFI_ENABLED
+        depends on !WENDY_NET_NAN && !WENDY_MESH_ESPNOW && !WENDY_CLOUD
+        help
+            Boot-only laboratory RAM experiment. Keep shared lwIP, native VIP
+            listeners, physical BLE management and the normal guest runtime,
+            but never initialize the WiFi driver, station netif, WiFi services
+            worker or mDNS. WiFi/NAN carriers report unsupported. Mesh settings
+            changes are RAM-only during this boot; saved credentials and mesh
+            settings are retained. An incompatible saved WiFi policy starts
+            disabled. Real signed-time bootstrap is still required over BLE.
+            This does not enable additional BLE links or routing capabilities.
+
+    config WENDY_NET_TEST_COLD_BLE
+        bool "Integration test: boot without connecting the station"
+        default n
+        depends on WENDY_NET_ROUTER
+        help
+            Preserve saved credentials but skip station connection from boot.
+            Use to measure BLE-only worker, application and signed-time
+            bootstrap. This does not itself supply a trusted clock.
+endmenu

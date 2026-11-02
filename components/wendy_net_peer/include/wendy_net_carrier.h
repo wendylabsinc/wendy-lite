@@ -12,20 +12,6 @@
 /* Sparse FIFO classes share one existing allocation ceiling. */
 enum { WNC_ROUTE, WNC_METADATA, WNC_IP, WNC_CLASSES };
 #define WNC_CLASS_RESERVE 1536U
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-#include <stdatomic.h>
-struct wnc_probe {
-    atomic_uint tx_bytes, rx_bytes, tx_frames, rx_frames;
-    atomic_uint queued_bytes[WNC_CLASSES], queued_frames[WNC_CLASSES];
-    atomic_uint oldest_us[WNC_CLASSES], wait_max_us[WNC_CLASSES];
-    unsigned now_us; /* Outer driver monotonic clock, actor owned. */
-};
-struct wnc_probe_snapshot {
-    unsigned tx_bytes, rx_bytes, tx_frames, rx_frames;
-    unsigned queued_bytes[WNC_CLASSES], queued_frames[WNC_CLASSES];
-    unsigned oldest_age_us[WNC_CLASSES], wait_max_us[WNC_CLASSES];
-};
-#endif
 
 enum {
     WNC_INVALID = -1,
@@ -53,18 +39,10 @@ struct wnc_carrier {
     size_t small_size, limit, control_limit, priority_reserve, queued, body_size, body_have;
     uint8_t header[5];
     unsigned header_have;
-    bool rx_paused;
+    bool rx_paused, rx_discard;
     int64_t rx_started, rx_progress;
     int64_t stall_timeout_us, frame_timeout_us;
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-    struct wnc_probe probe;
-#endif
 };
-#if CONFIG_WENDY_NET_TEST_ACTOR_READINESS
-/* No clock access in the core: outer drivers timestamp queue admission. */
-void wnc_probe_clock(struct wnc_carrier *, int64_t monotonic_us);
-void wnc_probe_take(struct wnc_carrier *, int64_t monotonic_us, struct wnc_probe_snapshot *);
-#endif
 struct wnc_timeout {
     bool writing;
     size_t offset, size;
@@ -98,6 +76,8 @@ typedef int (*wnc_receive)(void *, const void *, size_t, bool control);
 /* Service both directions once.1 progress,0 would block,negative error.
  * receive may enqueue replies; it must not call pump/deinit recursively.
  * A pending write keeps exactly the same pointer/length until TLS accepts it.
+ * Unsupported outer kinds are discarded within control_limit+4 bytes using
+ * the existing scratch buffer; known frame bounds and validation still apply.
  * Partial frames default to5s without progress or30s total. Owners may raise
  * the two timeout fields for a constrained carrier; routing timers are separate. */
 int wnc_pump(struct wnc_carrier *, int64_t monotonic_us, wnc_receive, void *);

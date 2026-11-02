@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <sys/types.h>
 
 #include "esp_err.h"
@@ -25,6 +26,10 @@ bool wble_l2cap_wait_session(TickType_t timeout);
 
 /// True while the channel is usable.
 bool wble_l2cap_session_alive(void);
+
+/// Whether the shared management channel owns this GAP connection. Mesh may
+/// retire an ACL it created only while management is not using it.
+bool wble_l2cap_uses_connection(uint16_t handle);
 
 /// Disconnect the channel (if any) and drop all buffered state, so the next
 /// wait_session() starts clean.
@@ -52,3 +57,6 @@ bool wble_l2cap_wait_readable(TickType_t timeout);
 bool wble_l2cap_wait_writable(TickType_t timeout);
 
 #endif
+
+/* Host-only idle probe. Contention keeps the ACL conservatively alive. */
+bool wble_l2cap_connection_idle(uint16_t handle);

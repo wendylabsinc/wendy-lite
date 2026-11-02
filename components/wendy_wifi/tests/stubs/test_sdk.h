@@ -9,7 +9,6 @@
 #define strlcpy test_strlcpy
 #define CONFIG_WENDY_CLOUD 1
 #define CONFIG_WENDY_DEVICE_NAME_BUF_SIZE 64
-#define CONFIG_WENDY_DEVICE_NAME_DEFAULT_PREFIX "wendy"
 #define CONFIG_WENDY_WIFI_SSID ""
 #define CONFIG_WENDY_WIFI_PASSWORD ""
 typedef int esp_err_t;
@@ -19,8 +18,10 @@ typedef int esp_err_t;
 #define ESP_ERR_INVALID_ARG 0x102
 #define ESP_ERR_INVALID_STATE 0x103
 #define ESP_ERR_NOT_FOUND 0x105
+#define ESP_ERR_NOT_SUPPORTED 0x106
 #define ESP_ERR_TIMEOUT 0x107
 #define ESP_ERR_WIFI_STATE 0x3006
+#define ESP_ERR_WIFI_NOT_CONNECT 0x300f
 #define ESP_ERROR_CHECK(expr) assert((expr) == ESP_OK)
 #define ESP_LOGI(tag, ...) do { (void)(tag); test_log(__VA_ARGS__); } while (0)
 #define ESP_LOGW(tag, ...) ESP_LOGI(tag, __VA_ARGS__)
