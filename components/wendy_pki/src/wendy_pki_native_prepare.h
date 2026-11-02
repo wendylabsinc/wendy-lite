@@ -15,17 +15,21 @@ static inline void pki_native_prepare_yield(void)
 #ifdef ESP_PLATFORM
     vTaskDelay(1);
 #else
-    const struct timespec tick={.tv_nsec=1000000};(void)nanosleep(&tick,NULL);
+    const struct timespec tick = {.tv_nsec = 1000000};
+    (void)nanosleep(&tick, NULL);
 #endif
 }
-static inline bool pki_native_prepare_claim(void *owner,int64_t deadline)
+static inline bool pki_native_prepare_claim(void *owner, int64_t deadline)
 {
     /* A worker callback must return a future/busy result rather than await a
      * lease that another callback on this same queue may need to release. */
-    if(!owner || wendy_pki_work_is_current())return false;
-    for(;;){
-        if(wendy_pki_reset_in_progress() || esp_timer_get_time()>=deadline)return false;
-        if(wendy_pki_handshake_claim(owner))return true;
+    if (!owner || wendy_pki_work_is_current())
+        return false;
+    for (;;) {
+        if (wendy_pki_reset_in_progress() || esp_timer_get_time() >= deadline)
+            return false;
+        if (wendy_pki_handshake_claim(owner))
+            return true;
         pki_native_prepare_yield();
     }
 }
@@ -34,16 +38,20 @@ static inline bool pki_native_prepare_claim(void *owner,int64_t deadline)
  * snapshots/handles at this boundary. Never await either scarce resource while
  * owning the other: legacy Cloud/identity work can take them in the reverse
  * order, and an actor PREPARE job must be able to trylock identity meanwhile. */
-static inline bool pki_native_prepare_with_identity(void *owner,pthread_mutex_t *identity,int64_t deadline)
+static inline bool pki_native_prepare_with_identity(void *owner, pthread_mutex_t *identity,
+                                                    int64_t deadline)
 {
-    if(!owner || wendy_pki_work_is_current())return false;
+    if (!owner || wendy_pki_work_is_current())
+        return false;
     pthread_mutex_unlock(identity);
-    while(pki_native_prepare_claim(owner,deadline)){
-        if(!pthread_mutex_trylock(identity))return true;
+    while (pki_native_prepare_claim(owner, deadline)) {
+        if (!pthread_mutex_trylock(identity))
+            return true;
         wendy_pki_handshake_release(owner);
         pki_native_prepare_yield();
     }
     /* Restore the caller's existing lock contract without holding workspace.
      * Another identity operation may still own its legacy network interval. */
-    pthread_mutex_lock(identity);return false;
+    pthread_mutex_lock(identity);
+    return false;
 }

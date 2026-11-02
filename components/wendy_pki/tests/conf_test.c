@@ -5,8 +5,10 @@
 /* Keep persistence tests over opaque encoded fixtures without exposing a
  * legacy encoded public API. Real-certificate tests below check DER adoption. */
 static esp_err_t test_copy_enrollment_encoded(WendyConfEnrollment *config,
-    struct wendy_conf_enrollment_data *data)
-{return copy_enrollment(config,data,ENROLLMENT_ALL,false);}
+                                              struct wendy_conf_enrollment_data *data)
+{
+    return copy_enrollment(config, data, ENROLLMENT_ALL, false);
+}
 #include "pb_encode.h"
 #include <assert.h>
 
