@@ -93,7 +93,7 @@ static void reset_rx(struct wnc_carrier *c)
     c->body = NULL;
     c->body_have = c->body_size = c->header_have = 0;
     c->rx_started = c->rx_progress = 0;
-    c->rx_paused = false;
+    c->rx_paused = c->rx_discard = false;
 }
 void wnc_deinit(struct wnc_carrier *c)
 {
@@ -315,8 +315,12 @@ static int pump_read(struct wnc_carrier *c, int64_t now, wnc_receive receive, vo
         return deliver_frame(c, receive, ctx);
     if (c->header_have && expired(c, now, c->rx_started, c->rx_progress))
         return WNC_TIMEOUT;
-    uint8_t *out = c->header_have < 5 ? c->header + c->header_have : c->body + c->body_have;
+    uint8_t *out = c->header_have < 5 ? c->header + c->header_have
+                   : c->rx_discard    ? c->small
+                                      : c->body + c->body_have;
     size_t left = c->header_have < 5 ? 5 - c->header_have : c->body_size - c->body_have;
+    if (c->rx_discard && left > c->small_size)
+        left = c->small_size;
     ssize_t n = c->io.read(c->io.context, out, left);
     if (n == -2 || n == -3)
         return 0;
@@ -332,20 +336,34 @@ static int pump_read(struct wnc_carrier *c, int64_t now, wnc_receive receive, vo
         c->header_have += (unsigned)n;
         if (c->header_have == 5) {
             size_t size = wn_get32(c->header + 1);
-            if ((c->header[0] == 1 && (size < 5 || size > c->control_limit + 4)) ||
-                (c->header[0] == 2 && (!size || size > WN_DATAGRAM_MAX)) ||
-                (c->header[0] != 1 && c->header[0] != 2))
+            uint8_t control = 1, packet = 2;
+            if ((c->header[0] == control && (size < 5 || size > c->control_limit + 4)) ||
+                (c->header[0] == packet && (!size || size > WN_DATAGRAM_MAX)))
                 return WNC_INVALID;
+            c->rx_discard = c->header[0] != control && c->header[0] != packet;
+            /* A future frame has its own body schema. Consume its bounded
+             * envelope without allocating or passing it to today's decoder. */
+            if (c->rx_discard && size > c->control_limit + 4)
+                return WNC_INVALID;
+            if (c->rx_discard && !size) {
+                reset_rx(c);
+                return 1;
+            }
             c->body_size = size;
-            c->body = size <= c->small_size ? c->small : wendy_net_malloc(size);
+            c->body = c->rx_discard || size <= c->small_size ? c->small : wendy_net_malloc(size);
             if (!c->body)
                 return WNC_NOMEM;
         }
         return 1;
     }
     c->body_have += (size_t)n;
-    if (c->body_have == c->body_size)
+    if (c->body_have == c->body_size) {
+        if (c->rx_discard) {
+            reset_rx(c);
+            return 1;
+        }
         return deliver_frame(c, receive, ctx);
+    }
     return 1;
 }
 int wnc_pump(struct wnc_carrier *c, int64_t now, wnc_receive receive, void *ctx)

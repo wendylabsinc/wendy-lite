@@ -295,22 +295,23 @@ static void connected(struct wcom_state_change_handler *handler, int id, enum wc
     }
 }
 
-static WendyComMessage exchange(struct wire *wire, int id, uint8_t channel,
-                                const WendyComMessage *message)
+static WendyComMessage exchange_body(struct wire *wire, int id, uint8_t channel, uint8_t category,
+                                     const uint8_t *body, size_t size)
 {
     assert(wire->input_offset == wire->input_size);
+    assert(size <= sizeof wire->input - sizeof(struct wcom_agent_msg_header));
     wire->input_offset = wire->output_size = 0;
     struct wcom_agent_msg_header header = {
         .magic = WCOM_AGENT_MSG_MAGIC,
         .version = WCOM_AGENT_MSG_VERSION,
+        .category = category,
         .channel = channel,
+        .body_size = htons(size),
     };
-    pb_ostream_t stream =
-        pb_ostream_from_buffer(wire->input + sizeof header, sizeof wire->input - sizeof header);
-    assert(pb_encode(&stream, WendyComMessage_fields, message));
-    header.body_size = htons(stream.bytes_written);
+    if (size)
+        memcpy(wire->input + sizeof header, body, size);
     memcpy(wire->input, &header, sizeof header);
-    wire->input_size = sizeof header + stream.bytes_written;
+    wire->input_size = sizeof header + size;
     _link_do_rx(_get_link(id));
     if (_get_link(id))
         _link_do_tx(_get_link(id));
@@ -328,6 +329,15 @@ static WendyComMessage exchange(struct wire *wire, int id, uint8_t channel,
         assert(pb_decode(&input, WendyComMessage_fields, &response));
     }
     return response;
+}
+
+static WendyComMessage exchange(struct wire *wire, int id, uint8_t channel,
+                                const WendyComMessage *message)
+{
+    uint8_t body[4096];
+    pb_ostream_t stream = pb_ostream_from_buffer(body, sizeof body);
+    assert(pb_encode(&stream, WendyComMessage_fields, message));
+    return exchange_body(wire, id, channel, 0, body, stream.bytes_written);
 }
 
 static void handshake(struct wire *wire, int id)
@@ -561,6 +571,90 @@ int main(void)
            WendyComResult_WENDY_COM_RESULT_OK);
     console_input(&full, full_id, 0);
     assert(stdin_calls == 1);
+
+    /* A future message oneof and command oneof must not inherit the decoder's
+     * callback discriminator or invoke a known command. Every next ping uses
+     * the same fragmented stream and proves framing/session continuity. */
+    unsigned before_unknown = management_calls;
+    static const uint8_t future_message[] = {0x9a, 0x06, 0x03, 'n', 'e', 'w'};
+    assert(exchange_body(&full, full_id, 0, 0, future_message, sizeof future_message).which_msg ==
+           0);
+    assert(_get_link(full_id) && management_calls == before_unknown);
+    assert(command(&full, full_id, 0, WendyComCommand_ping_tag) ==
+           WendyComResult_WENDY_COM_RESULT_OK);
+    static const uint8_t future_command[] = {0x1a, 0x05, 0x08, 55, 0x9a, 0x06, 0};
+    WendyComMessage unsupported =
+        exchange_body(&full, full_id, 0, 0, future_command, sizeof future_command);
+    assert(unsupported.which_msg == WendyComMessage_response_tag);
+    assert(unsupported.msg.response.request_id == 55 &&
+           unsupported.msg.response.result == WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR);
+    assert(management_calls == before_unknown);
+    static const uint8_t future_event[] = {0x2a, 0x05, 0x08, 55, 0x9a, 0x06, 0};
+    assert(exchange_body(&full, full_id, 0, 0, future_event, sizeof future_event).which_msg == 0);
+    static const uint8_t future_service[] = {0x12, 0x03, 0x9a, 0x06, 0};
+    unsupported = exchange_body(&full, full_id, 0, 0, future_service, sizeof future_service);
+    assert(unsupported.which_msg == WendyComMessage_service_tag &&
+           unsupported.msg.service.cmd.channel_state.which_state == WendyComChannelState_error_tag);
+    assert(command(&full, full_id, 0, WendyComCommand_ping_tag) ==
+           WendyComResult_WENDY_COM_RESULT_OK);
+
+    /* Added fields at command and wrapper scope are ignored. The known ping
+     * remains recognized, with its request ID and no application delegate. */
+    static const uint8_t extended_ping[] = {
+        0x1a, 0x07, 0x08, 55, 0x12, 0, 0x98, 0x06, 123, 0x9a, 0x06, 0x03, 'n', 'e', 'w',
+    };
+    WendyComMessage pong = exchange_body(&full, full_id, 0, 0, extended_ping, sizeof extended_ping);
+    assert(pong.which_msg == WendyComMessage_response_tag && pong.msg.response.request_id == 55 &&
+           pong.msg.response.result == WendyComResult_WENDY_COM_RESULT_OK);
+
+    /* Future framing categories can use empty or multi-chunk opaque bodies.
+     * They require neither a new allocation nor parsing their body bytes. */
+    unsigned allocations_before_unknown = full.allocations;
+    uint8_t future_body[1300];
+    memset(future_body, 0xff, sizeof future_body);
+    assert(exchange_body(&full, full_id, 0, 17, NULL, 0).which_msg == 0);
+    assert(exchange_body(&full, full_id, 0, 17, future_body, sizeof future_body).which_msg == 0);
+    assert(_get_link(full_id) && full.allocations == allocations_before_unknown);
+    assert(command(&full, full_id, 0, WendyComCommand_ping_tag) ==
+           WendyComResult_WENDY_COM_RESULT_OK);
+    assert(management_calls == before_unknown && stdin_calls == 1);
+
+    // Future enum variants are rejected before acquiring push ownership or
+    // reaching a delegate that only knows the current WASM/native or
+    // replace/update semantics. Both existing app types still work afterward.
+    // Client IDs are opaque: resolve this link's actual open channel.
+    int full_client = 0;
+    for (int i = 0; i < WCOM_LINK_COUNT; ++i)
+        if (_links[i].link_id == full_id)
+            full_client = _links[i].channels[0].client_id;
+    assert(full_client > 0);
+    assert(wcom_cmd_app_push_begin(full_client, 16, (WendyComAppType)99) ==
+           WendyComResult_WENDY_COM_RESULT_BAD_APP_TYPE);
+    assert(wcom_cmd_conf_push_begin(full_client, 16, (WendyComConfPushMode)99, false) ==
+           WendyComResult_WENDY_COM_RESULT_BAD_STATE);
+    assert(_push_kind == PUSH_NONE && management_calls == before_unknown);
+    WendyComMessage future_app = WendyComMessage_init_zero;
+    future_app.which_msg = WendyComMessage_command_tag;
+    future_app.msg.command.which_params = WendyComCommand_app_push_begin_tag;
+    future_app.msg.command.params.app_push_begin.size = 16;
+    future_app.msg.command.params.app_push_begin.app_type = (WendyComAppType)99;
+    assert(exchange(&full, full_id, 0, &future_app).msg.response.result ==
+           WendyComResult_WENDY_COM_RESULT_BAD_APP_TYPE);
+    assert(_push_kind == PUSH_NONE && management_calls == before_unknown);
+
+    // The same major accepts a future minor and added nested version/handshake
+    // fields. The request identifier remains exact in the echoed response.
+    static const uint8_t extended_handshake[] = {
+        0x0a, 0x0e, 0x08, 77,   0x12, 0x07, 0x08, 2,    0x10, 127,
+        0x98, 0x06, 1,    0x98, 0x06, 2,    0x98, 0x06, 3,
+    };
+    WendyComMessage hello =
+        exchange_body(&full, full_id, 0, 0, extended_handshake, sizeof extended_handshake);
+    assert(hello.which_msg == WendyComMessage_handshake_tag &&
+           hello.msg.handshake.handshake_id == 77 && hello.msg.handshake.version.major == 2);
+    assert(wcom_cmd_app_push_begin(full_client, 16, WendyComAppType_WENDY_COM_APP_TYPE_NATIVE) ==
+           WendyComResult_WENDY_COM_RESULT_OK);
+    assert(wcom_cmd_app_push_end(full_client) == WendyComResult_WENDY_COM_RESULT_OK);
     static const struct wcom_net_delegate net = {.set = net_set,
                                                  .reply_complete = net_reply,
                                                  .topology = net_topology,
