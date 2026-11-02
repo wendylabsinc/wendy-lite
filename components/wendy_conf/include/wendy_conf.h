@@ -178,6 +178,7 @@ esp_err_t wendy_conf_copy_device_trust(WendyConfEnrollment *config,
  * roots. Excludes device CA bytes. Generation pins the exact configuration,
  * so refresh can reject any intervening write without reparsing device CAs. */
 esp_err_t wendy_conf_copy_time_trust(WendyConfEnrollment *config,
-    struct wendy_conf_enrollment_data *data, bool bootstrap, bool https);
+                                     struct wendy_conf_enrollment_data *data, bool bootstrap,
+                                     bool https);
 /* A point-in-time check, not a lease: later writes can invalidate it. */
 bool wendy_conf_snapshot_current(uint64_t generation);

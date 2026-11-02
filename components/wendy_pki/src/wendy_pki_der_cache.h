@@ -7,8 +7,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #define PKI_DER_PARTS 8
-struct pki_der_source
-{
+struct pki_der_source {
     nvs_handle_t handle;
     unsigned count;
     uint8_t hashes[PKI_DER_PARTS][32];
@@ -29,7 +28,7 @@ int pki_der_cache_hash(void *, unsigned, uint8_t[32], size_t *);
  * read hashes the whole part in bounded chunks against the verified TLS
  * presentation's exact hash before returning success. */
 int pki_der_cache_prepare_ranges(struct pki_der_source *);
-int pki_der_cache_read_range(void *,unsigned,size_t,uint8_t *,size_t,
+int pki_der_cache_read_range(void *, unsigned, size_t, uint8_t *, size_t,
                              const uint8_t expected[32]);
 /* Before replacing the main certificate, durably remove metadata FIRST.
  * Partial writes/power loss can leave unused parts, never an admitted chain. */
@@ -38,5 +37,5 @@ int pki_der_cache_build(nvs_handle_t, const uint8_t *pem, size_t);
 
 /* Read-only content-addressed local public DER. Never builds/repairs or
  * invalidates flash on a miss. Returns bytes,1 for size-only,-1 missing/error. */
-int pki_der_cache_part(struct pki_der_source *,const uint8_t hash[32],size_t offset,
-                       uint8_t out[1024],size_t *total);
+int pki_der_cache_part(struct pki_der_source *, const uint8_t hash[32], size_t offset,
+                       uint8_t out[1024], size_t *total);
