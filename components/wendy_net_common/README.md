@@ -1,8 +1,8 @@
 # Wendy Net common foundations
 
-This component adds reusable memory, binary encoding and task helpers. Adding it
-alone does not replace the existing leaf protocol or enable a mesh runtime.
-Dependent protocol/runtime components activate those integrations separately.
+This component supplies the memory, binary encoding and task helpers used by
+Wendy Net. The helpers do not start a mesh runtime or radio themselves; the
+runtime owns configuration, startup and shutdown.
 
 `wendy_net_binary.h` provides a portable, allocation-free CBOR writer over a
 caller-owned buffer. It emits definite containers and shortest-form unsigned

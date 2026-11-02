@@ -383,7 +383,7 @@ static int arm_receive_batch(struct wble_mesh_pipe *p, unsigned count)
             for (unsigned j = i + 1; j < count; j++)
                 os_mbuf_free_chain(buffers[j]);
             return result;
-        }
+    }
     }
     return 0;
 }
@@ -561,7 +561,7 @@ static int coc_event(struct ble_l2cap_event *event, void *context)
         }
         lock();
         struct wble_mesh_pipe *p = make_pipe(event->accept.chan, event->accept.conn_handle, true,
-                                             (uint16_t)(uintptr_t)context);
+                      (uint16_t)(uintptr_t)context);
         if (p)
             p->held = true;
         unlock();
@@ -661,10 +661,10 @@ static int coc_event(struct ble_l2cap_event *event, void *context)
         return 0;
     }
     struct ble_l2cap_chan *channel =
-        event->type == BLE_L2CAP_EVENT_COC_DISCONNECTED    ? event->disconnect.chan
+        event->type == BLE_L2CAP_EVENT_COC_DISCONNECTED ? event->disconnect.chan
         : event->type == BLE_L2CAP_EVENT_COC_DATA_RECEIVED ? event->receive.chan
         : event->type == BLE_L2CAP_EVENT_COC_TX_UNSTALLED  ? event->tx_unstalled.chan
-                                                           : NULL;
+            : NULL;
     lock();
     struct wble_mesh_pipe *p = find(channel);
     if (event->type == BLE_L2CAP_EVENT_COC_DATA_RECEIVED) {
@@ -881,8 +881,8 @@ static int start_scan(void)
     if (ble_gap_disc_active()) {
         if (ours) {
             atomic_store(&scan_listen_pending, false);
-            return 0;
-        }
+        return 0;
+    }
         /* Normal shared-host contention must not masquerade as our scan. */
         if (!atomic_load(&quiescing))
             wble_gap_retry_failed(&scan_retry, esp_timer_get_time());
@@ -1022,13 +1022,13 @@ static int initialize_host(void)
         return ESP_FAIL;
     if (!WENDY_NET_NON_TRANSIT) {
         int rc = ble_l2cap_create_server(WBLE_MESH_TIME_PSM, MTU, coc_event,
-                                         (void *)(uintptr_t)WBLE_MESH_TIME_PSM);
+                                      (void *)(uintptr_t)WBLE_MESH_TIME_PSM);
         if (rc && rc != BLE_HS_EALREADY) {
             ESP_LOGW(TAG, "timestamp HTTPS PSM%u registration failed: %d", WBLE_MESH_TIME_PSM, rc);
             return ESP_FAIL;
         }
         rc = ble_l2cap_create_server(CONFIG_WENDY_NET_BLE_PSM, MTU, coc_event,
-                                     (void *)(uintptr_t)CONFIG_WENDY_NET_BLE_PSM);
+                                  (void *)(uintptr_t)CONFIG_WENDY_NET_BLE_PSM);
         if (rc && rc != BLE_HS_EALREADY)
             return ESP_FAIL;
     }
@@ -1155,7 +1155,7 @@ esp_err_t wble_mesh_dial(const uint8_t address[6], uint8_t type, uint16_t psm)
         return ESP_ERR_INVALID_STATE;
     if (dialing || pending || count() >= CHANNELS || atomic_load(&scan_listen_pending) ||
         (scan_owned && esp_timer_get_time() < scan_dial_after)) {
-        unlock();
+    unlock();
         return ESP_ERR_INVALID_STATE;
     }
     struct wble_gap_dial command = {.type = type, .psm = psm, .epoch = ++dial_epoch};
@@ -1274,7 +1274,7 @@ static int stop_host(void)
             lock();
             dialing = false;
             dial_gap_pending = false;
-            unlock();
+    unlock();
         } else if (rc && rc != BLE_HS_EALREADY)
             result = rc;
     }
@@ -1423,6 +1423,14 @@ struct wendy_pki_stream wble_mesh_stream(struct wble_mesh_pipe *p)
 {
     return (struct wendy_pki_stream){
         .context = p, .read = stream_read, .write = stream_write, .wait = stream_wait};
+}
+bool wble_mesh_output_drained(struct wble_mesh_pipe *p)
+{
+    if (!p || !atomic_load(&ready) || !mutex || !trylock())
+        return false;
+    bool drained = p->owned && p->connected && !p->closing && !p->tx_pending && !p->stalled;
+    unlock();
+    return drained;
 }
 void wble_mesh_release(struct wble_mesh_pipe *p)
 {

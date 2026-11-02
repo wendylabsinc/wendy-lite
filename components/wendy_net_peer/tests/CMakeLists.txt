@@ -190,6 +190,8 @@ target_link_libraries(driver_wake_lifetime PRIVATE Threads::Threads)
 driver_test(actor_driver actor_driver_success_test.c)
 target_include_directories(driver_actor_driver BEFORE PRIVATE io_stubs)
 
+# Standalone management handoff/state checks do not require crypto dependencies.
+add_subdirectory(settings)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME driver_setup_lifecycle COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_LIST_DIR}/setup_lifecycle_success_test.py")

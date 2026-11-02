@@ -3,9 +3,6 @@
 #include "wendy_net_alloc.h"
 #include <stdlib.h>
 #include <string.h>
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-#include "esp_log.h"
-#endif
 struct workspace {
     struct wns_record record;
     const char *txt[WNS_TXT_MAX];
@@ -96,9 +93,6 @@ struct registration {
 struct wnsc_registry {
     struct registration *entries;
     size_t count, bytes;
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-    uint64_t next_probe;
-#endif
 };
 static int guest_register_binary(struct wnsc_registry **owner, const void *spec, size_t size,
                                  wnsc_listener_owner listener_owner, void *context)
@@ -197,15 +191,6 @@ int wnsc_guest_tick(struct wnsc_registry **owner, struct wnsc_node *node,
                                                   wall, now);
                 if (!result)
                     e->dirty = false;
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-                if (result && now >= registry->next_probe) {
-                    registry->next_probe = now + 15000;
-                    ESP_LOGI("wendy_net_catalog",
-                             "guest publication pending: service=%s result=%d records=%u bytes=%u",
-                             e->service, result, (unsigned)node->records.count,
-                             (unsigned)node->records.bytes);
-                }
-#endif
             }
         }
         at = &e->next;

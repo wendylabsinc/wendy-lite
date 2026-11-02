@@ -148,7 +148,14 @@ struct wcom_stream_ops {
     /* Optional paired hooks, using the same transport context. */
     void *(*allocate_buffer)(void *ctx, size_t size);
     void (*free_buffer)(void *ctx, void *buffer);
+    /* Optional transport fence after a complete management response was
+     * accepted. The provider calls done exactly once after its buffered
+     * plaintext/ciphertext drains, or when the transport retires. */
+    void (*reply_barrier)(void *ctx, uint32_t token, void (*done)(uint32_t));
 };
+/* Called only from the com owner. Socket/TLS/UART writes have already crossed
+ * their transport; memory streams may defer the completion to their owner. */
+void wcom_link_reply_barrier(int link_id, uint32_t token, void (*done)(uint32_t));
 
 int wcom_add_stream_link(const struct wcom_stream_ops *ops, void *ctx,
                          wcom_interruption_handler_t interruption_handler);
@@ -156,8 +163,8 @@ int wcom_add_stream_link(const struct wcom_stream_ops *ops, void *ctx,
  * before CONNECTED callbacks; retains the normal four-slot bound and 45s
  * write-progress allowance. No TLS is added by WendyCom itself. */
 int wcom_add_routed_stream_link_with_permission(const struct wcom_stream_ops *ops, void *ctx,
-                                                wcom_interruption_handler_t interruption_handler,
-                                                enum wcom_link_permission permission);
+                         wcom_interruption_handler_t interruption_handler,
+                         enum wcom_link_permission permission);
 // Socket-backed custom TLS transport. wakeup_fd returns the transport socket,
 // selected but never drained as eventfd. can_read/can_write are not used.
 int wcom_add_socket_link(const struct wcom_stream_ops *ops, void *ctx,
@@ -171,8 +178,8 @@ int wcom_add_socket_link_with_permission(const struct wcom_stream_ops *ops, void
 /* Routed mesh TCP: allow 45s without write progress for carrier/route recovery.
  * All queue and buffer limits remain identical; ordinary transports use 15s. */
 int wcom_add_routed_socket_link_with_permission(const struct wcom_stream_ops *ops, void *ctx,
-                                                wcom_interruption_handler_t interruption_handler,
-                                                enum wcom_link_permission permission);
+                         wcom_interruption_handler_t interruption_handler,
+                         enum wcom_link_permission permission);
 bool wcom_link_is_local(int link_id);
 enum wcom_link_permission wcom_link_get_permission(int link_id);
 int wcom_add_tls_link(esp_tls_t *tls, wcom_interruption_handler_t interruption_handler);

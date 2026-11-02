@@ -12,6 +12,8 @@ struct wnab_bridge {
     struct wnab_bridge *com_next; /* Accessed only by the com application task. */
     int link;
     bool close_queued;
+    atomic_uint barrier_token;
+    void (*barrier_done)(uint32_t);
     enum wcom_link_permission permission;
     wendy_net_memory_scope_t scope;
     struct wnap_ring incoming, outgoing;
@@ -88,13 +90,39 @@ static void free_buffer(void *context, void *buffer)
     (void)context;
     wendy_net_memory_scoped_free(buffer);
 }
+static void reply_barrier(void *context, uint32_t token, void (*done)(uint32_t))
+{
+    struct wnab_bridge *b = context;
+    /* A later accepted configuration can follow a timed-out receipt on this
+     * still-retiring stream. The callback is immutable for the stream. Retire
+     * that obsolete receipt instead of asserting or retaining a second queue. */
+    if (!b->barrier_done)
+        b->barrier_done = done;
+    else
+        assert(b->barrier_done == done);
+    uint32_t old = atomic_exchange_explicit(&b->barrier_token, token, memory_order_acq_rel);
+    if (old)
+        done(old);
+    wnad_wake();
+}
+uint32_t wnab_output_receipt(struct wnab_bridge *b)
+{
+    return atomic_load_explicit(&b->barrier_token, memory_order_acquire);
+}
+void wnab_output_drained(struct wnab_bridge *b, uint32_t token)
+{
+    if (token && atomic_compare_exchange_strong_explicit(
+                     &b->barrier_token, &token, 0, memory_order_acq_rel, memory_order_acquire))
+        b->barrier_done(token);
+}
 static const struct wcom_stream_ops operations = {.read = read_plain,
                                                   .write = write_plain,
                                                   .wakeup_fd = wake_fd,
                                                   .can_read = can_read,
                                                   .can_write = can_write,
                                                   .allocate_buffer = allocate_buffer,
-                                                  .free_buffer = free_buffer};
+                                                  .free_buffer = free_buffer,
+                                                  .reply_barrier = reply_barrier};
 static void interrupted(int link, enum wcom_interruption_reason reason)
 {
     (void)reason;
@@ -154,6 +182,7 @@ struct wnab_bridge *wnab_open(enum wcom_link_permission permission, unsigned cap
     atomic_init(&b->references, 2); /* Actor + queued add operation. */
     atomic_init(&b->closing, false);
     atomic_init(&b->input_eof, false);
+    atomic_init(&b->barrier_token, 0);
     b->link = -1;
     b->permission = permission;
     b->scope = wendy_net_memory_scope_current();

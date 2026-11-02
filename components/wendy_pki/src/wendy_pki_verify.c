@@ -100,7 +100,7 @@ int pki_parse_certificate_bundle(mbedtls_x509_crt *cert, const uint8_t *data, si
         if (++count > 8) {
             result = -1;
             break;
-        }
+    }
         result = borrow ? mbedtls_x509_crt_parse_der_nocopy(cert, der, bytes)
                         : mbedtls_x509_crt_parse_der(cert, der, bytes);
         if (result)
@@ -294,7 +294,7 @@ static int own_public_key(der spki)
 #if defined(MBEDTLS_MLDSA65_PRIVATE_KEY)
     der id, params, key;
     return !public_key_parts(spki, &id, &params, &key) &&
-           bytes(id, mldsa65_oid, sizeof mldsa65_oid) && !params.n && key.n == 1953;
+        bytes(id, mldsa65_oid, sizeof mldsa65_oid) && !params.n && key.n == 1953;
 #else
     return 0;
 #endif
@@ -422,7 +422,7 @@ static int verify_at(void *context, mbedtls_x509_crt *cert, int depth, uint32_t 
     return 0;
 }
 static int verify_chain_parsed(mbedtls_x509_crt *leaf, mbedtls_x509_crt **certs, int count,
-                               mbedtls_x509_crt *anchors, time_t now, time_t *expires)
+    mbedtls_x509_crt *anchors, time_t now, time_t *expires)
 {
     if (!leaf || count < 1 || count > 8)
         return -1;
@@ -485,7 +485,7 @@ static int verify_chain_parsed(mbedtls_x509_crt *leaf, mbedtls_x509_crt **certs,
     return 0;
 }
 static int verify_chain(mbedtls_x509_crt *leaf, mbedtls_x509_crt **certs, int count,
-                        const uint8_t *roots, size_t size, time_t now, time_t *expires)
+    const uint8_t *roots, size_t size, time_t now, time_t *expires)
 {
     if (!roots || !size || size > 16384)
         return -1;
@@ -549,8 +549,8 @@ static int tsa_eku(der cert)
     } while (0)
 #endif
 static int verify_time_direct(const uint8_t *input, size_t size, const uint8_t nonce[32],
-                              const uint8_t *roots, size_t roots_size, time_t floor,
-                              time_t *verified_time)
+                          const uint8_t *roots, size_t roots_size, time_t floor,
+                          time_t *verified_time)
 {
     int result = -1, count = 0, signer_index = -1;
     mbedtls_x509_crt *certs[8] = {0};
@@ -899,7 +899,7 @@ int wendy_pki_verify_operator(const uint8_t *data, size_t size, const char *tena
 
 int wendy_pki_mesh_chain(const uint8_t *const *data, const size_t *sizes, size_t count,
                          const uint8_t *roots, size_t roots_size, const char *tenant, time_t now,
-                         struct wendy_pki_mesh_peer *peer)
+    struct wendy_pki_mesh_peer *peer)
 {
     return mesh_chain(data, sizes, count, roots, roots_size, NULL, tenant, now, peer);
 }

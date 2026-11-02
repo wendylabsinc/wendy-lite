@@ -124,15 +124,65 @@ jobs:
           config = json.loads(Path("build/config/sdkconfig.json").read_text())
           enabled = os.environ["BOARD_CFG"] in {
               "seeed_xiao_esp32s3_native", "esp32s31_korvo_1_native",
-              "esp32s31_mosaico_native",
+              "esp32s31_mosaico_native", "esp32c5_net_psram", "esp32c6_net",
           }
-          for option in ("WENDY_MESH_LEAF", "WENDY_MESH_WIFI_BLE", "WENDY_MESH_AUTO_DISCOVER"):
+          for option in ("WENDY_NET_PEER", "WENDY_NET_BLE"):
               assert bool(config.get(option)) == enabled, f"unexpected {option} for this board"
           if enabled:
               assert config.get("LWIP_IPV6") and config.get("LWIP_HOOK_IP6_ROUTE_CUSTOM")
               assert not config.get("LWIP_IPV6_FORWARD")
-              assert config["BT_NIMBLE_L2CAP_COC_MAX_NUM"] >= 2
+              assert config["BT_NIMBLE_L2CAP_COC_MAX_NUM"] >= (3 if os.environ["BOARD_CFG"] == "esp32c6_net" else 4)
               assert config["BT_NIMBLE_MSYS_1_BLOCK_SIZE"] >= 248
+          PY
+
+      - name: Verify supported ESP32 mesh and guest profiles
+        if: matrix.board_cfg == 'esp32c5_net_psram' || matrix.board_cfg == 'esp32c6_net'
+        shell: bash
+        env:
+          BOARD_CFG: ${{ matrix.board_cfg }}
+        run: |
+          python - <<'PY'
+          import csv
+          import json
+          import os
+          from pathlib import Path
+
+          config = json.loads(Path("build/config/sdkconfig.json").read_text())
+          c5 = os.environ["BOARD_CFG"] == "esp32c5_net_psram"
+          for key in ("WENDY_CORE_WASM_APP_SUPPORT", "WENDY_WASM", "WENDY_NET", "WENDY_NET_PEER",
+                      "WENDY_NET_BLE", "WAMR_ENABLE_AOT", "WENDY_WASM_AOT_XIP"):
+              assert config.get(key), f"{key} must be enabled"
+          assert config["ESPTOOLPY_FLASHSIZE"] == "8MB"
+          assert config["PARTITION_TABLE_CUSTOM_FILENAME"] == "partitions.net.8mb.csv"
+          assert config["WENDY_WASM_MAX_MEMORY_PAGES"] == (80 if c5 else 1)
+          assert config["WENDY_WASM_POOL_SIZE"] == 0
+          assert config["WENDY_WASM_HEAP_SIZE"] == 0
+          assert config["WENDY_NET_MAX_LINKS"] == (6 if c5 else 1)
+          assert config["WENDY_NET_BLE_CHANNELS"] == (3 if c5 else 1)
+          assert bool(config.get("SPIRAM")) == c5
+          assert bool(config.get("WENDY_NET_CONSTRAINED_PROFILE")) != c5
+          assert config["WENDY_SERVER_TASK_STACK_SIZE"] == 16384
+          if c5:
+              assert config["WENDY_CLOUD_TASK_STACK_SIZE"] == 16384
+          else:
+              assert config.get("WENDY_NET_SELECT_RADIO_AT_BOOT")
+              assert not config.get("WENDY_CLOUD")
+              assert config["WENDY_NET_INTERNAL_MEMORY_LIMIT_KIB"] == 160
+          flash = json.loads(Path("build/flasher_args.json").read_text())
+          assert flash["otadata"]["offset"] == "0x7c0000"
+          # Validate the release partition table itself, including guest capacity.
+          rows = [r for r in csv.reader(Path("partitions.net.8mb.csv").read_text().splitlines())
+                  if r and not r[0].lstrip().startswith("#")]
+          end = 0
+          parts = {}
+          for row in rows:
+              name, _, _, offset, size = [x.strip() for x in row[:5]]
+              offset, size = int(offset, 0), int(size, 0)
+              assert offset >= end and size > 0
+              end = offset + size
+              parts[name] = (offset, size)
+          assert end == 8 * 1024 * 1024
+          assert parts["wasm_a"] == (0x510000, 0x2B0000)
           PY
 
       - name: Verify ESP32-S31 native profile
@@ -155,7 +205,7 @@ jobs:
               assert config.get(option), f"{option} must be enabled"
           for option in ("WENDY_CORE_WASM_APP_SUPPORT", "MBEDTLS_DYNAMIC_BUFFER"):
               assert not config.get(option), f"{option} must be disabled"
-          assert config["BT_NIMBLE_L2CAP_COC_MAX_NUM"] == (2 if config.get("WENDY_MESH_WIFI_BLE") else 1)
+          assert config["BT_NIMBLE_L2CAP_COC_MAX_NUM"] == (4 if config.get("WENDY_NET_PEER") else 1)
           components = json.loads((build / "project_description.json").read_text())["build_components"]
           assert not {"espressif__wasm-micro-runtime", "wendy_wasm", "wendy_hal"}.intersection(components)
           flash = json.loads((build / "flasher_args.json").read_text())
@@ -212,8 +262,7 @@ jobs:
               }
               assert flash["otadata"]["offset"] == "0xfc0000"
           elif os.environ["BOARD_CFG"] == "esp32s31_mosaico_native":
-              for option in ("SPIRAM", "WENDY_MESH_LEAF", "WENDY_MESH_WIFI_BLE",
-                             "WENDY_MESH_AUTO_DISCOVER", "LWIP_HOOK_IP6_ROUTE_CUSTOM",
+              for option in ("SPIRAM", "WENDY_NET_PEER", "WENDY_NET_BLE", "LWIP_HOOK_IP6_ROUTE_CUSTOM",
                              "LV_OS_FREERTOS", "LV_USE_CLIB_MALLOC", "TINYUSB_CDC_ENABLED"):
                   assert config.get(option), f"{option} must be enabled on Mosaico"
               assert not config.get("WENDY_USJ")

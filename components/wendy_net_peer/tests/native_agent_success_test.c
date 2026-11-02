@@ -16,7 +16,12 @@ static bool current = true, prepare_busy, immediate_close, slots_full, transmit_
 static uint64_t generation = 1;
 static void (*cpu_callback)(void *);
 static void *cpu_argument, *gate_owner;
-static unsigned actor_wakes, com_wakes, removed, steps, closed;
+static unsigned actor_wakes, com_wakes, removed, steps, closed, reply_completed;
+static void reply_complete(uint32_t token)
+{
+    assert(token == 41 || token == 42);
+    reply_completed++;
+}
 static struct wcom_operation *operations_first, *operations_last;
 static const struct wcom_stream_ops *com_ops;
 static void *com_context;
@@ -360,6 +365,22 @@ int main(void)
     close(fds[1]);
     assert(wendy_net_runtime_memory_open());
     wendy_net_memory_scope_t previous = wendy_net_runtime_scope_enter();
+    struct wnab_bridge *fence = wnab_open(WCOM_LINK_PERMISSION_FULL, 256);
+    assert(fence);
+    finish_com();
+    com_ops->reply_barrier(com_context, 41, reply_complete);
+    uint32_t sampled = wnab_output_receipt(fence);
+    com_ops->reply_barrier(com_context, 42, reply_complete);
+    assert(reply_completed == 1); /* superseded receipt retired without a second slot */
+    wnab_output_drained(fence, sampled);
+    assert(reply_completed == 1);
+    wnab_output_drained(fence, wnab_output_receipt(fence));
+    assert(reply_completed == 2);
+    wnab_close(fence);
+    finish_com();
+    assert(wnab_retired(fence));
+    wnab_release(fence);
+    reply_completed = 0;
     int client = begin();
     assert(send(client, "loan", 4, 0) == 4);
     wendy_net_agent_poll();
@@ -423,7 +444,7 @@ int main(void)
                     have = (size_t)n;
                 } else
                     assert(n == -2);
-            }
+        }
             if (offset < have) {
                 ssize_t n = com_ops->write(com_context, echo + offset, have - offset);
                 if (n > 0)
@@ -453,7 +474,7 @@ int main(void)
             else {
                 struct pollfd wait = {.fd = client, .events = POLLIN};
                 (void)poll(&wait, 1, 1);
-            }
+        }
         }
         assert(got == 4 && !memcmp(tail, "tail", 4));
         stop();
@@ -490,6 +511,10 @@ int main(void)
     int64_t deadline = now + 1000000;
     wendy_net_agent_watch(&reading, &writing, &maximum, &deadline);
     assert(deadline > now && FD_ISSET(flows->fd, &writing));
+    com_ops->reply_barrier(com_context, 42, reply_complete);
+    for (unsigned i = 0; i < 5; i++)
+        wendy_net_agent_poll();
+    assert(!reply_completed); /* ring and TLS BIO still contain the response */
     wcom_close(com_id);
     deadline = now + 1000000;
     wendy_net_agent_watch(&reading, &writing, &maximum, &deadline);
@@ -505,6 +530,7 @@ int main(void)
             assert(errno == EAGAIN || errno == EWOULDBLOCK);
     }
     assert(pressure_got == sizeof pressure && !memcmp(pressure, pressure_reply, sizeof pressure));
+    assert(reply_completed == 1);
     /* A delayed com close ACK keeps the slot: repeated ordinary reconnects
      * cannot build orphan bridges while application work occupies com. */
     wendy_net_agent_poll();

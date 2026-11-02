@@ -1,9 +1,9 @@
-menu "Wendy Net native peer prototype"
+menu "Wendy Net native peer"
     config WENDY_NET_PEER
-        bool "Enable native Wendy Net prototype"
+        bool "Build native Wendy Net peer support"
         default n
         depends on WENDY_PKI && LWIP_IPV6 && WENDY_WIFI_ENABLED
-        depends on !WENDY_MESH_LEAF && LWIP_HOOK_IP6_ROUTE_CUSTOM
+        depends on LWIP_HOOK_IP6_ROUTE_CUSTOM
         depends on FREERTOS_THREAD_LOCAL_STORAGE_POINTERS >= 2
         select FREERTOS_TLSP_DELETION_CALLBACKS
         select LWIP_IP6_FRAG
@@ -135,18 +135,18 @@ menu "Wendy Net native peer prototype"
             fragmenter does not propagate individual fragment output errors.
             Measure peak storage and burst latency with the real workload.
     config WENDY_NET_MAX_LINKS
-        int "Prototype simultaneous authenticated carriers"
+        int "Maximum simultaneous authenticated carriers"
         depends on WENDY_NET_ROUTER
         range 1 6
         default 1 if WENDY_NET_CONSTRAINED_PROFILE
         default 6 if SPIRAM
         default 2
         help
-            A prototype allocation bound, not a measured hardware maximum.
+            An allocation bound, not a measured hardware maximum.
             Additional carrier state is allocated on demand. TLS setup is
             serialized on the existing worker while packet handling continues.
             The native Babel link bound follows this setting on ESP targets.
-            Six is the PSRAM investigation target (three BLE plus three IP);
+            Six is the PSRAM configuration target (three BLE plus three IP);
             it is not a qualified SRAM-only profile.
     config WENDY_NET_ROUTING_QUEUE_FRAMES
         int "Bounded Babel frames per carrier"
@@ -243,7 +243,7 @@ menu "Wendy Net native peer prototype"
             experimental resource guard; measure startup latency and overlap
             with the actual identity chain, guest and radio configuration.
     config WENDY_NET_BLE
-        bool "Prototype native mesh BLE discovery and L2CAP"
+        bool "Native mesh BLE discovery and L2CAP"
         default n
         depends on WENDY_NET_ROUTER && WENDY_BLE
         help
@@ -280,15 +280,18 @@ menu "Wendy Net native peer prototype"
         int "Native mesh CoC capacity"
         depends on WENDY_NET_BLE
         range 1 4
+        default 3 if SPIRAM
+        default 1 if WENDY_NET_CONSTRAINED_PROFILE
         default 2
         help
-            Prototype bound, not a measured hardware limit. SDK CoC capacity
+            Configured bound, not a measured hardware limit. SDK CoC capacity
             must also include management and the timestamp HTTPS server
             registration (three server registrations at the standard PSMs).
     config WENDY_NET_BLE_SDU_BUFFERS
         int "Shared native mesh CoC SDU buffers"
         depends on WENDY_NET_BLE
         range 2 32
+        default 16 if SPIRAM
         default 6
         help
             Bounded private pool shared by every native mesh and timestamp
@@ -324,52 +327,13 @@ menu "Wendy Net native peer prototype"
             Remote service discovery remains bounded and demand-driven.
     config WENDY_NET_SELECT_RADIO_AT_BOOT
         bool "Select the constrained endpoint radio from management settings"
+        default y if IDF_TARGET_ESP32C6
         default n
         depends on WENDY_NET_CONSTRAINED_PROFILE && WENDY_NET_ENDPOINT_GATEWAY
         help
             Keep BLE and infrastructure WiFi in one firmware, but initialize
             only the carrier selected in saved management settings. Changing
-            the carrier returns APPLIED_RESTARTING and reboots after five
-            seconds. Enabling/disabling the same carrier needs no reboot.
+            the carrier returns APPLIED_RESTARTING and reboots after its
+            management reply drains. Enabling/disabling the same carrier needs no reboot.
             The inactive physical management radio is unavailable; USB remains.
-    config WENDY_NET_BLE_ONLY_RADIO
-        bool "C6 SRAM endpoint: omit the Wi-Fi radio"
-        default n
-        depends on IDF_TARGET_ESP32C6 && WENDY_NET_CONSTRAINED_PROFILE && WENDY_NET_BLE
-        depends on !WENDY_NET_NAN && !WENDY_MESH_ESPNOW && !WENDY_CLOUD
-        help
-            Build a BLE-only SRAM endpoint retaining shared IP, native VIPs,
-            the guest runtime and physical BLE management. Never initialize
-            Wi-Fi, its station netif, services task or mDNS. Management reports
-            Wi-Fi unsupported; choose another firmware profile to use it.
-            NAN remains unavailable in this delivery.
-            Mesh remains off by default. Explicit management settings persist
-            normally, unlike the temporary no-radio laboratory experiment.
-            This does not enable transit or additional BLE carriers and does
-            not reduce the independent PSRAM router profile.
-
-    config WENDY_NET_TEST_NO_WIFI_RADIO
-        bool "Integration test: omit WiFi radio initialization for this boot"
-        default n
-        depends on IDF_TARGET_ESP32C6 && WENDY_NET_ROUTER && WENDY_NET_BLE
-        depends on WENDY_WIFI_ENABLED
-        depends on !WENDY_NET_NAN && !WENDY_MESH_ESPNOW && !WENDY_CLOUD
-        help
-            Boot-only laboratory RAM experiment. Keep shared lwIP, native VIP
-            listeners, physical BLE management and the normal guest runtime,
-            but never initialize the WiFi driver, station netif, WiFi services
-            worker or mDNS. WiFi/NAN carriers report unsupported. Mesh settings
-            changes are RAM-only during this boot; saved credentials and mesh
-            settings are retained. An incompatible saved WiFi policy starts
-            disabled. Real signed-time bootstrap is still required over BLE.
-            This does not enable additional BLE links or routing capabilities.
-
-    config WENDY_NET_TEST_COLD_BLE
-        bool "Integration test: boot without connecting the station"
-        default n
-        depends on WENDY_NET_ROUTER
-        help
-            Preserve saved credentials but skip station connection from boot.
-            Use to measure BLE-only worker, application and signed-time
-            bootstrap. This does not itself supply a trusted clock.
 endmenu

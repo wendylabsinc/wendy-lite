@@ -166,6 +166,9 @@ static bool dispose(struct native_flow *f)
     if (f->bridge) {
         if (!wnab_retired(f->bridge))
             return false;
+        /* A lost connection cannot deliver its response. Complete the bounded
+         * configuration handoff once the com producer has retired. */
+        wnab_output_drained(f->bridge, wnab_output_receipt(f->bridge));
         wnab_release(f->bridge);
         f->bridge = NULL;
     }
@@ -178,7 +181,7 @@ static bool tls_ready(struct native_flow *f, int need, bool reading)
 {
     if (need == -2)
         return f->channel.input.size || f->channel.eof ||
-               (reading && wendy_pki_pending(f->connection));
+        (reading && wendy_pki_pending(f->connection));
     if (need == -3)
         return wna_buffer_space(&f->channel.output) != 0;
     return true;
@@ -198,6 +201,7 @@ static int plaintext(struct native_flow *f, int64_t now)
 {
     struct wnab_bridge *b = f->bridge;
     int progress = 0;
+    uint32_t receipt = wnab_output_receipt(b);
     /* Keep the identical pointer/length across TLS WANT_WRITE/READ retries.
      * The com producer cannot overwrite this consumer span before consume. */
     if (!f->write_size)
@@ -219,6 +223,8 @@ static int plaintext(struct native_flow *f, int64_t now)
         else
             return -1;
     }
+    if (!f->write_size && !wnap_available(wnab_outgoing(b)) && !f->channel.output.size)
+        wnab_output_drained(b, receipt);
     if (wnab_closed(b)) {
         /* Ordinary application completion drains accepted plaintext and its
          * final encrypted BIO bytes; explicit OFF/expiry may abort instead. */
@@ -334,7 +340,7 @@ int wendy_net_agent_poll(void)
         } else {
             progress |= result > 0;
             at = &f->next;
-        }
+    }
     }
     return progress;
 }

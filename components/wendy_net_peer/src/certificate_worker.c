@@ -34,7 +34,7 @@ static void verify(void *context)
             if (job->loan.sizes[i] > SIZE_MAX - missing)
                 goto done;
             missing += job->loan.sizes[i];
-        }
+    }
     if (missing) {
         workspace = wendy_pki_input_workspace_borrow(&capacity);
         workspace_borrowed = workspace != NULL;
@@ -42,7 +42,7 @@ static void verify(void *context)
             wendy_pki_input_workspace_release(workspace);
             workspace = NULL;
             workspace_borrowed = false;
-        }
+            }
         if (!workspace) {
             workspace = wendy_net_malloc(missing);
             capacity = missing;
@@ -63,23 +63,11 @@ static void verify(void *context)
                         goto done;
                 }
                 used += job->loan.sizes[i];
-            }
+        }
     }
     /* The actor pinned resident RAM entries before submission. Common local
      * issuers use the independently checked baseline reader and shared workspace;
      * no store/node/session address crosses this task boundary. */
-#if CONFIG_WENDY_NET_TEST_DIAGNOSTICS
-    size_t bytes = 0;
-    for (unsigned i = 0; i < job->chain.count; i++)
-        bytes += job->loan.sizes[i];
-    ESP_LOGI(
-        "net-cert-worker",
-        "public chain RAM: DER=%u cached=%u local=%u workspace=%u shared=%u free=%u largest=%u",
-        (unsigned)bytes, (unsigned)(bytes - missing), (unsigned)missing,
-        (unsigned)(workspace ? capacity : 0), (unsigned)workspace_borrowed,
-        (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-#endif
     if (wn_principal_device(job->chain.principal, job->clock.tenant, device) ||
         wendy_pki_mesh_verify_snapshot(&job->clock, job->loan.parts, job->loan.sizes,
                                        job->chain.count, &job->peer) ||
@@ -96,7 +84,7 @@ done:
     wncv_release(job);
 }
 int wncv_start(struct wncv_job **out, struct wncs_store *store, const struct wncf_chain *chain,
-               const struct wendy_pki_mesh_identity *clock)
+                const struct wendy_pki_mesh_identity *clock)
 {
     if (!out || *out || !store || !chain || !clock || !chain->count ||
         chain->count > WNCF_CHAIN_MAX)
@@ -118,7 +106,7 @@ int wncv_start(struct wncv_job **out, struct wncs_store *store, const struct wnc
         if (!wendy_pki_handshake_claim(job)) {
             wendy_net_free(job);
             return 1;
-        }
+    }
         job->workspace_owned = true;
     }
     if (wncs_pin_chain(store, chain, &job->loan)) {

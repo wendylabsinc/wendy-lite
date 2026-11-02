@@ -15,12 +15,6 @@
 
 /* sizeof includes the domain's required NUL byte. */
 static const uint8_t domain[] = "wendy-local-mesh/manifest/4";
-#if CONFIG_WENDY_MESH_LEAF
-/* Existing Lite leaf wire contract, removed with that component at cutover. */
-static const uint8_t leaf_domain[] = "wendy-local-mesh/manifest/3";
-#else
-#define leaf_domain domain
-#endif
 /* Canonical principals have 105 UTF-8 bytes. Encode their byte length,
  * not a C string terminator, before the exact principal and CBOR body. */
 static const uint8_t principal_size[] = { 0, 0, 0, 105 };
@@ -67,7 +61,7 @@ static int mesh_digest(const char *principal, const void *body, size_t size, uin
 }
 int wendy_pki_mesh_digest(const char *principal, const void *body, size_t size, uint8_t hash[32])
 {
-    return mesh_digest(principal, body, size, hash, leaf_domain, sizeof leaf_domain);
+    return mesh_digest(principal, body, size, hash, domain, sizeof domain);
 }
 int wendy_pki_artifact_digest(unsigned kind, const char *principal, const void *body, size_t size,
                               uint8_t hash[32])
@@ -220,7 +214,7 @@ int wendy_pki_inventory_verify_key(const struct wendy_pki_mesh_key *peer, const 
 }
 
 /* Keep the complete-peer API for certificate-verification callers and the
- * separate legacy adapter. Native directories retain actual-sized key bytes. */
+ * native directories. Retain only actual-sized key bytes in directories. */
 static struct wendy_pki_mesh_key key_view(const struct wendy_pki_mesh_peer *peer)
 {
     struct wendy_pki_mesh_key view = {0};
@@ -237,8 +231,8 @@ int wendy_pki_mesh_verify(const struct wendy_pki_mesh_peer *peer, const char *pr
                           size_t signature_size)
 {
     struct wendy_pki_mesh_key view = key_view(peer);
-    return mesh_verify_key(&view, principal, body, size, signature, signature_size, leaf_domain,
-                           sizeof leaf_domain);
+    return mesh_verify_key(&view, principal, body, size, signature, signature_size, domain,
+                           sizeof domain);
 }
 int wendy_pki_service_verify(const struct wendy_pki_mesh_peer *peer, const void *body, size_t size,
                              const uint8_t *signature, size_t signature_size)

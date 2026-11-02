@@ -42,7 +42,7 @@
 #define TAG                       "wendy_server"
 #define WENDY_SERVER_PORT         5054
 #define WENDY_SERVER_BACKLOG      4
-#define WENDY_SERVER_TASK_STACK CONFIG_WENDY_SERVER_TASK_STACK_SIZE
+#define WENDY_SERVER_TASK_STACK   CONFIG_WENDY_SERVER_TASK_STACK_SIZE
 #define WENDY_SERVER_MAX_LINKS    4
 
 
@@ -247,7 +247,7 @@ static void _server_task(void *arg)
 {
     bool enrolled = wendy_conf_has_enrollment();
 
-#if CONFIG_WENDY_MESH_LEAF || CONFIG_WENDY_NET_PEER
+#if CONFIG_WENDY_NET_PEER
     int listen_fd = socket(AF_INET6, SOCK_STREAM, 0);
 #else
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -269,7 +269,7 @@ static void _server_task(void *arg)
     int opt = 1;
     setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-#if CONFIG_WENDY_MESH_LEAF || CONFIG_WENDY_NET_PEER
+#if CONFIG_WENDY_NET_PEER
     /* The same authenticated WendyCom listener serves LAN IPv4 and mesh IPv6. */
     int v6_only = 0;
     if (setsockopt(listen_fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6_only, sizeof v6_only) < 0) {

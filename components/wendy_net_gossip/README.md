@@ -5,13 +5,14 @@ This standalone, single-owner byte scheduler depends only on
 service catalogue, flash persistence, transport, or wire parser. The integrating
 runtime supplies digest identification, verifies complete artifacts before
 offering them, and owns serialization. The scheduler does not grant identity,
-routing, or service authority. Its type-1 route reserve and type-2 service hint
-policy do not impose an artifact schema or a per-service gossip model; runtime
-combined manifests remain a later integration. Type 3 uses the same shared bounds.
+routing, or service authority. The runtime uses the type-1 reserve for complete
+signed manifests containing routing and services together. The scheduler's other
+numeric categories retain their generic quota/hint policies; they do not imply
+a separate service publication or signature. Type 3 uses the same shared bounds.
 
 `HAVE` advertises an exact object digest. `WANT` starts a request; `DATA` carries
-request-tagged chunks. `UNAVAILABLE` answers an individual request. The prototype
-adds `GONE`, with the same digest and no request ID: it proactively withdraws
+request-tagged chunks. `UNAVAILABLE` answers an individual request. `GONE`, with
+the same digest and no request ID, proactively withdraws
 this session's supplier hint, allowing an alternate supplier to proceed without
 waiting for the idle timeout. GONE does not withdraw the origin's signed record
 or discard a copy held independently by the receiving node.
