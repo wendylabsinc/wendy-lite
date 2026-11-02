@@ -178,8 +178,8 @@ int main(int argc, char **argv)
      * between available inventory and the trust bundle. */
     if (c->issuers) {
         mbedtls_x509_crt *candidates[16];
-        size_t count = c->config.MBEDTLS_PRIVATE(f_wendy_untrusted_issuers)(
-            c, &c->certificate, candidates, 16);
+        size_t count = c->config.MBEDTLS_PRIVATE(f_wendy_untrusted_issuers)(c, &c->certificate,
+                                                                            candidates, 16);
         for (size_t i = 0; i < count; i++)
             for (mbedtls_x509_crt *anchor = &c->roots; anchor; anchor = anchor->next)
                 assert(candidates[i] != anchor);
