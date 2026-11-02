@@ -3,7 +3,7 @@
 #include "agent_pipe.h"
 #include "wendy_com_link.h"
 struct wnab_bridge;
-struct wnab_bridge *wnab_open(enum wcom_link_permission,unsigned capacity);
+struct wnab_bridge *wnab_open(enum wcom_link_permission, unsigned capacity);
 struct wnap_ring *wnab_incoming(struct wnab_bridge *);
 struct wnap_ring *wnab_outgoing(struct wnab_bridge *);
 void wnab_input_eof(struct wnab_bridge *);

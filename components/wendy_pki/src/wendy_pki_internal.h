@@ -15,27 +15,28 @@
 #define PKI_MAX_RESPONSE 65536
 struct pki_tls_owned_identity;
 struct pki_presented_chain;
-struct pki_public_chain
-{
+struct pki_public_chain {
     unsigned count;
     uint8_t hashes[8][32];
     /* Reuse sizes in the existing owned source; setup fills them only after
      * binding parsed DER to the public hashes. */
     uint32_t *sizes;
-    int (*metadata)(void *,struct wendy_pki_mesh_public_index *);
-    int (*read)(void *,unsigned,uint8_t **,size_t *);
+    int (*metadata)(void *, struct wendy_pki_mesh_public_index *);
+    int (*read)(void *, unsigned, uint8_t **, size_t *);
     void (*destroy)(void *);
     void *context;
     /* Optional owned enrollment-root DER snapshot: malloc size+1 bytes, with
      * a trailing NUL outside the returned size. TLS pins its SHA256 before
      * parsing and verifies the same bytes before every on-demand use. */
-    int (*load_trust)(void *,uint8_t **,size_t *);
+    int (*load_trust)(void *, uint8_t **, size_t *);
     uint8_t trust_hash[32];
 };
 static inline void pki_public_chain_free(struct pki_public_chain *chain)
 {
-    if(!chain)return;
-    if(chain->destroy)chain->destroy(chain->context);
+    if (!chain)
+        return;
+    if (chain->destroy)
+        chain->destroy(chain->context);
     pki_owned_free(chain);
 }
 extern const uint8_t wendy_pki_device_roots_start[] asm("_binary_wendy_pki_device_roots_start");
@@ -83,66 +84,79 @@ struct wendy_pki_connection
     uint8_t public_anchor;
     bool lazy_trust;
 };
-static inline int pki_limit_session(wendy_pki_connection *c,time_t now,int64_t monotonic)
+static inline int pki_limit_session(wendy_pki_connection *c, time_t now, int64_t monotonic)
 {
-    time_t expires=c->device_expires;
-    if (!expires || (c->operator_expires && c->operator_expires<expires)) expires=c->operator_expires;
-    if (!expires || expires<=now || monotonic<0) return -1;
-    int64_t remaining=expires-now;
-    if (remaining>(INT64_MAX-monotonic)/INT64_C(1000000)) return -1;
-    int64_t deadline=monotonic+remaining*INT64_C(1000000);
-    if (!c->session_deadline_us || deadline<c->session_deadline_us) c->session_deadline_us=deadline;
+    time_t expires = c->device_expires;
+    if (!expires || (c->operator_expires && c->operator_expires < expires))
+        expires = c->operator_expires;
+    if (!expires || expires <= now || monotonic < 0)
+        return -1;
+    int64_t remaining = expires - now;
+    if (remaining > (INT64_MAX - monotonic) / INT64_C(1000000))
+        return -1;
+    int64_t deadline = monotonic + remaining * INT64_C(1000000);
+    if (!c->session_deadline_us || deadline < c->session_deadline_us)
+        c->session_deadline_us = deadline;
     return 0;
 }
 /* Caller separately checks the exact signed clock and current enrollment
  * generation under identity_lock. Never resurrect an expired attachment or
  * accept a worker snapshot that changes its original full-path expiry. */
 static inline int pki_net_apply_time(wendy_pki_connection *c,
-    const struct wendy_pki_mesh_identity *identity,int64_t now)
+                                     const struct wendy_pki_mesh_identity *identity, int64_t now)
 {
-    if (!c || !identity || !c->mesh_deadline_us || now>=c->mesh_deadline_us ||
-        strcmp(c->mesh_tenant,identity->tenant) || strcmp(c->mesh_device,identity->device) ||
-        identity->certificate_expires!=c->device_expires ||
-        identity->verified_seconds<=0 || identity->verified_monotonic_us<0 ||
-        now<identity->verified_monotonic_us ||
-        now-identity->verified_monotonic_us>=INT64_C(300000000)) return -1;
-    int64_t lifetime=identity->certificate_expires-identity->verified_seconds;
-    if (lifetime<=30) return -1;
-    if (lifetime>300) lifetime=300;
-    if (identity->verified_monotonic_us>INT64_MAX-lifetime*INT64_C(1000000)) return -1;
-    int64_t deadline=identity->verified_monotonic_us+lifetime*INT64_C(1000000);
-    if (now>=deadline) return -1;
-    c->mesh_deadline_us=deadline;
+    if (!c || !identity || !c->mesh_deadline_us || now >= c->mesh_deadline_us ||
+        strcmp(c->mesh_tenant, identity->tenant) || strcmp(c->mesh_device, identity->device) ||
+        identity->certificate_expires != c->device_expires || identity->verified_seconds <= 0 ||
+        identity->verified_monotonic_us < 0 || now < identity->verified_monotonic_us ||
+        now - identity->verified_monotonic_us >= INT64_C(300000000))
+        return -1;
+    int64_t lifetime = identity->certificate_expires - identity->verified_seconds;
+    if (lifetime <= 30)
+        return -1;
+    if (lifetime > 300)
+        lifetime = 300;
+    if (identity->verified_monotonic_us > INT64_MAX - lifetime * INT64_C(1000000))
+        return -1;
+    int64_t deadline = identity->verified_monotonic_us + lifetime * INT64_C(1000000);
+    if (now >= deadline)
+        return -1;
+    c->mesh_deadline_us = deadline;
     return 0;
 }
 int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t key_size,
-                    struct wendy_conf_span cert, struct wendy_conf_span roots, wendy_pki_connection **out);
-int pki_tls_mesh_connect(const char *host, unsigned port, const char *tenant,
-    const char *device, const char *router, const uint8_t *key, size_t key_size,
-    struct wendy_conf_span cert, struct wendy_conf_span roots, wendy_pki_connection **out);
+                    struct wendy_conf_span cert, struct wendy_conf_span roots,
+                    wendy_pki_connection **out);
+int pki_tls_mesh_connect(const char *host, unsigned port, const char *tenant, const char *device,
+                         const char *router, const uint8_t *key, size_t key_size,
+                         struct wendy_conf_span cert, struct wendy_conf_span roots,
+                         wendy_pki_connection **out);
 int pki_http_post(const char *url, const char *type, const char *token, const void *body,
-                  size_t body_size, const uint8_t *key, size_t key_size, struct wendy_conf_span cert,
-                  struct wendy_conf_span roots, uint8_t **response, size_t *response_size);
+                  size_t body_size, const uint8_t *key, size_t key_size,
+                  struct wendy_conf_span cert, struct wendy_conf_span roots, uint8_t **response,
+                  size_t *response_size);
 /* End-to-end HTTPS over a caller-owned ciphertext stream. No client key or
  * enrollment token is sent. The caller releases its stream after return. */
-int pki_http_post_stream(const char *,const char *,const void *,size_t,
-    struct wendy_conf_span,const struct wendy_pki_stream *,uint8_t **,size_t *);
+int pki_http_post_stream(const char *, const char *, const void *, size_t, struct wendy_conf_span,
+                         const struct wendy_pki_stream *, uint8_t **, size_t *);
 /* Only enrollment/renewal may consume this authenticated response header.
  * The caller owns both the response body and optional allocated header. */
 int pki_http_post_enrollment(const char *url, const char *type, const char *token, const void *body,
-                  size_t body_size, const uint8_t *key, size_t key_size, struct wendy_conf_span cert,
-                  struct wendy_conf_span roots, uint8_t **response, size_t *response_size,
+                             size_t body_size, const uint8_t *key, size_t key_size,
+                             struct wendy_conf_span cert, struct wendy_conf_span roots,
+                             uint8_t **response, size_t *response_size,
                   char **lite_authority_header);
 
 int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, struct wendy_conf_span cert,
-                   struct wendy_conf_span roots, const char *tenant, wendy_pki_connection **out, int64_t deadline);
-int pki_tls_accept_stream(const struct wendy_pki_stream *stream,
-                          const uint8_t *key, size_t key_size, struct wendy_conf_span cert,
+                   struct wendy_conf_span roots, const char *tenant, wendy_pki_connection **out,
+                   int64_t deadline);
+int pki_tls_accept_stream(const struct wendy_pki_stream *stream, const uint8_t *key,
+                          size_t key_size, struct wendy_conf_span cert,
                           struct wendy_conf_span roots, const char *tenant,
                           wendy_pki_connection **out, int64_t deadline);
 int pki_tls_accept_lan(int fd, const uint8_t *key, size_t key_size, struct wendy_conf_span cert,
-                      struct wendy_conf_span roots, const char *tenant,
-                      wendy_pki_connection **out, int64_t deadline);
+                       struct wendy_conf_span roots, const char *tenant, wendy_pki_connection **out,
+                       int64_t deadline);
 int pki_tls_accept_lite(int fd, const uint8_t *key, size_t key_size, struct wendy_conf_span cert,
                        struct wendy_conf_span roots, const char *tenant,
                        wendy_pki_connection **out, int64_t deadline);
@@ -153,24 +167,27 @@ int pki_tls_accept_owned(int *fd, struct pki_tls_owned_identity *owned,
     wendy_pki_connection **out, int64_t deadline);
 /* Same complete-path, streamed-DER setup over a caller-owned radio stream.
  * Management BLE remains operator-only; it gains no router/device authority. */
-int pki_tls_accept_owned_stream(const struct wendy_pki_stream *,
-    struct pki_tls_owned_identity *,struct wendy_conf_span roots,
-    const char *tenant,const char *device,wendy_pki_connection **out,int64_t deadline);
+int pki_tls_accept_owned_stream(const struct wendy_pki_stream *, struct pki_tls_owned_identity *,
+                                struct wendy_conf_span roots, const char *tenant,
+                                const char *device, wendy_pki_connection **out, int64_t deadline);
 
 int pki_relay_grant(wendy_pki_connection *, const struct wendy_lite_trust *, int64_t deadline);
 
 /* A NULL peer is allowed only for client streams. The verified same-tenant
  * UUID is returned in connection->mesh_peer; self identities are rejected. */
-int pki_tls_mesh_stream(const struct wendy_pki_stream*, bool server, const char* tenant,
-    const char* device, const char* peer, const uint8_t* key, size_t key_size,
-    struct wendy_conf_span cert, struct wendy_conf_span roots, wendy_pki_connection** out);
+int pki_tls_mesh_stream(const struct wendy_pki_stream *, bool server, const char *tenant,
+                        const char *device, const char *peer, const uint8_t *key, size_t key_size,
+                        struct wendy_conf_span cert, struct wendy_conf_span roots,
+                        wendy_pki_connection **out);
 
-int pki_tls_gateway_connect(const char* host, unsigned port, const char* tenant, const char* device,
-    const char* router, const uint8_t* key, size_t key_size, struct wendy_conf_span cert,
-    struct wendy_conf_span roots, wendy_pki_connection** out);
-int pki_tls_bound_connect(const char* host, unsigned port, const char* interface, const char* resolver,
-    const uint8_t* key, size_t key_size, struct wendy_conf_span cert,
-    struct wendy_conf_span roots, wendy_pki_connection** out);
+int pki_tls_gateway_connect(const char *host, unsigned port, const char *tenant, const char *device,
+                            const char *router, const uint8_t *key, size_t key_size,
+                            struct wendy_conf_span cert, struct wendy_conf_span roots,
+                            wendy_pki_connection **out);
+int pki_tls_bound_connect(const char *host, unsigned port, const char *interface,
+                          const char *resolver, const uint8_t *key, size_t key_size,
+                          struct wendy_conf_span cert, struct wendy_conf_span roots,
+                          wendy_pki_connection **out);
 
 /* Native connection consumes these temporary NVS copies on every return.
  * Parsed TLS identity objects remain owned by the connection. */
@@ -205,22 +222,23 @@ struct pki_tls_owned_identity {
      * authorization at verify_at remains mandatory; only byte-identical,
      * previously verified paths may reuse their verified validity window.
      * This avoids a contiguous whole PEM copy. */
-    int (*read_der)(void *,unsigned,uint8_t **,size_t *);
+    int (*read_der)(void *, unsigned, uint8_t **, size_t *);
     /* Optional exact source digest/length using bounded reads. Same result
      * convention as read_der; bytes must be hashed, not trusted metadata. */
-    int (*hash_der)(void *,unsigned,uint8_t[32],size_t *);
+    int (*hash_der)(void *, unsigned, uint8_t[32], size_t *);
     /* Optional bounded public presentation reader, bound to the exact
      * independently verified part hash. Same synchronous lifetime as above. */
-    int (*read_der_range)(void *,unsigned,size_t,uint8_t *,size_t,const uint8_t[32]);
+    int (*read_der_range)(void *, unsigned, size_t, uint8_t *, size_t, const uint8_t[32]);
     void *der_context;
     /* Optional owned, hash-pinned public chain source. Setup compares every
      * hash with the exact verified own source before transfer. Enables releasing
      * serialized certificates while serving descriptors/parts on demand. */
     struct pki_public_chain *public_chain;
 };
-int pki_tls_net_connect(const char* host, unsigned port, const char* tenant, const char* device,
-    const char* peer, struct pki_tls_owned_identity* owned,
-    struct wendy_conf_span roots, const char* protocol, wendy_pki_connection** out);
+int pki_tls_net_connect(const char *host, unsigned port, const char *tenant, const char *device,
+                        const char *peer, struct pki_tls_owned_identity *owned,
+                        struct wendy_conf_span roots, const char *protocol,
+                        wendy_pki_connection **out);
 
 /* Consumes both fd and identity inputs on all returns. Peer UUID comes only
  * from the authenticated same-tenant device certificate. */
@@ -230,17 +248,20 @@ int pki_tls_net_accept(int *fd, const char *tenant, const char *device,
 /* Full-router TLS over caller-owned BLE/L2CAP bytes. A missing expected UUID
  * permits discovery by short hint; full chain, tenant, device role and ALPN
  * remain mandatory and the authenticated full UUID is available afterward. */
-int pki_tls_net_stream(const struct wendy_pki_stream *,bool server,const char *tenant,
-    const char *device,const char *expected_peer,struct pki_tls_owned_identity *,
-    struct wendy_conf_span roots,wendy_pki_connection **);
+int pki_tls_net_stream(const struct wendy_pki_stream *, bool server, const char *tenant,
+                       const char *device, const char *expected_peer,
+                       struct pki_tls_owned_identity *, struct wendy_conf_span roots,
+                       wendy_pki_connection **);
 
 /* CPU/storage preparation and one nonblocking handshake step. The caller's
  * buffered BIO and owned DER source remain alive until handshake completion. */
-int pki_tls_net_begin(const struct wendy_pki_stream *,bool,const char *,const char *,
-    struct pki_tls_owned_identity *,struct wendy_conf_span,bool,wendy_pki_connection **);
-int pki_tls_net_advance(wendy_pki_connection *,bool,const char *);
+int pki_tls_net_begin(const struct wendy_pki_stream *, bool, const char *, const char *,
+                      struct pki_tls_owned_identity *, struct wendy_conf_span, bool,
+                      wendy_pki_connection **);
+int pki_tls_net_advance(wendy_pki_connection *, bool, const char *);
 /* Native WendyCom server TLS: ordinary ALPN/no-ALPN, same-tenant operator or
  * device roles. CPU worker only; BIO callbacks never wait on network I/O. */
-int pki_tls_agent_begin(const struct wendy_pki_stream *,const char *,const char *,
-    struct pki_tls_owned_identity *,struct wendy_conf_span,wendy_pki_connection **);
+int pki_tls_agent_begin(const struct wendy_pki_stream *, const char *, const char *,
+                        struct pki_tls_owned_identity *, struct wendy_conf_span,
+                        wendy_pki_connection **);
 int pki_tls_agent_advance(wendy_pki_connection *);
