@@ -26,6 +26,8 @@ head = r'''
 #include <stdio.h>
 struct wn_candidate { int port; char address[64]; };
 struct wendy_pki_stream { int unused; };
+struct wendy_pki_net_issuers { void (*release)(void *); };
+struct wendy_pki_operator_peer;
 struct peer_state {
  struct wn_candidate candidate;
  char authenticated_peer[37];
@@ -37,7 +39,14 @@ struct peer_state {
  int64_t setup_at;
  atomic_bool setup_complete, setup_pending;
  struct wendy_pki_stream setup_stream;
+ struct wendy_pki_net_issuers tls_issuers;
+ struct wendy_pki_operator_peer *operator_peer;
+ uint8_t operator_instance[16];
 };
+/* This setup fixture has no issuer inventory or outstanding snapshot loans. */
+void wendy_net_peer_issuer_snapshot(struct wendy_pki_net_issuers *snapshot) {
+ memset(snapshot, 0, sizeof *snapshot);
+}
 static int64_t clock_us = 100;
 static bool allocation_ok = true, candidate_ok = true, connect_ready, worker_accept;
 static unsigned io_calls, connection_checks, submissions, closes;
