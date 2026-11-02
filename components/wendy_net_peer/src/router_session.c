@@ -13,6 +13,7 @@
 #include "certificate_store.h"
 #include "certificate_wire.h"
 #include "certificate_worker.h"
+#include "operator_worker.h"
 #include "certificate_read.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -126,6 +127,8 @@ struct wnrs {
     uint8_t described_artifact[32];
     bool described;
 #if WN_ROUTE_ASYNC
+    struct wnop_job *operator_verification;
+    uint8_t operator_record[32];
     struct wncrypto_job *record_verification;
     bool verification_blocked;
     int64_t signature_retry;
@@ -248,6 +251,23 @@ static int inventory(struct wnrs *s)
                 (!s->inventory_has_after || memcmp(e->device, s->inventory_after, 16) > 0) &&
                 (!next || memcmp(e->device, next->device, 16) < 0))
                 next = e;
+        const struct wno_entry *operator = NULL;
+        if (node->core.operators)
+            for (const struct wno_entry *e = node->core.operators->entries; e; e = e->next)
+                if (e->gossip_cached &&
+                    (!s->inventory_has_after || memcmp(e->address, s->inventory_after, 16) > 0) &&
+                    (!operator || memcmp(e->address, operator->address, 16) < 0))
+                    operator = e;
+        if (operator && (!next || memcmp(operator->address, next->device, 16) < 0)) {
+            struct wg_message have = {.id = {.type = 1}, .op = WG_HAVE};
+            memcpy(have.id.hash, operator->gossip_hash, 32);
+            int r = emit(s, &have);
+            if (r)
+                return r;
+            memcpy(s->inventory_after, operator->address, 16);
+            s->inventory_has_after = true;
+            continue;
+        }
         if (!next)
             break;
         struct wg_message have = {.id = {.type = 1}, .op = WG_HAVE};
@@ -373,7 +393,7 @@ static int publish(void *ctx, const struct wn_origin *origin, int64_t now, int64
     if (signed_result) {
         ESP_LOGW(TAG, "route proof signing failed: result=%d heap=%u largest=%u", signed_result,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
         return -1;
     }
 #endif
@@ -457,6 +477,10 @@ static bool known_artifact(void *context, const struct wg_id *id)
     for (const struct wnd_entry *e = node->core.directory.entries; e; e = e->next)
         if (e->gossip_retired && !memcmp(e->gossip_hash, id->hash, 32))
             return true;
+    if (node->core.operators)
+        for (const struct wno_entry *e = node->core.operators->entries; e; e = e->next)
+            if (e->gossip_retired && !memcmp(e->gossip_hash, id->hash, 32))
+                return true;
     return false;
 }
 static void evicted_artifact(void *context, const struct wg_id *id, const void *bytes, size_t size)
@@ -471,6 +495,12 @@ static void evicted_artifact(void *context, const struct wg_id *id, const void *
             e->gossip_cached = false;
             e->gossip_retired = true;
         }
+    if (node->core.operators)
+        for (struct wno_entry *e = node->core.operators->entries; e; e = e->next)
+            if (e->gossip_cached && !memcmp(e->gossip_hash, id->hash, 32)) {
+                e->gossip_cached = false;
+                e->gossip_retired = true;
+            }
 }
 static bool want_artifact(void *context, const struct wg_id *id, uint64_t now)
 {
@@ -809,7 +839,7 @@ static int admit_complete(void *ctx, const struct wg_id *id, const void *bytes, 
                         if (!memcmp(endpoint->device, uuid, 16)) {
                             memcpy(endpoint->artifact_hash, id->hash, 32);
                             break;
-            }
+                        }
             }
             int projected =
                 wnsc_manifest_services(s->node->catalog, &d, (unsigned)wn_doc_member(&d, 0, "body"),
@@ -857,6 +887,109 @@ static int admit_complete(void *ctx, const struct wg_id *id, const void *bytes, 
     return -1;
 }
 #if WN_ROUTE_ASYNC
+/* A typed operator owns an ordinary signed manifest and fetches its exact DER
+ * hashes. It does not need a second descriptor format or a special gossip type. */
+static int complete_operator(struct wnrs *s, const struct wg_id *id, const void *bytes, size_t size)
+{
+    struct wnrs_node *node = s->node;
+    if (node->core.config.endpoint_gateway)
+        return 0; /* Trusted sole next hop; no remote origin cache. */
+    struct wno_manifest proof;
+    int parsed = wno_manifest_read(bytes, size, node->clock.tenant, &proof);
+    if (parsed == WNO_UNSUPPORTED)
+        return 0;
+    if (parsed)
+        return -1;
+    if (s->operator_verification) {
+        struct wnop_job *job = s->operator_verification;
+        if (memcmp(s->operator_record, id->hash, 32))
+            return WG_DEFER;
+        if (!atomic_load(&job->done)) {
+            s->verification_blocked = true;
+            return WG_DEFER;
+        }
+        s->operator_verification = NULL;
+        s->verification_blocked = false;
+        bool current = job->clock.config_generation == node->clock.config_generation &&
+                       !memcmp(job->clock.trust_hash, node->clock.trust_hash, 32);
+        int verified = job->result;
+        int result = verified;
+        if (!verified && current)
+            result = wnr_operator_manifest_verified(&node->core, &proof, job->peer, unix_now(s),
+                                                    esp_timer_get_time());
+        wnop_job_release(job);
+        if (!current || verified > 0) {
+            s->signature_retry = esp_timer_get_time() + INT64_C(250000);
+            return WG_DEFER;
+        }
+        /* Stale/expired records and a full bounded directory are ordinary
+         * terminal outcomes, as for device origins. Do not verify them in a
+         * loop while retaining the carrier's completed download slot. */
+        if (result == 1 || result == 3)
+            return 0;
+        if (result)
+            return -1;
+        struct wno_entry *entry = NULL;
+        for (struct wno_entry *e = node->core.operators->entries; e; e = e->next)
+            if (e->principal_size == proof.principal_size &&
+                !memcmp(e->principal, proof.principal, proof.principal_size) &&
+                !memcmp(e->instance, proof.instance, 16)) {
+                entry = e;
+                break;
+            }
+        if (!entry)
+            return -1;
+        if (entry->gossip_cached && memcmp(entry->gossip_hash, id->hash, 32)) {
+            struct wg_id old = {.type = 1};
+            memcpy(old.hash, entry->gossip_hash, 32);
+            wg_forget(&node->pool, &old);
+            entry->gossip_cached = false;
+        }
+        int64_t now = esp_timer_get_time(), until = entry->deadline_us;
+        /* Withdrawal revokes the route immediately, but its signed notice
+         * remains useful to other peers for the rest of its verified lease. */
+        if (proof.withdraw)
+            until = now + (proof.expires - unix_now(s)) * 1000;
+        if (until <= now)
+            return 0;
+        struct wg_id accepted;
+        int offered = wg_offer(&node->pool, 1, bytes, size, (uint64_t)until / 1000,
+                               (uint64_t)now / 1000, &accepted);
+        memcpy(entry->gossip_hash, id->hash, 32);
+        entry->gossip_cached = !offered;
+        entry->gossip_retired = offered > 0;
+        if (!offered) {
+            struct wg_message have = {.id = *id, .op = WG_HAVE};
+            for (struct wnrs *p = node->sessions; p; p = p->next)
+                if (p != s && announce(p, &have))
+                    return -1;
+        }
+        return offered < 0 ? -1 : 0;
+    }
+    int started = wnop_job_start(&s->operator_verification, &node->certificates, bytes, size,
+                                 &node->clock, NULL);
+    if (started == 2) {
+        if (!s->fetch.chain) {
+            uint8_t hashes[16][32];
+            for (unsigned i = 0; i < proof.hash_count; i++)
+                memcpy(hashes[i], proof.hashes[i], 32);
+            int r =
+                wncf_start_hashes(&s->fetch, hashes, proof.hash_count, esp_timer_get_time() / 1000);
+            if (r < 0)
+                return -1;
+        }
+        return WG_DEFER;
+    }
+    if (started < 0)
+        return -1;
+    if (!started) {
+        memcpy(s->operator_record, id->hash, 32);
+        s->verification_blocked = true;
+    }
+    return WG_DEFER;
+}
+#endif
+#if WN_ROUTE_ASYNC
 struct manifest_workspace {
     struct wn_doc doc;
     struct wnd_manifest manifest;
@@ -891,8 +1024,14 @@ static int complete(void *ctx, const struct wg_id *id, const void *bytes, size_t
     size_t sig_size = 0;
     const uint8_t *signature;
     struct wnd_entry *identity = NULL;
-    if (wn_doc_parse_array_view(&w->doc, bytes, size, WG_OBJECT_MAX, "s") ||
-        wn_doc_string(&w->doc, wn_doc_member(&w->doc, 0, "principal"), w->principal,
+    if (wn_doc_parse_array_view(&w->doc, bytes, size, WG_OBJECT_MAX, "s"))
+        goto done;
+    int owner_body = wn_doc_member(&w->doc, 0, "body");
+    if (owner_body >= 0 && wn_doc_member(&w->doc, (unsigned)owner_body, "o") >= 0) {
+        wendy_net_free(w);
+        return complete_operator(s, id, bytes, size);
+    }
+    if (wn_doc_string(&w->doc, wn_doc_member(&w->doc, 0, "principal"), w->principal,
                       sizeof w->principal) != 105 ||
         wn_principal_device(w->principal, node->clock.tenant, w->uuid))
         goto done;
@@ -1217,6 +1356,14 @@ static int certificate_tick(struct wnrs *s)
         return 0;
     }
     if (r == 2) {
+        /* Exact hashes came from an operator's signed manifest; its own worker
+         * pins and verifies them when the retained download next completes. */
+        if (!s->fetch.chain->principal[0]) {
+            if (node->fetch_owner == s)
+                node->fetch_owner = NULL;
+            wncf_stop(&s->fetch);
+            return 0;
+        }
         if (chain_verified(node, s->fetch.chain)) {
             if (node->fetch_owner == s)
                 node->fetch_owner = NULL;
@@ -1260,7 +1407,7 @@ static uint64_t catalog_next_hop(void *context, const uint8_t device[16], uint64
     struct wb_route route;
     if (!wnr_lookup(&node->core, address, esp_timer_get_time(), &route) || route.link == exclude)
         return 0;
- return route.link;
+    return route.link;
 }
 static void catalog_changed(void *context)
 {
@@ -1321,7 +1468,7 @@ static bool certificate_index_current(void *context,
 /* A newly admitted TLS context is actor-owned after its worker loan returned.
  * Snapshot availability only; actual DER output keeps the existing I/O path. */
 static void refresh_certificate_index(struct wnrs_node *node, wendy_pki_connection *connection,
-    const struct wendy_pki_mesh_identity *identity)
+                                      const struct wendy_pki_mesh_identity *identity)
 {
     if (!node->certificates.opened)
         return;
@@ -1504,6 +1651,8 @@ void wnrs_close(struct wnrs *s)
     if (!s)
         return;
 #if WN_ROUTE_ASYNC
+    wnop_job_release(s->operator_verification);
+    s->operator_verification = NULL;
     wncrypto_cancel(&s->record_verification);
 #endif
     struct wnrs_node *node = s->node;
@@ -1522,7 +1671,7 @@ void wnrs_close(struct wnrs *s)
                 if (!memcmp(e->address, s->peer_address, 16)) {
                     (void)wnd_key_pin(&node->core.directory, e->device, false);
                     break;
-            }
+                }
     }
     if (node->fetch_owner == s)
         node->fetch_owner = NULL;
@@ -1560,19 +1709,22 @@ int wnrs_tick(struct wnrs *s)
                  "router tick failed: result=%d stage=%s error=%d checkpoint=%u heap=%u largest=%u",
                  r, s->node->core.stop_stage ? s->node->core.stop_stage : "unknown",
                  s->node->core.stop_error, (unsigned)s->node->core.checkpoint_bytes,
-            (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
         return -1;
     }
     bool owned = false;
 #if WN_ROUTE_ASYNC
-    owned = s->record_verification != NULL || s->record_verdict != 0;
+    owned = s->record_verification != NULL || s->record_verdict != 0 ||
+            s->operator_verification != NULL;
     if (owned) {
         struct wg_id id = {.type = 1};
-        memcpy(id.hash, s->verified_record, 32);
+        memcpy(id.hash, s->operator_verification ? s->operator_record : s->verified_record, 32);
         r = wg_resume_id(&s->gossip, &id, complete, s);
         if (r == WG_RESUME_MISSING) {
             wncrypto_cancel(&s->record_verification);
+            wnop_job_release(s->operator_verification);
+            s->operator_verification = NULL;
             s->record_verdict = 0;
             s->verification_blocked = false;
             r = 0;
@@ -1619,14 +1771,14 @@ int wnrs_tick(struct wnrs *s)
         s->selected_metric = route.metric;
         ESP_LOGI(
             TAG,
-                 "native Babel peer route ready: cost=%u selected_link=%llu carrier_link=%llu state=%u gossip=%u "
-                 "heap=%u internal=%u largest_internal=%u stack_free=%u",
+            "native Babel peer route ready: cost=%u selected_link=%llu carrier_link=%llu state=%u gossip=%u "
+            "heap=%u internal=%u largest_internal=%u stack_free=%u",
             (unsigned)route.metric, (unsigned long long)route.link, (unsigned long long)s->link,
             (unsigned)wnr_memory(&s->node->core), (unsigned)wg_memory(&s->node->pool),
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+            (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-                 (unsigned)uxTaskGetStackHighWaterMark(NULL));
+            (unsigned)uxTaskGetStackHighWaterMark(NULL));
     }
 #undef TICK_PROBE
     return 0;
@@ -1717,6 +1869,13 @@ static int control_parsed(struct wnrs *s, const void *data, size_t size, const s
         int chain = wn_doc_member(d, cert, "chain");
         if (chain >= 0) {
             struct wncf_chain description;
+            int principal = wn_doc_member(d, (unsigned)chain, "principal");
+            const char *name = NULL;
+            size_t name_size = 0;
+            if (wn_doc_text(d, principal, &name, &name_size))
+                return -1;
+            if (!wendy_pki_operator_principal(name, name_size, s->identity.tenant))
+                return 0;
             if (wncf_chain_read(d, (unsigned)chain, s->identity.tenant, &description))
                 return -1;
             if (!s->node->certificates.opened || s->fetch.chain)
@@ -1756,12 +1915,12 @@ static int control_parsed(struct wnrs *s, const void *data, size_t size, const s
                     if (!strcmp(p->principal, description.principal)) {
                         needed = true;
                         break;
-            }
+                    }
                 for (struct wnrs *peer = s->node->sessions; identity && peer; peer = peer->next)
                     if (!memcmp(peer->peer_address, identity->address, 16)) {
                         needed = true;
                         break;
-        }
+                    }
                 if (!needed)
                     return 0;
             }
@@ -1858,7 +2017,7 @@ bool wnrs_app_endpoint(struct wnrs *s, const uint8_t device[16], uint16_t *port)
                 if (peer->link == s->node->endpoint_request_supplier) {
                     supplier = peer->next ? peer->next : s->node->sessions;
                     break;
-        }
+                }
         }
         if (n > 0 && !send_control(supplier, wire, (size_t)n)) {
             memcpy(s->node->endpoint_request_device, device, 16);
@@ -1953,6 +2112,8 @@ int64_t wnrs_next_deadline(const struct wnrs *s)
         c->published && c->published_us + INT64_C(1000000) < deadline)
         deadline = c->published_us + INT64_C(1000000);
 #if WN_ROUTE_ASYNC
+    if (s->operator_verification && atomic_load(&s->operator_verification->done))
+        return esp_timer_get_time();
     if (s->signature_retry && s->signature_retry < deadline)
         deadline = s->signature_retry;
 #endif
@@ -2016,17 +2177,56 @@ static int64_t topology_expiry(const struct wnrs_node *n, int64_t deadline, int6
                     (deadline - n->clock.verified_monotonic_us) / 1000;
     return signed_expiry > 0 && signed_expiry < bound ? signed_expiry : bound;
 }
-/* Typed operator state is added by the following authority delivery. This
- * generic hook deliberately creates neither a registry nor authority on C6. */
+/* Borrow only an already verified live receipt. No scan allocations, signer
+ * work or additional registry is needed; constrained gateways return empty. */
 int wnrs_topology_operator_row(struct wnrs_node *node, unsigned category, unsigned index,
                                int64_t now, struct wnt_record_view *view)
 {
-    (void)node;
-    (void)category;
-    (void)index;
-    (void)now;
-    (void)view;
-    return 0;
+    if (!node || !view || !node->core.operators || node->core.config.endpoint_gateway)
+        return 0;
+    if (category != 2 && category != 3)
+        return 0;
+    const struct wno_entry *selected = NULL;
+    for (const struct wno_entry *e = node->core.operators->entries; e; e = e->next) {
+        if (e->deadline_us <= now)
+            continue;
+        if (category == 2) {
+            if (view->record.address.size != 16 ||
+                memcmp(e->address, view->record.address.bytes, 16))
+                continue;
+            /* A collision has no unique authenticated owner. */
+            if (selected)
+                return 0;
+            selected = e;
+        } else if (!index--) {
+            selected = e;
+            break;
+        }
+    }
+    if (!selected || selected->principal_size > WNT_TOPOLOGY_PRINCIPAL_MAX)
+        return 0;
+    WendyComNetTopologyRecord *out = &view->record;
+    out->owner_role = WNT_TOPOLOGY_OPERATOR;
+    out->device.size = 0;
+    out->owner_instance.size = 16;
+    memcpy(out->owner_instance.bytes, selected->instance, 16);
+    view->principal = selected->principal;
+    view->principal_size = selected->principal_size;
+    out->expires_at_unix_ms = topology_expiry(node, selected->deadline_us, 0);
+    view->lease_deadline_us = selected->deadline_us;
+    if (category == 2) {
+        out->authorized = wno_authorizes(node->core.operators, selected->address, out->router_id,
+                                         (uint16_t)out->sequence, now);
+    } else {
+        out->kind = 3;
+        out->address.size = 16;
+        memcpy(out->address.bytes, selected->address, 16);
+        out->router_id = selected->origin.router_id;
+        out->sequence = selected->origin.seqno;
+        out->revision = selected->revision;
+        out->authorized = true;
+    }
+    return 1;
 }
 static int topology_record(struct wnrs_node *n, unsigned wanted, int64_t now,
                            struct wnt_record_view *view)

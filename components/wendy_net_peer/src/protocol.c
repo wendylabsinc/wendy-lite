@@ -91,7 +91,7 @@ void wn_prefix(const uint8_t u[16], char out[48])
     uint8_t a[16];
     wn_address(u, a);
     snprintf(out, 48, "fd45:b891:567f:%x:%x:%x:%x:%x/128", wn_get16(a + 6), wn_get16(a + 8),
-             wn_get16(a + 10), wn_get16(a + 12), wn_get16(a + 14));
+        wn_get16(a + 10), wn_get16(a + 12), wn_get16(a + 14));
 }
 int wn_principal(const char *tenant, const char *device, char out[106])
 {
@@ -249,10 +249,15 @@ int wn_directory_missing_write(const char *principal, bool manifest, char *out, 
 
 bool wn_ip_admits(const uint8_t self[16], const void *data, size_t size, bool incoming)
 {
-    static const uint8_t prefix[6] = {0xfd, 0x45, 0xb8, 0x91, 0x56, 0x7f};
+    static const uint8_t prefix[5] = {0xfd, 0x45, 0xb8, 0x91, 0x56};
     const uint8_t *p = data;
+    /* Structural netif gate only. The actor subsequently requires the exact
+     * signed origin on full routers, or the sole authenticated gateway on the
+     * constrained profile. The local endpoint must still be our exact address. */
     if (!self || !p || size < 40 || size > WN_MTU || p[0] >> 4 != 6 ||
-        wn_get16(p + 4) != size - 40 || memcmp(p + 8, prefix, 6) || memcmp(p + 24, prefix, 6))
+        wn_get16(p + 4) != size - 40 || memcmp(p + 8, prefix, 5) ||
+        (p[13] != 0x7f && p[13] != 0x80) || memcmp(p + 24, prefix, 5) ||
+        (p[29] != 0x7f && p[29] != 0x80))
         return false;
     uint8_t address[16];
     wn_address(self, address);

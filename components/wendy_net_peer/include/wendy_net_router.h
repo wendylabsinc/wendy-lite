@@ -5,6 +5,7 @@
 #pragma once
 #include "wendy_babel.h"
 #include "wendy_net_directory.h"
+#include "wendy_net_operator.h"
 
 #define WNR_JOURNAL_HEADER 84
 #define WNR_JOURNAL_MAX (WNR_JOURNAL_HEADER + WB_HISTORY_MAX + WND_RECEIPTS_MAX + 32)
@@ -37,6 +38,7 @@ struct wnr_core {
     struct wb_engine babel;
     struct wnd_directory directory;
     struct wne_cache endpoints;
+    struct wno_directory *operators; /* lazy, full routers only; no signed blobs */
     struct wnr_config config;
     uint8_t scope[76], saved_hash[32];
     int64_t epoch_us, now_us, unix_ms, published_us;
@@ -71,7 +73,7 @@ int wnr_attach(struct wnr_core *, const char *peer, uint16_t cost, int64_t unix_
                int64_t monotonic_us, uint64_t *link);
 int wnr_detach(struct wnr_core *, uint64_t link, int64_t unix_ms, int64_t monotonic_us);
 int wnr_receive(struct wnr_core *, uint64_t link, const void *, size_t, int64_t unix_ms,
-                int64_t monotonic_us);
+               int64_t monotonic_us);
 int wnr_tick(struct wnr_core *, int64_t unix_ms, int64_t monotonic_us);
 /* Copies only a committed, presently authorized IPv6 /128 route. */
 bool wnr_lookup(const struct wnr_core *, const uint8_t address[16], int64_t monotonic_us,
@@ -95,3 +97,10 @@ size_t wnr_memory(const struct wnr_core *);
 int wnr_manifest_verified(struct wnr_core *, const void *, size_t, int64_t, int64_t);
 
 bool wnr_busy(const struct wnr_core *);
+
+/* Actor continuation only: primary chain and this exact v4 signature completed
+ * on the crypto worker. Operator origins use ordinary manifest gossip. Gateway
+ * profiles deliberately do not learn/cache remote operator authorities. */
+int wnr_operator_manifest_verified(struct wnr_core *, const struct wno_manifest *,
+                                   const struct wendy_pki_operator_peer *, int64_t unix_ms,
+                                   int64_t monotonic_us);

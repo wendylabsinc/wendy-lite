@@ -76,7 +76,13 @@ func main() {
 		parent, issuer = ca, key
 	}
 	leaf := func(role, id string) (tls.Certificate, []byte) {
-		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		var key crypto.Signer
+		var err error
+		if profile == "mldsa65" && role == "operator" {
+			key, err = mldsa.GenerateKey(mldsa.MLDSA65())
+		} else {
+			key, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		}
 		must(err)
 		cert := template("normal " + role)
 		cert.KeyUsage = x509.KeyUsageDigitalSignature
