@@ -4,7 +4,10 @@
 #include "wendy_babel.h"
 #include <string.h>
 
-static uint16_t u16(const uint8_t *p) { return (uint16_t)((unsigned)p[0] << 8 | p[1]); }
+static uint16_t u16(const uint8_t *p)
+{
+    return (uint16_t)((unsigned)p[0] << 8 | p[1]);
+}
 static uint64_t u64(const uint8_t *p)
 {
     uint64_t v = 0;
@@ -29,12 +32,10 @@ bool wb_prefix_equal(const struct wb_prefix *a, const struct wb_prefix *b)
 void wb_prefix_mask(struct wb_prefix *p)
 {
     unsigned bits = p->bits;
-    for (unsigned i = 0; i < 16; i++)
-    {
+    for (unsigned i = 0; i < 16; i++) {
         if (bits >= 8)
             bits -= 8;
-        else
-        {
+        else {
             p->bytes[i] &= bits ? (uint8_t)(255u << (8 - bits)) : 0;
             bits = 0;
         }
@@ -50,8 +51,7 @@ bool wb_prefix_valid(const struct wb_prefix *p)
 }
 static bool subs(const uint8_t *p, size_t n)
 {
-    while (n)
-    {
+    while (n) {
         unsigned t = *p++;
         n--;
         if (!t)
@@ -72,22 +72,19 @@ static bool address(unsigned ae, const uint8_t *p, size_t n, uint8_t out[16], ui
     *used = 0;
     if (ae == 0)
         return true;
-    if (ae == 1 && n >= 4)
-    {
+    if (ae == 1 && n >= 4) {
         memcpy(out, p, 4);
         *family = 4;
         *used = 4;
         return true;
     }
-    if (ae == 2 && n >= 16)
-    {
+    if (ae == 2 && n >= 16) {
         memcpy(out, p, 16);
         *family = 6;
         *used = 16;
         return true;
     }
-    if (ae == 3 && n >= 8)
-    {
+    if (ae == 3 && n >= 8) {
         out[0] = 0xfe;
         out[1] = 0x80;
         memcpy(out + 8, p, 8);
@@ -112,8 +109,7 @@ static bool prefix(unsigned ae, unsigned bits, unsigned omitted, const uint8_t *
     out->bits = (uint8_t)bits;
     if (omitted)
         memcpy(out->bytes, previous->bytes, 16);
-    if (ae == 3)
-    {
+    if (ae == 3) {
         out->bytes[0] = 0xfe;
         out->bytes[1] = 0x80;
     }
@@ -131,8 +127,7 @@ int wb_decode(const void *data, size_t size, const uint8_t source[16],
         return WB_INVALID;
     size_t body = u16(packet + 2), pos = 4;
     /* Validate all outer TLV lengths before producing any state changes. */
-    while (pos < 4 + body)
-    {
+    while (pos < 4 + body) {
         unsigned t = packet[pos++];
         if (!t)
             continue;
@@ -145,8 +140,7 @@ int wb_decode(const void *data, size_t size, const uint8_t source[16],
     memcpy(hops[1], source, 16);
     uint64_t router = 0;
     pos = 4;
-    while (pos < 4 + body)
-    {
+    while (pos < 4 + body) {
         unsigned t = packet[pos++];
         if (!t)
             continue;
@@ -154,8 +148,7 @@ int wb_decode(const void *data, size_t size, const uint8_t source[16],
         const uint8_t *p = packet + pos;
         pos += n;
         struct wb_message m = {.type = (uint8_t)t};
-        switch (t)
-        {
+        switch (t) {
         case WB_HELLO:
         case WB_ACK_REQUEST:
             if (n < 6)
@@ -174,21 +167,17 @@ int wb_decode(const void *data, size_t size, const uint8_t source[16],
             m.opaque = u16(p);
             break;
         case WB_IHU:
-        case WB_NEXT_HOP:
-        {
+        case WB_NEXT_HOP: {
             unsigned base = t == WB_IHU ? 6 : 2;
             if (n < base || !address(p[0], p + base, n - base, m.address, &m.address_family, &z) ||
                 (t == WB_NEXT_HOP && !p[0]))
                 continue;
             used = base + z;
-            if (t == WB_NEXT_HOP)
-            {
+            if (t == WB_NEXT_HOP) {
                 unsigned f = m.address_family == 4 ? 0 : 1;
                 memcpy(hops[f], m.address, 16);
                 hop_family[f] = m.address_family;
-            }
-            else
-            {
+            } else {
                 m.metric = u16(p + 2);
                 m.interval = u16(p + 4);
                 if (!m.interval)
@@ -202,8 +191,7 @@ int wb_decode(const void *data, size_t size, const uint8_t source[16],
             used = 10;
             router = m.router = u64(p + 2);
             break;
-        case WB_UPDATE:
-        {
+        case WB_UPDATE: {
             if (n < 10)
                 continue;
             unsigned ae = p[0];
@@ -211,15 +199,12 @@ int wb_decode(const void *data, size_t size, const uint8_t source[16],
             m.seqno = u16(p + 6);
             m.metric = u16(p + 8);
             m.via6 = ae == 4;
-            if (!ae)
-            {
+            if (!ae) {
                 if (p[2] || p[3] || m.metric != WB_INFINITY)
                     continue;
                 used = 10;
                 m.wildcard = true;
-            }
-            else
-            {
+            } else {
                 if (ae > 4 || !prefix(ae, p[2], p[3], p + 10, n - 10, &previous[ae], &m.prefix, &z))
                     continue;
                 used = 10 + z;
@@ -244,27 +229,22 @@ int wb_decode(const void *data, size_t size, const uint8_t source[16],
             break;
         }
         case WB_REQUEST:
-        case WB_SEQ_REQUEST:
-        {
+        case WB_SEQ_REQUEST: {
             unsigned base = t == WB_REQUEST ? 2 : 14;
             if (n < base)
                 continue;
-            if (!p[0])
-            {
+            if (!p[0]) {
                 if (t != WB_REQUEST || p[1])
                     continue;
                 used = base;
                 m.wildcard = true;
-            }
-            else
-            {
+            } else {
                 struct wb_prefix none = {0};
                 if (!prefix(p[0], p[1], 0, p + base, n - base, &none, &m.prefix, &z))
                     continue;
                 used = base + z;
             }
-            if (t == WB_SEQ_REQUEST)
-            {
+            if (t == WB_SEQ_REQUEST) {
                 m.seqno = u16(p + 2);
                 m.hops = p[4];
                 m.router = u64(p + 6);
@@ -292,8 +272,7 @@ size_t wb_encode(const struct wb_message *m, uint8_t *out, size_t cap)
         return 0;
     uint8_t p[64] = {0};
     size_t n = 0;
-    switch (m->type)
-    {
+    switch (m->type) {
     case WB_HELLO:
     case WB_ACK_REQUEST:
         n = 8;
@@ -316,8 +295,7 @@ size_t wb_encode(const struct wb_message *m, uint8_t *out, size_t cap)
         p[1] = 6;
         put16(p + 4, m->metric);
         put16(p + 6, m->interval);
-        if (m->address_family)
-        {
+        if (m->address_family) {
             unsigned bytes = m->address_family == 4 ? 4 : 16;
             p[2] = m->address_family == 4 ? 1 : 2;
             memcpy(p + n, m->address, bytes);
@@ -325,16 +303,13 @@ size_t wb_encode(const struct wb_message *m, uint8_t *out, size_t cap)
             p[1] = (uint8_t)(n - 2);
         }
         break;
-    case WB_UPDATE:
-    {
-        if (m->metric != WB_INFINITY)
-        {
+    case WB_UPDATE: {
+        if (m->metric != WB_INFINITY) {
             p[0] = WB_ROUTER;
             p[1] = 10;
             put64(p + 4, m->router);
             n = 12;
-            if (m->address_family)
-            {
+            if (m->address_family) {
                 unsigned bytes = m->address_family == 4 ? 4 : 16;
                 p[n] = WB_NEXT_HOP;
                 p[n + 1] = (uint8_t)(bytes + 2);
@@ -350,8 +325,7 @@ size_t wb_encode(const struct wb_message *m, uint8_t *out, size_t cap)
         put16(p + at + 6, m->interval);
         put16(p + at + 8, m->seqno);
         put16(p + at + 10, m->metric);
-        if (!m->wildcard)
-        {
+        if (!m->wildcard) {
             unsigned bytes = (m->prefix.bits + 7) / 8;
             p[at + 2] = m->prefix.family == 4 ? (m->via6 ? 4 : 1) : 2;
             p[at + 4] = m->prefix.bits;
@@ -362,14 +336,12 @@ size_t wb_encode(const struct wb_message *m, uint8_t *out, size_t cap)
         break;
     }
     case WB_REQUEST:
-    case WB_SEQ_REQUEST:
-    {
+    case WB_SEQ_REQUEST: {
         unsigned base = m->type == WB_REQUEST ? 2 : 14;
         p[0] = m->type;
         p[1] = (uint8_t)base;
         n = base + 2;
-        if (!m->wildcard)
-        {
+        if (!m->wildcard) {
             unsigned bytes = (m->prefix.bits + 7) / 8;
             p[2] = m->prefix.family == 4 ? 1 : 2;
             p[3] = m->prefix.bits;
@@ -377,8 +349,7 @@ size_t wb_encode(const struct wb_message *m, uint8_t *out, size_t cap)
             n += bytes;
             p[1] += (uint8_t)bytes;
         }
-        if (m->type == WB_SEQ_REQUEST)
-        {
+        if (m->type == WB_SEQ_REQUEST) {
             put16(p + 4, m->seqno);
             p[6] = m->hops;
             put64(p + 8, m->router);

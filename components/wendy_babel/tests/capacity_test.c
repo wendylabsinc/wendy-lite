@@ -39,10 +39,12 @@ int main(void)
     struct wb_config c = {.router = 1000};
     assert(wb_init(&e, &c) == WB_OK && !e.config.local_only);
     assert(WB_CANDIDATES >= WB_ROUTES * WB_LINKS);
-    for (unsigned path = 1; path <= WB_LINKS; path++)
-    {
-        struct wb_link l = {.id = path, .local = {0xfe, 0x80}, .peer = {0xfe, 0x80},
-                            .cost = 128 * path, .max_packet = 512};
+    for (unsigned path = 1; path <= WB_LINKS; path++) {
+        struct wb_link l = {.id = path,
+                            .local = {0xfe, 0x80},
+                            .peer = {0xfe, 0x80},
+                            .cost = 128 * path,
+                            .max_packet = 512};
         l.local[15] = 100;
         l.peer[15] = path;
         complete(&e, wb_add_link(&e, 0, &l));
@@ -50,10 +52,13 @@ int main(void)
         receive(&e, path, &m);
         m = (struct wb_message){.type = WB_IHU, .metric = 128, .interval = 800};
         receive(&e, path, &m);
-        for (unsigned prefix = 1; prefix <= WB_ROUTES; prefix++)
-        {
-            m = (struct wb_message){.type = WB_UPDATE, .prefix = host(prefix), .router = prefix,
-                                    .seqno = 1, .metric = 0, .interval = 1600};
+        for (unsigned prefix = 1; prefix <= WB_ROUTES; prefix++) {
+            m = (struct wb_message){.type = WB_UPDATE,
+                                    .prefix = host(prefix),
+                                    .router = prefix,
+                                    .seqno = 1,
+                                    .metric = 0,
+                                    .interval = 1600};
             receive(&e, path, &m);
         }
     }
@@ -69,8 +74,7 @@ int main(void)
     complete(&e, wb_originate(&e, 0, &own, 0));
     assert(wb_lookup(&e, &own)->local);
     complete(&e, wb_withdraw(&e, 0, &own));
-    for (unsigned path = 1; path <= WB_LINKS; path++)
-    {
+    for (unsigned path = 1; path <= WB_LINKS; path++) {
         complete(&e, wb_remove_link(&e, 0, path));
         const struct wb_route *r = wb_lookup(&e, &own);
         assert(r && (path == WB_LINKS ? r->unreachable : r->link == path + 1));
