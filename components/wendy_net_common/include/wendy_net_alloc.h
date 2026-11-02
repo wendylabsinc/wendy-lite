@@ -19,7 +19,7 @@ extern "C" {
 #ifndef CONFIG_WENDY_NET_INTERNAL_MEMORY_LIMIT_KIB
 #define CONFIG_WENDY_NET_INTERNAL_MEMORY_LIMIT_KIB 1024
 #endif
-#define WENDY_NET_RUNTIME_INTERNAL_MEMORY_LIMIT \
+#define WENDY_NET_RUNTIME_INTERNAL_MEMORY_LIMIT                                                    \
     ((size_t)CONFIG_WENDY_NET_INTERNAL_MEMORY_LIMIT_KIB * 1024)
 #define WENDY_NET_RUNTIME_EXTERNAL_MEMORY_LIMIT ((size_t)2 * 1024 * 1024)
 /* Available while OFF as well, for management capability reporting. */
@@ -48,19 +48,42 @@ char *wendy_net_strdup(const char *text);
 /* Portable components retain their libc ownership ABI on host. Their existing
  * standalone tests and custom allocator callbacks do not need runtime startup
  * or a link dependency on the ESP ledger. */
-static inline void *wendy_net_malloc(size_t bytes) { return malloc(bytes); }
-static inline void *wendy_net_calloc(size_t count, size_t bytes) { return calloc(count, bytes); }
-static inline void *wendy_net_realloc(void *ptr, size_t bytes) { return realloc(ptr, bytes); }
-static inline void wendy_net_free(void *ptr) { free(ptr); }
-static inline void *wendy_net_internal_malloc(size_t bytes) { return malloc(bytes); }
-static inline void *wendy_net_rtc_malloc(size_t bytes) { return malloc(bytes); }
-static inline void *wendy_net_internal_calloc(size_t count, size_t bytes) { return calloc(count, bytes); }
+static inline void *wendy_net_malloc(size_t bytes)
+{
+    return malloc(bytes);
+}
+static inline void *wendy_net_calloc(size_t count, size_t bytes)
+{
+    return calloc(count, bytes);
+}
+static inline void *wendy_net_realloc(void *ptr, size_t bytes)
+{
+    return realloc(ptr, bytes);
+}
+static inline void wendy_net_free(void *ptr)
+{
+    free(ptr);
+}
+static inline void *wendy_net_internal_malloc(size_t bytes)
+{
+    return malloc(bytes);
+}
+static inline void *wendy_net_rtc_malloc(size_t bytes)
+{
+    return malloc(bytes);
+}
+static inline void *wendy_net_internal_calloc(size_t count, size_t bytes)
+{
+    return calloc(count, bytes);
+}
 static inline char *wendy_net_strdup(const char *text)
 {
-    if (!text) return NULL;
+    if (!text)
+        return NULL;
     size_t size = strlen(text) + 1;
     char *copy = malloc(size);
-    if (copy) memcpy(copy, text, size);
+    if (copy)
+        memcpy(copy, text, size);
     return copy;
 }
 #endif

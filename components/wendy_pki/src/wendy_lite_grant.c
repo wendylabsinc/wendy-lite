@@ -69,33 +69,39 @@ int wendy_lite_verify_grant(const uint8_t *r, size_t n,
     return result;
 }
 
-int pki_parsed_peer_expiry(const mbedtls_x509_crt *cert,time_t *expires)
+int pki_parsed_peer_expiry(const mbedtls_x509_crt *cert, time_t *expires)
 {
-    if (!cert || !expires || !cert->raw.len) return -1;
-    int result=-1;
-        const mbedtls_x509_time *t = &cert->valid_to;
-        if (t->year >= 1970 && t->year <= 9999) {
-            /* Gregorian civil date to UTC seconds, independent of process TZ. */
-            int year = t->year - (t->mon <= 2);
-            int era = year / 400, yy = year - era * 400;
-            int doy = (153 * (t->mon + (t->mon > 2 ? -3 : 9)) + 2) / 5 + t->day - 1;
-            int64_t seconds = ((int64_t)era * 146097 + yy * 365 + yy / 4 - yy / 100 +
-                               doy - 719468) * 86400 + t->hour * 3600 + t->min * 60 + t->sec;
-            time_t value = (time_t)seconds;
-            if (seconds >= 0 && (int64_t)value == seconds) {
-                *expires = value;
-                result = 0;
-            }
+    if (!cert || !expires || !cert->raw.len)
+        return -1;
+    int result = -1;
+    const mbedtls_x509_time *t = &cert->valid_to;
+    if (t->year >= 1970 && t->year <= 9999) {
+        /* Gregorian civil date to UTC seconds, independent of process TZ. */
+        int year = t->year - (t->mon <= 2);
+        int era = year / 400, yy = year - era * 400;
+        int doy = (153 * (t->mon + (t->mon > 2 ? -3 : 9)) + 2) / 5 + t->day - 1;
+        int64_t seconds =
+            ((int64_t)era * 146097 + yy * 365 + yy / 4 - yy / 100 + doy - 719468) * 86400 +
+            t->hour * 3600 + t->min * 60 + t->sec;
+        time_t value = (time_t)seconds;
+        if (seconds >= 0 && (int64_t)value == seconds) {
+            *expires = value;
+            result = 0;
         }
+    }
     return result;
 }
-int wendy_lite_peer_expiry(const uint8_t *der,size_t n,time_t *expires)
+int wendy_lite_peer_expiry(const uint8_t *der, size_t n, time_t *expires)
 {
-    if (!der || !n || n>65536 || !expires || wendy_pki_crypto_init()) return -1;
-    mbedtls_x509_crt cert;mbedtls_x509_crt_init(&cert);
-    int result=mbedtls_x509_crt_parse_der(&cert,der,n) || cert.raw.len!=n ? -1 :
-        pki_parsed_peer_expiry(&cert,expires);
-    mbedtls_x509_crt_free(&cert);return result;
+    if (!der || !n || n > 65536 || !expires || wendy_pki_crypto_init())
+        return -1;
+    mbedtls_x509_crt cert;
+    mbedtls_x509_crt_init(&cert);
+    int result = mbedtls_x509_crt_parse_der(&cert, der, n) || cert.raw.len != n
+                     ? -1
+                     : pki_parsed_peer_expiry(&cert, expires);
+    mbedtls_x509_crt_free(&cert);
+    return result;
 }
 
 int wendy_lite_peer_spki_hash(const uint8_t *der, size_t n, uint8_t hash[32])
