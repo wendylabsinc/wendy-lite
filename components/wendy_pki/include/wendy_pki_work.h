@@ -40,7 +40,11 @@ bool wendy_pki_work_idle(void);
 bool wendy_pki_work_is_current(void);
 
 #include <stdint.h>
-struct wendy_pki_work_metrics {uint64_t jobs,total_us,max_us;unsigned stack_free;bool running;};
+struct wendy_pki_work_metrics {
+    uint64_t jobs, total_us, max_us;
+    unsigned stack_free;
+    bool running;
+};
 void wendy_pki_work_metrics(struct wendy_pki_work_metrics *);
 /* Existing server polling provider. These callbacks may wait for network I/O;
  * their CPU-heavy TLS steps use work_run, never occupy the crypto queue while
@@ -55,7 +59,7 @@ bool wendy_pki_io_work_idle(void);
  * safe. Caller retains its arguments until completion. NULL callbacks fail.
  * When no dedicated task exists baseline callers keep the inline path; this
  * does not add a task or serialize unrelated baseline work while mesh is OFF. */
-int wendy_pki_work_run(void (*)(void *),void *);
+int wendy_pki_work_run(void (*)(void *), void *);
 void wendy_pki_work_bind_actor(void);
 /* Retained heavyweight context lifetime, separate from one CPU callback.
  * SRAM has one shared slot; PSRAM has two mesh slots plus a reserved baseline
