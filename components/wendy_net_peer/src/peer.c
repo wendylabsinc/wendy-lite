@@ -23,6 +23,9 @@
 #include "wendy_net_packet_queue.h"
 #include "actor_driver.h"
 #include "wendy_net_agent.h"
+#if CONFIG_WENDY_NET
+#include "wendy_net.h"
+#endif
 #include "crypto_job.h"
 #include "settings.h"
 #include "esp_vfs.h"
@@ -322,7 +325,7 @@ void wendy_net_peer_maintain(void)
     pthread_mutex_lock(&state_lock);
     struct peer_state *s = state;
     if (!s || atomic_load(&stopping)) {
-        pthread_mutex_unlock(&state_lock);
+    pthread_mutex_unlock(&state_lock);
         return;
     }
     while (s && s->clock.phase != CLOCK_QUEUED)
@@ -357,7 +360,7 @@ static void finish_clock(struct peer_state *s, int64_t *refresh_at)
 {
     pthread_mutex_lock(&state_lock);
     if (s->clock.phase != CLOCK_DONE) {
-        pthread_mutex_unlock(&state_lock);
+    pthread_mutex_unlock(&state_lock);
         return;
     }
     if (s->clock.attachment != s->attachment || !s->connection || !refresh_at) {
@@ -385,8 +388,8 @@ static void finish_clock(struct peer_state *s, int64_t *refresh_at)
         *refresh_at = fresh.verified_monotonic_us + REFRESH_INTERVAL_US;
         ESP_LOGI(TAG, "signed time refreshed without pausing carrier: ms=%u heap=%u largest=%u",
                  (unsigned)((finished - started) / 1000),
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+            (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     } else {
         *refresh_at = finished + INT64_C(15000000);
         ESP_LOGW(TAG, "signed time refresh failed; original deadline remains in force");
@@ -623,7 +626,7 @@ void wendy_net_peer_prepare_handshake(void)
     struct peer_state *s = state;
     if (!s || !node_live(s, esp_timer_get_time()) || s->reclaim.owned ||
         s->reclaim.serial == UINT64_MAX) {
-        pthread_mutex_unlock(&state_lock);
+    pthread_mutex_unlock(&state_lock);
         return;
     }
     uint64_t serial = ++s->reclaim.serial;
@@ -643,7 +646,7 @@ void wendy_net_peer_prepare_handshake(void)
     pthread_mutex_unlock(&state_lock);
     ESP_LOGI(TAG, "TLS handshake FIFO reclaim: bytes=%u heap=%u largest=%u", (unsigned)released,
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 #endif
 }
 #if CONFIG_WENDY_NET_ROUTER && CONFIG_WENDY_NET_RECLAIM_PAYLOADS_FOR_TLS
@@ -773,13 +776,16 @@ static void service_query_release(struct service_query *q)
         wendy_net_free(q);
     }
 }
-/* Guest listeners join with the VIP adapter, not the inactive carrier layer. */
 static int guest_listener_owner(void *context, uint16_t port, bool datagram)
 {
     (void)context;
+#if CONFIG_WENDY_NET
+    return wendy_net_guest_listener_owner(port, datagram);
+#else
     (void)port;
     (void)datagram;
     return -1;
+#endif
 }
 static void service_catalog_query(struct peer_state *s)
 {
@@ -870,8 +876,8 @@ static bool snapshot_live(const struct wendy_pki_mesh_identity *identity, int64_
 {
     int64_t elapsed = now - identity->verified_monotonic_us;
     return elapsed >= 0 && elapsed < FRESH_TIME_US &&
-           wendy_conf_snapshot_current(identity->config_generation) &&
-           !wendy_pki_reset_in_progress() &&
+        wendy_conf_snapshot_current(identity->config_generation) &&
+        !wendy_pki_reset_in_progress() &&
            identity->verified_seconds + elapsed / 1000000 < identity->certificate_expires;
 }
 static bool identity_live(struct peer_state *s, int64_t now)
@@ -1070,7 +1076,7 @@ static void time_tick(struct peer_state *s, int64_t now)
             if (job->result || job->offset == job->size) {
                 s->time_reply = NULL;
                 wnt_release(job);
-            }
+    }
         }
     }
     pthread_mutex_unlock(&state_lock);
@@ -1351,7 +1357,7 @@ static bool medium_available(struct peer_state *root, enum wn_medium medium)
             total++;
             if (s->candidate.medium == medium)
                 active++;
-        }
+    }
     if (total >= root->config.max_links)
         return false;
     if (medium == WN_BLE)
@@ -1420,8 +1426,8 @@ static void update_input_workspace(struct peer_state *root, bool wanted)
     wendy_pki_input_workspace_active(wanted);
     ESP_LOGI(TAG, "TLS input workspace: active=%u cached=%u heap=%u largest=%u", (unsigned)wanted,
              (unsigned)wendy_pki_input_workspace_cached_bytes(),
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 }
 #endif
 static void update_node_status(struct peer_state *root)
@@ -1558,7 +1564,7 @@ static int advance_setup(struct peer_state *link, int64_t now)
         if (link->setup_result == 2) {
             link->tls_state.retry_at = (uint64_t)now + 50000;
             wnad_handshake_release(link);
-        }
+    }
     }
     /* A failed admission/allocation may have no BIO at all. Check terminal
      * state before touching it or waiting for a TCP connection. A lent
@@ -2100,9 +2106,9 @@ static void router_run(struct peer_state *root)
                         link->setup_have_stream = false;
                         link->setup_server = false;
                         begin_setup(link, &hint, -1);
-                    }
                 }
             }
+        }
         }
         progress |= wendy_net_agent_poll() != 0;
         progress |= wendy_net_app_poll() != 0;
@@ -2175,7 +2181,7 @@ static void router_run(struct peer_state *root)
                 bool can_read = link->setup_waiting || (link->router && !link->carrier.rx_paused &&
                                                         !wnrs_receive_paused(link->router));
                 if (can_read && link->tls_state.phase == WNA_READY &&
-                    ((link->tls_channel && link->tls_channel->input.size) ||
+                   ((link->tls_channel && link->tls_channel->input.size) ||
                      (link->connection && wendy_pki_pending(link->connection)))) {
 
                     deadline = esp_timer_get_time();
@@ -2184,7 +2190,7 @@ static void router_run(struct peer_state *root)
                     int64_t next = wnrs_next_deadline(link->router);
                     if (next < deadline)
                         deadline = next;
-                }
+            }
             }
             wendy_net_app_watch(&rd, &wr, &maximum, &deadline);
             wendy_net_agent_watch(&rd, &wr, &maximum, &deadline);
@@ -2243,7 +2249,7 @@ static bool shutdown_step(struct peer_state *root)
             if (!atomic_load(&link->setup_complete)) {
                 waiting = true;
                 continue;
-            }
+        }
             wna_completed(&link->tls_state, link->setup_result);
         }
         if (wncrypto_borrowed(link->connection)) {
@@ -2329,11 +2335,11 @@ static void finish_shutdown(struct peer_state *root)
     atomic_store(&starting, false);
     ESP_LOGI(TAG, "mesh shutdown complete; actor/crypto resources released");
     ESP_LOGI(TAG, "mesh stopped: heap=%u internal=%u largest=%u internal_largest=%u tasks=%u",
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-             (unsigned)uxTaskGetNumberOfTasks());
+        (unsigned)uxTaskGetNumberOfTasks());
 }
 static void run(void *argument)
 {
@@ -2466,7 +2472,7 @@ static esp_err_t start_enrolled(void)
         TAG,
         "native endpoint started: state=%u packet_queue_idle=%u packet_queue_limit=%u stack=%u bytes",
         (unsigned)sizeof *s, (unsigned)sizeof *s->queue, (unsigned)PEER_QUEUE,
-        (unsigned)CONFIG_WENDY_NET_TASK_STACK_SIZE);
+             (unsigned)CONFIG_WENDY_NET_TASK_STACK_SIZE);
     return ESP_OK;
 }
 static void await_identity(void *unused)

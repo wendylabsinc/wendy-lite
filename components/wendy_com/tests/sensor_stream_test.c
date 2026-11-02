@@ -113,6 +113,7 @@ static void pump_message(void)
     uint8_t bytes[10 * 1024];
     size_t size = 0;
     for (unsigned n = 0; size < sizeof(header) + ntohs(header.body_size); n++) {
+        (void)n; /* coalesced and borrowed-buffer variants share this loop */
         struct wcom_tx_chunk *chunk = wire_first;
         assert(chunk && size + chunk->size <= sizeof(bytes));
 #if !CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3

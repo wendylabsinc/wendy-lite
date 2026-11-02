@@ -92,7 +92,7 @@ static esp_err_t identity_ready = ESP_FAIL;
 static pthread_mutex_t identity_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool identity_use_allowed(void);
 static int validate_config_and_trust(const WendyConfEnrollment *cfg,
-                                     struct wendy_conf_enrollment_data *data);
+    struct wendy_conf_enrollment_data *data);
 #if CONFIG_WENDY_NET_PEER || CONFIG_WENDY_NET_NAN
 static int select_time_trust(const WendyConfEnrollment *cfg,
                              struct wendy_conf_enrollment_data *data, bool https);
@@ -447,7 +447,7 @@ esp_err_t wendy_pki_reset(const char *expected_device_id, const char *nonce_hex)
     /* Never erase keys while the old bootstrap token can still be used. */
     result = wendy_conf_clear_enrollment();
     if (result != ESP_OK) goto done;
-    const char *keys[] = {"key",       "certificate", "pending",   "lite_ca",      "pending_ca",
+    const char *keys[] = {"key", "certificate", "pending", "lite_ca", "pending_ca",
                           "tenant",    "device",      "nonce",     "net_der_meta", "net_der_ranges",
                           "net_der_0", "net_der_1",   "net_der_2", "net_der_3",    "net_der_4",
                           "net_der_5", "net_der_6",   "net_der_7"};
@@ -556,7 +556,7 @@ static int mesh_raw(const struct wendy_pki_stream* stream, void* buffer, size_t 
 }
 static int mesh_time_exchange(const struct wendy_pki_stream *stream, const uint8_t *request,
                               size_t size, uint8_t **response, size_t *response_size,
-                              const char magic[4])
+    const char magic[4])
 {
     if (!size || size > 128) return -1;
     uint8_t header[8] = {0, 0, 0, 0, 0, 0, 0, (uint8_t)size};
@@ -600,7 +600,7 @@ done:
 }
 #endif
 static int refresh_time_source(nvs_handle_t h, const char *url,
-                               const struct wendy_conf_enrollment_data *data,
+                        const struct wendy_conf_enrollment_data *data,
                                const struct wendy_pki_stream *stream, const char magic[4])
 {
     uint8_t nonce[32], request[128], *response = NULL;
@@ -1202,7 +1202,7 @@ struct wendy_pki_agent_setup {
 };
 #endif
 static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
-                                      const struct wendy_lite_trust *trust, bool allow_device,
+    const struct wendy_lite_trust *trust, bool allow_device,
                                       const struct wendy_pki_stream *stream,
                                       struct wendy_pki_agent_setup *async)
 {
@@ -1417,7 +1417,7 @@ static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
             if (certificate_source->count) {
                 async->source_open = true;
                 opened = false;
-            }
+        }
             result = ESP_OK;
             goto done;
         }
@@ -1425,10 +1425,10 @@ static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
             expires = (*connection)->device_expires;
     } else
 #endif
-        if (stream)
+    if (stream)
         accepted =
             pki_tls_accept_stream(stream, key, key_size, (struct wendy_conf_span){cert, cert_size},
-                                  data.device_roots, cfg.tenant_id, connection, deadline);
+                                        data.device_roots, cfg.tenant_id, connection, deadline);
     else if (trust)
     {
         if (load_certificate(h, "lite_ca", &lite_ca, &lite_ca_size)) {
@@ -1436,22 +1436,22 @@ static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
             goto done;
         }
         accepted = pki_tls_accept_lite(fd, key, key_size, (struct wendy_conf_span){cert, cert_size},
-                                       (struct wendy_conf_span){lite_ca, lite_ca_size},
-                                       cfg.tenant_id, connection, deadline);
+                                      (struct wendy_conf_span){lite_ca, lite_ca_size},
+                                      cfg.tenant_id, connection, deadline);
     }
     else if (allow_device)
         accepted = pki_tls_accept_lan(fd, key, key_size, (struct wendy_conf_span){cert, cert_size},
-                                      data.device_roots, cfg.tenant_id, connection, deadline);
+                                     data.device_roots, cfg.tenant_id, connection, deadline);
     else
         accepted = pki_tls_accept(fd, key, key_size, (struct wendy_conf_span){cert, cert_size},
-                                  data.device_roots, cfg.tenant_id, connection, deadline);
+                                 data.device_roots, cfg.tenant_id, connection, deadline);
     fd = -1; /* pki_tls_accept owns the socket, including failures. */
     if (!accepted) {
         (*connection)->device_expires = expires;
         if (!pki_limit_session(*connection, time(NULL), esp_timer_get_time()) &&
             (!trust || (!wendy_pki_sha256((uint8_t *)principal, strlen(principal),
                                           (*connection)->device_hash) &&
-                        !pki_relay_grant(*connection, trust, deadline)))) {
+                       !pki_relay_grant(*connection, trust, deadline)))) {
             result = ESP_OK;
         } else {
             wendy_pki_close(*connection);
@@ -1462,8 +1462,8 @@ done:
     if (result != ESP_OK)
         ESP_LOGW(TAG, "accepted identity failed at %s: free=%u largest=%u minimum=%u", stage,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
-                 (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
+            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+            (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
     if (fd >= 0) close(fd);
 #if CONFIG_WENDY_NET_PEER
     pki_tls_input_return(input_reservation, NATIVE_TLS_INPUT_RESERVE);
@@ -1575,7 +1575,7 @@ int wendy_pki_mesh_local_part(const struct wendy_pki_mesh_identity *clock, const
 }
 static int public_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
                                   const uint8_t *const *der, const size_t *sizes, size_t count,
-                                  struct wendy_pki_mesh_peer *peer)
+    struct wendy_pki_mesh_peer *peer)
 {
     if (!clock || !der || !sizes || !count || !peer || !wendy_conf_is_current() ||
         wendy_pki_reset_in_progress())
@@ -1965,6 +1965,12 @@ int wendy_pki_net_step(struct wendy_pki_net_setup *op)
     c->mesh_deadline_us =
         op->application ? 0 : op->identity.verified_monotonic_us + INT64_C(300000000);
     op->complete = true;
+    /* Certificate presentation has finished on this worker. Taking the ready
+     * TLS context on the actor must never close even a read-only NVS handle. */
+    if (op->source_open) {
+        nvs_close(op->source.handle);
+        op->source_open = false;
+    }
     return 0;
 }
 wendy_pki_connection *wendy_pki_net_take(struct wendy_pki_net_setup *op,
@@ -2233,7 +2239,7 @@ void wendy_pki_net_time_relay(int fd)
     WendyConfEnrollment config = WendyConfEnrollment_init_zero;
     struct wendy_conf_enrollment_data trust = {0};
     if (fd >= 0 && fd < FD_SETSIZE && fcntl(fd, F_SETFL, O_NONBLOCK) >= 0 &&
-        wendy_conf_is_current() && !wendy_pki_reset_in_progress() &&
+       wendy_conf_is_current() && !wendy_pki_reset_in_progress() &&
         wendy_conf_copy_time_trust(&config, &trust, false, true) == ESP_OK &&
         !select_time_trust(&config, &trust, true)) {
         struct wendy_pki_stream stream = {
@@ -2292,7 +2298,7 @@ done:
 }
 #endif
 esp_err_t wendy_pki_net_refresh_time(struct wendy_pki_mesh_identity *identity,
-                                     const char *relay_host)
+                                    const char *relay_host)
 {
     if (!identity)
         return ESP_ERR_INVALID_ARG;
@@ -2315,9 +2321,9 @@ esp_err_t wendy_pki_net_refresh_time(struct wendy_pki_mesh_identity *identity,
     bool newer = mesh_time_recent() && mesh_verified_generation == data.generation &&
                  mesh_verified_monotonic_us > identity->verified_monotonic_us;
     if (!newer) {
-        (void)relay_host;
+    (void)relay_host;
         if (refresh_time(h, cfg.time_url, &data))
-            goto done;
+        goto done;
     }
     if (!wendy_conf_is_current() || wendy_pki_reset_in_progress() ||
         identity->certificate_expires <= mesh_verified_seconds + 30)
@@ -2334,7 +2340,7 @@ done:
     return result;
 }
 esp_err_t wendy_pki_net_apply_time(wendy_pki_connection *connection,
-                                   const struct wendy_pki_mesh_identity *identity)
+                                  const struct wendy_pki_mesh_identity *identity)
 {
     if (!connection || !identity)
         return ESP_ERR_INVALID_ARG;
@@ -2354,7 +2360,7 @@ esp_err_t wendy_pki_net_apply_time(wendy_pki_connection *connection,
     return result;
 }
 esp_err_t wendy_pki_net_refresh(wendy_pki_connection *connection,
-                                struct wendy_pki_mesh_identity *identity)
+                               struct wendy_pki_mesh_identity *identity)
 {
     if (!connection || !identity || !connection->mesh_deadline_us)
         return ESP_ERR_INVALID_ARG;

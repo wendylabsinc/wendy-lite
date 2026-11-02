@@ -1,4 +1,5 @@
 #include <stdbool.h>
+#include <stdlib.h>
 #include <assert.h>
 #include <limits.h>
 #include <string.h>
@@ -44,8 +45,10 @@ struct _agent_link {
     struct wcom_rx_chunk rx_chunk;
     struct wcom_tx_chunk tx_chunks[2];
     char static_buf[256];
+    struct wcom_link_buffer_allocator buffer_allocator;
     char *dynamic_buf;
     size_t dynamic_buf_size;
+    size_t discard_remaining;
     struct _agent_channel channels[_CHANNELS_PER_LINK_COUNT];
 };
 
@@ -123,22 +126,36 @@ static struct _agent_link *_get_tx_chunk_link(const struct wcom_tx_chunk *chunk)
     return NULL;
 }
 
+static void _free_dynamic_buffer(struct _agent_link *link)
+{
+    if (link->dynamic_buf) {
+        if (link->buffer_allocator.release)
+            link->buffer_allocator.release(link->buffer_allocator.context, link->dynamic_buf);
+        else
+            free(link->dynamic_buf);
+    }
+    link->dynamic_buf = NULL;
+    link->dynamic_buf_size = 0;
+}
+
 static void *_get_buffer(struct _agent_link *link, size_t size)
 {
-    if (size > sizeof(link->static_buf)) {
-        if (size > link->dynamic_buf_size) {
-            free(link->dynamic_buf);
-            link->dynamic_buf = malloc(size);
-            if (!link->dynamic_buf) {
-                ESP_LOGE(TAG, "malloc failed for dynamic rx buffer of size %zu", size);
-                return NULL;
-            }
-            link->dynamic_buf_size = size;
-        }
-        return link->dynamic_buf;
-    } else {
+    if (size <= sizeof(link->static_buf))
         return link->static_buf;
+    if (size > link->dynamic_buf_size) {
+        /* Bound the resize peak to one protocol buffer on constrained boards. */
+        _free_dynamic_buffer(link);
+        link->dynamic_buf =
+            link->buffer_allocator.allocate
+                ? link->buffer_allocator.allocate(link->buffer_allocator.context, size)
+                : malloc(size);
+        if (!link->dynamic_buf) {
+            ESP_LOGE(TAG, "allocation failed for protocol buffer of size %zu", size);
+            return NULL;
+        }
+        link->dynamic_buf_size = size;
     }
+    return link->dynamic_buf;
 }
 
 static bool _capture_span(pb_istream_t *stream, const pb_field_t *field, void **arg)
@@ -211,6 +228,10 @@ static void _send_message(struct _agent_link *link, const WendyComMessage *out)
     }
 
     void *buf = _get_buffer(link, sizing.bytes_written);
+    if (!buf) {
+        wcom_close(link->link_id);
+        return;
+    }
     pb_ostream_t out_stream = pb_ostream_from_buffer(buf, sizing.bytes_written);
     if (!pb_encode(&out_stream, WendyComMessage_fields, out)) {
         ESP_LOGE(TAG, "link %d pb_encode message: %s", link->link_id, PB_GET_ERROR(&out_stream));
@@ -393,6 +414,16 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
         return;
     }
     switch (cmd->which_params) {
+    case WendyComCommand_net_get_tag:
+        resp->which_data = WendyComResponse_net_status_tag;
+        resp->result = wcom_cmd_net_get(&resp->data.net_status);
+        break;
+    case WendyComCommand_net_set_tag:
+        resp->which_data = WendyComResponse_net_status_tag;
+        resp->result = cmd->params.net_set.has_config
+                           ? wcom_cmd_net_set(&cmd->params.net_set.config, &resp->data.net_status)
+                           : WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+        break;
     case WendyComCommand_enrollment_challenge_tag:
         resp->which_data = WendyComResponse_enrollment_challenge_tag;
         resp->data.enrollment_challenge.usb_trust_supported = true;
@@ -541,24 +572,34 @@ static void _process_message(struct _agent_link *link, const uint8_t *body, size
     struct _span data_span = {NULL, 0};
     struct _span server_span = {NULL, 0};
     WendyComMessage req = WendyComMessage_init_zero;
-    // Pre-set the oneof discriminators along the app_push_data path so nanopb
-    // preserves our callback when it encounters those fields: it only resets
-    // a oneof member whose which_ value doesn't already match the wire tag.
-    req.which_msg = WendyComMessage_command_tag;
-    req.msg.command.which_params = WendyComCommand_app_push_data_tag;
-    req.msg.command.params.app_push_data.data.funcs.decode = _capture_span;
-    req.msg.command.params.app_push_data.data.arg = &data_span;
+    // First identify the actual oneof members without pre-setting any
+    // discriminator. Nanopb skips unknown members; seeding app_push_data here
+    // would otherwise turn a future message/command into that known command.
     pb_istream_t stream = pb_istream_from_buffer(body, size);
-
-    if (!pb_decode_noinit(&stream, WendyComMessage_fields, &req)) {
+    if (!pb_decode(&stream, WendyComMessage_fields, &req)) {
         ESP_LOGE(TAG, "link %d pb_decode: %s", link->link_id, PB_GET_ERROR(&stream));
         wcom_close(link->link_id);
         return;
     }
 
-    // Only one oneof member can be pre-set per decode, so a conf_push_data
-    // command came out with its data callback reset and the bytes skipped.
-    // Decode again with the conf_push_data path pre-set instead.
+    // Pre-set only the now-identified oneof path so nanopb preserves the
+    // callback in the second pass. The first pass skipped callback bytes.
+    if (req.which_msg == WendyComMessage_command_tag &&
+        req.msg.command.which_params == WendyComCommand_app_push_data_tag) {
+        req = (WendyComMessage)WendyComMessage_init_zero;
+        req.which_msg = WendyComMessage_command_tag;
+        req.msg.command.which_params = WendyComCommand_app_push_data_tag;
+        req.msg.command.params.app_push_data.data.funcs.decode = _capture_span;
+        req.msg.command.params.app_push_data.data.arg = &data_span;
+        stream = pb_istream_from_buffer(body, size);
+        if (!pb_decode_noinit(&stream, WendyComMessage_fields, &req)) {
+            ESP_LOGE(TAG, "link %d pb_decode: %s", link->link_id, PB_GET_ERROR(&stream));
+            wcom_close(link->link_id);
+            return;
+        }
+    }
+
+    // Only one callback-bearing oneof path can be pre-set per decode.
     if (req.which_msg == WendyComMessage_command_tag &&
         req.msg.command.which_params == WendyComCommand_conf_push_data_tag) {
         data_span = (struct _span){NULL, 0};
@@ -636,8 +677,12 @@ static void _process_message(struct _agent_link *link, const uint8_t *body, size
         _process_event(link, &req.msg.event, &data_span);
         break;
     default:
-        ESP_LOGE(TAG, "link %d unexpected message (which_msg=%d)", link->link_id, req.which_msg);
-        wcom_close(link->link_id);
+        // The enclosing frame has already bounded and consumed this message.
+        // Future message kinds (and known device-to-host kinds) do not change
+        // session/channel state or prevent the next supported request.
+        ESP_LOGW(TAG, "link %d unsupported message ignored (which_msg=%d)", link->link_id,
+                 req.which_msg);
+        _start_recv_header(link);
         break;
     }
 }
@@ -654,9 +699,46 @@ static void _done_recv_body(int link_id, const struct wcom_rx_chunk *chunk, bool
     _process_message(link, chunk->data, chunk->size);
 }
 
+static void _discard_body(struct _agent_link *link);
+
+static void _done_discard_body(int link_id, const struct wcom_rx_chunk *chunk, bool success)
+{
+    if (!success)
+        return;
+    struct _agent_link *link = _get_rx_chunk_link(chunk);
+    assert(link);
+    if (link_id != link->link_id)
+        return;
+    link->discard_remaining -= chunk->size;
+    _discard_body(link);
+}
+
+static void _discard_body(struct _agent_link *link)
+{
+    if (!link->discard_remaining) {
+        _start_recv_header(link);
+        return;
+    }
+    // A future category still uses this version's length framing. Drain it
+    // in fixed-size chunks rather than charging an unknown body to the link's
+    // protocol allocation budget or interpreting it as WendyCom protobuf.
+    link->rx_chunk.data = link->static_buf;
+    link->rx_chunk.size = link->discard_remaining < sizeof(link->static_buf)
+                              ? link->discard_remaining
+                              : sizeof(link->static_buf);
+    link->rx_chunk.done_handler = _done_discard_body;
+    link->rx_chunk.next = NULL;
+    wcom_recv(link->link_id, &link->rx_chunk);
+}
+
 static void _start_recv_body(struct _agent_link *link)
 {
     size_t body_size = ntohs(link->header.body_size);
+    if (link->header.category != 0) {
+        link->discard_remaining = body_size;
+        _discard_body(link);
+        return;
+    }
     if (body_size == 0) {
         // an empty body is not a valid WendyComMessage
         ESP_LOGE(TAG, "link %d empty message body", link->link_id);
@@ -664,6 +746,10 @@ static void _start_recv_body(struct _agent_link *link)
         return;
     }
     link->rx_chunk.data = _get_buffer(link, body_size);
+    if (!link->rx_chunk.data) {
+        wcom_close(link->link_id);
+        return;
+    }
     link->rx_chunk.size = body_size;
     link->rx_chunk.done_handler = _done_recv_body;
     link->rx_chunk.next = NULL;
@@ -680,8 +766,7 @@ static void _done_recv_header(int link_id, const struct wcom_rx_chunk *chunk, bo
         return;
 
     if (link->header.magic != WCOM_AGENT_MSG_MAGIC ||
-        link->header.version != WCOM_AGENT_MSG_VERSION ||
-        link->header.category != 0) {
+        link->header.version != WCOM_AGENT_MSG_VERSION) {
         ESP_LOGE(TAG, "invalid message header received on link %d", link->link_id);
         wcom_close(link_id);
         return;
@@ -714,7 +799,9 @@ static void _on_link_state_changed(
             if (ch->link_id == 0) {
                 ch->link_id = link_id;
                 ch->permission = wcom_link_get_permission(link_id);
+                (void)wcom_link_get_buffer_allocator(link_id, &ch->buffer_allocator);
                 ch->handshake_done = false;
+                ch->discard_remaining = 0;
                 ch->rx_channel = 0;
                 for (int i = 0; i < _CHANNELS_PER_LINK_COUNT; i++) {
                     ch->channels[i].client_id = 0;
@@ -740,9 +827,8 @@ static void _on_link_state_changed(
                 link->handshake_done = false;
                 link->link_id = 0;
                 link->permission = WCOM_LINK_PERMISSION_NONE;
-                free(link->dynamic_buf);
-                link->dynamic_buf = NULL;
-                link->dynamic_buf_size = 0;
+                _free_dynamic_buffer(link);
+                link->buffer_allocator = (struct wcom_link_buffer_allocator){0};
                 return;
             }
         }

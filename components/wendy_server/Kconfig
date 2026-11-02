@@ -1,4 +1,14 @@
 menu "Wendy Server"
+    config WENDY_SERVER_TASK_STACK_SIZE
+        int "Server and physical TLS task stack (bytes)"
+        range 15360 65536 if WENDY_NET_PEER
+        range 8192 65536
+        default 24576 if WENDY_PKI
+        default 8192
+        help
+            Stack for physical management TLS and signed-time maintenance.
+            Mesh carrier and VIP TLS run on the mesh actor/crypto tasks.
+
     config WENDY_SERVER_TASK_PRIORITY
         int "Server task priority"
         default 5

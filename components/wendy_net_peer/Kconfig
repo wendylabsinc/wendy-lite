@@ -189,8 +189,8 @@ menu "Wendy Net native peer prototype"
         help
             Counts pending handshakes and resident relays independently for
             incoming and outgoing app connections. Payloads, TLS state and
-            relay tasks are allocated on demand; idle nodes reserve no flow
-            buffers. Expensive handshakes remain serialized on the existing
+            relay buffers are allocated on demand; idle nodes reserve no flow
+            buffers. All relays share the mesh actor. Expensive handshakes remain serialized on the existing
             certificate worker. One preserves the initial prototype budget;
             measure larger values with actual guests and concurrent traffic.
     config WENDY_NET_IO_BYTES
@@ -217,15 +217,6 @@ menu "Wendy Net native peer prototype"
             buffers, at the cost of more actor/TLS read-write calls. Stream
             operations retain ordinary partial completion and backpressure;
             this does not reduce TLS record, IP MTU or UDP datagram limits.
-    config WENDY_NET_TCP_RELAY_STACK_SIZE
-        int "Native app TCP relay task stack (bytes)"
-        depends on WENDY_NET_ROUTER
-        range 6144 32768
-        default 8192
-        help
-            Allocated only for a live TCP app flow, after its handshake on the
-            certificate worker. Measure duplex traffic, backpressure and close
-            high-water marks before selecting a smaller per-flow budget.
     config WENDY_NET_SETUP_FREE_BYTES
         int "Free heap required before adding a carrier to a live node"
         depends on WENDY_NET_ROUTER
