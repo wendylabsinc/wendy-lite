@@ -2286,6 +2286,8 @@ static int topology_record(struct wnrs_node *n, unsigned wanted, int64_t now,
                 out->authorized =
                     wnd_authorizes(&n->core.directory, r->prefix.bytes, r->router, r->seqno, now);
                 out->expires_at_unix_ms = topology_expiry(n, e->deadline_us, e->manifest.expires);
+                view->lease_deadline_us = e->deadline_us;
+                view->signed_expiry_unix_ms = e->manifest.expires;
                 break;
             }
         if (!out->device.size && wnrs_topology_operator_row(n, 2, 0, now, view) < 0)
@@ -2308,6 +2310,8 @@ static int topology_record(struct wnrs_node *n, unsigned wanted, int64_t now,
         out->revision = e->revision;
         out->issued_at_unix_ms = e->manifest.issued;
         out->expires_at_unix_ms = topology_expiry(n, e->deadline_us, e->manifest.expires);
+        view->lease_deadline_us = e->deadline_us;
+        view->signed_expiry_unix_ms = e->manifest.expires;
         out->authorized = true;
         return true;
     }
@@ -2326,6 +2330,7 @@ static int topology_record(struct wnrs_node *n, unsigned wanted, int64_t now,
         wn_address(e->device, out->address.bytes);
         out->revision = e->revision;
         out->expires_at_unix_ms = topology_expiry(n, e->deadline_us, 0);
+        view->lease_deadline_us = e->deadline_us;
         out->authorized = true;
         return true;
     }
@@ -2379,7 +2384,10 @@ int wnrs_topology(struct wnrs_node *n, uint32_t cursor, uint64_t generation,
         hash = topology_hash(hash, &row->unreachable, sizeof row->unreachable);
         hash = topology_hash(hash, &row->authorized, sizeof row->authorized);
         hash = topology_hash(hash, &row->revision, sizeof row->revision);
-        hash = topology_hash(hash, &row->expires_at_unix_ms, sizeof row->expires_at_unix_ms);
+        /* Hash the accepted lifetime, not its wall-clock display conversion.
+         * Fractional reanchoring must not turn an unchanged page into BUSY. */
+        hash = topology_hash(hash, &view.lease_deadline_us, sizeof view.lease_deadline_us);
+        hash = topology_hash(hash, &view.signed_expiry_unix_ms, sizeof view.signed_expiry_unix_ms);
         hash = topology_hash(hash, &row->owner_role, sizeof row->owner_role);
         hash = topology_hash(hash, row->owner_instance.bytes, row->owner_instance.size);
         hash = topology_hash(hash, view.principal, view.principal_size);
