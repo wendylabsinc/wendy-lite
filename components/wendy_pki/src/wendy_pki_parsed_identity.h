@@ -21,5 +21,10 @@ int pki_mesh_chain_anchors(const uint8_t *const *der, const size_t *sizes, size_
                            mbedtls_x509_crt *anchors, const char *tenant, time_t now,
                            struct wendy_pki_mesh_peer *);
 
-/* DER is passed directly to the library. PEM is imported only at boundaries. */
-int pki_parse_certificate_bundle(mbedtls_x509_crt *, const uint8_t *, size_t, bool borrow);
+/* Append up to eight complete DER certificates directly to an initialized
+ * chain. PEM is decoded at this import boundary and always copied by Mbed TLS.
+ * For DER with borrow=true, input must remain immutable and alive until the
+ * chain is freed. The caller owns/frees the chain, also after a partial failure.
+ * This only parses certificates; callers still verify trust and usage policy. */
+int pki_parse_certificate_bundle(mbedtls_x509_crt *cert, const uint8_t *data, size_t size,
+                                 bool borrow);
