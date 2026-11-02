@@ -14,7 +14,7 @@ bool wendy_pki_work_available(void);
  * completion; false means nothing was retained. Callback must not await a
  * second callback on this same worker. The initiating allocation scope follows
  * the job; the worker restores its previous scope after callback completion. */
-bool wendy_pki_work_submit(void (*callback)(void *),void *context);
+bool wendy_pki_work_submit(void (*callback)(void *), void *context);
 /* Called by the dedicated task when started, otherwise the registered server.
  * Actor calls fail; while dedicated, other tasks cannot steal its callback. */
 bool wendy_pki_work_poll(void);
@@ -47,7 +47,7 @@ void wendy_pki_work_metrics(struct wendy_pki_work_metrics *);
  * waiting for bytes. No additional task is created for this provider. The
  * server must keep polling throughout accepted I/O and mesh shutdown; the actor
  * and crypto task cannot poll this queue. Quiesce producers before stop(). */
-bool wendy_pki_io_work_submit(void (*)(void *),void *);
+bool wendy_pki_io_work_submit(void (*)(void *), void *);
 bool wendy_pki_io_work_poll(void);
 bool wendy_pki_io_work_idle(void);
 /* Synchronous facade for existing non-actor callers. Actor use is rejected;
@@ -73,5 +73,5 @@ bool wendy_pki_handshake_available(void);
 unsigned wendy_pki_handshake_mesh_limit(void);
 /* Retain one uninterrupted workspace lease while preparation moves into its
  * real TLS context. A stale cookie/context cannot release a different owner. */
-bool wendy_pki_handshake_transfer(void *from,void *to);
+bool wendy_pki_handshake_transfer(void *from, void *to);
 bool wendy_pki_handshake_busy(void);
