@@ -195,3 +195,19 @@ profiles report an explicit false enrollment capability while retaining local
 identity recovery wherever PKI is available. They also check that ML-DSA support
 is advertised only when both PKI and ML-DSA-65 verification are enabled and that false values
 survive protobuf encoding.
+
+`pki_time_nonce_normal` covers seven ordinary 256-bit nonce shapes: low/high
+leading bit, all-ones, leading zeroes before low/high bits, one, and zero.
+It compares firmware request bytes with independently marshalled Go ASN.1 and
+verifies a correctly signed disposable P-384 timestamp for each value. The
+imprint always hashes all 32 original bytes; only the INTEGER representation
+strips zeroes or adds a sign octet. Run this positive interoperability check with
+`ctest --test-dir <build> -R '^pki_time_nonce_normal$' --output-on-failure`.
+
+The C6 sustained BLE trial on 2026-10-28 exposed the former fixed-width encoder:
+control-channel renewals used arbitrary random bytes, unlike bootstrap callers
+which masked the high bit. A high-bit nonce was encoded as negative and rejected
+by the timestamp response verifier. Renewal retries sometimes succeeded by
+chance. Canonical positive encoding fixes the source rather than constraining
+the random input, and matching canonical INTEGER values also handles leading
+zeroes in otherwise valid random nonces.
