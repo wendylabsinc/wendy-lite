@@ -1,0 +1,92 @@
+--- a/src/ble_l2cap_sig.c
++++ b/src/ble_l2cap_sig.c
+@@ -1797,6 +1797,32 @@
+  * $disconnect                                                               *
+  *****************************************************************************/
+ 
++/* Both peers may initiate an ordinary CoC close together. A peer request
++ * completes the channel before our response/timeout does; retire that pending
++ * procedure while the host lock still protects its channel ownership. */
++static struct ble_l2cap_sig_proc *
++ble_l2cap_sig_extract_chan_disconnect(uint16_t conn_handle,
++                                    struct ble_l2cap_chan *chan)
++{
++    struct ble_l2cap_sig_proc *proc;
++    struct ble_l2cap_sig_proc *prev = NULL;
++
++    STAILQ_FOREACH(proc, &ble_l2cap_sig_procs, next) {
++        if (proc->conn_handle == conn_handle &&
++            proc->op == BLE_L2CAP_SIG_PROC_OP_DISCONNECT &&
++            proc->disconnect.chan == chan) {
++            if (prev == NULL) {
++                STAILQ_REMOVE_HEAD(&ble_l2cap_sig_procs, next);
++            } else {
++                STAILQ_REMOVE_AFTER(&ble_l2cap_sig_procs, prev, next);
++            }
++            return proc;
++        }
++        prev = proc;
++    }
++    return NULL;
++}
++
+ static int
+ ble_l2cap_sig_disc_req_rx(uint16_t conn_handle, struct ble_l2cap_sig_hdr *hdr,
+                           struct os_mbuf **om)
+@@ -1806,6 +1832,7 @@
+     struct ble_l2cap_sig_disc_rsp *rsp;
+     struct ble_l2cap_chan *chan;
+     struct ble_hs_conn *conn;
++    struct ble_l2cap_sig_proc *pending;
+     int rc;
+ 
+     rc = ble_hs_mbuf_pullup_base(om, sizeof(*req));
+@@ -1857,8 +1884,10 @@
+     rsp->dcid = htole16(chan->scid);
+     rsp->scid = htole16(chan->dcid);
+ 
++    pending = ble_l2cap_sig_extract_chan_disconnect(conn_handle, chan);
+     ble_hs_conn_delete_chan(conn, chan);
+     ble_hs_unlock();
++    ble_l2cap_sig_proc_free(pending);
+ 
+     ble_l2cap_sig_tx(conn_handle, txom);
+     return 0;
+@@ -1868,31 +1897,19 @@
+ ble_l2cap_sig_coc_disconnect_cb(struct ble_l2cap_sig_proc *proc, int status)
+ {
+     struct ble_l2cap_chan *chan;
+-    struct ble_l2cap_event event;
+     struct ble_hs_conn *conn;
+ 
+-    if (!proc) {
++    if (!proc || !proc->disconnect.chan) {
+         return;
+     }
+-
+-    memset(&event, 0, sizeof(event));
+     chan = proc->disconnect.chan;
+-
+-    if (!chan) {
+-        return;
+-    }
+-
+-    if (!chan->cb) {
+-        goto done;
+-    }
+-
+-done:
+     ble_hs_lock();
+-    conn = ble_hs_conn_find_assert(chan->conn_handle);
+-    if (conn) {
++    /* The procedure owns the stable handle. The channel may already have
++     * been retired by a peer close or connection teardown; do not dereference
++     * its old pointer before checking membership in the live connection. */
++    conn = ble_hs_conn_find(proc->conn_handle);
++    if (conn && ble_hs_conn_chan_exist(conn, chan)) {
+         ble_hs_conn_delete_chan(conn, chan);
+-    } else {
+-        ble_l2cap_chan_free(NULL, chan);
+     }
+     ble_hs_unlock();
+ }
