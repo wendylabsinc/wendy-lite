@@ -57,7 +57,8 @@ static bool register_hooks(void)
         }
         hooks_registered = core == CONFIG_FREERTOS_NUMBER_OF_CORES;
         if (!hooks_registered) {
-            while (core) esp_deregister_freertos_idle_hook_for_cpu(retire_tasks, --core);
+            while (core)
+                esp_deregister_freertos_idle_hook_for_cpu(retire_tasks, --core);
         }
     }
     bool ready = hooks_registered;
@@ -65,17 +66,19 @@ static bool register_hooks(void)
     return ready;
 }
 
-static void reaped(int slot,void *context)
+static void reaped(int slot, void *context)
 {
     (void)slot;
-    struct owned_task *task=context;
-    if (task->explicit_delete) return;
+    struct owned_task *task = context;
+    if (task->explicit_delete)
+        return;
     unsigned core = xPortGetCoreID();
     bool idle = xTaskGetCurrentTaskHandle() == xTaskGetIdleTaskHandleForCore(core);
     /* Raw synchronous vTaskDelete by another task is outside this ownership
      * API: retaining the charge is safer than premature admission/reopen. */
     configASSERT(idle);
-    if (!idle) return;
+    if (!idle)
+        return;
     portENTER_CRITICAL(&reap_lock);
     task->next = pending[core];
     pending[core] = task;
@@ -83,38 +86,46 @@ static void reaped(int slot,void *context)
 }
 static void enter(void *context)
 {
-    struct owned_task *task=context;
-    TaskFunction_t function=task->function;
-    void *argument=task->argument;
-    SemaphoreHandle_t started=task->started;
-    vTaskSetThreadLocalStoragePointerAndDelCallback(NULL,1,task,reaped);
+    struct owned_task *task = context;
+    TaskFunction_t function = task->function;
+    void *argument = task->argument;
+    SemaphoreHandle_t started = task->started;
+    vTaskSetThreadLocalStoragePointerAndDelCallback(NULL, 1, task, reaped);
     xSemaphoreGive(started);
     function(argument);
     vTaskDelete(NULL);
 }
-BaseType_t wendy_net_task_create(TaskFunction_t function,const char *name,
-    uint32_t stack_bytes,void *argument,UBaseType_t priority,TaskHandle_t *handle)
+BaseType_t wendy_net_task_create(TaskFunction_t function, const char *name, uint32_t stack_bytes,
+                                 void *argument, UBaseType_t priority, TaskHandle_t *handle)
 {
-    if(!function || !stack_bytes || !register_hooks())return errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY;
-    struct owned_task *task=wendy_net_internal_calloc(1,sizeof *task);
-    if(!task)return errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY;
+    if (!function || !stack_bytes || !register_hooks())
+        return errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY;
+    struct owned_task *task = wendy_net_internal_calloc(1, sizeof *task);
+    if (!task)
+        return errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY;
     /* Public static-TCB bound plus 64 bytes for SDK allocation bookkeeping. */
-    size_t charge=(size_t)stack_bytes+sizeof(StaticTask_t)+64;
-    if(charge<stack_bytes || !wendy_net_memory_reserve(wendy_net_runtime_memory_ledger(),
-        &task->reservation,charge,WENDY_NET_MEMORY_INTERNAL)){
-        wendy_net_free(task);return errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY;
+    size_t charge = (size_t)stack_bytes + sizeof(StaticTask_t) + 64;
+    if (charge < stack_bytes ||
+        !wendy_net_memory_reserve(wendy_net_runtime_memory_ledger(), &task->reservation, charge,
+                                  WENDY_NET_MEMORY_INTERNAL)) {
+        wendy_net_free(task);
+        return errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY;
     }
     StaticSemaphore_t started_storage;
-    SemaphoreHandle_t started=xSemaphoreCreateBinaryStatic(&started_storage);
-    task->function=function;task->argument=argument;task->started=started;
+    SemaphoreHandle_t started = xSemaphoreCreateBinaryStatic(&started_storage);
+    task->function = function;
+    task->argument = argument;
+    task->started = started;
     TaskHandle_t created;
-    BaseType_t result=xTaskCreate(enter,name,stack_bytes,task,priority,&created);
-    if(result!=pdPASS)release(task);
+    BaseType_t result = xTaskCreate(enter, name, stack_bytes, task, priority, &created);
+    if (result != pdPASS)
+        release(task);
     else {
         /* Publish the handle only after its deletion callback is installed.
          * This also permits callers to delete a lower-priority task safely. */
-        xSemaphoreTake(started,portMAX_DELAY);
-        if(handle)*handle=created;
+        xSemaphoreTake(started, portMAX_DELAY);
+        if (handle)
+            *handle = created;
     }
     vSemaphoreDelete(started);
     return result;
@@ -126,17 +137,20 @@ void wendy_net_task_delete(TaskHandle_t handle)
         vTaskDelete(NULL);
         return;
     }
-    struct owned_task *task = pvTaskGetThreadLocalStoragePointer(handle,1);
+    struct owned_task *task = pvTaskGetThreadLocalStoragePointer(handle, 1);
     configASSERT(task);
-    if (!task) return;
+    if (!task)
+        return;
     /* Match IDF's WithCaps deletion: ensure vTaskDelete takes its synchronous
      * cleanup path rather than leaving stack/TCB frees to a later idle pass. */
     vTaskSuspend(handle);
     for (;;) {
         bool running = false;
         for (unsigned core = 0; core < CONFIG_FREERTOS_NUMBER_OF_CORES; ++core)
-            if (xTaskGetCurrentTaskHandleForCore(core) == handle) running = true;
-        if (!running) break;
+            if (xTaskGetCurrentTaskHandleForCore(core) == handle)
+                running = true;
+        if (!running)
+            break;
         taskYIELD();
     }
     task->explicit_delete = true;
@@ -144,10 +158,10 @@ void wendy_net_task_delete(TaskHandle_t handle)
     release(task);
 }
 #else
-BaseType_t wendy_net_task_create(TaskFunction_t function,const char *name,
-    uint32_t stack_bytes,void *argument,UBaseType_t priority,TaskHandle_t *task)
+BaseType_t wendy_net_task_create(TaskFunction_t function, const char *name, uint32_t stack_bytes,
+                                 void *argument, UBaseType_t priority, TaskHandle_t *task)
 {
-    return xTaskCreate(function,name,stack_bytes,argument,priority,task);
+    return xTaskCreate(function, name, stack_bytes, argument, priority, task);
 }
 void wendy_net_task_delete(TaskHandle_t task)
 {
