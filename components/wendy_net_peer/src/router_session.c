@@ -796,6 +796,11 @@ static int admit_complete(void *ctx, const struct wg_id *id, const void *bytes, 
                     return WG_DEFER;
                 if (cached == 2)
                     return -1;
+                /* The compact receipt outlives the verified-key FIFO. A
+                 * reacquired key must not let an older manifest restore
+                 * service rows already omitted by a newer revision. */
+                if (cached == 1)
+                    return 0;
                 if (!cached)
                     for (struct wne_entry *endpoint = s->node->core.endpoints.entries; endpoint;
                          endpoint = endpoint->next)
