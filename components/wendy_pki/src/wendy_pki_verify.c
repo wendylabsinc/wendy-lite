@@ -555,7 +555,8 @@ int wendy_pki_verify_time(const uint8_t *input, size_t size, const uint8_t nonce
     }
     REQUIRE(integer_value.n <= 32);
     size_t nonce_padding = 32 - integer_value.n;
-    for (size_t i = 0; i < nonce_padding; i++) REQUIRE(nonce[i] == 0);
+    for (size_t i = 0; i < nonce_padding; i++)
+        REQUIRE(nonce[i] == 0);
     REQUIRE(bytes(integer_value, nonce + nonce_padding, integer_value.n));
     if (tst.n && tst.p[0] == 0xa0)
         REQUIRE(!take(&tst, 0xa0, &tmp));
@@ -721,12 +722,14 @@ size_t wendy_pki_time_request(uint8_t out[128], const uint8_t nonce[32])
         return 0;
     size_t n = sizeof prefix + 32;
     size_t first = 0;
-    while (first < 31 && nonce[first] == 0) first++;
+    while (first < 31 && nonce[first] == 0)
+        first++;
     size_t bytes = 32 - first;
     bool sign_padding = (nonce[first] & 0x80) != 0;
     out[n++] = 2;
     out[n++] = (uint8_t)(bytes + sign_padding);
-    if (sign_padding) out[n++] = 0;
+    if (sign_padding)
+        out[n++] = 0;
     memcpy(out + n, nonce + first, bytes);
     n += bytes;
     out[n++] = 1;
