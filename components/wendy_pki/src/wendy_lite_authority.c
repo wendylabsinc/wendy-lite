@@ -25,7 +25,8 @@ int wendy_pki_lite_authority_from_header(const char *header, uint8_t **out, size
     if (!header || wendy_pki_crypto_init()) return -1;
     size_t size = strnlen(header, WENDY_LITE_AUTHORITY_HEADER_MAX + 1);
     if (!size || size > WENDY_LITE_AUTHORITY_HEADER_MAX) return -1;
-    uint8_t *der = pki_owned_malloc(size);
+    /* Public import outputs retain libc ownership for enrollment cleanup. */
+    uint8_t *der = malloc(size);
     unsigned char *encoded = pki_owned_malloc(size + 1);
     mbedtls_x509_crt cert;
     mbedtls_x509_crt_init(&cert);
@@ -58,7 +59,7 @@ int wendy_pki_lite_authority_from_header(const char *header, uint8_t **out, size
     result = 0;
 done:
     pki_owned_free(encoded);
-    pki_owned_free(der);
+    free(der);
     mbedtls_x509_crt_free(&cert);
     return result;
 }

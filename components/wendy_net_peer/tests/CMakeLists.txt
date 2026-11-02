@@ -132,3 +132,5 @@ if(WENDYOS_GO_ROOT)
         --go "${GO_EXECUTABLE}" --wendyos-root "${WENDYOS_GO_ROOT}" --driver "$<TARGET_FILE:session_manifest_interop>")
     set_tests_properties(session_manifest_interop PROPERTIES TIMEOUT 120)
 endif()
+
+session_test(endpoint_replay_regression endpoint_replay_regression_test.c "${session_key}")
