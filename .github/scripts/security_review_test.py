@@ -202,6 +202,21 @@ class GeneratedExclusionTests(unittest.TestCase):
         self.assertNotIn("generatedMarker", kept)
         self.assertEqual(excluded, ["go/console/wendypb/x.pb.go"])
 
+    def test_generated_only_pr_prepares_zero_batches_without_model_calls(self) -> None:
+        raw = diff("go/console/wendypb/x.pb.go")
+        meta = metadata()
+        manifest = security_review.build_input_manifest(meta, raw, 42, HEAD_SHA)
+        self.assertEqual(manifest["batch_count"], 0)
+        self.assertEqual(manifest["reviewable_bytes"], 0)
+        self.assertEqual(manifest["reviewed_files"], 0)
+        with patch.object(security_review, "review_batch") as review:
+            result = security_review.review_batches(None, "offline", meta, raw.decode(), "", manifest)
+        review.assert_not_called()
+        rendered, blocking = security_review.render_review(result, raw.decode(), manifest)
+        self.assertFalse(blocking)
+        self.assertIn("1 generated file(s) excluded", rendered)
+        self.assertIn("no handwritten changes require review", rendered)
+
     def test_hand_written_diff_over_the_limit_still_fails(self) -> None:
         handwritten = diff("go/internal/thing.go")
         raw = handwritten + diff("go/console/wendypb/x.pb.go")
@@ -549,11 +564,39 @@ class BatchReviewTests(unittest.TestCase):
     def test_repair_credit_outage_fails_closed_after_initial_response(self) -> None:
         client = Mock()
         client.messages.create.side_effect = [
-            SimpleNamespace(content=[SimpleNamespace(text='{"severity":"high", invalid')]),
+            SimpleNamespace(content=[SimpleNamespace(text='{"severity":"high", invalid')], stop_reason='end_turn'),
             RuntimeError("credit balance unavailable"),
         ]
         with self.assertRaisesRegex(security_review.ReviewError, "repair failed"):
             security_review.review_batch(client, "test-model", self.meta, self.raw.decode(), "", "")
+
+    def test_incomplete_initial_response_fails_before_repair(self) -> None:
+        for reason in ("max_tokens", "model_context_window_exceeded", "refusal", None):
+            with self.subTest(stop_reason=reason):
+                client = Mock()
+                client.messages.create.side_effect = [
+                    SimpleNamespace(content=[SimpleNamespace(text='{"summary":"Review", "findings":[{"severity":"high", "details":"truncated')], stop_reason=reason),
+                    SimpleNamespace(content=[SimpleNamespace(text="NO_FINDINGS")], stop_reason="end_turn"),
+                ]
+                with self.assertRaisesRegex(security_review.ReviewError, "did not complete"):
+                    security_review.review_batch(client, "offline", self.meta, self.raw.decode(), "", "")
+                self.assertEqual(client.messages.create.call_count, 1)
+
+    def test_incomplete_repair_response_fails_closed(self) -> None:
+        client = Mock()
+        client.messages.create.side_effect = [
+            SimpleNamespace(content=[SimpleNamespace(text="invalid")], stop_reason="end_turn"),
+            SimpleNamespace(content=[SimpleNamespace(text="NO_FINDINGS")], stop_reason="max_tokens"),
+        ]
+        with self.assertRaisesRegex(security_review.ReviewError, "invalid security-review response after repair"):
+            security_review.review_batch(client, "offline", self.meta, self.raw.decode(), "", "")
+
+    def test_complete_response_is_accepted(self) -> None:
+        client = Mock()
+        client.messages.create.return_value = SimpleNamespace(
+            content=[SimpleNamespace(text="NO_FINDINGS")], stop_reason="end_turn")
+        result = security_review.review_batch(client, "offline", self.meta, self.raw.decode(), "", "")
+        self.assertEqual(result["findings"], [])
 
     def test_combined_results_keep_more_than_ten_findings(self) -> None:
         def response(_client, _model, _meta, batch, _previous, _context):

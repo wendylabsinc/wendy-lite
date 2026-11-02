@@ -290,7 +290,7 @@ def build_input_manifest(
     reviewable_text, generated_paths = partition_generated(diff_text, globs)
     reviewable_bytes = len(reviewable_text.encode("utf-8"))
     try:
-        batches = split_diff(reviewable_text, max_diff_bytes)
+        batches = split_diff(reviewable_text, max_diff_bytes) if reviewable_text else []
     except ValueError as error:
         raise ReviewError(f"Cannot prepare complete review; no partial review was performed: {error}") from error
     manifest = {
@@ -862,6 +862,8 @@ def render_review(
 
 
 def _response_text(message: Any) -> str:
+    if getattr(message, "stop_reason", None) != "end_turn":
+        raise ReviewError("Claude did not complete its response; no complete review was performed")
     content = getattr(message, "content", None)
     if not isinstance(content, list) or not content:
         raise ReviewError("Claude returned no response content")
@@ -1003,10 +1005,14 @@ def review_batches(client: Any, model: str, metadata: dict[str, Any], diff: str,
         raise ReviewError("Review input no longer matches the prepared input manifest")
     # Filtered with the same rule prepare-input costed, so the model reads
     # exactly the bytes the budget was spent on.
-    batches = [batch.rendered for batch in split_diff(reviewable_diff(diff), manifest["max_diff_bytes"])] or [
-        "(Every changed file in this pull request is a generated file excluded "
-        "from review. There are no hand-written changes to assess.)"
-    ]
+    reviewable_text = reviewable_diff(diff)
+    if not reviewable_text:
+        return {
+            "summary": "All changed files are generated bindings; no handwritten changes require review.",
+            "findings": [],
+            "compliance_summary": "",
+        }
+    batches = [batch.rendered for batch in split_diff(reviewable_text, manifest["max_diff_bytes"])]
 
     def run_batch(item: tuple[int, str]) -> dict[str, Any]:
         index, batch = item
