@@ -15,8 +15,10 @@ A fingerprint is the first 16 bytes of SHA-256 over the complete certificate DER
 The client's own path is ordered root first through its intermediates, excluding
 the leaf. It offers the longest prefix first, shorter prefixes, then the ordinary
 application protocol. The server selects the longest prefix it holds, explicitly
-acknowledging which client CAs it can omit. The server independently omits its own
-CA certificates advertised by the client. Paths contain at most eight CA hashes;
+acknowledging which client CAs it can omit. When a hash-bearing variant is selected, the server independently omits its own
+CA certificates advertised by the client. Selecting ordinary ALPN requests full
+leaf-and-intermediate presentations in both directions, even if the client also
+offered cached inventory names. Paths contain at most eight CA hashes;
 each ALPN name stays within 255 bytes.
 
 Other resident cached CAs use auxiliary names beginning with `wendy-net-cached`,
@@ -41,3 +43,19 @@ are no new flash writes or allocations while Wendy Net is off.
 The tracked Mbed TLS patches support opaque ALPN names with explicit lengths and
 untrusted issuer candidates. They preserve normal certificate validation. Lite
 TLS session resumption remains disabled; see the separate resumption follow-up.
+
+A local certificate verification failure whose only flag is an untrusted issuer
+path pauses certificate hints process-wide for 120 seconds. Known expiry,
+not-yet-valid, revocation, usage, name and other policy flags exclude recovery,
+including when combined with the untrusted-path flag. Generic peer alerts and
+transport errors do not start recovery. The cause need not be a hash collision;
+unavailable issuers or an ordinary trust configuration problem can look the same.
+
+During the cooldown clients offer only the ordinary service name; servers select
+ordinary ALPN and send their complete usual presentation, including all
+intermediates. Cache contents and trust anchors remain intact, verification is
+unchanged, and reconnects use the existing retry policy. The rejecting endpoint
+alone can request a full exchange in either TLS role. Failures inside the window
+do not prolong it, and new handshakes resume hints at the monotonic deadline.
+The controller uses bounded atomic RAM state, with no peer map, timer or flash
+writes. Lite resumption remains disabled.

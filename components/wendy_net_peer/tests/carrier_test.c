@@ -5,8 +5,7 @@
 #include <string.h>
 
 static bool operator_mode;
-struct port
-{
+struct port {
     struct port *peer;
     uint8_t ring[31];
     size_t head, size;
@@ -15,8 +14,7 @@ struct port
     unsigned reads, writes, blocks;
     bool eof;
 };
-struct endpoint
-{
+struct endpoint {
     struct wnc_carrier carrier;
     struct port port;
     uint8_t buffer[2052];
@@ -30,8 +28,7 @@ static ssize_t read_bytes(void *ctx, void *data, size_t size)
         return 0;
     if (!p->size)
         return -2;
-    if (p->reads % 11 == 0)
-    {
+    if (p->reads % 11 == 0) {
         p->blocks++;
         return -3;
     }
@@ -52,12 +49,10 @@ static ssize_t write_bytes(void *ctx, const void *data, size_t size)
     if (p->writes == 1)
         assert(((const uint8_t *)data)[0] == (operator_mode ? 4 : 2) ||
                ((const uint8_t *)data)[0] == (operator_mode ? 5 : 1));
-    if (p->retry)
-    {
+    if (p->retry) {
         assert(data == p->retry && size == p->retry_size);
     }
-    if (q->size == sizeof q->ring || p->writes % 7 == 0 || p->writes % 13 == 0)
-    {
+    if (q->size == sizeof q->ring || p->writes % 7 == 0 || p->writes % 13 == 0) {
         p->retry = data;
         p->retry_size = size;
         p->blocks++;
@@ -69,8 +64,7 @@ static ssize_t write_bytes(void *ctx, const void *data, size_t size)
     if (size > sizeof q->ring - q->size)
         size = sizeof q->ring - q->size;
     for (size_t i = 0; i < size; i++)
-        q->ring[(q->head + q->size + i) % sizeof q->ring] =
-            ((const uint8_t *)data)[i];
+        q->ring[(q->head + q->size + i) % sizeof q->ring] = ((const uint8_t *)data)[i];
     q->size += size;
     return (ssize_t)size;
 }
@@ -78,10 +72,8 @@ static void init(struct endpoint *e, unsigned owner)
 {
     memset(e, 0, sizeof *e);
     e->owner = owner;
-    struct wnc_io io = {
-        .context = &e->port, .read = read_bytes, .write = write_bytes};
-    assert(
-        !wnc_init(&e->carrier, &io, e->buffer, sizeof e->buffer, 8192, 65536));
+    struct wnc_io io = {.context = &e->port, .read = read_bytes, .write = write_bytes};
+    assert(!wnc_init(&e->carrier, &io, e->buffer, sizeof e->buffer, 8192, 65536));
     if (operator_mode)
         assert(!wnc_operator_router(&e->carrier));
 }
@@ -120,28 +112,22 @@ static int large_receive(void *ctx, const void *data, size_t size, bool control)
     (*count)++;
     return 0;
 }
-struct packet_pressure
-{
+struct packet_pressure {
     struct wn_assembler assembler;
     uint8_t expected[WN_MTU];
     unsigned controls, packets;
 };
-static int pressure_receive(void *ctx, const void *data, size_t size,
-                            bool control)
+static int pressure_receive(void *ctx, const void *data, size_t size, bool control)
 {
     struct packet_pressure *p = ctx;
-    if (control)
-    {
+    if (control) {
         assert(size == 600 && !p->controls++);
         for (size_t i = 0; i < size; i++)
             assert(!((const uint8_t *)data)[i]);
-    }
-    else
-    {
+    } else {
         int assembled = wn_assemble(&p->assembler, data, size, 0);
         assert(assembled >= 0);
-        if (assembled)
-        {
+        if (assembled) {
             assert(assembled == WN_MTU && !p->packets++);
             assert(!memcmp(p->assembler.packet, p->expected, WN_MTU));
         }
@@ -157,30 +143,24 @@ int main(int argc, char **argv)
     a.port.peer = &b.port;
     b.port.peer = &a.port;
     unsigned rounds = 0;
-    while (a.received < 128 || b.received < 128)
-    {
+    while (a.received < 128 || b.received < 128) {
         struct endpoint *ends[] = {&a, &b};
-        for (unsigned i = 0; i < 2; i++)
-        {
+        for (unsigned i = 0; i < 2; i++) {
             struct endpoint *e = ends[i];
-            if (e->sent < 128 && e->carrier.queued < 2048)
-            {
+            if (e->sent < 128 && e->carrier.queued < 2048) {
                 uint8_t data[1024];
                 fill(data, sizeof data, e->sent, e->owner);
-                assert(
-                    !wnc_enqueue(&e->carrier, data, sizeof data, e->sent % 2));
+                assert(!wnc_enqueue(&e->carrier, data, sizeof data, e->sent % 2));
                 e->sent++;
             }
-            assert(wnc_pump(&e->carrier, (int64_t)rounds * 10, receive, e) >=
-                   0);
+            assert(wnc_pump(&e->carrier, (int64_t)rounds * 10, receive, e) >= 0);
             assert(e->carrier.queued <= 8192);
         }
         assert(++rounds < 200000);
     }
-    assert(!a.carrier.queued && !b.carrier.queued && a.port.blocks &&
-           b.port.blocks);
-    printf("duplex 128KiB each direction,31byte windows: rounds=%u idle=%zu\n",
-           rounds, sizeof a.carrier);
+    assert(!a.carrier.queued && !b.carrier.queued && a.port.blocks && b.port.blocks);
+    printf("duplex 128KiB each direction,31byte windows: rounds=%u idle=%zu\n", rounds,
+           sizeof a.carrier);
     wnc_deinit(&a.carrier);
     wnc_deinit(&b.carrier);
     /* The first fragment fits, the second exceeds the queue budget. Keep
@@ -198,23 +178,18 @@ int main(int argc, char **argv)
     uint8_t control[600] = {0};
     assert(!wnc_enqueue(&a.carrier, control, sizeof control, true));
     size_t before = a.carrier.queued;
-    assert(wnc_enqueue_packet(&a.carrier, pressure.expected, WN_MTU, 1) ==
-           WNC_LIMIT);
+    assert(wnc_enqueue_packet(&a.carrier, pressure.expected, WN_MTU, 1) == WNC_LIMIT);
     assert(a.carrier.queued == before && a.carrier.head == a.carrier.tail);
-    for (rounds = 0; !pressure.controls; rounds++)
-    {
+    for (rounds = 0; !pressure.controls; rounds++) {
         assert(wnc_pump(&a.carrier, rounds * 10, unexpected, NULL) >= 0);
-        assert(wnc_pump(&b.carrier, rounds * 10, pressure_receive, &pressure) >=
-               0);
+        assert(wnc_pump(&b.carrier, rounds * 10, pressure_receive, &pressure) >= 0);
         assert(rounds < 200000);
     }
     assert(!a.carrier.queued && !b.carrier.header_have && !pressure.packets);
     assert(!wnc_enqueue_packet(&a.carrier, pressure.expected, WN_MTU, 2));
-    for (; !pressure.packets; rounds++)
-    {
+    for (; !pressure.packets; rounds++) {
         assert(wnc_pump(&a.carrier, rounds * 10, unexpected, NULL) >= 0);
-        assert(wnc_pump(&b.carrier, rounds * 10, pressure_receive, &pressure) >=
-               0);
+        assert(wnc_pump(&b.carrier, rounds * 10, pressure_receive, &pressure) >= 0);
         assert(rounds < 200000);
     }
     assert(!a.carrier.queued);
@@ -229,8 +204,7 @@ int main(int argc, char **argv)
     a.port.ring[0] = operator_mode ? 5 : 1;
     wn_put32(a.port.ring + 1, 65541);
     a.port.size = 5;
-    assert(wnc_pump(&a.carrier, 0, unexpected, NULL) == WNC_INVALID &&
-           !a.carrier.body);
+    assert(wnc_pump(&a.carrier, 0, unexpected, NULL) == WNC_INVALID && !a.carrier.body);
     wnc_deinit(&a.carrier);
     init(&a, 0);
     a.port.peer = &b.port;
@@ -271,12 +245,9 @@ int main(int argc, char **argv)
     fill(large, sizeof large, 42, 0);
     assert(!wnc_enqueue(&a.carrier, large, sizeof large, true));
     unsigned delivered = 0;
-    for (rounds = 0; !delivered; rounds++)
-    {
-        assert(wnc_pump(&a.carrier, (int64_t)rounds * 10, unexpected, NULL) >=
-               0);
-        assert(wnc_pump(&b.carrier, (int64_t)rounds * 10, large_receive,
-                        &delivered) >= 0);
+    for (rounds = 0; !delivered; rounds++) {
+        assert(wnc_pump(&a.carrier, (int64_t)rounds * 10, unexpected, NULL) >= 0);
+        assert(wnc_pump(&b.carrier, (int64_t)rounds * 10, large_receive, &delivered) >= 0);
         assert(rounds < 200000);
     }
     assert(!b.carrier.body && !a.carrier.queued);
@@ -284,7 +255,6 @@ int main(int argc, char **argv)
     assert(wnc_pump(&b.carrier, rounds * 10, unexpected, NULL) == WNC_CLOSED);
     wnc_deinit(&a.carrier);
     wnc_deinit(&b.carrier);
-    puts(
-        "sparse framing, partial retry, bounds, expiry and large receive pass");
+    puts("sparse framing, partial retry, bounds, expiry and large receive pass");
     return 0;
 }

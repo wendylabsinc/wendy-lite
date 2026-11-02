@@ -8,4 +8,4 @@ void wendy_net_agent_start(void);
 void wendy_net_agent_accept(int fd);
 int wendy_net_agent_poll(void);
 bool wendy_net_agent_stop(void);
-void wendy_net_agent_watch(fd_set *,fd_set *,int *,int64_t *);
+void wendy_net_agent_watch(fd_set *, fd_set *, int *, int64_t *);

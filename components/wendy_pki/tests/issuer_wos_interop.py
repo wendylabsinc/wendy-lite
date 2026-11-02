@@ -40,7 +40,7 @@ def run():
         fixture = fixture.replace(before, after)
     imports = 'bytes crypto crypto/ecdsa crypto/elliptic crypto/mldsa crypto/rand crypto/x509 crypto/x509/pkix encoding/asn1 encoding/pem math/big net/url testing time'.split()
     header = 'package bleprovider\nimport (\n' + ''.join('"' + item + '"\n' for item in imports)
-    header += '"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"\n"github.com/wendylabsinc/wendy/go/internal/shared/meshid"\n)\n'
+    header += '"github.com/wendylabsinc/wendy/go/internal/agent/localmesh"\n"github.com/wendylabsinc/wendy/go/internal/shared/meshalpn"\n"github.com/wendylabsinc/wendy/go/internal/shared/meshid"\n)\n'
     header += 'var liteIssuerRoots=map[*localmesh.Credentials]string{}\n'
     host_os = subprocess.check_output([args.go, 'env', 'GOOS'], text=True).strip()
     with tempfile.TemporaryDirectory(prefix='lite-issuer-wos-') as temporary:

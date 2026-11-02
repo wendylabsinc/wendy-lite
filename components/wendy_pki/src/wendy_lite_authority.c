@@ -16,10 +16,12 @@ static int p256(const mbedtls_x509_crt *cert)
            mbedtls_pk_get_bitlen(&cert->pk) == 256;
 }
 
-int wendy_pki_lite_authority_from_header(const char *header,uint8_t **out,size_t *out_size)
+int wendy_pki_lite_authority_from_header(const char *header, uint8_t **out, size_t *out_size)
 {
-    if(!out || !out_size)return -1;
-    *out=NULL;*out_size=0;
+    if (!out || !out_size)
+        return -1;
+    *out = NULL;
+    *out_size = 0;
     if (!header || wendy_pki_crypto_init()) return -1;
     size_t size = strnlen(header, WENDY_LITE_AUTHORITY_HEADER_MAX + 1);
     if (!size || size > WENDY_LITE_AUTHORITY_HEADER_MAX) return -1;
@@ -50,7 +52,9 @@ int wendy_pki_lite_authority_from_header(const char *header,uint8_t **out,size_t
         goto done;
     /* Trust bootstrap does not depend on the device's initial wall clock.
      * Normal TLS validation still checks this CA's lifetime when it is used. */
-    *out=der;*out_size=der_size;der=NULL;
+    *out = der;
+    *out_size = der_size;
+    der = NULL;
     result = 0;
 done:
     pki_owned_free(encoded);
