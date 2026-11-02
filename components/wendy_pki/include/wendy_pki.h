@@ -55,6 +55,13 @@ esp_err_t wendy_pki_accept_lan(int fd, wendy_pki_connection **connection);
 enum wendy_peer_role wendy_pki_get_peer_role(const wendy_pki_connection *connection);
 
 #include "wendy_lite_grant.h"
-/* Installs keys exclusively from authenticated outer TLS, then detaches TCP. */
+enum wendy_pki_relay_result {
+    WENDY_PKI_RELAY_FAILED = -1,
+    WENDY_PKI_RELAY_RENEW = -2,
+};
+/* Installs keys exclusively from authenticated outer TLS, then detaches TCP.
+ * Returns the handed-off fd, FAILED, or RENEW for normal planned refresh.
+ * The caller must close connection on every outcome. A nonnegative return
+ * transfers the detached fd to the caller independently of connection. */
 int wendy_pki_relay_upgrade(wendy_pki_connection *, struct wendy_lite_trust *);
 esp_err_t wendy_pki_accept_relay(int fd, const struct wendy_lite_trust *, wendy_pki_connection **);

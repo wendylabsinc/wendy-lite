@@ -83,6 +83,12 @@ close_notify and then transfers raw bytes on the preserved TCP socket.
 LAN cases also accept same-tenant device clients and assert the verified peer
 role. They reject wrong tenants, malformed or ambiguous identities, missing
 clientAuth, CA leaves, invalid dates, untrusted issuers, and signature tampering.
+`relay_control_test` runs the production broker control loop with deterministic
+TLS reads, writes and socket waits. Healthy heartbeats reach the four-minute
+refresh deadline and return the planned-renewal result. Early heartbeat timeout,
+EOF, invalid or partial headers, stalled writes, reset and socket errors retain
+the failure result even at that deadline. Successful handoff preserves the
+detached fd and its trust data for the caller.
 The operator-only accept path rejects device clients, including relay clients.
 Callback stream cases exercise the PKI stream API used by BLE through fragmented reads and
 writes with forced retry responses. A valid operator exchanges application data;
