@@ -89,6 +89,14 @@ esp_err_t wendy_wasm_load_from_partition(const char *partition_label,
                                          wendy_wasm_module_handle_t *out);
 
 /**
+ * Begin a one-use linear-mapping transfer after the old guest has stopped.
+ * Serialized lifecycle control thread only. Finish on every replacement exit;
+ * zero means this runtime/module is ineligible and normal allocation applies.
+ */
+uint32_t wendy_wasm_replacement_begin(wendy_wasm_module_handle_t module);
+void wendy_wasm_replacement_finish(uint32_t generation);
+
+/**
  * Run a loaded WASM module. Blocks until the module's main() returns or
  * wendy_wasm_stop() is called from another task.
  *
