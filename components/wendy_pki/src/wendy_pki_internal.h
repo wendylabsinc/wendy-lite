@@ -236,4 +236,4 @@ int pki_tls_agent_begin(const struct wendy_pki_stream *,const char *,const char 
     struct pki_tls_owned_identity *,struct wendy_conf_span,wendy_pki_connection **);
 int pki_tls_agent_advance(wendy_pki_connection *);
 
-void pki_tls_net_add_issuers(wendy_pki_connection *,struct wendy_pki_net_issuers *);
+void pki_tls_net_add_issuers(wendy_pki_connection *, struct wendy_pki_net_issuers *);

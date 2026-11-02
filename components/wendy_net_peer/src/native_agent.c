@@ -99,8 +99,10 @@ static void work(void *context)
     }else if(f->state.phase==WNA_PREPARE){
         struct wendy_pki_stream bio={.context=&f->channel,.read=wna_read,.write=write_bio,.wait=wnad_no_wait};
         esp_err_t result=wendy_pki_agent_begin(&bio,&f->setup);
-        if(result==ESP_OK)wendy_pki_agent_add_issuers(f->setup,&f->issuers);
-        else wendy_pki_net_release_issuers(&f->issuers);
+        if (result == ESP_OK)
+            wendy_pki_agent_add_issuers(f->setup, &f->issuers);
+        else
+            wendy_pki_net_release_issuers(&f->issuers);
         f->result=result==ESP_OK ? 0:(result==ESP_ERR_TIMEOUT || result==ESP_ERR_NO_MEM) ? 2:-1;
     }else f->result=wendy_pki_agent_step(f->setup);
     atomic_store_explicit(&f->done,true,memory_order_release);
@@ -124,7 +126,7 @@ static bool dispose(struct native_flow *f)
     }
     /* Source-handle close and TLS destruction are a worker effect too. Never
      * free a context from beneath a running handshake or cleanup loan. */
-    if(f->setup || f->connection || f->issuers.release){
+    if (f->setup || f->connection || f->issuers.release) {
         atomic_store(&f->done,false);
         if(wendy_pki_work_submit(work,f))f->state.lent=true;
         return false;
@@ -204,7 +206,8 @@ static int step(struct native_flow *f,int64_t now)
             return progress;
         }
         if(effect==WNA_CRYPTO_PREPARE || effect==WNA_CRYPTO_STEP){
-            if(effect==WNA_CRYPTO_PREPARE && !f->issuers.release)wendy_net_peer_issuer_snapshot(&f->issuers);
+            if (effect == WNA_CRYPTO_PREPARE && !f->issuers.release)
+                wendy_net_peer_issuer_snapshot(&f->issuers);
             atomic_store(&f->done,false);
             if(wendy_pki_work_submit(work,f))wna_lend(&f->state);
         }

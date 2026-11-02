@@ -221,7 +221,7 @@ struct wendy_pki_net_setup;
 esp_err_t wendy_pki_net_begin(const struct wendy_pki_stream *,bool server,
     const char *expected_peer,bool application,struct wendy_pki_net_setup **);
 /* Worker-only, immediately after begin and before the first handshake step. */
-void wendy_pki_net_add_issuers(struct wendy_pki_net_setup *,struct wendy_pki_net_issuers *);
+void wendy_pki_net_add_issuers(struct wendy_pki_net_setup *, struct wendy_pki_net_issuers *);
 int wendy_pki_net_step(struct wendy_pki_net_setup *);
 wendy_pki_connection *wendy_pki_net_take(struct wendy_pki_net_setup *,struct wendy_pki_mesh_identity *);
 void wendy_pki_net_dispose(struct wendy_pki_net_setup *);
@@ -238,7 +238,7 @@ struct wendy_pki_agent_info {
 };
 esp_err_t wendy_pki_agent_begin(const struct wendy_pki_stream *,struct wendy_pki_agent_setup **);
 /* Worker consumes an actor snapshot before the first agent step. */
-void wendy_pki_agent_add_issuers(struct wendy_pki_agent_setup *,struct wendy_pki_net_issuers *);
+void wendy_pki_agent_add_issuers(struct wendy_pki_agent_setup *, struct wendy_pki_net_issuers *);
 int wendy_pki_agent_step(struct wendy_pki_agent_setup *);
 wendy_pki_connection *wendy_pki_agent_take(struct wendy_pki_agent_setup *,struct wendy_pki_agent_info *);
 void wendy_pki_agent_dispose(struct wendy_pki_agent_setup *);

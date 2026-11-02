@@ -1267,8 +1267,8 @@ static void update_node_status(struct peer_state *root)
 #define NET_SETUP_DEFERRED INT_MIN
 void wendy_net_peer_issuer_snapshot(struct wendy_pki_net_issuers *snapshot)
 {
-    struct peer_state *root=atomic_load(&state);
-    wnrs_issuer_snapshot(root ? root->router_node:NULL,snapshot);
+    struct peer_state *root = atomic_load(&state);
+    wnrs_issuer_snapshot(root ? root->router_node : NULL, snapshot);
 }
 static bool setup_room(struct peer_state *root);
 static void setup_work(void *context)
@@ -1279,8 +1279,10 @@ static void setup_work(void *context)
             .read=wna_read,.write=wna_write,.wait=wnad_no_wait};
         esp_err_t result=wendy_pki_net_begin(&bio,link->setup_server,
             link->candidate.device[0] ? link->candidate.device:NULL,false,&link->tls_setup);
-        if(result==ESP_OK)wendy_pki_net_add_issuers(link->tls_setup,&link->tls_issuers);
-        else wendy_pki_net_release_issuers(&link->tls_issuers);
+        if (result == ESP_OK)
+            wendy_pki_net_add_issuers(link->tls_setup, &link->tls_issuers);
+        else
+            wendy_pki_net_release_issuers(&link->tls_issuers);
         link->setup_result=result==ESP_OK ? 0:result==ESP_ERR_TIMEOUT ? 2:-1;
     }else link->setup_result=wendy_pki_net_step(link->tls_setup);
     atomic_store(&link->setup_complete,true);
@@ -1353,7 +1355,7 @@ static int advance_setup(struct peer_state *link,int64_t now)
     if(effect==WNA_CLOSE)return -1;
     if(effect==WNA_CRYPTO_PREPARE && !wnad_handshake_claim(link))return 1;
     if(effect==WNA_CRYPTO_PREPARE || effect==WNA_CRYPTO_STEP){
-        if(effect==WNA_CRYPTO_PREPARE && !link->tls_issuers.release)
+        if (effect == WNA_CRYPTO_PREPARE && !link->tls_issuers.release)
             wendy_net_peer_issuer_snapshot(&link->tls_issuers);
         atomic_store(&link->setup_complete,false);
         /* Queue submission is an outer-driver effect. No ownership transfer

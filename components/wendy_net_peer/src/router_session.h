@@ -48,4 +48,4 @@ int wnrs_topology(struct wnrs_node *,uint32_t cursor,uint64_t generation,
     struct _WendyComNetTopologyPage *);
 
 struct wendy_pki_net_issuers;
-void wnrs_issuer_snapshot(struct wnrs_node *,struct wendy_pki_net_issuers *);
+void wnrs_issuer_snapshot(struct wnrs_node *, struct wendy_pki_net_issuers *);
