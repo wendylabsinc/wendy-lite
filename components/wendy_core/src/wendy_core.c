@@ -60,20 +60,24 @@ static const char *TAG = "wendy_core";
 #define EVT_APP_START_REQUEST BIT6
 
 static EventGroupHandle_t s_events;
-static bool s_boot_ble_enabled=true;
-esp_err_t wendy_core_set_boot_radios(bool ble,bool wifi)
+static bool s_boot_ble_enabled = true;
+esp_err_t wendy_core_set_boot_radios(bool ble, bool wifi)
 {
-    if(s_events)return ESP_ERR_INVALID_STATE;
+    if (s_events)
+        return ESP_ERR_INVALID_STATE;
 #if CONFIG_WENDY_WIFI_ENABLED
-    esp_err_t result=wendy_wifi_set_boot_radio_enabled(wifi);
-    if(result!=ESP_OK)return result;
+    esp_err_t result = wendy_wifi_set_boot_radio_enabled(wifi);
+    if (result != ESP_OK)
+        return result;
 #else
-    if(wifi)return ESP_ERR_NOT_SUPPORTED;
+    if (wifi)
+        return ESP_ERR_NOT_SUPPORTED;
 #endif
 #if !CONFIG_WENDY_BLE
-    if(ble)return ESP_ERR_NOT_SUPPORTED;
+    if (ble)
+        return ESP_ERR_NOT_SUPPORTED;
 #endif
-    s_boot_ble_enabled=ble;
+    s_boot_ble_enabled = ble;
     return ESP_OK;
 }
 
@@ -411,7 +415,8 @@ static esp_err_t wasm_app_stop_on_control_thread(uint32_t *replacement)
     if (err != ESP_OK) return err;
     if (!wait_for_wasm_inactive(5000)) return ESP_ERR_TIMEOUT;
     reset_guest_resources();
-    if (replacement) *replacement = wendy_wasm_replacement_begin(s_current_module);
+    if (replacement)
+        *replacement = wendy_wasm_replacement_begin(s_current_module);
     wendy_wasm_unload(s_current_module);
     mark_current_module_unloaded();
     return ESP_OK;
@@ -1024,8 +1029,9 @@ esp_err_t wendy_core_init(void)
      * disagree. */
 #if CONFIG_WENDY_BLE
     {
-        esp_err_t ble_err = s_boot_ble_enabled ? wendy_ble_start():ESP_OK;
-        if(!s_boot_ble_enabled)ESP_LOGI(TAG,"BLE radio omitted by saved endpoint policy");
+        esp_err_t ble_err = s_boot_ble_enabled ? wendy_ble_start() : ESP_OK;
+        if (!s_boot_ble_enabled)
+            ESP_LOGI(TAG, "BLE radio omitted by saved endpoint policy");
         if (ble_err != ESP_OK) {
             ESP_LOGW(TAG, "BLE transport not started: %s",
                      esp_err_to_name(ble_err));
@@ -1037,9 +1043,10 @@ esp_err_t wendy_core_init(void)
 #if CONFIG_WENDY_WIFI_ENABLED
     err = wendy_wifi_init();
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "%s", !wendy_wifi_radio_available() ? "WiFi radio disabled by boot policy" :
-                 wendy_wifi_is_connected() ? "WiFi connected" :
-                 "WiFi infrastructure ready; station disconnected");
+        ESP_LOGI(TAG, "%s",
+                 !wendy_wifi_radio_available() ? "WiFi radio disabled by boot policy"
+                 : wendy_wifi_is_connected()   ? "WiFi connected"
+                                               : "WiFi infrastructure ready; station disconnected");
     } else if (err == WENDY_WIFI_ERR_NO_CREDS) {
         ESP_LOGW(TAG, "no WiFi credentials configured, continuing without WiFi");
     } else {

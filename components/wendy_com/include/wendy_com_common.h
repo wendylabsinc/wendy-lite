@@ -12,13 +12,13 @@ extern "C" {
 #endif
 
 struct wcom_net_delegate {
-    WendyComResult (*topology)(const WendyComNetTopologyParams *,WendyComNetTopologyPage *);
+    WendyComResult (*topology)(const WendyComNetTopologyParams *, WendyComNetTopologyPage *);
     /* Releases selected-row public metadata after synchronous response encoding. */
     void (*topology_release)(WendyComNetTopologyPage *);
     WendyComResult (*get)(WendyComNetStatus *);
     /* A changed configuration returns one nonzero receipt token. The delegate
      * defers application until the response crosses its transport barrier. */
-    WendyComResult (*set)(const WendyComNetConfig *,WendyComNetStatus *,uint32_t *reply_token);
+    WendyComResult (*set)(const WendyComNetConfig *, WendyComNetStatus *, uint32_t *reply_token);
     void (*reply_complete)(uint32_t reply_token);
 };
 

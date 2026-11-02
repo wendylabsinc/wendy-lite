@@ -15,7 +15,7 @@ struct wnt_record_view {
     size_t principal_size;
 };
 /* page starts empty. Success transfers one immutable selected row into it. */
-int wnt_record_copy(WendyComNetTopologyPage *,const struct wnt_record_view *);
+int wnt_record_copy(WendyComNetTopologyPage *, const struct wnt_record_view *);
 /* Safe after both synchronous encoding passes, or on query timeout/stop. */
 void wnt_page_release(WendyComNetTopologyPage *);
 
@@ -25,5 +25,5 @@ struct wnrs_node;
  * fill its owner only. Category3 selects the indexed live announcement.
  * Return1 row/owner,0 absent,-1 unavailable. Views borrow only this actor turn;
  * this hook never allocates. LUI's base implementation returns0. */
-int wnrs_topology_operator_row(struct wnrs_node *,unsigned category,unsigned index,
-    int64_t now,struct wnt_record_view *);
+int wnrs_topology_operator_row(struct wnrs_node *, unsigned category, unsigned index, int64_t now,
+                               struct wnt_record_view *);

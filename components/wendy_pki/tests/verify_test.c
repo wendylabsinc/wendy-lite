@@ -35,15 +35,18 @@ int main(int argc, char **argv)
             size_t bytes = size * count;
             unsigned char *bundle = malloc(bytes);
             assert(bundle);
-            for (unsigned i = 0; i < count; i++) memcpy(bundle + size*i, root, size);
+            for (unsigned i = 0; i < count; i++)
+                memcpy(bundle + size * i, root, size);
             assert(wendy_pki_verify_roots(bundle, bytes) == 0);
-            size_t der_size=0;
-            assert(!wendy_cert_bundle_measure(bundle,bytes,&der_size));
-            uint8_t *der=malloc(der_size);assert(der);
-            assert(!wendy_cert_bundle_import(bundle,bytes,der,der_size,&der_size));
-            assert(der_size<bytes && !wendy_pki_verify_roots(der,der_size));
+            size_t der_size = 0;
+            assert(!wendy_cert_bundle_measure(bundle, bytes, &der_size));
+            uint8_t *der = malloc(der_size);
+            assert(der);
+            assert(!wendy_cert_bundle_import(bundle, bytes, der, der_size, &der_size));
+            assert(der_size < bytes && !wendy_pki_verify_roots(der, der_size));
             free(der);
-            for (unsigned i = 0; i < count; i++) assert(!memcmp(bundle + size*i, root, size));
+            for (unsigned i = 0; i < count; i++)
+                assert(!memcmp(bundle + size * i, root, size));
             free(bundle);
         }
         free(root);

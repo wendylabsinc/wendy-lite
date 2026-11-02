@@ -38,8 +38,8 @@ struct pki_issuer_state {
 };
 /* Inspect complete, already Mbed TLS-validated TLS1.3 handshake messages.
  * An unavailable/unrecognized layout simply leaves the ordinary full chain. */
-bool pki_client_hello_offers(const uint8_t *message,size_t size,const char *protocol);
-unsigned pki_certificate_message_count(const uint8_t *message,size_t size);
+bool pki_client_hello_offers(const uint8_t *message, size_t size, const char *protocol);
+unsigned pki_certificate_message_count(const uint8_t *message, size_t size);
 
 /* Binary per-CA availability. Prefix names are real protocol variants; the
  * selected prefix explicitly acknowledges which client CAs the server has. */

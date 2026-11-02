@@ -17,17 +17,18 @@ struct wendy_pki_operator_peer {
 };
 /* Shape only: exact serialized URI bytes, canonical tenant and operator kind.
  * URI escaping remains opaque; this function grants no trust. */
-int wendy_pki_operator_principal(const char *,size_t,const char *tenant);
+int wendy_pki_operator_principal(const char *, size_t, const char *tenant);
 /* Worker-only primary v4-manifest verification. The peer must come from independently
  * verified primary client-auth roots; a Lite authority twin is not a root. */
-int wendy_pki_operator_manifest_verify(const struct wendy_pki_operator_peer *,
-    const void *body,size_t,const uint8_t *signature,size_t);
-int wendy_pki_operator_chain(const uint8_t *const *der,const size_t *,size_t,
-    const uint8_t *roots,size_t roots_size,const char *tenant,time_t,
-    struct wendy_pki_operator_peer *);
+int wendy_pki_operator_manifest_verify(const struct wendy_pki_operator_peer *, const void *body,
+                                       size_t, const uint8_t *signature, size_t);
+int wendy_pki_operator_chain(const uint8_t *const *der, const size_t *, size_t,
+                             const uint8_t *roots, size_t roots_size, const char *tenant, time_t,
+                             struct wendy_pki_operator_peer *);
 
 /* Crypto-worker snapshot is tied to the current enrollment/trust generation
  * and five-minute verified clock. These helpers perform no network I/O. */
 bool wendy_pki_operator_snapshot_current(const struct wendy_pki_mesh_identity *);
 int wendy_pki_operator_verify_snapshot(const struct wendy_pki_mesh_identity *,
-    const uint8_t *const *,const size_t *,size_t,struct wendy_pki_operator_peer *);
+                                       const uint8_t *const *, const size_t *, size_t,
+                                       struct wendy_pki_operator_peer *);

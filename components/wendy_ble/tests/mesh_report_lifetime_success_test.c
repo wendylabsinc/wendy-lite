@@ -3,7 +3,7 @@
 
 int main(void)
 {
-    struct wble_report_lifetime l={0};
+    struct wble_report_lifetime l = {0};
     assert(wble_report_drained(&l) && !wble_report_acquire(&l));
     wble_report_open(&l);
     /* The host copied a live report/context, then an ordinary OFF arrives
