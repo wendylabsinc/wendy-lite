@@ -19,7 +19,10 @@ static uint64_t get64(const uint8_t *p)
         v = v << 8 | p[i];
     return v;
 }
-static unsigned get16(const uint8_t *p) { return (unsigned)p[0] << 8 | p[1]; }
+static unsigned get16(const uint8_t *p)
+{
+    return (unsigned)p[0] << 8 | p[1];
+}
 static void put64(uint64_t v)
 {
     for (unsigned i = 0; i < 8; i++)
@@ -47,21 +50,17 @@ static bool allow(void *ctx, uint64_t router, const struct wb_prefix *p, uint16_
 }
 int main(void)
 {
-    for (;;)
-    {
+    for (;;) {
         int command = getchar();
-        if (command == EOF)
-        {
+        if (command == EOF) {
             wb_deinit(&engine);
             return 0;
         }
         read_exact(input, 8);
         uint64_t now = get64(input);
         int result = WB_INVALID;
-        switch (command)
-        {
-        case 'i':
-        {
+        switch (command) {
+        case 'i': {
             struct wb_config c = {
                 .router = now, .hello_ms = 1000, .update_ms = 4000, .allow = allow};
             result = wb_init(&engine, &c);
@@ -70,8 +69,7 @@ int main(void)
         case 't':
             result = wb_tick(&engine, now);
             break;
-        case 'a':
-        {
+        case 'a': {
             read_exact(input, 42);
             struct wb_link l = {.id = get64(input),
                                 .cost = (uint16_t)get16(input + 40),
@@ -81,8 +79,7 @@ int main(void)
             result = wb_add_link(&engine, now, &l);
             break;
         }
-        case 'r':
-        {
+        case 'r': {
             read_exact(input, 10);
             uint64_t id = get64(input);
             unsigned size = get16(input + 8);
@@ -93,8 +90,7 @@ int main(void)
             break;
         }
         case 'o':
-        case 'w':
-        {
+        case 'w': {
             read_exact(input, 18);
             struct wb_prefix p;
             prefix(&p, input);
@@ -122,8 +118,7 @@ int main(void)
         put16((unsigned)(uint16_t)result);
         put16(engine.seqno);
         put16((unsigned)engine.route_count);
-        for (size_t i = 0; i < engine.route_count; i++)
-        {
+        for (size_t i = 0; i < engine.route_count; i++) {
             const struct wb_route *r = &engine.routes[i];
             fwrite(r->prefix.bytes, 1, 16, stdout);
             putchar(r->prefix.bits);
@@ -136,8 +131,7 @@ int main(void)
             putchar(r->next_family);
             fwrite(r->next_hop, 1, 16, stdout);
         }
-        for (;;)
-        {
+        for (;;) {
             uint8_t packet[WB_PACKET_MAX];
             uint64_t id = 0;
             int size = wb_next_packet(&engine, &id, packet, sizeof packet);
