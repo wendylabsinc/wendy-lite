@@ -205,10 +205,30 @@ esp_err_t wendy_pki_net_sync_time(const char *peer_address, unsigned port);
  * authenticated, -1 failure. Cancellation waits for worker acknowledgement.
  * Existing signed-time bootstrap is a separate prerequisite, never network
  * I/O hidden inside begin. Take transfers an authenticated connection only. */
+/* Immutable RAM-only CA loans from the mesh actor. The optional optimisation
+ * consumes this snapshot on every path; release must remain safe after cache
+ * close. No worker traverses the actor's mutable certificate directory. */
+#define WENDY_PKI_NET_CACHED_ISSUERS 8
+struct wendy_pki_net_issuers {
+    unsigned count;
+    const uint8_t *der[WENDY_PKI_NET_CACHED_ISSUERS];
+    size_t sizes[WENDY_PKI_NET_CACHED_ISSUERS];
+    void *context;
+    void (*release)(void *);
+};
+void wendy_pki_net_release_issuers(struct wendy_pki_net_issuers *);
 struct wendy_pki_net_setup;
 esp_err_t wendy_pki_net_begin(const struct wendy_pki_stream *, bool server,
                               const char *expected_peer, bool application,
                               struct wendy_pki_net_setup **);
+/* Opt-in only for incoming PSRAM full-router carriers, before the first step.
+ * Unavailable profiles retain their device-only protocol. */
+esp_err_t wendy_pki_net_allow_operator_routers(struct wendy_pki_net_setup *);
+struct wendy_pki_operator_peer;
+/* Borrowed until connection close; caller must own the completed TLS context. */
+const struct wendy_pki_operator_peer *wendy_pki_mesh_authenticated_operator(wendy_pki_connection *);
+/* Worker-only, immediately after begin and before the first handshake step. */
+void wendy_pki_net_add_issuers(struct wendy_pki_net_setup *, struct wendy_pki_net_issuers *);
 int wendy_pki_net_step(struct wendy_pki_net_setup *);
 wendy_pki_connection *wendy_pki_net_take(struct wendy_pki_net_setup *,
                                          struct wendy_pki_mesh_identity *);
@@ -225,6 +245,8 @@ struct wendy_pki_agent_info {
     int64_t session_deadline_us;
 };
 esp_err_t wendy_pki_agent_begin(const struct wendy_pki_stream *, struct wendy_pki_agent_setup **);
+/* Worker consumes an actor snapshot before the first agent step. */
+void wendy_pki_agent_add_issuers(struct wendy_pki_agent_setup *, struct wendy_pki_net_issuers *);
 int wendy_pki_agent_step(struct wendy_pki_agent_setup *);
 wendy_pki_connection *wendy_pki_agent_take(struct wendy_pki_agent_setup *,
                                            struct wendy_pki_agent_info *);

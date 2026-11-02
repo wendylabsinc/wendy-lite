@@ -78,6 +78,15 @@ PB_BIND(WendyComNetSetParams, WendyComNetSetParams, AUTO)
 PB_BIND(WendyComNetStatus, WendyComNetStatus, AUTO)
 
 
+PB_BIND(WendyComNetTopologyParams, WendyComNetTopologyParams, AUTO)
+
+
+PB_BIND(WendyComNetTopologyRecord, WendyComNetTopologyRecord, AUTO)
+
+
+PB_BIND(WendyComNetTopologyPage, WendyComNetTopologyPage, 2)
+
+
 PB_BIND(WendyComGetDeviceInfoParams, WendyComGetDeviceInfoParams, AUTO)
 
 

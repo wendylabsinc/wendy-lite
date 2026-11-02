@@ -28,6 +28,7 @@
 #endif
 #include "crypto_job.h"
 #include "settings.h"
+#include "topology_query.h"
 #include "esp_vfs.h"
 #include "netif_lifetime.h"
 #include "netif_effect.h"
@@ -38,6 +39,7 @@
 #endif
 #include "router_session.h"
 #include "wendy_pki_mesh.h"
+#include "wendy_pki_operator.h"
 #include "wendy_pki_crypto.h"
 #include "wendy_pki_verify.h"
 #include "time_control.h"
@@ -120,6 +122,8 @@ struct peer_state {
     struct wnnl address_lifetime;
     struct wn_candidate candidate;
     char authenticated_peer[37];
+    const struct wendy_pki_operator_peer *operator_peer;
+    uint8_t operator_instance[16];
     struct wendy_pki_stream setup_stream;
     int setup_fd, setup_result;
     bool setup_have_stream, setup_server, setup_waiting, failed;
@@ -127,6 +131,7 @@ struct peer_state {
     struct wna_channel *tls_channel;
     struct wna_session tls_state;
     struct wendy_pki_net_setup *tls_setup;
+    struct wendy_pki_net_issuers tls_issuers;
     size_t hello_out, hello_in, hello_size;
     int64_t refresh_at, setup_at;
     struct wnm_owner *mdns;
@@ -189,6 +194,79 @@ static atomic_uint runtime_error;
 static WendyComNetConfig applied_config;
 static void lifecycle_poll(void);
 static pthread_mutex_t state_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct topology_query *topology_query;
+static _Atomic(TaskHandle_t) topology_actor;
+static void topology_release(struct topology_query *query)
+{
+    wnqt_release(query, wendy_net_free);
+}
+static void service_topology_query(struct peer_state *root)
+{
+    pthread_mutex_lock(&state_lock);
+    struct topology_query *query = wnqt_take(&topology_query);
+    pthread_mutex_unlock(&state_lock);
+    if (!query)
+        return;
+    int result = wnrs_topology(root->router_node, query->params.cursor, query->params.generation,
+                               &query->page);
+    if (!result && query->page.has_record && query->page.record.kind == 1)
+        for (struct peer_state *link = root; link; link = link->next)
+            if (link->router && wnrs_link_id(link->router) == query->page.record.link_id) {
+                query->page.record.transport = (unsigned)link->candidate.medium;
+                break;
+            }
+    pthread_mutex_lock(&state_lock);
+    wnqt_finish(&topology_query, query, result, wendy_net_free);
+    pthread_mutex_unlock(&state_lock);
+}
+WendyComResult wn_peer_topology(const WendyComNetTopologyParams *params,
+                                WendyComNetTopologyPage *page)
+{
+    if (params->cursor > 1024)
+        return WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+    char tenant[37], device[65];
+    wendy_conf_enrollment_identity(tenant, device);
+    if (wn_uuid_parse(tenant, page->tenant) || wn_uuid_parse(device, page->device))
+        return WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+    pthread_mutex_lock(&state_lock);
+    struct peer_state *root = state;
+    if (!root || atomic_load(&stopping)) {
+        pthread_mutex_unlock(&state_lock);
+        return params->cursor ? WendyComResult_WENDY_COM_RESULT_BUSY
+                              : WendyComResult_WENDY_COM_RESULT_OK;
+    }
+    if (topology_query || xTaskGetCurrentTaskHandle() == atomic_load(&topology_actor)) {
+        pthread_mutex_unlock(&state_lock);
+        return WendyComResult_WENDY_COM_RESULT_BUSY;
+    }
+    struct topology_query *query = wendy_net_calloc(1, sizeof *query);
+    if (!query) {
+        pthread_mutex_unlock(&state_lock);
+        return WendyComResult_WENDY_COM_RESULT_BUSY;
+    }
+    atomic_init(&query->references, 2);
+    query->params = *params;
+    query->page = *page;
+    topology_query = query;
+    wnad_wake();
+    int64_t deadline = esp_timer_get_time() + INT64_C(2000000);
+    while (!query->complete && esp_timer_get_time() < deadline) {
+        pthread_mutex_unlock(&state_lock);
+        vTaskDelay(1);
+        pthread_mutex_lock(&state_lock);
+    }
+    WendyComResult result = WendyComResult_WENDY_COM_RESULT_BUSY;
+    if (query->complete && !query->result) {
+        *page = query->page;
+        /* Transfer the selected immutable row to the synchronous encoder. */
+        query->page.record.owner_principal = (pb_callback_t){0};
+        result = WendyComResult_WENDY_COM_RESULT_OK;
+    }
+    wnqt_cancel(&topology_query, query, wendy_net_free);
+    pthread_mutex_unlock(&state_lock);
+    topology_release(query);
+    return result;
+}
 static const char *TAG = "wendy_net_peer";
 #if CONFIG_WENDY_NET_BLE
 static void delete_ble_reports(struct peer_state *s)
@@ -1308,6 +1386,7 @@ static void close_session(struct peer_state *s, int candidate)
     s->router = NULL;
     wendy_pki_close(s->connection);
     s->connection = NULL;
+    s->operator_peer = NULL;
     wendy_net_free(s->tls_channel);
     s->tls_channel = NULL;
 #if CONFIG_WENDY_NET_BLE
@@ -1479,6 +1558,11 @@ static void update_node_status(struct peer_state *root)
 }
 /* A queued job can wait behind app/management work while heap use changes. */
 #define NET_SETUP_DEFERRED INT_MIN
+void wendy_net_peer_issuer_snapshot(struct wendy_pki_net_issuers *snapshot)
+{
+    struct peer_state *root = atomic_load(&state);
+    wnrs_issuer_snapshot(root ? root->router_node : NULL, snapshot);
+}
 static bool setup_room(struct peer_state *root);
 static void setup_work(void *context)
 {
@@ -1491,6 +1575,12 @@ static void setup_work(void *context)
         esp_err_t result = wendy_pki_net_begin(
             &bio, link->setup_server, link->candidate.device[0] ? link->candidate.device : NULL,
             false, &link->tls_setup);
+        if (result == ESP_OK) {
+            if (link->setup_server)
+                (void)wendy_pki_net_allow_operator_routers(link->tls_setup);
+            wendy_pki_net_add_issuers(link->tls_setup, &link->tls_issuers);
+        } else
+            wendy_pki_net_release_issuers(&link->tls_issuers);
         link->setup_result = result == ESP_OK ? 0 : result == ESP_ERR_TIMEOUT ? 2 : -1;
     } else
         link->setup_result = wendy_pki_net_step(link->tls_setup);
@@ -1508,49 +1598,94 @@ static int setup_hello(struct peer_state *link)
         wnad_handshake_release(link);
         if (!link->connection || wn_uuid_parse(link->identity.device, link->self))
             return -1;
+        link->operator_peer = wendy_pki_mesh_authenticated_operator(link->connection);
+        /* An incoming operator is not a device listener at this source IP.
+         * Do not pin/poison a device-discovery row with its client socket. */
+        if (link->operator_peer)
+            release_candidate(link);
         memcpy(link->authenticated_peer, link->identity.peer, 37);
         /* Remember the verified address binding before exchanging hello: a
          * peer can retire this redundant carrier during hello. Held discovery
          * rows intentionally ignore unauthenticated advertisement identities. */
-        if (link->candidate_held &&
+        if (!link->operator_peer && link->candidate_held &&
             wn_candidate_authenticated(node_root(link)->selection, (unsigned)link->candidate_index,
                                        link->authenticated_peer))
             return -1;
-        int n = wn_router_hello_write(link->identity.device, link->authenticated_peer,
-                                      link->control + 4, PEER_CONTROL_BYTES - 4);
-        if (n < 0)
-            return -1;
-        wn_put32((uint8_t *)link->control, (uint32_t)n);
-        link->hello_size = (size_t)n + 4;
+        if (!link->operator_peer) {
+            int n = wn_router_hello_write(link->identity.device, link->authenticated_peer,
+                                          link->control + 4, PEER_CONTROL_BYTES - 4);
+            if (n < 0)
+                return -1;
+            wn_put32((uint8_t *)link->control, (uint32_t)n);
+            link->hello_size = (size_t)n + 4;
+        }
         link->hello_started = true;
     }
-    if (link->hello_out < link->hello_size) {
-        ssize_t n = wendy_pki_write(link->connection, link->control + link->hello_out,
-                                    link->hello_size - link->hello_out);
-        if (n > 0) {
-            link->hello_out += (size_t)n;
-        } else if (n != -2 && n != -3)
+    if (link->operator_peer) {
+        if (!link->setup_server)
             return -1;
-        return 1;
-    }
-    size_t wanted = link->hello_in < 4 ? 4 : 4 + wn_get32((uint8_t *)link->control);
-    if (wanted > PEER_CONTROL_BYTES || wanted < 4)
-        return -1;
-    if (link->hello_in < wanted) {
-        ssize_t n = wendy_pki_read(link->connection, link->control + link->hello_in,
-                                   wanted - link->hello_in);
-        if (n > 0) {
-            link->hello_in += (size_t)n;
-        } else if (n != -2 && n != -3)
+        if (!link->hello_size) {
+            size_t wanted = link->hello_in < 5 ? 5 : 5 + wn_get32((uint8_t *)link->control + 1);
+            if (wanted > 5 + WN_OPERATOR_HELLO_MAX || wanted < 5)
+                return -1;
+            if (link->hello_in < wanted) {
+                ssize_t n = wendy_pki_read(link->connection, link->control + link->hello_in,
+                                           wanted - link->hello_in);
+                if (n > 0)
+                    link->hello_in += (size_t)n;
+                else if (n != -2 && n != -3)
+                    return -1;
+                return 1;
+            }
+            if (wanted == 5 || link->control[0] != 1 ||
+                wn_operator_hello_read(link->control + 5, wanted - 5, link->operator_instance))
+                return -1;
+            int n = wn_operator_ready_write(link->control + 5, PEER_CONTROL_BYTES - 5);
+            if (n < 0)
+                return -1;
+            link->control[0] = 1;
+            wn_put32((uint8_t *)link->control + 1, (uint32_t)n);
+            link->hello_size = (size_t)n + 5;
+        }
+        if (link->hello_out < link->hello_size) {
+            ssize_t n = wendy_pki_write(link->connection, link->control + link->hello_out,
+                                        link->hello_size - link->hello_out);
+            if (n > 0)
+                link->hello_out += (size_t)n;
+            else if (n != -2 && n != -3)
+                return -1;
+            return 1;
+        }
+    } else {
+        if (link->hello_out < link->hello_size) {
+            ssize_t n = wendy_pki_write(link->connection, link->control + link->hello_out,
+                                        link->hello_size - link->hello_out);
+            if (n > 0) {
+                link->hello_out += (size_t)n;
+            } else if (n != -2 && n != -3)
+                return -1;
+            return 1;
+        }
+        size_t wanted = link->hello_in < 4 ? 4 : 4 + wn_get32((uint8_t *)link->control);
+        if (wanted > PEER_CONTROL_BYTES || wanted < 4)
             return -1;
-        return 1;
+        if (link->hello_in < wanted) {
+            ssize_t n = wendy_pki_read(link->connection, link->control + link->hello_in,
+                                       wanted - link->hello_in);
+            if (n > 0) {
+                link->hello_in += (size_t)n;
+            } else if (n != -2 && n != -3)
+                return -1;
+            return 1;
+        }
+        if (wanted == 4 || wn_router_hello_check(link->control + 4, wanted - 4,
+                                                 link->identity.device, link->authenticated_peer))
+            return -1;
     }
-    if (wanted == 4 || wn_router_hello_check(link->control + 4, wanted - 4, link->identity.device,
-                                             link->authenticated_peer))
-        return -1;
     struct wnc_io io = {.context = link, .read = carrier_read, .write = carrier_write};
     if (wnc_init(&link->carrier, &io, link->control, PEER_CONTROL_BYTES, 8192, 65536) ||
-        wnc_fair_scheduler(&link->carrier, CONFIG_WENDY_NET_ROUTING_QUEUE_FRAMES))
+        wnc_fair_scheduler(&link->carrier, CONFIG_WENDY_NET_ROUTING_QUEUE_FRAMES) ||
+        (link->operator_peer && wnc_operator_router(&link->carrier)))
         return -1;
     link->carrier.stall_timeout_us = INT64_C(30000000);
     link->carrier.frame_timeout_us = INT64_C(90000000);
@@ -1600,6 +1735,8 @@ static int advance_setup(struct peer_state *link, int64_t now)
     if (effect == WNA_CRYPTO_PREPARE && !wnad_handshake_claim(link))
         return 1;
     if (effect == WNA_CRYPTO_PREPARE || effect == WNA_CRYPTO_STEP) {
+        if (effect == WNA_CRYPTO_PREPARE && !link->tls_issuers.release)
+            wendy_net_peer_issuer_snapshot(&link->tls_issuers);
         atomic_store(&link->setup_complete, false);
         /* Queue submission is an outer-driver effect. No ownership transfer
          * occurs if the one-slot worker rejects a busy submission. */
@@ -1614,6 +1751,8 @@ static void begin_setup(struct peer_state *link, const struct wn_candidate *cand
 {
     link->candidate = *candidate;
     link->authenticated_peer[0] = 0;
+    link->operator_peer = NULL;
+    memset(link->operator_instance, 0, 16);
     int index = reserve_candidate(link, candidate);
     link->tls_channel = index >= 0 ? wendy_net_calloc(1, sizeof *link->tls_channel) : NULL;
     uint64_t budget = UINT64_C(60000000);
@@ -1662,6 +1801,7 @@ static void retire_link(struct peer_state *link)
     }
     wendy_pki_net_dispose(link->tls_setup);
     link->tls_setup = NULL;
+    wendy_pki_net_release_issuers(&link->tls_issuers);
     wnad_handshake_release(link);
     if (link->setup_fd >= 0) {
         close(link->setup_fd);
@@ -1674,19 +1814,37 @@ static void retire_link(struct peer_state *link)
     link->candidate_index = -1;
     link->failed = false;
 }
-static bool cheaper_ip_carrier(struct peer_state *root, const char *peer, uint16_t cost)
+static bool same_peer(const struct peer_state *a, const struct peer_state *b)
+{
+    if (a->operator_peer || b->operator_peer)
+        return a->operator_peer && b->operator_peer &&
+               !strcmp(a->operator_peer->principal, b->operator_peer->principal) &&
+               !memcmp(a->operator_instance, b->operator_instance, 16);
+    return !strcmp(a->authenticated_peer, b->authenticated_peer);
+}
+static int commit_carrier(struct peer_state *root, struct peer_state *link, unsigned index)
+{
+    return link->operator_peer
+               ? 0
+               : wn_candidate_commit(root->selection, index, link->candidate.device);
+}
+static bool cheaper_ip_carrier(struct peer_state *root, const struct peer_state *candidate,
+                               const char *device, uint16_t cost)
 {
 #if !CONFIG_WENDY_NET_KEEP_REDUNDANT_BLE
-    if (!peer[0])
+    if (!candidate && (!device || !device[0]))
         return false;
     for (struct peer_state *link = root; link; link = link->next)
         if (atomic_load(&link->active) && link->candidate.medium != WN_BLE &&
-            link->candidate.cost < cost && !strcmp(link->authenticated_peer, peer) &&
+            link->candidate.cost < cost &&
+            (candidate ? same_peer(link, candidate)
+                       : (!link->operator_peer && !strcmp(link->authenticated_peer, device))) &&
             identity_live(link, esp_timer_get_time()))
             return true;
 #else
     (void)root;
-    (void)peer;
+    (void)candidate;
+    (void)device;
     (void)cost;
 #endif
     return false;
@@ -1700,33 +1858,39 @@ static int admit_link(struct peer_state *root, struct peer_state *link)
     memcpy(link->candidate.device, link->authenticated_peer, 37);
     /* Remember a successfully authenticated radio even when an existing IP
      * path makes admission redundant. Repeated discovery can then skip it. */
-    int index = reserve_candidate(link, &link->candidate);
-    if (index < 0)
+    int index = link->operator_peer ? -1 : reserve_candidate(link, &link->candidate);
+    if (index < 0 && !link->operator_peer)
         return -1;
     if (link->candidate.medium == WN_BLE &&
-        cheaper_ip_carrier(root, link->authenticated_peer, link->candidate.cost)) {
+        cheaper_ip_carrier(root, link, NULL, link->candidate.cost)) {
         ESP_LOGI(TAG, "keeping cheaper authenticated IP carrier: peer=%s",
                  link->authenticated_peer);
         return -1;
     }
     for (struct peer_state *other = root; other; other = other->next) {
         if (other == link || !atomic_load(&other->active) ||
-            other->candidate.medium != link->candidate.medium ||
-            strcmp(other->authenticated_peer, link->authenticated_peer))
+            other->candidate.medium != link->candidate.medium || !same_peer(other, link))
             continue;
-        if (!wn_link_replaces(link->identity.device, link->authenticated_peer, other->setup_server,
+        if (link->operator_peer ||
+            !wn_link_replaces(link->identity.device, link->authenticated_peer, other->setup_server,
                               link->setup_server)) {
             ESP_LOGI(TAG, "keeping authenticated incumbent: peer=%s medium=%u",
                      link->authenticated_peer, (unsigned)link->candidate.medium);
             return -1;
         }
     }
-    if (wn_candidate_commit(root->selection, index, link->candidate.device))
+    if (commit_carrier(root, link, index))
         return -1;
     root->selection->active = -1;
     link->candidate_index = index;
-    if (wnrs_open(&link->router, &root->router_node, link->connection, &link->identity,
-                  link->candidate.device, link->candidate.cost, router_send, link))
+    int opened =
+        link->operator_peer
+            ? wnrs_open_operator(&link->router, &root->router_node, link->connection,
+                                 &link->identity, link->operator_instance, link->candidate.cost,
+                                 router_send, link)
+            : wnrs_open(&link->router, &root->router_node, link->connection, &link->identity,
+                        link->candidate.device, link->candidate.cost, router_send, link);
+    if (opened)
         return -1;
     wnrs_time_handler(link->router, time_receive);
     pthread_mutex_lock(&state_lock);
@@ -1739,8 +1903,7 @@ static int admit_link(struct peer_state *root, struct peer_state *link)
     /* Replace only after the new router session is usable. Redundant BLE
      * remains discoverable for a fresh dial after the cheaper IP link fails. */
     for (struct peer_state *other = root; other; other = other->next) {
-        if (other == link || !atomic_load(&other->active) ||
-            strcmp(other->authenticated_peer, link->authenticated_peer))
+        if (other == link || !atomic_load(&other->active) || !same_peer(other, link))
             continue;
         bool replace = other->candidate.medium == link->candidate.medium;
 #if !CONFIG_WENDY_NET_KEEP_REDUNDANT_BLE
@@ -1755,14 +1918,14 @@ static int admit_link(struct peer_state *root, struct peer_state *link)
         retire_link(other);
     }
     /* A retired duplicate may share the same discovery slot. */
-    (void)wn_candidate_commit(root->selection, index, link->candidate.device);
+    (void)commit_carrier(root, link, index);
     root->selection->active = -1;
     unsigned active = 0;
     for (struct peer_state *p = root; p; p = p->next)
         if (atomic_load(&p->active))
             active++;
     ESP_LOGI(TAG, "authenticated carrier admitted: peer=%s medium=%s link=%llu active=%u",
-             link->candidate.device,
+             link->operator_peer ? link->operator_peer->principal : link->candidate.device,
              link->setup_have_stream            ? "BLE"
              : link->candidate.medium == WN_NAN ? "NAN"
                                                 : "LAN",
@@ -1771,10 +1934,12 @@ static int admit_link(struct peer_state *root, struct peer_state *link)
 }
 static bool candidate_used(struct peer_state *root, const struct wn_candidate *candidate)
 {
-    if (candidate->medium == WN_BLE && cheaper_ip_carrier(root, candidate->device, candidate->cost))
+    if (candidate->medium == WN_BLE &&
+        cheaper_ip_carrier(root, NULL, candidate->device, candidate->cost))
         return true;
     for (struct peer_state *link = root; link; link = link->next)
-        if ((atomic_load(&link->active) || atomic_load(&link->setup_pending) ||
+        if (!link->operator_peer &&
+            (atomic_load(&link->active) || atomic_load(&link->setup_pending) ||
              link->setup_waiting) &&
             link->candidate.medium == candidate->medium &&
             ((link->candidate.port == candidate->port &&
@@ -1842,6 +2007,12 @@ static void discover_async(struct peer_state *root, bool lan, const char *tenant
                 snprintf(ad->mesh + 2 * i, 3, "%02x", hash[i]);
             snprintf(ad->instance, sizeof ad->instance, "wendy-net-tls-%.36s", device);
             ad->enabled = true;
+#if CONFIG_WENDY_NET_ROUTER && !CONFIG_WENDY_NET_CONSTRAINED_PROFILE &&                            \
+    !CONFIG_WENDY_NET_ENDPOINT_GATEWAY
+            wendy_net_memory_snapshot_t memory;
+            wendy_net_runtime_memory_snapshot(&memory);
+            ad->operator_router = memory.accepting && memory.external_enabled;
+#endif
 #if CONFIG_WENDY_NET_BLE
             uint8_t address[6];
             if (root->config.ble && esp_read_mac(address, ESP_MAC_BT) == ESP_OK) {
@@ -2019,6 +2190,7 @@ static void router_run(struct peer_state *root)
         }
 
         update_node_status(root);
+        service_topology_query(root);
         service_catalog_query(root);
         if (atomic_load(&root->node_active)) {
             service_app_query(root);
@@ -2303,6 +2475,7 @@ static bool shutdown_step(struct peer_state *root)
     }
     pthread_mutex_lock(&state_lock);
     atomic_store(&root->node_active, false);
+    wnqt_abort(&topology_query, wendy_net_free);
     if (root->service_query) {
         struct service_query *q = root->service_query;
         root->service_query = NULL;
@@ -2381,6 +2554,7 @@ static void run(void *argument)
 {
     wendy_net_memory_scope_t previous = wendy_net_runtime_scope_enter();
     struct peer_state *s = argument;
+    atomic_store(&topology_actor, xTaskGetCurrentTaskHandle());
     if (wnad_start()) {
         ESP_LOGE(TAG, "actor driver initialization failed");
         atomic_store(&runtime_error, ESP_ERR_NO_MEM);
@@ -2390,6 +2564,7 @@ static void run(void *argument)
         s->crypto_cleanup_submitted = true;
         atomic_store(&s->crypto_cleanup_done, true);
         finish_shutdown(s);
+        atomic_store(&topology_actor, NULL);
         wendy_net_memory_scope_leave(previous);
         vTaskDelete(NULL);
         return;
@@ -2403,6 +2578,7 @@ static void run(void *argument)
     atomic_store(&runtime_state, WendyComNetState_WENDY_COM_NET_RUNNING);
     router_run(s);
     finish_shutdown(s);
+    atomic_store(&topology_actor, NULL);
     wendy_net_memory_scope_leave(previous);
     vTaskDelete(NULL);
     return;

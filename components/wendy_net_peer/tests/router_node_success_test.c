@@ -11,6 +11,7 @@
 #include <string.h>
 struct wendy_pki_connection {
     struct wendy_pki_mesh_peer peer;
+    const struct wendy_pki_operator_peer *operator;
 };
 /* Fixture implementation of the boot-owned publication counter. */
 esp_err_t wendy_pki_mesh_revision_next(uint64_t *);
@@ -42,6 +43,16 @@ void wncs_release(void *loan)
 void wncs_close(struct wncs_store *s)
 {
     (void)s;
+}
+struct wncs_loan *wncs_issuer_loan(struct wncs_store *s, int64_t now)
+{
+    (void)s;
+    (void)now;
+    return NULL;
+}
+void wncs_issuer_loan_free(void *loan)
+{
+    assert(!loan);
 }
 size_t wncs_trim(struct wncs_store *s)
 {
@@ -82,7 +93,7 @@ int wendy_pki_mesh_public_index_snapshot(wendy_pki_connection *connection,
     return 0;
 }
 bool wendy_pki_mesh_public_index_current(const struct wendy_pki_mesh_public_index *index,
-    const struct wendy_pki_mesh_identity *identity)
+                                         const struct wendy_pki_mesh_identity *identity)
 {
     return index->count == 1 && index->certificate_epoch == 1 &&
            index->config_generation == identity->config_generation;
@@ -154,6 +165,25 @@ int wncv_start(struct wncv_job **out, struct wncs_store *store, const struct wnc
     return 1;
 }
 void wncv_release(struct wncv_job *job)
+{
+    assert(!job);
+}
+#endif
+
+#ifndef WENDY_NET_REAL_OPERATOR_RELAY_TEST
+int wnop_job_start(struct wnop_job **out, struct wncs_store *store, const void *wire, size_t size,
+                   const struct wendy_pki_mesh_identity *clock,
+                   const struct wnop_primary_key *cached)
+{
+    (void)out;
+    (void)store;
+    (void)wire;
+    (void)size;
+    (void)clock;
+    (void)cached;
+    return 1;
+}
+void wnop_job_release(struct wnop_job *job)
 {
     assert(!job);
 }
@@ -242,6 +272,10 @@ esp_err_t nvs_commit(nvs_handle_t handle)
 bool wendy_net_app_ready(void)
 {
     return true;
+}
+const struct wendy_pki_operator_peer *wendy_pki_mesh_authenticated_operator(wendy_pki_connection *c)
+{
+    return c->operator;
 }
 int wendy_pki_mesh_authenticated_peer(wendy_pki_connection *c, struct wendy_pki_mesh_peer *out)
 {
@@ -812,6 +846,61 @@ static void large_manifest_repair_fixture(void)
     free(wire);
     free(value);
 }
+static int discard_operator_frame(void *ctx, const void *bytes, size_t size, bool control)
+{
+    (void)ctx;
+    (void)bytes;
+    (void)size;
+    (void)control;
+    return 0;
+}
+static void operator_attachment_fixture(void)
+{
+    struct wendy_pki_operator_peer primary = {.expires = 1800003600};
+    snprintf(primary.principal, sizeof primary.principal,
+             "spiffe://wendy.sh/tenant/%s/operator/alice", tenant);
+    wendy_pki_connection tls = {.operator = &primary};
+    struct wendy_pki_mesh_identity identity = {.verified_seconds = 1800000000,
+                                               .verified_monotonic_us = clock_us,
+                                               .certificate_expires = 1800003600,
+                                               .config_generation = 1};
+    strcpy(identity.tenant, tenant);
+    strcpy(identity.device, ids[0]);
+    struct wnrs_node *owner = NULL;
+    struct wnrs *first = NULL;
+    uint8_t installation[16] = {1};
+    assert(wnrs_open_operator(&first, &owner, &tls, &identity, (uint8_t[16]){0}, 128,
+                              discard_operator_frame, NULL));
+    assert(!first && !owner);
+#if WENDY_NET_SMALL_RESOURCES || CONFIG_WENDY_NET_ENDPOINT_GATEWAY
+    assert(wnrs_open_operator(&first, &owner, &tls, &identity, installation, 128,
+                              discard_operator_frame, NULL));
+    assert(!first && !owner);
+#else
+    struct wnrs *second = NULL;
+    assert(!wnrs_open_operator(&first, &owner, &tls, &identity, installation, 128,
+                               discard_operator_frame, NULL));
+    assert(first->operator_peer == &primary && !owner->core.directory.count);
+    assert(owner->core.babel.links[0].config.local[15] == 1 &&
+           owner->core.babel.links[0].config.peer[15] == 2);
+    struct wb_route route;
+    assert(!wnr_lookup(&owner->core, first->peer_address, clock_us, &route));
+    /* TLS plus hello creates no route authority. Separate installations of
+     * one operator have distinct addresses and typed topology ownership. */
+    installation[0] = 2;
+    assert(!wnrs_open_operator(&second, &owner, &tls, &identity, installation, 128,
+                               discard_operator_frame, NULL));
+    assert(memcmp(first->peer_address, second->peer_address, 16));
+    struct wnt_record_view row = {.record = WendyComNetTopologyRecord_init_zero};
+    assert(topology_record(owner, 0, clock_us, &row));
+    assert(row.record.owner_role == WNT_TOPOLOGY_OPERATOR && !row.record.device.size);
+    assert(row.principal == primary.principal && row.record.owner_instance.bytes[0] == 2);
+    wnrs_close(first);
+    assert(owner && owner->sessions == second);
+    wnrs_close(second);
+    assert(!owner);
+#endif
+}
 /* Optional future records must not suppress the signed route, supported
  * siblings, immutable relay payload, or subsequent controls on this carrier. */
 static int optional_send(void *context, const void *bytes, size_t size, bool control)
@@ -1022,8 +1111,139 @@ static void optional_projection_fixture(void)
     wnrs_close(session);
     assert(!node);
 }
+/* Continuation identity follows accepted monotonic leases and signed
+ * provenance, not fractional changes in their wall-clock display anchor. */
+static uint64_t topology_clock_generation(struct wnrs_node *node, unsigned expected_rows)
+{
+    WendyComNetTopologyPage page = WendyComNetTopologyPage_init_zero;
+    uint32_t cursor = 0;
+    uint64_t generation = 0;
+    unsigned rows = 0;
+    do {
+        assert(!wnrs_topology(node, cursor, generation, &page));
+        generation = page.generation;
+        rows += page.has_record;
+        cursor = page.next_cursor;
+    } while (cursor);
+    assert(rows == expected_rows);
+    wnt_page_release(&page);
+    return generation;
+}
+static void topology_clock_cursor(struct wnrs_node *node, uint64_t generation, int expected)
+{
+    WendyComNetTopologyPage page = WendyComNetTopologyPage_init_zero;
+    assert(wnrs_topology(node, 1, generation, &page) == expected);
+    wnt_page_release(&page);
+}
+static void topology_clock_fixture(void)
+{
+    int64_t saved_clock = clock_us;
+    clock_us = 3000000;
+    struct wnrs_node node = {0};
+    node.core.ready = true;
+    node.core.config.endpoint_gateway = true;
+    node.clock.verified_seconds = 1800000000;
+    node.clock.verified_monotonic_us = 1000000;
+    strcpy(node.clock.tenant, tenant);
+    strcpy(node.clock.device, ids[0]);
+    struct wne_entry endpoints[2] = {0};
+    for (unsigned i = 0; i < 2; i++) {
+        assert(!wn_uuid_parse(ids[i + 1], endpoints[i].device));
+        endpoints[i].revision = 100 + i;
+        endpoints[i].deadline_us = clock_us + 900000000;
+        endpoints[i].next = i ? NULL : &endpoints[1];
+    }
+    node.core.endpoints.entries = endpoints;
+    uint64_t generation = topology_clock_generation(&node, 2);
+    WendyComNetTopologyPage before = WendyComNetTopologyPage_init_zero;
+    assert(!wnrs_topology(&node, 0, 0, &before));
+    int64_t expiry = before.record.expires_at_unix_ms;
+    wnt_page_release(&before);
+    node.clock.verified_seconds++;
+    node.clock.verified_monotonic_us += 1000000;
+    topology_clock_cursor(&node, generation, 0);
+    node.clock.verified_monotonic_us += 500;
+    topology_clock_cursor(&node, generation, 0);
+    assert(topology_clock_generation(&node, 2) == generation);
+    assert(!wnrs_topology(&node, 0, 0, &before));
+    assert(before.record.expires_at_unix_ms == expiry - 1); /* Wire conversion unchanged. */
+    wnt_page_release(&before);
+    endpoints[0].deadline_us--; /* Same-revision sub-ms tightening stays structural. */
+    topology_clock_cursor(&node, generation, 1);
+    endpoints[0].deadline_us++;
+    endpoints[0].revision++;
+    topology_clock_cursor(&node, generation, 1);
+    endpoints[0].revision--;
+    endpoints[0].withdraw = true;
+    topology_clock_cursor(&node, generation, 1);
+    endpoints[0].withdraw = false;
+    clock_us = endpoints[0].deadline_us;
+    topology_clock_cursor(&node, generation, 1);
+    assert(topology_clock_generation(&node, 0) != generation);
+    clock_us = 3000000;
+    topology_clock_cursor(&node, generation, 0);
+
+    /* Full-router device peer, signed route and announcement rows use the
+     * same lifetime provenance without retaining a converted timestamp. */
+    node.core.config.endpoint_gateway = false;
+    node.core.endpoints.entries = NULL;
+    node.clock.verified_seconds = 1800000000;
+    node.clock.verified_monotonic_us = 1000000;
+    struct wnd_entry origin = {0};
+    assert(!wn_uuid_parse(ids[1], origin.device));
+    wn_address(origin.device, origin.address);
+    origin.revision = 91;
+    origin.deadline_us = clock_us + 900000000;
+    origin.manifest.origin = (struct wn_origin){.router_id = 49, .seqno = 7};
+    origin.manifest.issued = 1800000000000;
+    origin.manifest.expires = 1800000903000;
+    node.core.directory.entries = &origin;
+    struct wb_route route = {
+        .prefix = {.family = 6, .bits = 128}, .router = 49, .seqno = 7, .metric = 128, .link = 17};
+    memcpy(route.prefix.bytes, origin.address, 16);
+    node.core.babel.routes = &route;
+    node.core.babel.route_count = 1;
+    struct wnrs peer = {.attached = true, .link = 17};
+    strcpy(peer.identity.peer, ids[1]);
+    node.sessions = &peer;
+    generation = topology_clock_generation(&node, 3);
+    node.clock.verified_monotonic_us += 500;
+    topology_clock_cursor(&node, generation, 0);
+    assert(topology_clock_generation(&node, 3) == generation);
+    origin.deadline_us--;
+    topology_clock_cursor(&node, generation, 1);
+    origin.deadline_us++;
+    origin.manifest.expires++;
+    topology_clock_cursor(&node, generation, 1);
+    origin.manifest.expires--;
+    origin.revision++;
+    topology_clock_cursor(&node, generation, 1);
+    origin.revision--;
+    route.metric++;
+    topology_clock_cursor(&node, generation, 1);
+    route.metric--;
+    peer.link++;
+    topology_clock_cursor(&node, generation, 1);
+    peer.link--;
+    clock_us = origin.deadline_us;
+    topology_clock_cursor(&node, generation, 1);
+    assert(topology_clock_generation(&node, 2) != generation);
+    clock_us = saved_clock;
+}
 int main(int argc, char **argv)
 {
+    /* The actor exists before its first authenticated carrier and after the
+     * last carrier retires. It must still report unavailable runtime state. */
+    WendyComNetTopologyPage absent = WendyComNetTopologyPage_init_zero;
+    absent.has_status = true;
+    memset(absent.tenant, 0x11, sizeof absent.tenant);
+    memset(absent.device, 0x22, sizeof absent.device);
+    assert(!wnrs_topology(NULL, 0, 0, &absent));
+    assert(!absent.runtime_available && !absent.has_record && !absent.next_cursor &&
+           !absent.generation && absent.has_status && absent.tenant[0] == 0x11 &&
+           absent.device[0] == 0x22);
+    assert(wnrs_topology(NULL, 1, 0, &absent) == 1);
+    assert(wnrs_topology(NULL, 0, 42, &absent) == 1);
     assert(argc == 2 && !wendy_pki_crypto_init());
 #if defined(WENDY_NET_MEMORY_HOST_BUDGET_TEST)
     assert(wendy_net_runtime_memory_open());
@@ -1105,6 +1325,49 @@ int main(int argc, char **argv)
         }
         drain();
     }
+    /* The live actor projection remains bounded, allocation-free and stable
+     * across ordinary timer work; structural edits invalidate old cursors. */
+    size_t topology_before = wnr_memory(&node->core) + wg_memory(&node->pool);
+    WendyComNetTopologyPage page = WendyComNetTopologyPage_init_zero;
+    assert(!wnrs_topology(node, 0, 0, &page));
+    assert(page.runtime_available && page.has_record && page.record.kind == 1 && page.next_cursor);
+    assert(sizeof page <= 384);
+    uint64_t generation = page.generation;
+    unsigned cursor = page.next_cursor, rows = 1;
+    unsigned kinds[4] = {0};
+    kinds[page.record.kind]++;
+    node->core.babel.revision++; /* Maintenance counters are not structural. */
+    clock_us += 1000;
+    while (cursor) {
+        page = (WendyComNetTopologyPage)WendyComNetTopologyPage_init_zero;
+        assert(!wnrs_topology(node, cursor, generation, &page));
+        assert(page.has_record && page.generation == generation && page.record.kind <= 3);
+        rows++;
+        kinds[page.record.kind]++;
+        cursor = page.next_cursor;
+        assert(rows < 1024);
+    }
+    assert(kinds[1] == 2 && kinds[2] >= 3 && kinds[3] >= 2);
+    assert(wnr_memory(&node->core) + wg_memory(&node->pool) == topology_before);
+    uint32_t old_metric = node->core.babel.routes[0].metric;
+    node->core.babel.routes[0].metric++;
+    assert(wnrs_topology(node, 1, generation, &page) == 1);
+    node->core.babel.routes[0].metric = (uint16_t)old_metric;
+    assert(!wnrs_topology(node, 1, generation, &page));
+    /* Partial/full is part of the view, even if its current rows coincide. */
+    bool gateway = node->core.config.endpoint_gateway;
+    node->core.config.endpoint_gateway = true;
+    assert(wnrs_topology(node, 1, generation, &page) == 1);
+    assert(!wnrs_topology(node, 0, 0, &page) && page.partial);
+    assert(page.generation != generation);
+    assert(!wnrs_topology(node, rows, page.generation, &page) && !page.has_record &&
+           !page.next_cursor);
+    node->core.config.endpoint_gateway = gateway;
+    node->core.stopped = true;
+    assert(!wnrs_topology(node, 0, 0, &page) && !page.runtime_available && !page.has_record &&
+           !page.next_cursor);
+    node->core.stopped = false;
+    printf("topology pages: records=%u dto=%zu heap_delta=0\n", rows, sizeof page);
     uint8_t uuid[2][16], address[2][16];
     uint16_t port;
     for (unsigned i = 0; i < 2; i++) {
@@ -1173,7 +1436,9 @@ int main(int argc, char **argv)
     assert(!opens && !closes && !commits && !journal_size && !service_journal_size);
     for (unsigned i = 0; i < 2; i++)
         wb_deinit(&peers[i].remote);
+    topology_clock_fixture();
     optional_projection_fixture();
+    operator_attachment_fixture();
     mbedtls_pk_free(&key);
 #if defined(WENDY_NET_MEMORY_HOST_BUDGET_TEST)
     wendy_net_runtime_memory_close();

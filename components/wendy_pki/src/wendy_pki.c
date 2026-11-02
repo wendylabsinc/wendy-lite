@@ -29,6 +29,8 @@
 #include <netdb.h>
 #endif
 #include "wendy_pki_verify.h"
+#include "wendy_pki_operator.h"
+#include "wendy_net_alloc.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -1181,7 +1183,7 @@ struct wendy_pki_agent_setup {
     struct pki_der_source source;
     uint64_t generation;
     int64_t deadline;
-    bool source_open, complete;
+    bool source_open, complete, started;
 };
 #endif
 static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
@@ -1485,11 +1487,21 @@ esp_err_t wendy_pki_agent_begin(const struct wendy_pki_stream *stream,
     *out = op;
     return ESP_OK;
 }
+void wendy_pki_agent_add_issuers(struct wendy_pki_agent_setup *op,
+                                 struct wendy_pki_net_issuers *snapshot)
+{
+    if (!op || op->started) {
+        wendy_pki_net_release_issuers(snapshot);
+        return;
+    }
+    pki_tls_net_add_issuers(op->connection, snapshot);
+}
 int wendy_pki_agent_step(struct wendy_pki_agent_setup *op)
 {
     if (!op || !op->connection || op->complete || wendy_pki_reset_in_progress() ||
         !wendy_conf_snapshot_current(op->generation) || esp_timer_get_time() >= op->deadline)
         return -1;
+    op->started = true;
     int r = pki_tls_agent_advance(op->connection);
     if (!wendy_conf_snapshot_current(op->generation) || wendy_pki_reset_in_progress() ||
         esp_timer_get_time() >= op->deadline)
@@ -1556,9 +1568,18 @@ int wendy_pki_mesh_local_part(const struct wendy_pki_mesh_identity *clock, const
     pthread_mutex_unlock(&identity_lock);
     return result;
 }
+bool wendy_pki_operator_snapshot_current(const struct wendy_pki_mesh_identity *clock)
+{
+    if (!clock || !wendy_conf_is_current() || wendy_pki_reset_in_progress() ||
+        !wendy_conf_snapshot_current(clock->config_generation))
+        return false;
+    int64_t now = esp_timer_get_time();
+    return now >= clock->verified_monotonic_us &&
+           now - clock->verified_monotonic_us < INT64_C(300000000);
+}
 static int public_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
                                   const uint8_t *const *der, const size_t *sizes, size_t count,
-    struct wendy_pki_mesh_peer *peer)
+                                  void *peer, bool operator)
 {
     if (!clock || !der || !sizes || !count || !peer || !wendy_conf_is_current() ||
         wendy_pki_reset_in_progress())
@@ -1583,8 +1604,10 @@ static int public_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
         goto done;
     time_t now =
         clock->verified_seconds + (monotonic - clock->verified_monotonic_us) / INT64_C(1000000);
-    result = wendy_pki_mesh_chain(der, sizes, count, trust.device_roots.data,
-                                  trust.device_roots.size, clock->tenant, now, peer);
+    result = operator ? wendy_pki_operator_chain(der, sizes, count, trust.device_roots.data,
+                                                 trust.device_roots.size, clock->tenant, now, peer)
+                      : wendy_pki_mesh_chain(der, sizes, count, trust.device_roots.data,
+                                             trust.device_roots.size, clock->tenant, now, peer);
     if (!wendy_conf_snapshot_current(trust.generation) || wendy_pki_reset_in_progress())
         result = -1;
 done:
@@ -1595,7 +1618,13 @@ int wendy_pki_mesh_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
                                    const uint8_t *const *der, const size_t *sizes, size_t count,
                                    struct wendy_pki_mesh_peer *peer)
 {
-    return public_verify_snapshot(clock, der, sizes, count, peer);
+    return public_verify_snapshot(clock, der, sizes, count, peer, false);
+}
+int wendy_pki_operator_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
+                                       const uint8_t *const *der, const size_t *sizes, size_t count,
+                                       struct wendy_pki_operator_peer *peer)
+{
+    return public_verify_snapshot(clock, der, sizes, count, peer, true);
 }
 
 #if CONFIG_WENDY_NET_PEER
@@ -1603,7 +1632,7 @@ struct wendy_pki_net_setup {
     wendy_pki_connection *connection;
     struct wendy_pki_mesh_identity identity;
     struct pki_der_source source;
-    bool source_open, application, complete;
+    bool source_open, application, complete, started;
     char expected[37];
 };
 static esp_err_t mesh_connect(const char *host, unsigned port, const char *router,
@@ -1908,10 +1937,35 @@ esp_err_t wendy_pki_net_begin(const struct wendy_pki_stream *stream, bool server
     *out = op;
     return ESP_OK;
 }
+esp_err_t wendy_pki_net_allow_operator_routers(struct wendy_pki_net_setup *op)
+{
+    if (!op || op->complete || op->started || op->application || op->expected[0])
+        return ESP_ERR_INVALID_STATE;
+#if !CONFIG_WENDY_NET_ROUTER || CONFIG_WENDY_NET_CONSTRAINED_PROFILE ||                            \
+    CONFIG_WENDY_NET_ENDPOINT_GATEWAY
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    wendy_net_memory_snapshot_t memory;
+    wendy_net_runtime_memory_snapshot(&memory);
+    if (!memory.accepting || !memory.external_enabled)
+        return ESP_ERR_NOT_SUPPORTED;
+    return pki_tls_net_allow_operators(op->connection) ? ESP_FAIL : ESP_OK;
+#endif
+}
+void wendy_pki_net_add_issuers(struct wendy_pki_net_setup *op,
+                               struct wendy_pki_net_issuers *snapshot)
+{
+    if (!op || op->complete || op->started) {
+        wendy_pki_net_release_issuers(snapshot);
+        return;
+    }
+    pki_tls_net_add_issuers(op->connection, snapshot);
+}
 int wendy_pki_net_step(struct wendy_pki_net_setup *op)
 {
     if (!op || op->complete || !op->connection)
         return -1;
+    op->started = true;
     if (!wendy_conf_snapshot_current(op->identity.config_generation) ||
         wendy_pki_reset_in_progress())
         return -1;
@@ -1924,6 +1978,27 @@ int wendy_pki_net_step(struct wendy_pki_net_setup *op)
         wendy_pki_reset_in_progress() || c->operator_expires <= time(NULL) ||
         esp_timer_get_time() - op->identity.verified_monotonic_us >= INT64_C(300000000))
         return -1;
+    if (c->peer_role == WENDY_PEER_ROLE_OPERATOR) {
+        const uint8_t *der[8];
+        size_t sizes[8], count = 0;
+        for (const mbedtls_x509_crt *cert = mbedtls_ssl_get_peer_cert(&c->ssl);
+             cert && cert->raw.len; cert = cert->next) {
+            if (count == 8)
+                return -1;
+            der[count] = cert->raw.p;
+            sizes[count++] = cert->raw.len;
+        }
+        c->authenticated_operator = pki_owned_calloc(1, sizeof *c->authenticated_operator);
+        if (!c->authenticated_operator ||
+            wendy_pki_operator_verify_snapshot(&op->identity, der, sizes, count,
+                                               c->authenticated_operator))
+            return -1;
+        if (c->authenticated_operator->expires < c->operator_expires)
+            c->operator_expires = c->authenticated_operator->expires;
+        if (pki_limit_session(c, time(NULL), esp_timer_get_time()))
+            return -1;
+        pki_tls_net_operator_verified(c);
+    }
     if (c->operator_expires < op->identity.certificate_expires)
         op->identity.certificate_expires = c->operator_expires;
     memcpy(op->identity.peer, c->mesh_peer, 37);

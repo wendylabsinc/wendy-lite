@@ -144,6 +144,11 @@ waitAck:
 			if e := st.GetError(); e != nil {
 				return status.Errorf(codes.ResourceExhausted, "device rejected channel open: %s", e.GetReason())
 			}
+			if st.GetState() == nil {
+				// A future state is neither an acknowledgement nor a known
+				// rejection. Keep waiting within the existing open deadline.
+				continue
+			}
 			return status.Error(codes.Aborted, "unexpected channel state from device")
 		case <-ackTimer.C:
 			return status.Error(codes.Unavailable, "timeout waiting for device to open channel")
@@ -161,6 +166,12 @@ waitAck:
 			if err != nil {
 				recvC <- recvResult{err: err}
 				return
+			}
+			// Protobuf preserves an unrecognized future oneof as unknown
+			// fields, leaving Msg nil. The gRPC message is already framed;
+			// discard it and keep the established tunnel usable.
+			if msg.GetMsg() == nil {
+				continue
 			}
 			payload := msg.GetPayload()
 			if payload == nil {

@@ -47,6 +47,17 @@ WendyComResult wcom_cmd_net_get(WendyComNetStatus *status)
     return net_delegate && net_delegate->get ? net_delegate->get(status)
                                              : WendyComResult_WENDY_COM_RESULT_BAD_STATE;
 }
+WendyComResult wcom_cmd_net_topology(const WendyComNetTopologyParams *params,
+                                     WendyComNetTopologyPage *page)
+{
+    return net_delegate && net_delegate->topology ? net_delegate->topology(params, page)
+                                                  : WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+}
+void wcom_cmd_net_topology_release(WendyComNetTopologyPage *page)
+{
+    if (net_delegate && net_delegate->topology_release)
+        net_delegate->topology_release(page);
+}
 WendyComResult wcom_cmd_net_set(const WendyComNetConfig *config, WendyComNetStatus *status,
                                 uint32_t *token)
 {

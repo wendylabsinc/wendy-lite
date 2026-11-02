@@ -88,6 +88,33 @@ class BenchmarkLogTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             summarize(records)
 
+    def test_future_optional_records_and_extra_fields_are_ignored(self):
+        records = boot_records()
+        for record in records:
+            record["version"] = 1
+            record["future_field"] = {"nested": [1, 2, 3]}
+        records += [
+            {"test": "future_test", "ok": False, "time_us": "different schema"},
+            {"version": 2, "test": "heap", "ok": False, "time_us": -1},
+            {"version": True, "test": "complete", "ok": False},
+            {"test": "sensor", "channel": 2, "ok": False, "time_us": -1},
+            {"test": "memcpy", "memory": "future", "ok": False, "time_us": -1},
+        ]
+        self.assertEqual(summarize(records), summarize(boot_records()))
+
+    def test_future_version_does_not_replace_required_known_record(self):
+        records = boot_records()
+        records[-1]["version"] = 2
+        with self.assertRaises(ValueError):
+            summarize(records)
+
+    def test_known_version_failure_remains_a_failure(self):
+        records = boot_records()
+        records[1]["version"] = 1
+        records[1]["ok"] = False
+        with self.assertRaises(ValueError):
+            summarize(records)
+
     def test_truncated_json_rejected(self):
         with self.assertRaises(ValueError):
             benchmark.summarize(['I (10) WENDY_BENCH {"test": "heap"'])

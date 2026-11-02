@@ -86,7 +86,9 @@ typedef struct _wendy_lite_sensorlink_Ping {
     uint64_t ts_us;
 } wendy_lite_sensorlink_Ping;
 
-/* Every message on the wire is an Envelope, so framing needs only one type. */
+/* Legacy standalone SensorLink envelope schema. Current WendyCom transports
+ * SensorManifest and SensorData in its own negotiated messages/framing and does
+ * not send this Envelope. */
 typedef struct _wendy_lite_sensorlink_Envelope {
     pb_size_t which_msg;
     union {

@@ -72,13 +72,14 @@ struct wendy_pki_connection
     char mesh_peer[37];
     uint8_t *mesh_roots;
     size_t mesh_roots_size;
-    bool compact_records;
+    bool compact_records, allow_operator_router;
     /* Temporary native-DER setup guard. Cleanup owns it until ssl_setup. */
     unsigned char *setup_input_reservation;
     size_t setup_input_capacity;
     struct pki_presented_chain *presented_chain;
     struct pki_public_chain *public_chain;
     struct wendy_pki_mesh_peer *authenticated_peer;
+    struct wendy_pki_operator_peer *authenticated_operator;
     /* Optional index+1 of the EXACT independently trusted single anchor in
      * public_chain. Never accept a root merely because the chain names it. */
     uint8_t public_anchor;
@@ -246,6 +247,8 @@ int pki_tls_net_stream(const struct wendy_pki_stream *, bool server, const char 
 int pki_tls_net_begin(const struct wendy_pki_stream *, bool, const char *, const char *,
                       struct pki_tls_owned_identity *, struct wendy_conf_span, bool,
                       wendy_pki_connection **);
+int pki_tls_net_allow_operators(wendy_pki_connection *);
+void pki_tls_net_operator_verified(wendy_pki_connection *);
 int pki_tls_net_advance(wendy_pki_connection *, bool, const char *);
 /* Native WendyCom server TLS: ordinary ALPN/no-ALPN, same-tenant operator or
  * device roles. CPU worker only; BIO callbacks never wait on network I/O. */
@@ -253,3 +256,5 @@ int pki_tls_agent_begin(const struct wendy_pki_stream *, const char *, const cha
                         struct pki_tls_owned_identity *, struct wendy_conf_span,
                         wendy_pki_connection **);
 int pki_tls_agent_advance(wendy_pki_connection *);
+
+void pki_tls_net_add_issuers(wendy_pki_connection *, struct wendy_pki_net_issuers *);

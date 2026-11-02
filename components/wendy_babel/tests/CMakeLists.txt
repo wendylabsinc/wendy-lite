@@ -18,10 +18,10 @@ target_compile_options(babel_memory_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 add_test(NAME babel_sparse_memory COMMAND babel_memory_test)
 add_test(NAME babel_steady_workspace_success COMMAND babel_memory_test --normal)
 
-# Exercise the C5 resource policy with six carriers independently of firmware.
+# Exercise the C5 resource policy with eight carriers independently of firmware.
 add_library(wendy_babel_full ../src/wire.c ../src/engine.c ../src/history.c ../src/storage.c)
 target_include_directories(wendy_babel_full PUBLIC ../include PRIVATE ../../wendy_net_common/include)
-target_compile_definitions(wendy_babel_full PUBLIC WB_LINKS=6)
+target_compile_definitions(wendy_babel_full PUBLIC WB_LINKS=8)
 target_compile_options(wendy_babel_full PRIVATE -Wall -Wextra -Werror -Wno-misleading-indentation)
 add_executable(babel_capacity_test capacity_test.c)
 target_link_libraries(babel_capacity_test PRIVATE wendy_babel_full)

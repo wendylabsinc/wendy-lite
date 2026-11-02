@@ -45,3 +45,20 @@ and depth bounds. Adding a different CBOR dialect requires explicit protocol
 negotiation; it must not silently change the interpretation of an existing
 version. Standard IPv6/TCP/UDP and guest-owned payloads keep their own
 protocol contracts.
+
+### Operator and application adapters
+
+`wendy-net-operator-router/1` separately selects the operator hello and mux,
+including its distinct control/datagram type numbers. The same bounded
+unknown-frame draining and unsupported datagram discard rules apply.
+
+Application TCP/UDP streams use the separate `wendy-app-mesh-tls/1` ALPN.
+Their fixed requests are explicitly selected by `WAS1` (TCP) or `WAU3` (UDP),
+with `WUA3` acknowledging the UDP capacity; subsequent TCP bytes are opaque
+application data and UDP records have a two-byte length. An incompatible
+fixed header requires a new supported magic/ALPN rather than an appended
+field. An unsupported unframed application handshake ends only that
+application connection because its body boundary is not otherwise known.
+Native management is a different `wendy-com/2` TLS scope and hands plaintext
+to WendyCom; it does not interpret management messages as app/carrier data.
+BLE CoC exposes a byte stream beneath TLS and has no additional Wendy frame.

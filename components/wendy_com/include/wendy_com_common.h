@@ -19,6 +19,9 @@ struct wcom_bluetooth_power_delegate {
 };
 
 struct wcom_net_delegate {
+    WendyComResult (*topology)(const WendyComNetTopologyParams *, WendyComNetTopologyPage *);
+    /* Releases selected-row public metadata after synchronous response encoding. */
+    void (*topology_release)(WendyComNetTopologyPage *);
     WendyComResult (*get)(WendyComNetStatus *);
     /* A changed configuration returns one nonzero receipt token. The delegate
      * defers application until the response crosses its transport barrier. */

@@ -638,7 +638,14 @@ func (c *WendyLiteClient) ConsoleAttach(rollingMode bool, blockingMode bool) (<-
 	// Subscribe before attaching so no chunk is lost.
 	sub, err := c.subscribe(func(m *wendypb.WendyComMessage) bool {
 		e := m.GetEvent()
-		return e != nil && e.GetEventId() == eventID && e.GetConsoleData() != nil
+		if e == nil || e.GetEventId() != eventID || e.GetConsoleData() == nil {
+			return false
+		}
+		// Only current output streams can be projected to ConsoleChunk.
+		// Ignore future IO kinds and wrong-direction stdin events.
+		stream := e.GetConsoleData().GetIo()
+		return stream == wendypb.WendyComConsoleIo_WENDY_COM_CONSOLE_IO_STANDARD_OUTPUT ||
+			stream == wendypb.WendyComConsoleIo_WENDY_COM_CONSOLE_IO_STANDARD_ERROR
 	}, 16)
 	if err != nil {
 		return nil, nil, err

@@ -54,7 +54,7 @@ target_link_libraries(cert_bundle PUBLIC tfpsacrypto)
 add_library(net_common STATIC ../../wendy_net_common/src/memory.c ../../wendy_net_common/src/runtime_memory.c ../../wendy_net_common/src/binary.c)
 target_include_directories(net_common PUBLIC ../../wendy_net_common/include)
 target_link_libraries(net_common PUBLIC Threads::Threads)
-add_library(pki STATIC ../src/wendy_pki_issuers.c ../src/wendy_pki_work.c ../src/wendy_pki_tls_input.c ../src/wendy_pki_public_read.c ../src/wendy_pki_public_index.c ${PKI_VERIFIER} ../src/wendy_lite_grant.c ../src/wendy_lite_authority.c ../src/wendy_pki_crypto.c ../src/wendy_operator_auth.c ../src/wendy_pki_mesh_crypto.c)
+add_library(pki STATIC ../src/wendy_pki_operator_crypto.c ../src/wendy_pki_issuers.c ../src/wendy_pki_work.c ../src/wendy_pki_tls_input.c ../src/wendy_pki_public_read.c ../src/wendy_pki_public_index.c ${PKI_VERIFIER} ../src/wendy_lite_grant.c ../src/wendy_lite_authority.c ../src/wendy_pki_crypto.c ../src/wendy_operator_auth.c ../src/wendy_pki_mesh_crypto.c)
 target_include_directories(pki PUBLIC ../include stubs ../../wendy_conf/include ../../nanopb)
 target_compile_definitions(pki PUBLIC WENDY_PKI_MEMORY_HOST_SCOPE_TEST=1)
 target_link_libraries(pki PUBLIC net_common cert_bundle mbedtls mbedx509 tfpsacrypto Threads::Threads)
@@ -272,6 +272,13 @@ target_include_directories(issuer_interop_success_test PRIVATE ../src "${IDF_COM
 target_link_libraries(issuer_interop_success_test PRIVATE pki)
 target_compile_definitions(issuer_interop_success_test PRIVATE WENDY_MESH_TEST_LOG=1)
 target_compile_options(issuer_interop_success_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_executable(issuer_constrained_interop_test issuer_interop_success_test.c ${PKI_TLS}
+    "${IDF_COMPONENTS}/http_parser/http_parser.c")
+target_include_directories(issuer_constrained_interop_test PRIVATE ../src "${IDF_COMPONENTS}/http_parser")
+target_link_libraries(issuer_constrained_interop_test PRIVATE pki)
+target_compile_definitions(issuer_constrained_interop_test PRIVATE WENDY_MESH_TEST_LOG=1
+    CONFIG_WENDY_NET_CONSTRAINED_PROFILE=1)
+target_compile_options(issuer_constrained_interop_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 set(WENDYOS_GO_ROOT "" CACHE PATH "Optional WendyOS module root for issuer ALPN interop")
 if(WENDYOS_GO_ROOT)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
@@ -279,6 +286,11 @@ if(WENDYOS_GO_ROOT)
         "${CMAKE_CURRENT_LIST_DIR}/issuer_wos_interop.py" --go "${GO_EXECUTABLE}"
         --wendyos-root "${WENDYOS_GO_ROOT}" --driver "$<TARGET_FILE:issuer_interop_success_test>")
     set_tests_properties(pki_issuer_wos_interop_normal PROPERTIES TIMEOUT 120)
+    add_test(NAME pki_issuer_wos_interop_constrained COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_LIST_DIR}/issuer_wos_interop.py" --go "${GO_EXECUTABLE}"
+        --wendyos-root "${WENDYOS_GO_ROOT}" --driver "$<TARGET_FILE:issuer_constrained_interop_test>"
+        --constrained-native --native-resident-bytes 81920)
+    set_tests_properties(pki_issuer_wos_interop_constrained PROPERTIES TIMEOUT 120)
 endif()
 
 add_executable(issuer_helpers_test issuer_helpers_test.c)
@@ -430,6 +442,32 @@ add_test(NAME pki_time_nonce_normal COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_LIST_DIR}/time_nonce_success.py" "${GO_EXECUTABLE}"
     "${CMAKE_CURRENT_LIST_DIR}/public_time_fixtures.go" "$<TARGET_FILE:time_nonce_success_test>")
 set_tests_properties(pki_time_nonce_normal PROPERTIES TIMEOUT 240)
+
+add_executable(operator_app_composed_test operator_app_composed_test.c ${PKI_TLS}
+    ../../wendy_net_common/src/runtime_memory.c
+    ../../wendy_net_peer/src/actor.c ../../wendy_net_peer/src/protocol.c ../../wendy_net_peer/src/binary.c
+    "${IDF_COMPONENTS}/http_parser/http_parser.c")
+target_include_directories(operator_app_composed_test BEFORE PRIVATE ../../wendy_net_peer/tests/app_stubs ../../wendy_net_peer/tests/io_stubs ../../wendy_net_peer/tests/router_stubs)
+target_include_directories(operator_app_composed_test PRIVATE ../src ../../wendy_net_peer/include ../../wendy_net_peer/src ../../wendy_net/include "${IDF_COMPONENTS}/http_parser")
+target_compile_definitions(operator_app_composed_test PRIVATE WENDY_MESH_TEST_LOG=1 WENDY_NET_MEMORY_HOST_BUDGET_TEST=1 CONFIG_WENDY_NET=1 CONFIG_WENDY_NET_TCP_RELAY_BUFFER_SIZE=256)
+target_compile_options(operator_app_composed_test PRIVATE -UNDEBUG -Wall -Wextra -Werror -Wno-unused-parameter -Wno-unused-function)
+target_link_libraries(operator_app_composed_test PRIVATE pki)
+
+add_executable(native_operator_router_test native_operator_router_test.c ${PKI_TLS}
+    ../../wendy_net_gossip/src/gossip.c
+    ../../wendy_net_peer/src/carrier.c ../../wendy_net_peer/src/control.c
+    ../../wendy_net_peer/src/protocol.c ../../wendy_net_peer/src/binary.c
+    ../../wendy_net_peer/src/packet.c "${IDF_COMPONENTS}/http_parser/http_parser.c")
+target_include_directories(native_operator_router_test PRIVATE ../src ../../wendy_net_peer/include ../../wendy_net_gossip/include "${IDF_COMPONENTS}/http_parser")
+target_compile_options(native_operator_router_test PRIVATE -UNDEBUG -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter)
+target_compile_definitions(native_operator_router_test PRIVATE WENDY_MESH_TEST_LOG=1)
+target_link_libraries(native_operator_router_test PRIVATE pki)
+foreach(profile p256 mldsa65)
+    add_test(NAME native_operator_router_${profile} COMMAND "${GO_EXECUTABLE}" run
+        "${CMAKE_CURRENT_LIST_DIR}/native_operator_router_driver.go" "$<TARGET_FILE:native_operator_router_test>" "${profile}")
+    set_tests_properties(native_operator_router_${profile} PROPERTIES TIMEOUT 120)
+endforeach()
+
 add_executable(app_halfclose_composed_test app_halfclose_composed_test.c ${PKI_TLS}
     ../../wendy_net_peer/src/binary.c ../../wendy_net_peer/src/protocol.c
     "${IDF_COMPONENTS}/http_parser/http_parser.c"

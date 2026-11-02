@@ -257,6 +257,55 @@ typedef struct _WendyComNetStatus {
     uint32_t ble_profiles_supported; /* bit N corresponds to WendyComBleProfile N */
 } WendyComNetStatus;
 
+/* Read-only, bounded live projection. One record per page; cursors are opaque.
+ generation binds all pages to the same routing/directory view. Restart at
+ cursor zero if it changes. An endpoint gateway intentionally has a partial
+ directory and never claims a complete remote routing table. */
+typedef struct _WendyComNetTopologyParams {
+    uint32_t cursor;
+    uint64_t generation;
+} WendyComNetTopologyParams;
+
+typedef PB_BYTES_ARRAY_T(16) WendyComNetTopologyRecord_device_t;
+typedef PB_BYTES_ARRAY_T(16) WendyComNetTopologyRecord_address_t;
+typedef PB_BYTES_ARRAY_T(16) WendyComNetTopologyRecord_next_hop_device_t;
+typedef PB_BYTES_ARRAY_T(16) WendyComNetTopologyRecord_owner_instance_t;
+typedef struct _WendyComNetTopologyRecord {
+    uint32_t kind; /* 1 authenticated link, 2 selected route, 3 verified announcement */
+    WendyComNetTopologyRecord_device_t device; /* UUID, sixteen bytes; absent when origin is unknown */
+    WendyComNetTopologyRecord_address_t address; /* IPv6 address (route prefix is always /128) */
+    uint64_t link_id;
+    uint64_t router_id;
+    uint32_t sequence;
+    uint32_t metric;
+    bool local;
+    bool unreachable;
+    bool authorized;
+    int64_t expires_at_unix_ms;
+    uint64_t revision;
+    int64_t issued_at_unix_ms;
+    uint32_t transport; /* 1 infrastructure Wi-Fi, 2 BLE, 3 NAN */
+    WendyComNetTopologyRecord_next_hop_device_t next_hop_device;
+    uint32_t owner_role; /* 0 legacy device, 1 device, 2 operator */
+    pb_callback_t owner_principal; /* exact public operator principal, at most 1024 UTF-8 bytes */
+    WendyComNetTopologyRecord_owner_instance_t owner_instance; /* operator routing installation UUID, sixteen bytes, never a device ID */
+} WendyComNetTopologyRecord;
+
+typedef struct _WendyComNetTopologyPage {
+    pb_byte_t tenant[16];
+    pb_byte_t device[16];
+    int64_t captured_at_unix_ms;
+    uint64_t generation;
+    uint32_t next_cursor; /* zero means complete */
+    bool runtime_available;
+    bool partial;
+    bool truncated;
+    bool has_status;
+    WendyComNetStatus status;
+    bool has_record;
+    WendyComNetTopologyRecord record;
+} WendyComNetTopologyPage;
+
 typedef struct _WendyComGetDeviceInfoParams {
     char dummy_field;
 } WendyComGetDeviceInfoParams;
@@ -277,7 +326,7 @@ typedef struct _WendyComEnrollmentChallenge {
     bool has_cloud_enrollment_supported;
     bool cloud_enrollment_supported; /* absent on older firmware */
     bool has_mldsa_verification_supported;
-    bool mldsa_verification_supported; /* wolfSSL ML-DSA CA and peer certificate verification */
+    bool mldsa_verification_supported; /* ML-DSA-65 CA and peer certificate verification */
     char device_id[65]; /* configured PKI identity; distinct from the USB hardware ID */
     char tenant_id[37];
     bool uuid_enrollment_supported; /* UUID discovery and enrollment identity reporting */
@@ -375,6 +424,7 @@ typedef struct _WendyComCommand {
         WendyComEnrollmentResetParams enrollment_reset;
         WendyComNetGetParams net_get;
         WendyComNetSetParams net_set;
+        WendyComNetTopologyParams net_topology;
         WendyComBluetoothPowerGetParams bluetooth_power_get;
         WendyComBluetoothPowerSetParams bluetooth_power_set;
     } params;
@@ -392,6 +442,7 @@ typedef struct _WendyComResponse {
         WendyComEnrollmentChallenge enrollment_challenge;
         WendyComSyncTimeResult sync_time;
         WendyComNetStatus net_status;
+        WendyComNetTopologyPage net_topology;
         WendyComBluetoothPowerStatus bluetooth_power;
     } data;
 } WendyComResponse;
@@ -543,6 +594,9 @@ extern "C" {
 
 
 
+
+
+
 #define WendyComConsoleData_io_ENUMTYPE WendyComConsoleIo
 
 
@@ -586,6 +640,9 @@ extern "C" {
 #define WendyComNetGetParams_init_default        {0}
 #define WendyComNetSetParams_init_default        {false, WendyComNetConfig_init_default}
 #define WendyComNetStatus_init_default           {false, WendyComNetConfig_init_default, false, WendyComNetConfig_init_default, _WendyComNetState_MIN, 0, 0, 0, 0, 0, false, 0, false, 0, 0, 0, 0, 0}
+#define WendyComNetTopologyParams_init_default   {0, 0}
+#define WendyComNetTopologyRecord_init_default   {0, {0, {0}}, {0, {0}}, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, {0, {0}}, 0, {{NULL}, NULL}, {0, {0}}}
+#define WendyComNetTopologyPage_init_default     {{0}, {0}, 0, 0, 0, 0, 0, 0, false, WendyComNetStatus_init_default, false, WendyComNetTopologyRecord_init_default}
 #define WendyComGetDeviceInfoParams_init_default {0}
 #define WendyComEnrollmentChallengeParams_init_default {0}
 #define WendyComEnrollmentChallenge_init_default {"", 0, 0, 0, 0, 0, 0, false, 0, false, 0, "", "", 0}
@@ -633,6 +690,9 @@ extern "C" {
 #define WendyComNetGetParams_init_zero           {0}
 #define WendyComNetSetParams_init_zero           {false, WendyComNetConfig_init_zero}
 #define WendyComNetStatus_init_zero              {false, WendyComNetConfig_init_zero, false, WendyComNetConfig_init_zero, _WendyComNetState_MIN, 0, 0, 0, 0, 0, false, 0, false, 0, 0, 0, 0, 0}
+#define WendyComNetTopologyParams_init_zero      {0, 0}
+#define WendyComNetTopologyRecord_init_zero      {0, {0, {0}}, {0, {0}}, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, {0, {0}}, 0, {{NULL}, NULL}, {0, {0}}}
+#define WendyComNetTopologyPage_init_zero        {{0}, {0}, 0, 0, 0, 0, 0, 0, false, WendyComNetStatus_init_zero, false, WendyComNetTopologyRecord_init_zero}
 #define WendyComGetDeviceInfoParams_init_zero    {0}
 #define WendyComEnrollmentChallengeParams_init_zero {0}
 #define WendyComEnrollmentChallenge_init_zero    {"", 0, 0, 0, 0, 0, 0, false, 0, false, 0, "", "", 0}
@@ -723,6 +783,36 @@ extern "C" {
 #define WendyComNetStatus_error_code_tag         12
 #define WendyComNetStatus_restarting_tag         13
 #define WendyComNetStatus_ble_profiles_supported_tag 14
+#define WendyComNetTopologyParams_cursor_tag     1
+#define WendyComNetTopologyParams_generation_tag 2
+#define WendyComNetTopologyRecord_kind_tag       1
+#define WendyComNetTopologyRecord_device_tag     2
+#define WendyComNetTopologyRecord_address_tag    3
+#define WendyComNetTopologyRecord_link_id_tag    4
+#define WendyComNetTopologyRecord_router_id_tag  5
+#define WendyComNetTopologyRecord_sequence_tag   6
+#define WendyComNetTopologyRecord_metric_tag     7
+#define WendyComNetTopologyRecord_local_tag      8
+#define WendyComNetTopologyRecord_unreachable_tag 9
+#define WendyComNetTopologyRecord_authorized_tag 10
+#define WendyComNetTopologyRecord_expires_at_unix_ms_tag 11
+#define WendyComNetTopologyRecord_revision_tag   12
+#define WendyComNetTopologyRecord_issued_at_unix_ms_tag 13
+#define WendyComNetTopologyRecord_transport_tag  14
+#define WendyComNetTopologyRecord_next_hop_device_tag 15
+#define WendyComNetTopologyRecord_owner_role_tag 16
+#define WendyComNetTopologyRecord_owner_principal_tag 17
+#define WendyComNetTopologyRecord_owner_instance_tag 18
+#define WendyComNetTopologyPage_tenant_tag       1
+#define WendyComNetTopologyPage_device_tag       2
+#define WendyComNetTopologyPage_captured_at_unix_ms_tag 3
+#define WendyComNetTopologyPage_generation_tag   4
+#define WendyComNetTopologyPage_next_cursor_tag  5
+#define WendyComNetTopologyPage_runtime_available_tag 6
+#define WendyComNetTopologyPage_partial_tag      7
+#define WendyComNetTopologyPage_truncated_tag    8
+#define WendyComNetTopologyPage_status_tag       9
+#define WendyComNetTopologyPage_record_tag       10
 #define WendyComEnrollmentChallengeParams_status_only_tag 1
 #define WendyComEnrollmentChallenge_nonce_hex_tag 1
 #define WendyComEnrollmentChallenge_enrolled_tag 2
@@ -779,6 +869,7 @@ extern "C" {
 #define WendyComCommand_enrollment_reset_tag     21
 #define WendyComCommand_net_get_tag              22
 #define WendyComCommand_net_set_tag              23
+#define WendyComCommand_net_topology_tag         24
 #define WendyComCommand_bluetooth_power_get_tag  25
 #define WendyComCommand_bluetooth_power_set_tag  26
 #define WendyComResponse_request_id_tag          1
@@ -789,6 +880,7 @@ extern "C" {
 #define WendyComResponse_enrollment_challenge_tag 6
 #define WendyComResponse_sync_time_tag           7
 #define WendyComResponse_net_status_tag          8
+#define WendyComResponse_net_topology_tag        9
 #define WendyComResponse_bluetooth_power_tag     10
 #define WendyComEvent_event_id_tag               1
 #define WendyComEvent_console_begin_tag          2
@@ -988,6 +1080,50 @@ X(a, STATIC,   SINGULAR, UINT32,   ble_profiles_supported,  14)
 #define WendyComNetStatus_desired_MSGTYPE WendyComNetConfig
 #define WendyComNetStatus_applied_MSGTYPE WendyComNetConfig
 
+#define WendyComNetTopologyParams_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   cursor,            1) \
+X(a, STATIC,   SINGULAR, UINT64,   generation,        2)
+#define WendyComNetTopologyParams_CALLBACK NULL
+#define WendyComNetTopologyParams_DEFAULT NULL
+
+#define WendyComNetTopologyRecord_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   kind,              1) \
+X(a, STATIC,   SINGULAR, BYTES,    device,            2) \
+X(a, STATIC,   SINGULAR, BYTES,    address,           3) \
+X(a, STATIC,   SINGULAR, UINT64,   link_id,           4) \
+X(a, STATIC,   SINGULAR, UINT64,   router_id,         5) \
+X(a, STATIC,   SINGULAR, UINT32,   sequence,          6) \
+X(a, STATIC,   SINGULAR, UINT32,   metric,            7) \
+X(a, STATIC,   SINGULAR, BOOL,     local,             8) \
+X(a, STATIC,   SINGULAR, BOOL,     unreachable,       9) \
+X(a, STATIC,   SINGULAR, BOOL,     authorized,       10) \
+X(a, STATIC,   SINGULAR, INT64,    expires_at_unix_ms,  11) \
+X(a, STATIC,   SINGULAR, UINT64,   revision,         12) \
+X(a, STATIC,   SINGULAR, INT64,    issued_at_unix_ms,  13) \
+X(a, STATIC,   SINGULAR, UINT32,   transport,        14) \
+X(a, STATIC,   SINGULAR, BYTES,    next_hop_device,  15) \
+X(a, STATIC,   SINGULAR, UINT32,   owner_role,       16) \
+X(a, CALLBACK, SINGULAR, STRING,   owner_principal,  17) \
+X(a, STATIC,   SINGULAR, BYTES,    owner_instance,   18)
+#define WendyComNetTopologyRecord_CALLBACK pb_default_field_callback
+#define WendyComNetTopologyRecord_DEFAULT NULL
+
+#define WendyComNetTopologyPage_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, FIXED_LENGTH_BYTES, tenant,            1) \
+X(a, STATIC,   SINGULAR, FIXED_LENGTH_BYTES, device,            2) \
+X(a, STATIC,   SINGULAR, INT64,    captured_at_unix_ms,   3) \
+X(a, STATIC,   SINGULAR, UINT64,   generation,        4) \
+X(a, STATIC,   SINGULAR, UINT32,   next_cursor,       5) \
+X(a, STATIC,   SINGULAR, BOOL,     runtime_available,   6) \
+X(a, STATIC,   SINGULAR, BOOL,     partial,           7) \
+X(a, STATIC,   SINGULAR, BOOL,     truncated,         8) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  status,            9) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  record,           10)
+#define WendyComNetTopologyPage_CALLBACK NULL
+#define WendyComNetTopologyPage_DEFAULT NULL
+#define WendyComNetTopologyPage_status_MSGTYPE WendyComNetStatus
+#define WendyComNetTopologyPage_record_MSGTYPE WendyComNetTopologyRecord
+
 #define WendyComGetDeviceInfoParams_FIELDLIST(X, a) \
 
 #define WendyComGetDeviceInfoParams_CALLBACK NULL
@@ -1096,6 +1232,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (params,sync_time,params.sync_time),  20) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,enrollment_reset,params.enrollment_reset),  21) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,net_get,params.net_get),  22) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,net_set,params.net_set),  23) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,net_topology,params.net_topology),  24) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,bluetooth_power_get,params.bluetooth_power_get),  25) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,bluetooth_power_set,params.bluetooth_power_set),  26)
 #define WendyComCommand_CALLBACK NULL
@@ -1122,6 +1259,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (params,bluetooth_power_set,params.bluetooth_
 #define WendyComCommand_params_enrollment_reset_MSGTYPE WendyComEnrollmentResetParams
 #define WendyComCommand_params_net_get_MSGTYPE WendyComNetGetParams
 #define WendyComCommand_params_net_set_MSGTYPE WendyComNetSetParams
+#define WendyComCommand_params_net_topology_MSGTYPE WendyComNetTopologyParams
 #define WendyComCommand_params_bluetooth_power_get_MSGTYPE WendyComBluetoothPowerGetParams
 #define WendyComCommand_params_bluetooth_power_set_MSGTYPE WendyComBluetoothPowerSetParams
 
@@ -1134,6 +1272,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (data,sensor_link_manifest,data.sensor_link_m
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,enrollment_challenge,data.enrollment_challenge),   6) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,sync_time,data.sync_time),   7) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,net_status,data.net_status),   8) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,net_topology,data.net_topology),   9) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,bluetooth_power,data.bluetooth_power),  10)
 #define WendyComResponse_CALLBACK NULL
 #define WendyComResponse_DEFAULT NULL
@@ -1143,6 +1282,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (data,bluetooth_power,data.bluetooth_power), 
 #define WendyComResponse_data_enrollment_challenge_MSGTYPE WendyComEnrollmentChallenge
 #define WendyComResponse_data_sync_time_MSGTYPE WendyComSyncTimeResult
 #define WendyComResponse_data_net_status_MSGTYPE WendyComNetStatus
+#define WendyComResponse_data_net_topology_MSGTYPE WendyComNetTopologyPage
 #define WendyComResponse_data_bluetooth_power_MSGTYPE WendyComBluetoothPowerStatus
 
 #define WendyComEvent_FIELDLIST(X, a) \
@@ -1241,6 +1381,9 @@ extern const pb_msgdesc_t WendyComNetConfig_msg;
 extern const pb_msgdesc_t WendyComNetGetParams_msg;
 extern const pb_msgdesc_t WendyComNetSetParams_msg;
 extern const pb_msgdesc_t WendyComNetStatus_msg;
+extern const pb_msgdesc_t WendyComNetTopologyParams_msg;
+extern const pb_msgdesc_t WendyComNetTopologyRecord_msg;
+extern const pb_msgdesc_t WendyComNetTopologyPage_msg;
 extern const pb_msgdesc_t WendyComGetDeviceInfoParams_msg;
 extern const pb_msgdesc_t WendyComEnrollmentChallengeParams_msg;
 extern const pb_msgdesc_t WendyComEnrollmentChallenge_msg;
@@ -1290,6 +1433,9 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComNetGetParams_fields &WendyComNetGetParams_msg
 #define WendyComNetSetParams_fields &WendyComNetSetParams_msg
 #define WendyComNetStatus_fields &WendyComNetStatus_msg
+#define WendyComNetTopologyParams_fields &WendyComNetTopologyParams_msg
+#define WendyComNetTopologyRecord_fields &WendyComNetTopologyRecord_msg
+#define WendyComNetTopologyPage_fields &WendyComNetTopologyPage_msg
 #define WendyComGetDeviceInfoParams_fields &WendyComGetDeviceInfoParams_msg
 #define WendyComEnrollmentChallengeParams_fields &WendyComEnrollmentChallengeParams_msg
 #define WendyComEnrollmentChallenge_fields &WendyComEnrollmentChallenge_msg
@@ -1318,6 +1464,8 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 /* WendyComAppPushDataParams_size depends on runtime parameters */
 /* WendyComConfPushDataParams_size depends on runtime parameters */
 /* WendyComDeviceIdentity_size depends on runtime parameters */
+/* WendyComNetTopologyRecord_size depends on runtime parameters */
+/* WendyComNetTopologyPage_size depends on runtime parameters */
 /* WendyComSyncTimeParams_size depends on runtime parameters */
 /* WendyComConsoleData_size depends on runtime parameters */
 /* WendyComDeviceInfo_size depends on runtime parameters */
@@ -1357,6 +1505,7 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComNetGetParams_size                0
 #define WendyComNetSetParams_size                36
 #define WendyComNetStatus_size                   120
+#define WendyComNetTopologyParams_size           17
 #define WendyComOpenChannel_size                 0
 #define WendyComPingParams_size                  0
 #define WendyComProtocolVersion_size             12

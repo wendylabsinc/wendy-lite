@@ -55,6 +55,7 @@ function(wendy_patch_nimble)
         "${project_dir}/patches/idf-nimble-coc-credit-retry.patch"
         "${refill_patch}"
         "${project_dir}/patches/idf-nimble-coc-backed-credit-window.patch"
+        "${project_dir}/patches/idf-nimble-coc-initial-backed-credits.patch"
         "${project_dir}/patches/idf-nimble-acl-queued-retry.patch")
     wendy_prepare_patched_tree("${source}" "${destination}" ${host_patches})
     wendy_redirect_dependency_target(__idf_bt "${source}" "${destination}")

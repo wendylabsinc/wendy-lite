@@ -38,6 +38,10 @@ int main(void)
     for (unsigned i = 0; i < 3; i++)
         memcpy(chain.hashes[i], hashes[47 + i], 32);
     assert(!wncs_chain_put(&store, &chain, 10000));
+    struct wncs_loan *issuers = wncs_issuer_loan(&store, 1000);
+    assert(issuers && issuers->count == 2);   /* Leaf excluded, no extra DER copy. */
+    assert(!wncs_issuer_loan(&store, 10000)); /* Expired descriptors contribute nothing. */
+    const uint8_t *issuer_last = issuers->parts[1];
     struct wncf_chain loaded;
     assert(wncs_chain_get(&store, chain.principal, 1000, &loaded) == 1);
     assert(loaded.count == chain.count && !memcmp(loaded.hashes, chain.hashes, chain.count * 32));
@@ -81,6 +85,8 @@ int main(void)
 #endif
     wncs_unpin(&loan);
     assert(!loan.count);
+    assert(!memcmp(issuer_last, data, sizeof data)); /* Still borrowed after close. */
+    wncs_issuer_loan_free(issuers);
 #if defined(WENDY_NET_MEMORY_HOST_BUDGET_TEST)
     assert(wendy_net_runtime_memory_drained());
     assert(wendy_net_runtime_memory_open());

@@ -33,12 +33,17 @@ static void execute(void *context)
             memset(&o->applied, 0, sizeof o->applied);
     }
     if (want->enabled && !o->applied.enabled) {
-        mdns_txt_item_t txt[] = {
-            {"version", "1"},     {"protocol", "tls-v1"},      {"principal", want->principal},
-            {"mesh", want->mesh}, {"role", "embedded-router"}, {"platform", "Lite"},
-            {"ble", want->radio}, {"ble_psm", want->psm}};
+        mdns_txt_item_t txt[] = {{"version", "1"},
+                                 {"protocol", "tls-v1"},
+                                 {"principal", want->principal},
+                                 {"mesh", want->mesh},
+                                 {"role", "embedded-router"},
+                                 {"platform", "Lite"},
+                                 {"operator_router", want->operator_router ? "1" : "0"},
+                                 {"ble", want->radio},
+                                 {"ble_psm", want->psm}};
         if (mdns_service_add(want->instance, "_wendy-net", "_tcp", 43024, txt,
-                             want->radio[0] ? 8 : 6) == ESP_OK)
+                             want->radio[0] ? 9 : 7) == ESP_OK)
             o->applied = *want;
     }
     if (o->search && !o->finished) {
@@ -48,8 +53,8 @@ static void execute(void *context)
             if (!o->command.browse) {
                 o->consumed = true;
                 o->ready = false;
-            }
         }
+    }
     }
     if (o->search && o->finished && o->consumed) {
         if (o->results) {

@@ -31,7 +31,7 @@ int mdns_service_add(const char *instance, const char *service, const char *prot
                      mdns_txt_item_t *txt, size_t count)
 {
     assert(worker && instance && !strcmp(service, "_wendy-net") && !strcmp(protocol, "_tcp") &&
-           port == 43024 && count == 6);
+           port == 43024 && count == 7);
     assert(!advertised);
     advertised = true;
     strcpy(published, txt[2].value);

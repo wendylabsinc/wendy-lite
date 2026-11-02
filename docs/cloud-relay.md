@@ -112,3 +112,19 @@ Append `boards/no-ble.defaults` last to omit Bluetooth while retaining USB,
 Wi-Fi and Cloud. The C6 build without Bluetooth contains no BLE stack archive.
 See [Bluetooth configuration](../README.md#optional-bluetooth-support).
 Physical-board heap use, latency and enrollment behavior still need validation.
+
+## Development relay envelope
+
+The console's `cloud://` target and `go/tinycloud` use the separate development
+RPC `/WendyComRelayService/WendyComRelay`, not the authenticated Cloud path above.
+That RPC identity scopes the relay envelope: additive protobuf fields and new
+message variants may extend it; an incompatible envelope must use a new RPC or
+service identity rather than reinterpret this one. Each stream requires an
+initial `open`, followed by `payload` messages. After opening, unknown future
+relay variants are discarded; a repeated `open` remains an error.
+
+Payloads carry bare WendyCom protobuf bodies. The console and device still
+exchange the WendyCom major/minor handshake before commands, independently of
+the relay envelope. The broker adds the version-2 WendyCom frame header on the
+device connection. It consumes and discards unknown frame categories using their
+declared body length, so they cannot be mistaken for current protobuf payloads.

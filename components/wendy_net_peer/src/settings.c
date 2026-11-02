@@ -1,4 +1,5 @@
 #include "settings.h"
+#include "topology_record.h"
 #if CONFIG_WENDY_NET_BLE
 #include "wendy_ble_mesh.h"
 #endif
@@ -66,11 +67,11 @@ static esp_err_t normalize(WendyComNetConfig *c)
         c->ble_links = c->max_links < CONFIG_WENDY_NET_BLE_CHANNELS ? c->max_links
                                                                     : CONFIG_WENDY_NET_BLE_CHANNELS;
     if (!c->wifi_links)
-        c->wifi_links = c->max_links < 3 ? c->max_links : 3;
+        c->wifi_links = c->max_links;
     if (!c->nan_links)
         c->nan_links = 1;
     if (c->max_links > CONFIG_WENDY_NET_MAX_LINKS || c->ble_links > CONFIG_WENDY_NET_BLE_CHANNELS ||
-        c->wifi_links > 3 || c->nan_links > 1)
+        c->wifi_links > CONFIG_WENDY_NET_MAX_LINKS || c->nan_links > 1)
         return ESP_ERR_INVALID_ARG;
     if (WENDY_NET_NON_TRANSIT &&
         (c->max_links != 1 || c->ble_links > 1 || c->wifi_links > 1 || c->nan_links > 1 ||
@@ -111,6 +112,13 @@ esp_err_t wendy_net_peer_get_status(WendyComNetStatus *status)
     if (!status)
         return ESP_ERR_INVALID_ARG;
     return get(status) == WendyComResult_WENDY_COM_RESULT_OK ? ESP_OK : ESP_FAIL;
+}
+static WendyComResult topology(const WendyComNetTopologyParams *params,
+                               WendyComNetTopologyPage *page)
+{
+    page->has_status = true;
+    get(&page->status);
+    return wn_peer_topology(params, page);
 }
 static void reply_complete(uint32_t token)
 {
@@ -257,8 +265,11 @@ esp_err_t wn_settings_init(void)
         loaded = true;
     }
     pthread_mutex_unlock(&lock);
-    static const struct wcom_net_delegate delegate = {
-        .get = get, .set = set, .reply_complete = reply_complete};
+    static const struct wcom_net_delegate delegate = {.get = get,
+                                                      .set = set,
+                                                      .reply_complete = reply_complete,
+                                                      .topology = topology,
+                                                      .topology_release = wnt_page_release};
     wcom_cmd_set_net_delegate(&delegate);
     return ESP_OK;
 }

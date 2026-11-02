@@ -84,6 +84,22 @@ bool wendy_pki_work_submit(void (*fn)(void *), void *context)
     cpu_argument = context;
     return true;
 }
+void wendy_net_peer_issuer_snapshot(struct wendy_pki_net_issuers *snapshot)
+{
+    memset(snapshot, 0, sizeof *snapshot);
+}
+void wendy_pki_net_release_issuers(struct wendy_pki_net_issuers *snapshot)
+{
+    if (snapshot->release)
+        snapshot->release(snapshot->context);
+    memset(snapshot, 0, sizeof *snapshot);
+}
+void wendy_pki_agent_add_issuers(struct wendy_pki_agent_setup *op,
+                                 struct wendy_pki_net_issuers *snapshot)
+{
+    assert(op);
+    wendy_pki_net_release_issuers(snapshot);
+}
 static void finish_cpu(void)
 {
     assert(cpu_callback);
@@ -275,6 +291,20 @@ static int begin(void)
     wendy_net_agent_accept(fds[0]);
     wendy_net_agent_poll();
     assert(flows && flows->state.lent && cpu_callback);
+    /* An operator can disappear without a TCP FIN when its userspace mesh
+     * router exits. Such peers must not retain every native management slot
+     * until certificate expiry. Healthy idle peers still answer TCP probes. */
+    int enabled = 0, idle = 0, interval = 0, probes = 0;
+    socklen_t size = sizeof enabled;
+    assert(!getsockopt(flows->fd, SOL_SOCKET, SO_KEEPALIVE, &enabled, &size) && enabled);
+#ifdef TCP_KEEPIDLE
+    assert(!getsockopt(flows->fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, &size));
+#else
+    assert(!getsockopt(flows->fd, IPPROTO_TCP, TCP_KEEPALIVE, &idle, &size));
+#endif
+    assert(!getsockopt(flows->fd, IPPROTO_TCP, TCP_KEEPINTVL, &interval, &size));
+    assert(!getsockopt(flows->fd, IPPROTO_TCP, TCP_KEEPCNT, &probes, &size));
+    assert(idle > 0 && interval > 0 && probes > 0 && idle + interval * probes <= 30);
     return fds[1];
 }
 static void handshake(void)

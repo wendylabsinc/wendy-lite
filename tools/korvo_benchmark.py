@@ -8,6 +8,9 @@ Stop the monitor after the workload finishes. Missing, failed, and truncated
 benchmark runs exit nonzero. This reports kernel/copy timings, not model or
 end-to-end network performance. A log containing several boots is rejected;
 capture one boot per report so results cannot silently mix firmware runs.
+Records without a version are legacy version 1. Future versions, test types,
+and currently unsupported channels/memory targets are ignored; required known
+version-1 results are still mandatory.
 """
 
 import argparse
@@ -29,6 +32,18 @@ def summarize(lines):
             raise ValueError(f"Malformed benchmark JSON on line {number}") from error
         if not isinstance(record, dict):
             raise ValueError(f"Expected a benchmark object on line {number}")
+        # The serial stream can interleave optional tests from newer firmware.
+        # Only known version-1 records participate in this report's validation.
+        version = record.get("version", 1)
+        kind = record.get("test")
+        if type(version) is not int or version != 1:
+            continue
+        if kind not in ("complete", "heap", "memcpy", "conv_int8_1x1", "sensor"):
+            continue
+        if kind == "memcpy" and record.get("memory") not in ("internal", "psram"):
+            continue
+        if kind == "sensor" and record.get("channel") not in (0, 1):
+            continue
         records.append(record)
 
     complete = [r for r in records if r.get("test") == "complete"]

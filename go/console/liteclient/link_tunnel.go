@@ -84,6 +84,11 @@ func (l *tunnelLink) recvLoop() {
 			close(l.msgs)
 			return
 		}
+		// An unknown future relay oneof has no current Msg. gRPC has
+		// already consumed its complete envelope, so it is safe to skip.
+		if msg.GetMsg() == nil {
+			continue
+		}
 		payload := msg.GetPayload()
 		if payload == nil {
 			l.recvErr = fmt.Errorf("unexpected tunnel message: %v", msg)
@@ -95,6 +100,12 @@ func (l *tunnelLink) recvLoop() {
 			l.recvErr = fmt.Errorf("unmarshal: %w", err)
 			close(l.msgs)
 			return
+		}
+		// The payload is a complete WendyCom envelope too. A future inner
+		// oneof is not a reply to the current handshake or command; skip it
+		// here so the caller keeps its original receive timeout.
+		if m.GetMsg() == nil {
+			continue
 		}
 		select {
 		case l.msgs <- m:

@@ -14,9 +14,9 @@ struct wnc_frame {
     uint8_t data[];
 };
 _Static_assert(WNC_CLASS_RESERVE >= sizeof(struct wnc_frame) + 5 + WN_DATAGRAM_MAX,
-               "routing reserve must admit a maximum datagram");
+    "routing reserve must admit a maximum datagram");
 _Static_assert(WNC_CLASS_RESERVE >= WN_MTU + 2 * (sizeof(struct wnc_frame) + 5 + 9),
-               "IP reserve must admit one complete two-fragment packet");
+    "IP reserve must admit one complete two-fragment packet");
 #define CPROBE_ADD(c, key, n) ((void)0)
 #define probe_enqueue(c, f, n) ((void)0)
 #define probe_dequeue(c, f, n) ((void)0)
@@ -44,6 +44,13 @@ int wnc_fair_scheduler(struct wnc_carrier *c, unsigned frames)
         return WNC_INVALID;
     c->fair = true;
     c->routing_limit = frames;
+    return 0;
+}
+int wnc_operator_router(struct wnc_carrier *c)
+{
+    if (!c || !c->io.write || c->head || c->header_have || c->body)
+        return WNC_INVALID;
+    c->operator_router = true;
     return 0;
 }
 /* All bookkeeping is actor-owned. The three class queues and one global
@@ -139,7 +146,7 @@ static int enqueue(struct wnc_carrier *c, const void *data, size_t size, bool co
     f->size = prefix + size;
     f->priority = priority;
     f->category = (uint8_t)category;
-    f->data[0] = control ? 1 : 2;
+    f->data[0] = c->operator_router ? (control ? 5 : 4) : (control ? 1 : 2);
     wn_put32(f->data + 1, (uint32_t)(size + (control ? 4 : 0)));
     if (control)
         wn_put32(f->data + 5, (uint32_t)size);
@@ -295,7 +302,7 @@ static int pump_write(struct wnc_carrier *c, int64_t now)
 }
 static int deliver_frame(struct wnc_carrier *c, wnc_receive receive, void *ctx)
 {
-    bool control = c->header[0] == 1;
+    bool control = c->header[0] == (c->operator_router ? 5 : 1);
     if (control && wn_get32(c->body) != c->body_size - 4)
         return WNC_INVALID;
     int r = receive(ctx, c->body + (control ? 4 : 0), c->body_size - (control ? 4 : 0), control);
@@ -336,7 +343,7 @@ static int pump_read(struct wnc_carrier *c, int64_t now, wnc_receive receive, vo
         c->header_have += (unsigned)n;
         if (c->header_have == 5) {
             size_t size = wn_get32(c->header + 1);
-            uint8_t control = 1, packet = 2;
+            uint8_t control = c->operator_router ? 5 : 1, packet = c->operator_router ? 4 : 2;
             if ((c->header[0] == control && (size < 5 || size > c->control_limit + 4)) ||
                 (c->header[0] == packet && (!size || size > WN_DATAGRAM_MAX)))
                 return WNC_INVALID;

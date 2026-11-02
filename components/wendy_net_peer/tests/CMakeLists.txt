@@ -12,7 +12,7 @@ if(NOT EXISTS "${CJSON_ROOT}/cJSON.c")
 endif()
 add_library(format_cjson STATIC "${CJSON_ROOT}/cJSON.c")
 target_include_directories(format_cjson PUBLIC "${CJSON_ROOT}")
-set(format_sources ../src/protocol.c ../src/binary.c ../src/packet.c ../src/directory.c ../src/manifest_service.c ../src/service_protocol.c ../src/guest_json.c ../src/certificate_fetch.c ../src/certificate_store.c ../src/certificate_wire.c)
+set(format_sources ../src/operator.c ../src/protocol.c ../src/binary.c ../src/packet.c ../src/directory.c ../src/manifest_service.c ../src/service_protocol.c ../src/guest_json.c ../src/certificate_fetch.c ../src/certificate_store.c ../src/certificate_wire.c)
 add_library(peer_format STATIC ${format_sources})
 target_include_directories(peer_format BEFORE PUBLIC "${CJSON_ROOT}")
 target_include_directories(peer_format PUBLIC ../include PRIVATE ../src)
@@ -66,10 +66,11 @@ target_link_libraries(session_babel PUBLIC net_common)
 add_library(session_gossip STATIC ../../wendy_net_gossip/src/gossip.c)
 target_include_directories(session_gossip PUBLIC ../../wendy_net_gossip/include)
 target_link_libraries(session_gossip PUBLIC net_common)
-set(session_sources ../src/router.c ../src/control.c ../src/crypto_job.c ../src/certificate_read.c ../src/catalog_node.c ../src/manifest_catalog.c ../src/catalog_guest.c ../src/service_store.c)
+set(session_sources ../src/topology_record.c ../src/router.c ../src/control.c ../src/crypto_job.c ../src/certificate_read.c ../src/catalog_node.c ../src/manifest_catalog.c ../src/catalog_guest.c ../src/service_store.c)
 add_library(peer_session STATIC ${session_sources})
-target_include_directories(peer_session PUBLIC ../src ../include router_stubs)
+target_include_directories(peer_session PUBLIC ../src ../include router_stubs ../../wendy_com/include ../../nanopb)
 target_link_libraries(peer_session PUBLIC peer_format session_babel session_gossip)
+target_sources(peer_session PRIVATE ../../nanopb/pb_common.c ../../nanopb/pb_encode.c)
 target_compile_definitions(peer_session PUBLIC WENDY_NET_ROUTE_CRYPTO_HOST_TEST=1)
 target_compile_options(peer_session PRIVATE -Wall -Wextra -Werror -Wno-misleading-indentation)
 function(session_test name source)
@@ -88,14 +89,18 @@ session_test(catalog manifest_catalog_success_test.c)
 session_test(publication async_manifest_publication_success_test.c)
 session_test(inventory inventory_success_test.c)
 session_test(crypto_retry crypto_retry_success_test.c "${session_key}")
+add_executable(session_operator_manifest operator_manifest_success_test.c)
+target_link_libraries(session_operator_manifest PRIVATE peer_session)
+target_compile_options(session_operator_manifest PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 
 # All translation units use the same charged-pointer ABI in pressure fixtures.
 add_library(peer_session_budget STATIC ${format_sources} ${session_sources}
+    ../../nanopb/pb_common.c ../../nanopb/pb_encode.c
     ../../wendy_net_common/src/runtime_memory.c
     ../../wendy_net_gossip/src/gossip.c
     ../../wendy_babel/src/engine.c ../../wendy_babel/src/wire.c ../../wendy_babel/src/storage.c ../../wendy_babel/src/history.c)
 target_include_directories(peer_session_budget BEFORE PUBLIC "${CJSON_ROOT}")
-target_include_directories(peer_session_budget PUBLIC ../include ../src router_stubs ../../wendy_net_gossip/include ../../wendy_babel/include)
+target_include_directories(peer_session_budget PUBLIC ../../wendy_com/include ../../nanopb ../include ../src router_stubs ../../wendy_net_gossip/include ../../wendy_babel/include)
 target_compile_definitions(peer_session_budget PUBLIC WENDY_NET_MEMORY_HOST_BUDGET_TEST=1 WENDY_NET_ROUTE_CRYPTO_HOST_TEST=1)
 target_compile_options(peer_session_budget PRIVATE -Wall -Wextra -Werror -Wno-misleading-indentation)
 target_link_libraries(peer_session_budget PUBLIC pki format_cjson)
@@ -173,6 +178,7 @@ driver_test(ble_discovery ble_discovery_success_test.c)
 driver_test(nan_presence nan_presence_success_test.c)
 driver_test(carrier carrier_test.c)
 driver_test(carrier_extensions carrier_extensions_success_test.c)
+add_test(NAME driver_operator_carrier COMMAND driver_carrier --operator)
 driver_test(carrier_priority carrier_priority_success_test.c)
 add_executable(driver_carrier_fair carrier_fair_success_test.c ../src/carrier.c)
 target_link_libraries(driver_carrier_fair PRIVATE peer_session_budget)
@@ -192,6 +198,39 @@ target_include_directories(driver_actor_driver BEFORE PRIVATE io_stubs)
 
 # Standalone management handoff/state checks do not require crypto dependencies.
 add_subdirectory(settings)
+
+add_executable(topology_query_success_test topology_query_success_test.c ../src/topology_record.c
+    ../../nanopb/pb_common.c ../../nanopb/pb_encode.c)
+target_include_directories(topology_query_success_test PRIVATE ../src ../include ../../wendy_com/include ../../nanopb ../../wendy_net_common/include)
+target_compile_options(topology_query_success_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME topology_query_success COMMAND topology_query_success_test)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/../src/peer.c")
+execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/extract_topology_fixture.py"
+    "${CMAKE_CURRENT_LIST_DIR}/../src/peer.c" "${CMAKE_CURRENT_BINARY_DIR}/topology_driver.inc" COMMAND_ERROR_IS_FATAL ANY)
+add_executable(topology_driver_success_test topology_driver_success_test.c ../src/topology_record.c
+    ../../wendy_net_common/src/memory.c ../../wendy_net_common/src/runtime_memory.c
+    ../../nanopb/pb_common.c ../../nanopb/pb_encode.c)
+target_include_directories(topology_driver_success_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" ../src
+    ../../wendy_com/include ../../nanopb ../../wendy_net_common/include)
+target_compile_definitions(topology_driver_success_test PRIVATE WENDY_NET_MEMORY_HOST_BUDGET_TEST=1)
+target_compile_options(topology_driver_success_test PRIVATE -Wall -Wextra -Werror -UNDEBUG -Wno-misleading-indentation)
+target_link_libraries(topology_driver_success_test PRIVATE Threads::Threads)
+add_test(NAME topology_driver_success COMMAND topology_driver_success_test)
+set_tests_properties(topology_driver_success PROPERTIES TIMEOUT 20)
+add_executable(session_operator_actor operator_actor_success_test.c ../src/operator_worker.c)
+target_link_libraries(session_operator_actor PRIVATE peer_session_budget)
+target_compile_options(session_operator_actor PRIVATE -Wall -Wextra -Werror -UNDEBUG -Wno-misleading-indentation)
+
+# Optional exact production WendyOS signer/encoder, with no source overlays of
+# application code or module changes. The C target also supports the old driver.
+if(WENDYOS_GO_ROOT)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME session_operator_lifecycle_normal COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_LIST_DIR}/operator_lifecycle_interop.py" --go "${GO_EXECUTABLE}"
+        --wendyos-root "${WENDYOS_GO_ROOT}" --driver "$<TARGET_FILE:session_operator_actor>")
+    set_tests_properties(session_operator_lifecycle_normal PROPERTIES TIMEOUT 90)
+endif()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME driver_setup_lifecycle COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_LIST_DIR}/setup_lifecycle_success_test.py")

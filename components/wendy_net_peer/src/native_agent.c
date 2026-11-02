@@ -1,6 +1,7 @@
 /* Native WendyCom VIP TLS is mesh state. Only plaintext application bytes cross
  * to the existing com task. Raw socket operations live in this outer driver. */
 #include "wendy_net_agent.h"
+#include "wendy_net_peer.h"
 #include "agent_bridge.h"
 #include "actor_driver.h"
 #include "wendy_net_alloc.h"
@@ -32,6 +33,7 @@ struct native_flow {
     struct wna_channel channel;
     struct wna_session state;
     struct wendy_pki_agent_setup *setup;
+    struct wendy_pki_net_issuers issuers;
     wendy_pki_connection *connection;
     struct wendy_pki_agent_info info;
     struct wnab_bridge *bridge;
@@ -44,6 +46,24 @@ struct native_flow {
 };
 static struct native_flow *flows;
 static unsigned flow_count;
+static int native_socket_options(int fd)
+{
+    /* A userspace operator router can disappear without sending TCP FIN/RST.
+     * Without probes, two such sessions exhaust a C5's management capacity
+     * until certificate expiry. Reclaim a silent dead transport in about 30s;
+     * an idle but reachable operator simply acknowledges the TCP probes. */
+    int enabled = 1, idle = 15, interval = 5, probes = 3;
+#ifdef TCP_KEEPIDLE
+    int idle_option = TCP_KEEPIDLE; /* lwIP/Linux: seconds, unlike lwIP TCP_KEEPALIVE. */
+#else
+    int idle_option = TCP_KEEPALIVE; /* Darwin's seconds-based spelling. */
+#endif
+    return setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &enabled, sizeof enabled) ||
+           setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &enabled, sizeof enabled) ||
+           setsockopt(fd, IPPROTO_TCP, idle_option, &idle, sizeof idle) ||
+           setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof interval) ||
+           setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &probes, sizeof probes);
+}
 static int ending(struct native_flow *f, const char *reason, int64_t now)
 {
     ESP_LOGI("net-native-agent", "native VIP closed: reason=%s phase=%u result=%d", reason,
@@ -111,6 +131,7 @@ static void work(void *context)
 {
     struct native_flow *f = context;
     if (f->disposing) {
+        wendy_pki_net_release_issuers(&f->issuers);
         wendy_pki_agent_dispose(f->setup);
         f->setup = NULL;
         wendy_pki_close(f->connection);
@@ -120,6 +141,10 @@ static void work(void *context)
         struct wendy_pki_stream bio = {
             .context = &f->channel, .read = wna_read, .write = write_bio, .wait = wnad_no_wait};
         esp_err_t result = wendy_pki_agent_begin(&bio, &f->setup);
+        if (result == ESP_OK)
+            wendy_pki_agent_add_issuers(f->setup, &f->issuers);
+        else
+            wendy_pki_net_release_issuers(&f->issuers);
         f->result = result == ESP_OK                                          ? 0
                     : (result == ESP_ERR_TIMEOUT || result == ESP_ERR_NO_MEM) ? 2
                                                                               : -1;
@@ -157,7 +182,7 @@ static bool dispose(struct native_flow *f)
     }
     /* Source-handle close and TLS destruction are a worker effect too. Never
      * free a context from beneath a running handshake or cleanup loan. */
-    if (f->setup || f->connection) {
+    if (f->setup || f->connection || f->issuers.release) {
         atomic_store(&f->done, false);
         if (wendy_pki_work_submit(work, f))
             f->state.lent = true;
@@ -283,6 +308,8 @@ static int step(struct native_flow *f, int64_t now)
             return progress;
         }
         if (effect == WNA_CRYPTO_PREPARE || effect == WNA_CRYPTO_STEP) {
+            if (effect == WNA_CRYPTO_PREPARE && !f->issuers.release)
+                wendy_net_peer_issuer_snapshot(&f->issuers);
             atomic_store(&f->done, false);
             if (wendy_pki_work_submit(work, f))
                 wna_lend(&f->state);
@@ -313,9 +340,12 @@ int wendy_net_agent_poll(void)
     if (fd >= 0) {
         struct native_flow *f =
             flow_count < CONFIG_WENDY_NET_APP_MAX_FLOWS ? wendy_net_calloc(1, sizeof *f) : NULL;
-        int yes = 1, flags = fcntl(fd, F_GETFL, 0);
+        if (!f)
+            ESP_LOGD("net-native-agent", "native VIP admission unavailable: live=%u limit=%u",
+                     flow_count, (unsigned)CONFIG_WENDY_NET_APP_MAX_FLOWS);
+        int flags = fcntl(fd, F_GETFL, 0);
         if (!f || fd >= FD_SETSIZE || flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0 ||
-            setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof yes)) {
+            native_socket_options(fd)) {
             close(fd);
             wendy_net_free(f);
         } else {

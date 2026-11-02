@@ -120,10 +120,12 @@ check after a required client-certificate handshake. Valid same-organization ope
 and intermediate chains can exchange application data. Missing, untrusted,
 expired, future, and tampered certificates cannot. Other rejection cases cover
 wrong organizations, roles, authorities, missing or duplicate URI identities,
-invalid subject segments, URI query/fragment/percent/NUL suffixes, missing or
-incorrect EKUs, and CA leaves. Safe operator names and nested subjects remain
-valid, matching the pki-core issuer grammar. The same signed fixtures also
-exercise the PKI operator verifier.
+empty or malformed operator URI text, query/fragment/NUL suffixes, missing or
+incorrect EKUs, and CA leaves. Operator subjects remain opaque URI text:
+email-like names, nested paths and valid percent escapes are accepted without
+normalization, matching the shared operator grammar. Device subjects retain
+their separate restricted path policy. The same signed fixtures also exercise
+the PKI operator verifier.
 The LAN policy additionally accepts same-tenant device certificates and records
 their restricted role. Tests exercise both policies against the same fixtures,
 reject role changes during later verification, and check the TLS adapters' peer
@@ -229,15 +231,18 @@ all potentially issued revision values and resumes time verification from the
 first durable advance. This policy does not persist foreign peer/network state.
 
 
-`pki_issuer_helpers_normal` checks the canonical sorted digest and ordinary
+`pki_issuer_helpers_normal` checks binary root-first fingerprints and ordinary
 TLS 1.3 ClientHello/Certificate message layouts. With `WENDYOS_GO_ROOT` set,
-`pki_issuer_wos_interop_normal` overlays temporary test files onto the unchanged
-WendyOS issuer helpers. Sixteen real TLS handshakes cover both carrier and app
-ALPNs, both roles, shared/non-shared issuers, no auxiliary hint and partial
-local trust; two pre-handshake cancellations cover early cleanup. All fixture
-material supplied to Lite is binary DER. Actual TLS allocator hooks and an
-explicit owner ledger require zero retained bytes/allocations/reservations on
-close. An issuer hint is an existing short ALPN identifier, not encoded payload.
+`pki_issuer_wos_interop_normal` overlays temporary tests onto actual WendyOS
+helpers. Normal handshakes cover carrier, guest VIP and native WendyCom TLS,
+both applicable roles, shared ancestors, distinct issuing CAs, root-only trust,
+cached CA loans and full-chain fallback. Pre-handshake cancellation checks early
+cleanup. Cooldown fixtures cover full-chain carrier, VIP and native management
+exchanges in both applicable roles while the Go peer still offers hints. The
+issuer helper tests check the exact monotonic deadline, no extension, and date,
+revocation, usage and policy exclusions (including combined flags).
+All Lite fixture inputs are DER. Actual TLS allocation hooks and the
+owner ledger require zero retained bytes, allocations and reservations on close.
 
 `pki_owned_der_source_without_root_{p256,mldsa65}` supplies an ordinary local
 chain that already omits its self-signed root. Its trailing intermediate is

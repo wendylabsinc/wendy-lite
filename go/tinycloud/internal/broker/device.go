@@ -60,6 +60,13 @@ func (d *deviceConn) readLoop() {
 			return
 		}
 
+		// Category zero carries WendyCom protobuf bodies. Future categories
+		// retain this frame length, so drain and discard them without routing
+		// their bytes into a current channel as a WendyComMessage.
+		if h.Category != 0 {
+			continue
+		}
+
 		d.mu.Lock()
 		t := d.tunnels[h.Channel]
 		d.mu.Unlock()

@@ -77,8 +77,9 @@ heap bookkeeping, and SDK/radio memory before claiming a whole-system heap cap.
 
 Native peers use binary DER certificates and v4 binary manifests. The retired
 leaf JSON/base64 protocol is not compiled. Issuer omission is negotiated with
-the same auxiliary ALPN as WendyOS; a locally pinned issuer is not assumed to
-be present remotely without that negotiation.
+binary ALPN fingerprints matching WendyOS; a locally held issuer is not assumed
+to be present remotely without that negotiation. The selected root-first prefix
+acknowledges which client intermediates the server holds.
 
 The mesh actor borrows each heavyweight context exclusively to the serialized
 crypto worker. Stored own DER certificates are read directly into TLS; there
