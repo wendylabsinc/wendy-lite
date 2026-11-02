@@ -2213,6 +2213,7 @@ int wnrs_topology_operator_row(struct wnrs_node *node, unsigned category, unsign
     view->principal = selected->principal;
     view->principal_size = selected->principal_size;
     out->expires_at_unix_ms = topology_expiry(node, selected->deadline_us, 0);
+    view->lease_deadline_us = selected->deadline_us;
     if (category == 2) {
         out->authorized = wno_authorizes(node->core.operators, selected->address, out->router_id,
                                          (uint16_t)out->sequence, now);
