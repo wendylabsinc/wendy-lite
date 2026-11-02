@@ -37,11 +37,49 @@ static int services(unsigned count, bool repeat, char *out, size_t cap)
         service(&w, repeat ? 0 : i);
     return wn_finish(&w);
 }
+static void optional_service_rows(void)
+{
+    char wire[2048];
+    struct wn_writer w = {.data = (uint8_t *)wire, .capacity = sizeof wire, .maximum = sizeof wire};
+    wn_map(&w, 1);
+    wn_text(&w, "s");
+    wn_array(&w, 3);
+    service(&w, 0);
+    for (unsigned i = 0; i < 2; i++) {
+        wn_map(&w, i ? 4 : 5);
+        wn_text(&w, "m");
+        wn_text(&w, "default");
+        wn_text(&w, "a");
+        wn_text(&w, i ? "wendy.mesh.system" : "app.test");
+        wn_text(&w, "s");
+        wn_text(&w, i ? "future-gateway" : "future-stream");
+        if (!i) {
+            wn_text(&w, "t");
+            wn_text(&w, "_sensor._sctp");
+        }
+        wn_text(&w, "p");
+        wn_map(&w, 0); /* Opaque future payload shape. */
+    }
+    int n = wn_finish(&w);
+    struct wn_doc d, child;
+    assert(n > 0 && !wn_doc_parse_array_view(&d, wire, (size_t)n, sizeof wire, "s"));
+    assert(!wns_manifest_services_validate(&d, 0));
+    int array = wn_doc_member(&d, 0, "s");
+    size_t cursor = 0;
+    struct wns_record record;
+    assert(wn_doc_array_next(&d, array, &cursor, &child) == 1 &&
+           !wns_manifest_service_read(&child, &record));
+    for (unsigned i = 0; i < 2; i++)
+        assert(wn_doc_array_next(&d, array, &cursor, &child) == 1 &&
+               wns_manifest_service_read(&child, &record) == WNS_UNSUPPORTED);
+    assert(!wn_doc_array_next(&d, array, &cursor, &child));
+}
 int main(void)
 {
 #if defined(WENDY_NET_MEMORY_HOST_BUDGET_TEST)
     assert(wendy_net_runtime_memory_open());
 #endif
+    optional_service_rows();
     const char json[] =
         "{\"serviceId\":\"room.temperature\",\"type\":\"_sensor._tcp\",\"instance\":\"Room\",\"port\":7000,\"txt\":[\"unit=celsius\"]}";
     char *binary = NULL;

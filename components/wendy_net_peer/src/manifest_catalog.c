@@ -148,10 +148,17 @@ int wnsc_manifest_services(struct wnsc_node *node, const struct wn_doc *d, unsig
         int next = wn_doc_array_next(d, services, &cursor, &w->child);
         if (!next)
             break;
-        if (next < 0 || ++count > 256 || wns_manifest_service_read(&w->child, &w->record)) {
+        if (next < 0 || ++count > 256) {
             result = -1;
             goto done;
         }
+        int decoded = wns_manifest_service_read(&w->child, &w->record);
+        if (decoded < 0) {
+            result = -1;
+            goto done;
+        }
+        if (decoded == WNS_UNSUPPORTED)
+            continue;
         struct wns_record *r = &w->record;
         /* Child document positions reference the entire enclosing wire. Trim
          * the map span while rebasing TXT offsets for the stored compact row. */
