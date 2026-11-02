@@ -104,3 +104,37 @@ protection or substitute writable memory for executable memory.
 Native builds exclude the optional WAMR runtime. Its registry dependencies are
 enabled only with `CONFIG_WENDY_CORE_WASM_APP_SUPPORT`, through
 `boards/wasm.defaults`.
+
+## NimBLE CoC ownership and finite resource pressure
+
+The four `idf-nimble-*.patch` files apply in the order listed by
+`wendy_patch_nimble()` to ESP-IDF **6.0.3**'s NimBLE host. The firmware builds a
+copy under `wendy_patched/nimble_host`; the installed SDK stays unchanged.
+
+- Crossed disconnect retires a matching local close procedure before freeing
+  its channel. Timeout completion checks live connection membership.
+- Credit retry retains intent when ordinary signaling mbufs are busy and counts
+  credits only after HCI or the connection's existing TX queue accepts the PDU.
+  The shared host timer retries at 10 ms intervals.
+- The deferred credit window follows the currently armed contiguous RX buffers
+  when multiple receive slots are configured.
+- Queued ACL retry retains the exact unsent bytes until transport acceptance,
+  preserves first/continuation boundaries, and uses the existing host timer and
+  fragment pool to resume after finite allocation pressure.
+
+Run the portable SDK behavior and CMake registration tests with:
+
+```sh
+cmake -S cmake/tests -B build/nimble-tests \
+  -DWENDY_TEST_IDF_PATH="$IDF_PATH" -DWENDY_TEST_SANITIZE=ON
+ctest --test-dir build/nimble-tests --output-on-failure
+```
+
+The fixtures compile actual functions extracted from a private patched SDK copy.
+They cover one/two RX slots, deferred grants after short SDUs, simultaneous close,
+queued byte order, packet boundaries and resource release. They require no native
+adapter, firmware application, network service or hardware. For an optional whole
+SDK host compilation check, set `WENDY_TEST_COMPILE_COMMANDS` to an existing
+ESP-IDF firmware `compile_commands.json` for the same SDK and installed toolchain.
+That check reads the saved flags and generated headers, writes compiler output to
+a temporary directory, and does not build or link firmware.

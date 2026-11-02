@@ -33,6 +33,7 @@ project(wendy_mcu)
 # wendy_pki's project_include.cmake patches the bundled esp-pqc Mbed TLS.
 include(cmake/dependency_patches.cmake)
 wendy_patch_wamr()
+wendy_patch_nimble()
 
 # ESP32-P4 ships in several board layouts that differ in flash size and
 # partition table, so a board overlay must be selected explicitly:

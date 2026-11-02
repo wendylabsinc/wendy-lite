@@ -339,3 +339,13 @@ foreach(profile p256 mldsa65)
     set_tests_properties(pki_owned_der_source_without_root_${profile} PROPERTIES TIMEOUT 90
         ENVIRONMENT "WENDY_TLS_OWNED_STREAM=1;WENDY_TLS_OWNED_ONLY=1;WENDY_TLS_SCOPED_OWNER=1;WENDY_TLS_SOURCE_ROOT_OMITTED=1")
 endforeach()
+
+# Normal random RFC3161 nonce integer shapes, including sign/zero padding.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_executable(time_nonce_success_test time_nonce_success_test.c)
+target_link_libraries(time_nonce_success_test PRIVATE pki)
+target_compile_options(time_nonce_success_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME pki_time_nonce_normal COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_LIST_DIR}/time_nonce_success.py" "${GO_EXECUTABLE}"
+    "${CMAKE_CURRENT_LIST_DIR}/public_time_fixtures.go" "$<TARGET_FILE:time_nonce_success_test>")
+set_tests_properties(pki_time_nonce_normal PROPERTIES TIMEOUT 240)
