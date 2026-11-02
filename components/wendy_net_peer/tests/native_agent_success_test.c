@@ -291,6 +291,20 @@ static int begin(void)
     wendy_net_agent_accept(fds[0]);
     wendy_net_agent_poll();
     assert(flows && flows->state.lent && cpu_callback);
+    /* An operator can disappear without a TCP FIN when its userspace mesh
+     * router exits. Such peers must not retain every native management slot
+     * until certificate expiry. Healthy idle peers still answer TCP probes. */
+    int enabled = 0, idle = 0, interval = 0, probes = 0;
+    socklen_t size = sizeof enabled;
+    assert(!getsockopt(flows->fd, SOL_SOCKET, SO_KEEPALIVE, &enabled, &size) && enabled);
+#ifdef TCP_KEEPIDLE
+    assert(!getsockopt(flows->fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, &size));
+#else
+    assert(!getsockopt(flows->fd, IPPROTO_TCP, TCP_KEEPALIVE, &idle, &size));
+#endif
+    assert(!getsockopt(flows->fd, IPPROTO_TCP, TCP_KEEPINTVL, &interval, &size));
+    assert(!getsockopt(flows->fd, IPPROTO_TCP, TCP_KEEPCNT, &probes, &size));
+    assert(idle > 0 && interval > 0 && probes > 0 && idle + interval * probes <= 30);
     return fds[1];
 }
 static void handshake(void)
@@ -460,7 +474,7 @@ int main(void)
                     have = (size_t)n;
                 } else
                     assert(n == -2);
-            }
+        }
             if (offset < have) {
                 ssize_t n = com_ops->write(com_context, echo + offset, have - offset);
                 if (n > 0)
@@ -490,7 +504,7 @@ int main(void)
             else {
                 struct pollfd wait = {.fd = client, .events = POLLIN};
                 (void)poll(&wait, 1, 1);
-            }
+        }
         }
         assert(got == 4 && !memcmp(tail, "tail", 4));
         stop();
