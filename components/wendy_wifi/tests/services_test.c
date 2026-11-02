@@ -24,6 +24,7 @@ static bool replay_stale_control, deinit_on_control_wait, replace_on_control_wai
 static TickType_t test_ticks;
 static TickType_t stale_ack_elapsed, last_control_wait_ticks;
 static unsigned driver_starts, station_start_events, credential_saves;
+static unsigned power_save_disables;
 static const char *access_point_ssid, *conf_ssid, *conf_password;
 static bool cancel_retry_with_ip, cancel_retry_with_deinit;
 static unsigned connect_calls, connect_failures, reconnect_waits, restore_after_waits;
@@ -241,6 +242,12 @@ esp_err_t esp_wifi_stop(void)
     driver_started = driver_event_pending = false;
     return ESP_OK;
 }
+esp_err_t esp_wifi_set_ps(int mode)
+{
+    assert(driver_started && mode == WIFI_PS_NONE);
+    power_save_disables++;
+    return ESP_OK;
+}
 esp_err_t esp_wifi_deinit(void) { return ESP_OK; }
 esp_err_t nvs_open(const char *name, int mode, nvs_handle_t *handle) { *handle = 1; return ESP_OK; }
 esp_err_t nvs_get_str(nvs_handle_t handle, const char *name, char *out, size_t *size)
@@ -317,6 +324,7 @@ static void reset_test(void)
     test_ticks = 0;
     stale_ack_elapsed = last_control_wait_ticks = 0;
     driver_starts = station_start_events = credential_saves = 0;
+    power_save_disables = 0;
     access_point_ssid = NULL;
     conf_ssid = conf_password = "";
     cancel_retry_with_ip = cancel_retry_with_deinit = false;
@@ -462,6 +470,11 @@ static void test_credential_fallback_connects_on_started_station(void)
         assert(wendy_wifi_init() == ESP_OK);
         assert(wendy_wifi_is_connected());
         assert(driver_starts == 2 && station_start_events == 2);
+#if CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3
+        assert(power_save_disables == 2);
+#else
+        assert(power_save_disables == 0);
+#endif
         assert(connect_calls == (failure ? 2 : 7));
         assert(!strcmp((const char *)last_config.sta.ssid, conf_ssid));
         assert(!strcmp((const char *)last_config.sta.password, conf_password));

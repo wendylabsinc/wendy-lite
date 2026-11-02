@@ -236,6 +236,11 @@ static esp_err_t attempt_handoff(uint32_t request)
     err = esp_wifi_set_config(WIFI_IF_STA, &s_handoff_config);
     if (err == ESP_OK) err = esp_wifi_start();
     if (err == ESP_OK) {
+#if CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3
+        // A SensorLink camera is a continuous source: modem sleep adds beacon/DTIM
+        // waits between the TLS records that carry each frame.
+        ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+#endif
         s_connect_requested = true;
         ESP_LOGI(TAG, "connecting to WiFi SSID '%s'...", (char *)s_handoff_config.sta.ssid);
         ESP_LOGI(TAG, "WiFi security: minimum authmode=%u SAE PWE=%u",
@@ -263,14 +268,6 @@ static esp_err_t wifi_connect(const char *ssid, const char *password)
         strlcpy((char *)wifi_config.sta.password, password, sizeof(wifi_config.sta.password));
         wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
     }
-
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
-#if CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3
-    // A SensorLink camera is a continuous source: modem sleep adds beacon/DTIM
-    // waits between the TLS records that carry each frame.
-    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
-#endif
 
     ESP_LOGI(TAG, "connecting to WiFi SSID '%s'...", ssid);
     // Own the credentials before returning an error: the caller's buffers may
