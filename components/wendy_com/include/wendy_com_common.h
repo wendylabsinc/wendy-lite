@@ -13,7 +13,8 @@ extern "C" {
 
 struct wcom_bluetooth_power_delegate {
     WendyComResult (*get)(WendyComBluetoothPowerStatus *);
-    WendyComResult (*set)(const WendyComBluetoothPowerConfig *,WendyComBluetoothPowerStatus *,uint32_t *);
+    WendyComResult (*set)(const WendyComBluetoothPowerConfig *, WendyComBluetoothPowerStatus *,
+                          uint32_t *);
     void (*reply_complete)(uint32_t);
 };
 

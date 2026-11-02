@@ -13,8 +13,8 @@
 void wble_mesh_set_profile(unsigned profile);
 unsigned wble_mesh_profile(void);
 const char *wble_mesh_profile_name(void);
-int wble_mesh_profile_sync(void); /* host only, after synchronization */
-void wble_mesh_profile_connected(uint16_t handle); /* host only */
+int wble_mesh_profile_sync(void);                    /* host only, after synchronization */
+void wble_mesh_profile_connected(uint16_t handle);   /* host only */
 void wble_mesh_profile_event(const void *gap_event); /* host only */
 
 struct wble_mesh_pipe;

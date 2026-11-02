@@ -12,24 +12,31 @@ static int unknown_role = -1;
 static bool write_failure;
 static void (*commit_hook)(void);
 static unsigned writes;
-void wcom_cmd_set_bluetooth_power_delegate(const struct wcom_bluetooth_power_delegate *p) {
+void wcom_cmd_set_bluetooth_power_delegate(const struct wcom_bluetooth_power_delegate *p)
+{
     api = p;
 }
-esp_err_t nvs_flash_init(void) { return ESP_OK; }
-esp_err_t nvs_open(const char *n, int mode, nvs_handle_t *h) {
+esp_err_t nvs_flash_init(void)
+{
+    return ESP_OK;
+}
+esp_err_t nvs_open(const char *n, int mode, nvs_handle_t *h)
+{
     (void)n;
     (void)mode;
     *h = 1;
     return ESP_OK;
 }
-esp_err_t nvs_get_blob(nvs_handle_t h, const char *n, void *p, size_t *s) {
+esp_err_t nvs_get_blob(nvs_handle_t h, const char *n, void *p, size_t *s)
+{
     (void)h;
     (void)n;
     (void)p;
     (void)s;
     return ESP_FAIL;
 }
-esp_err_t nvs_set_blob(nvs_handle_t h, const char *n, const void *p, size_t s) {
+esp_err_t nvs_set_blob(nvs_handle_t h, const char *n, const void *p, size_t s)
+{
     (void)h;
     (void)n;
     (void)p;
@@ -37,7 +44,8 @@ esp_err_t nvs_set_blob(nvs_handle_t h, const char *n, const void *p, size_t s) {
     writes++;
     return write_failure ? ESP_FAIL : ESP_OK;
 }
-esp_err_t nvs_commit(nvs_handle_t h) {
+esp_err_t nvs_commit(nvs_handle_t h)
+{
     (void)h;
     if (commit_hook) {
         void (*f)(void) = commit_hook;
@@ -46,18 +54,24 @@ esp_err_t nvs_commit(nvs_handle_t h) {
     }
     return ESP_OK;
 }
-void nvs_close(nvs_handle_t h) { (void)h; }
+void nvs_close(nvs_handle_t h)
+{
+    (void)h;
+}
 esp_err_t esp_ble_tx_power_set_enhanced(esp_ble_enhanced_power_type_t role, uint16_t h,
-                                        esp_power_level_t p) {
+                                        esp_power_level_t p)
+{
     assert(h < 8);
     powers[role][h] = p;
     return ESP_OK;
 }
-esp_power_level_t esp_ble_tx_power_get_enhanced(esp_ble_enhanced_power_type_t role, uint16_t h) {
+esp_power_level_t esp_ble_tx_power_get_enhanced(esp_ble_enhanced_power_type_t role, uint16_t h)
+{
     return (int)role == unknown_role ? (esp_power_level_t)255 : powers[role][h];
 }
 int ble_gap_event_listener_register(struct ble_gap_event_listener *p,
-                                    int (*f)(struct ble_gap_event *, void *), void *a) {
+                                    int (*f)(struct ble_gap_event *, void *), void *a)
+{
     (void)f;
     (void)a;
     if (p->registered)
@@ -65,43 +79,54 @@ int ble_gap_event_listener_register(struct ble_gap_event_listener *p,
     p->registered = 1;
     return 0;
 }
-int ble_gap_read_le_phy(uint16_t h, uint8_t *tx, uint8_t *rx) {
+int ble_gap_read_le_phy(uint16_t h, uint8_t *tx, uint8_t *rx)
+{
     (void)h;
     *tx = *rx = 1;
     return 0;
 }
-struct ble_npl_eventq *nimble_port_get_dflt_eventq(void) { return &queue; }
-void ble_npl_event_init(struct ble_npl_event *e, void (*f)(struct ble_npl_event *), void *a) {
+struct ble_npl_eventq *nimble_port_get_dflt_eventq(void)
+{
+    return &queue;
+}
+void ble_npl_event_init(struct ble_npl_event *e, void (*f)(struct ble_npl_event *), void *a)
+{
     (void)a;
     e->fn = f;
 }
-void ble_npl_eventq_put(struct ble_npl_eventq *q, struct ble_npl_event *e) {
+void ble_npl_eventq_put(struct ble_npl_eventq *q, struct ble_npl_event *e)
+{
     assert(!q->queued || q->queued == e);
     q->queued = e;
 }
-void ble_npl_eventq_remove(struct ble_npl_eventq *q, struct ble_npl_event *e) {
+void ble_npl_eventq_remove(struct ble_npl_eventq *q, struct ble_npl_event *e)
+{
     if (q->queued == e)
         q->queued = NULL;
 }
-static void pump(void) {
+static void pump(void)
+{
     assert(queue.queued);
     struct ble_npl_event *e = queue.queued;
     queue.queued = NULL;
     e->fn(e);
 }
-static WendyComBluetoothPowerConfig config(int adv, int conn) {
+static WendyComBluetoothPowerConfig config(int adv, int conn)
+{
     return (WendyComBluetoothPowerConfig){
         .has_advertising = true,
         .has_connections = true,
         .advertising = {.mode = WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_DBM, .dbm = adv},
         .connections = {.mode = WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_DBM, .dbm = conn}};
 }
-static WendyComBluetoothPowerStatus status(void) {
+static WendyComBluetoothPowerStatus status(void)
+{
     WendyComBluetoothPowerStatus s;
     assert(api->get(&s) == 0);
     return s;
 }
-static void reset_during_save(void) {
+static void reset_during_save(void)
+{
     wendy_ble_power_host_reset();
     uint32_t token;
     WendyComBluetoothPowerStatus s;
@@ -111,11 +136,14 @@ static void reset_during_save(void) {
     assert(status().pending);
     assert(wendy_ble_power_advertising_request() == 12);
 }
-int main(void) {
+int main(void)
+{
     wendy_ble_power_init();
     assert(api);
-    assert(status().desired.advertising.mode == WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_DEFAULT);
-    assert(status().desired.connections.mode == WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_DEFAULT);
+    assert(status().desired.advertising.mode ==
+           WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_DEFAULT);
+    assert(status().desired.connections.mode ==
+           WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_DEFAULT);
     assert(writes == 0);
 #ifdef CONFIG_BT_LE_DFT_TX_POWER_LEVEL_DBM_EFF
     const int default_dbm = CONFIG_BT_LE_DFT_TX_POWER_LEVEL_DBM_EFF;
@@ -133,7 +161,8 @@ int main(void) {
     WendyComBluetoothPowerStatus s;
     uint32_t token, other;
     WendyComBluetoothPowerConfig explicit_power = {
-        .has_advertising = true, .has_connections = true,
+        .has_advertising = true,
+        .has_connections = true,
         .advertising = {.mode = WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_MAXIMUM},
         .connections = {.mode = WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_MAXIMUM}};
     assert(api->set(&explicit_power, &s, &token) == 0 && token);
@@ -146,7 +175,8 @@ int main(void) {
     assert(api->set(&explicit_power, &s, &token) == 0 && token);
     api->reply_complete(token);
     pump();
-    assert(status().advertising_dbm == default_dbm && status().connection_default_dbm == default_dbm);
+    assert(status().advertising_dbm == default_dbm &&
+           status().connection_default_dbm == default_dbm);
     WendyComBluetoothPowerConfig c = config(-5, 9);
     assert(api->set(&c, &s, &token) == 0 && token && s.pending);
     assert(wendy_ble_power_advertising_request() == default_dbm);

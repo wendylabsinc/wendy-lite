@@ -39,7 +39,8 @@ static struct ble_npl_event apply_event;
 static bool event_initialized;
 static struct ble_gap_event_listener power_listener;
 #endif
-static int selected(WendyComBluetoothPowerSetting setting) {
+static int selected(WendyComBluetoothPowerSetting setting)
+{
     if (setting.mode == WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_MAXIMUM)
         return 20;
     if (setting.mode == WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_DEFAULT) {
@@ -55,7 +56,8 @@ static int selected(WendyComBluetoothPowerSetting setting) {
             value = levels[i];
     return value;
 }
-static bool valid(WendyComBluetoothPowerSetting *setting) {
+static bool valid(WendyComBluetoothPowerSetting *setting)
+{
     if ((unsigned)setting->mode > WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_DBM)
         return false;
     if (setting->mode != WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_DBM) {
@@ -64,11 +66,13 @@ static bool valid(WendyComBluetoothPowerSetting *setting) {
     }
     return setting->dbm >= -15 && setting->dbm <= 20;
 }
-static bool same(const WendyComBluetoothPowerConfig *a, const WendyComBluetoothPowerConfig *b) {
+static bool same(const WendyComBluetoothPowerConfig *a, const WendyComBluetoothPowerConfig *b)
+{
     return a->advertising.mode == b->advertising.mode && a->advertising.dbm == b->advertising.dbm &&
            a->connections.mode == b->connections.mode && a->connections.dbm == b->connections.dbm;
 }
-static WendyComResult get(WendyComBluetoothPowerStatus *out) {
+static WendyComResult get(WendyComBluetoothPowerStatus *out)
+{
     pthread_mutex_lock(&lock);
     *out = state;
     out->available = atomic_load(&online);
@@ -76,7 +80,8 @@ static WendyComResult get(WendyComBluetoothPowerStatus *out) {
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 static WendyComResult set(const WendyComBluetoothPowerConfig *input,
-                          WendyComBluetoothPowerStatus *out, uint32_t *token) {
+                          WendyComBluetoothPowerStatus *out, uint32_t *token)
+{
     *token = 0;
     WendyComBluetoothPowerConfig config = *input;
     if (!POWER_SUPPORTED || (!config.has_advertising && !config.has_connections) ||
@@ -148,17 +153,20 @@ static WendyComResult set(const WendyComBluetoothPowerConfig *input,
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 #if POWER_SUPPORTED
-static esp_power_level_t power_level(int dbm) {
+static esp_power_level_t power_level(int dbm)
+{
     return dbm == 20 ? ESP_PWR_LVL_P20 : (esp_power_level_t)((int)ESP_PWR_LVL_N0 + dbm / 3);
 }
-static int power_dbm(esp_power_level_t level) {
+static int power_dbm(esp_power_level_t level)
+{
     if (level == ESP_PWR_LVL_P20)
         return 20;
     if (level >= ESP_PWR_LVL_N15 && level <= ESP_PWR_LVL_P18)
         return ((int)level - (int)ESP_PWR_LVL_N0) * 3;
     return -127;
 }
-static int apply_controller(const WendyComBluetoothPowerConfig *config) {
+static int apply_controller(const WendyComBluetoothPowerConfig *config)
+{
     static const esp_ble_enhanced_power_type_t roles[] = {ESP_BLE_ENHANCED_PWR_TYPE_DEFAULT,
                                                           ESP_BLE_ENHANCED_PWR_TYPE_SCAN,
                                                           ESP_BLE_ENHANCED_PWR_TYPE_INIT};
@@ -181,7 +189,8 @@ static int apply_controller(const WendyComBluetoothPowerConfig *config) {
     }
     return 0;
 }
-static void apply(struct ble_npl_event *event) {
+static void apply(struct ble_npl_event *event)
+{
     (void)event;
     WendyComBluetoothPowerConfig desired;
     pthread_mutex_lock(&lock);
@@ -222,7 +231,8 @@ static void apply(struct ble_npl_event *event) {
     pthread_mutex_unlock(&lock);
 }
 #endif
-static void reply_complete(uint32_t token) {
+static void reply_complete(uint32_t token)
+{
     pthread_mutex_lock(&lock);
     bool ready = waiting_token && token == waiting_token;
     if (ready)
@@ -235,7 +245,8 @@ static void reply_complete(uint32_t token) {
     (void)ready;
 #endif
 }
-static void initialize(void) {
+static void initialize(void)
+{
     state = (WendyComBluetoothPowerStatus)WendyComBluetoothPowerStatus_init_zero;
     state.has_desired = true;
     state.desired.has_advertising = state.desired.has_connections = true;
@@ -276,11 +287,15 @@ static void initialize(void) {
         .get = get, .set = set, .reply_complete = reply_complete};
     wcom_cmd_set_bluetooth_power_delegate(&delegate);
 }
-void wendy_ble_power_init(void) { pthread_once(&initialized, initialize); }
+void wendy_ble_power_init(void)
+{
+    pthread_once(&initialized, initialize);
+}
 #if POWER_SUPPORTED
 /* One host listener covers management, mesh and guest-created physical links.
  */
-static int power_gap_event(struct ble_gap_event *event, void *arg) {
+static int power_gap_event(struct ble_gap_event *event, void *arg)
+{
     (void)arg;
     switch (event->type) {
     case BLE_GAP_EVENT_CONNECT:
@@ -301,7 +316,8 @@ static int power_gap_event(struct ble_gap_event *event, void *arg) {
     return 0;
 }
 #endif
-int wendy_ble_power_host_sync(void) {
+int wendy_ble_power_host_sync(void)
+{
 #if POWER_SUPPORTED
     /* NPL callbacks are installed by nimble_port_init, after policy init. */
     if (!event_initialized) {
@@ -333,7 +349,8 @@ int wendy_ble_power_host_sync(void) {
 #endif
     return 0;
 }
-void wendy_ble_power_host_reset(void) {
+void wendy_ble_power_host_reset(void)
+{
 #if POWER_SUPPORTED
     if (event_initialized)
         ble_npl_eventq_remove(nimble_port_get_dflt_eventq(), &apply_event);
@@ -349,7 +366,8 @@ void wendy_ble_power_host_reset(void) {
     state.pending = saving || waiting_token != 0;
     pthread_mutex_unlock(&lock);
 }
-int8_t wendy_ble_power_advertising_request(void) {
+int8_t wendy_ble_power_advertising_request(void)
+{
     if (!POWER_SUPPORTED)
         return 127;
     pthread_mutex_lock(&lock);
@@ -357,14 +375,16 @@ int8_t wendy_ble_power_advertising_request(void) {
     pthread_mutex_unlock(&lock);
     return (int8_t)power;
 }
-void wendy_ble_power_advertising_selected(int8_t actual) {
+void wendy_ble_power_advertising_selected(int8_t actual)
+{
     pthread_mutex_lock(&lock);
     state.advertising_known = actual >= -15 && actual <= 20;
     state.advertising_dbm = actual;
 
     pthread_mutex_unlock(&lock);
 }
-void wendy_ble_power_connected(uint16_t handle) {
+void wendy_ble_power_connected(uint16_t handle)
+{
 #if POWER_SUPPORTED
     pthread_mutex_lock(&lock);
     int target = selected(active.connections);
@@ -399,7 +419,8 @@ void wendy_ble_power_connected(uint16_t handle) {
     (void)handle;
 #endif
 }
-void wendy_ble_power_disconnected(uint16_t handle) {
+void wendy_ble_power_disconnected(uint16_t handle)
+{
     pthread_mutex_lock(&lock);
     for (unsigned i = 0; i < state.connections_count; i++)
         if (state.connections[i].handle == handle) {
@@ -411,7 +432,8 @@ void wendy_ble_power_disconnected(uint16_t handle) {
     pthread_mutex_unlock(&lock);
 }
 
-void wendy_ble_power_phy_updated(uint16_t handle, uint8_t tx, uint8_t rx) {
+void wendy_ble_power_phy_updated(uint16_t handle, uint8_t tx, uint8_t rx)
+{
     pthread_mutex_lock(&lock);
     for (unsigned i = 0; i < state.connections_count; i++)
         if (state.connections[i].handle == handle) {
@@ -422,7 +444,8 @@ void wendy_ble_power_phy_updated(uint16_t handle, uint8_t tx, uint8_t rx) {
     pthread_mutex_unlock(&lock);
 }
 
-static int apply_advertising_set(uint8_t instance) {
+static int apply_advertising_set(uint8_t instance)
+{
 #if POWER_SUPPORTED
     int target = wendy_ble_power_advertising_request();
     esp_err_t result =
@@ -439,7 +462,8 @@ static int apply_advertising_set(uint8_t instance) {
 #endif
     return 0;
 }
-int wendy_ble_power_advertising_add(uint8_t instance) {
+int wendy_ble_power_advertising_add(uint8_t instance)
+{
     if (instance >= 8)
         return -1;
     pthread_mutex_lock(&lock);
@@ -447,14 +471,16 @@ int wendy_ble_power_advertising_add(uint8_t instance) {
     pthread_mutex_unlock(&lock);
     return apply_advertising_set(instance);
 }
-void wendy_ble_power_advertising_remove(uint8_t instance) {
+void wendy_ble_power_advertising_remove(uint8_t instance)
+{
     if (!instance || instance >= 8)
         return;
     pthread_mutex_lock(&lock);
     advertising_sets &= (uint8_t)~(1u << instance);
     pthread_mutex_unlock(&lock);
 }
-int wendy_ble_power_apply_advertising(void) {
+int wendy_ble_power_apply_advertising(void)
+{
     pthread_mutex_lock(&lock);
     uint8_t sets = advertising_sets;
     pthread_mutex_unlock(&lock);
@@ -466,7 +492,8 @@ int wendy_ble_power_apply_advertising(void) {
 
 /* Called only after the advertising owner successfully starts its set. During
  * a live change the apply event commits after all connection updates too. */
-void wendy_ble_power_advertising_started(void) {
+void wendy_ble_power_advertising_started(void)
+{
     pthread_mutex_lock(&lock);
     if (!state.pending && !state.error[0] && state.advertising_known &&
         state.connection_default_known && same(&active, &state.desired) &&

@@ -35,7 +35,8 @@ static uint32_t s_connect_handler_id = 0;
 
 /* ── GAP event callback ───────────────────────────────────────────────── */
 
-static int ble_gap_event(struct ble_gap_event *event, void *arg) {
+static int ble_gap_event(struct ble_gap_event *event, void *arg)
+{
     switch (event->type) {
     case BLE_GAP_EVENT_CONNECT:
         ESP_LOGI(TAG, "connect event: status=%d handle=%d", event->connect.status,
@@ -95,7 +96,8 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
  * Brings up the shared NimBLE stack through wendy_ble, which owns it. The
  * transport normally started it at boot already, in which case this is a
  * no-op that just marks the guest API usable. */
-static int ble_init_wrapper(wasm_exec_env_t exec_env) {
+static int ble_init_wrapper(wasm_exec_env_t exec_env)
+{
     if (wendy_ble_host_init() != ESP_OK)
         return -1;
     s_ble_initialized = true;
@@ -103,7 +105,8 @@ static int ble_init_wrapper(wasm_exec_env_t exec_env) {
 }
 
 /* ble_advertise_start(name_ptr, name_len) -> 0 ok */
-static int ble_advertise_start_wrapper(wasm_exec_env_t exec_env, const char *name, int name_len) {
+static int ble_advertise_start_wrapper(wasm_exec_env_t exec_env, const char *name, int name_len)
+{
     if (!s_ble_initialized)
         return -1;
 
@@ -193,7 +196,8 @@ static int ble_advertise_start_wrapper(wasm_exec_env_t exec_env, const char *nam
 }
 
 /* ble_advertise_stop() -> 0 ok */
-static int ble_advertise_stop_wrapper(wasm_exec_env_t exec_env) {
+static int ble_advertise_stop_wrapper(wasm_exec_env_t exec_env)
+{
     if (!s_ble_initialized)
         return -1;
 #if CONFIG_BT_NIMBLE_EXT_ADV
@@ -211,7 +215,8 @@ static int ble_advertise_stop_wrapper(wasm_exec_env_t exec_env) {
 }
 
 /* ble_scan_start(duration_ms, handler_id) -> 0 ok */
-static int ble_scan_start_wrapper(wasm_exec_env_t exec_env, int duration_ms, int handler_id) {
+static int ble_scan_start_wrapper(wasm_exec_env_t exec_env, int duration_ms, int handler_id)
+{
     if (!s_ble_initialized)
         return -1;
 
@@ -231,7 +236,8 @@ static int ble_scan_start_wrapper(wasm_exec_env_t exec_env, int duration_ms, int
 }
 
 /* ble_scan_stop() -> 0 ok */
-static int ble_scan_stop_wrapper(wasm_exec_env_t exec_env) {
+static int ble_scan_stop_wrapper(wasm_exec_env_t exec_env)
+{
     if (!s_ble_initialized)
         return -1;
     int rc = ble_gap_disc_cancel();
@@ -241,7 +247,8 @@ static int ble_scan_stop_wrapper(wasm_exec_env_t exec_env) {
 
 /* ble_connect(addr_type, addr_ptr, addr_len, handler_id) -> 0 ok */
 static int ble_connect_wrapper(wasm_exec_env_t exec_env, int addr_type, const char *addr,
-                               int addr_len, int handler_id) {
+                               int addr_len, int handler_id)
+{
     if (!s_ble_initialized || !addr || addr_len < 6) return -1;
 
     s_connect_handler_id = (uint32_t)handler_id;

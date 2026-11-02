@@ -14,13 +14,21 @@ static const char *TAG = "net-phy";
 #if CONFIG_IDF_TARGET_ESP32C5 || CONFIG_IDF_TARGET_ESP32C6
 extern void esp_ble_switch_phy_coded(bool phy_500k);
 #endif
-void wble_mesh_set_profile(unsigned value) { atomic_store(&selected, value); }
-unsigned wble_mesh_profile(void) { return atomic_load(&selected); }
-const char *wble_mesh_profile_name(void) {
+void wble_mesh_set_profile(unsigned value)
+{
+    atomic_store(&selected, value);
+}
+unsigned wble_mesh_profile(void)
+{
+    return atomic_load(&selected);
+}
+const char *wble_mesh_profile_name(void)
+{
     unsigned p = wble_mesh_profile();
     return p == 1 ? "coded-s2" : p == 2 ? "coded-s8" : "normal";
 }
-int wble_mesh_profile_sync(void) {
+int wble_mesh_profile_sync(void)
+{
     unsigned p = wble_mesh_profile();
     if (p > 2)
         return BLE_HS_ENOTSUP;
@@ -48,7 +56,8 @@ int wble_mesh_profile_sync(void) {
     return rc;
 #endif
 }
-void wble_mesh_profile_connected(uint16_t handle) {
+void wble_mesh_profile_connected(uint16_t handle)
+{
     unsigned p = wble_mesh_profile();
     uint8_t phy = p ? BLE_GAP_LE_PHY_CODED_MASK : BLE_GAP_LE_PHY_1M_MASK;
     int rc = ble_gap_set_prefered_le_phy(handle, phy, phy,
@@ -62,7 +71,8 @@ void wble_mesh_profile_connected(uint16_t handle) {
              "actual_rx=%u",
              handle, wble_mesh_profile_name(), rc, read, tx, rx);
 }
-void wble_mesh_profile_event(const void *value) {
+void wble_mesh_profile_event(const void *value)
+{
     const struct ble_gap_event *e = value;
     if (e->type == BLE_GAP_EVENT_PHY_UPDATE_COMPLETE) {
         ESP_LOGI(TAG,

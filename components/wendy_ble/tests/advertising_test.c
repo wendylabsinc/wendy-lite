@@ -2,9 +2,18 @@
 // the firmware code. No scheduler or radio runs in these host tests.
 #include <stdint.h>
 #if CONFIG_WENDY_NET_BLE
-void wble_mesh_profile_event(const void *event){(void)event;}
-void wble_mesh_profile_connected(uint16_t handle){(void)handle;}
-int wble_mesh_profile_sync(void){return 0;}
+void wble_mesh_profile_event(const void *event)
+{
+    (void)event;
+}
+void wble_mesh_profile_connected(uint16_t handle)
+{
+    (void)handle;
+}
+int wble_mesh_profile_sync(void)
+{
+    return 0;
+}
 #endif
 #include "../src/wendy_ble.c"
 

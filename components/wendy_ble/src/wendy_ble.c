@@ -305,21 +305,34 @@ static int _start_advertising(bool quiet_capacity);
 #define _radio_profile wble_mesh_profile
 #define _radio_profile_name wble_mesh_profile_name
 #else
-static unsigned _radio_profile(void){return 0;}
-static const char *_radio_profile_name(void){return "normal";}
+static unsigned _radio_profile(void)
+{
+    return 0;
+}
+static const char *_radio_profile_name(void)
+{
+    return "normal";
+}
 #endif
 static bool _ext_configured;
-static int _set_adv_data(const void *data,size_t size,bool response)
+static int _set_adv_data(const void *data, size_t size, bool response)
 {
-    struct os_mbuf *buffer=ble_hs_mbuf_from_flat(data,size);
-    if(!buffer)return BLE_HS_ENOMEM;
-    return response ? ble_gap_ext_adv_rsp_set_data(0,buffer):ble_gap_ext_adv_set_data(0,buffer);
+    struct os_mbuf *buffer = ble_hs_mbuf_from_flat(data, size);
+    if (!buffer)
+        return BLE_HS_ENOMEM;
+    return response ? ble_gap_ext_adv_rsp_set_data(0, buffer) : ble_gap_ext_adv_set_data(0, buffer);
 }
 #if CONFIG_WENDY_NET_BLE
-static bool _advertising_active(void){return ble_gap_ext_adv_active(0);}
+static bool _advertising_active(void)
+{
+    return ble_gap_ext_adv_active(0);
+}
 #endif
 #elif CONFIG_WENDY_NET_BLE
-static bool _advertising_active(void){return ble_gap_adv_active();}
+static bool _advertising_active(void)
+{
+    return ble_gap_adv_active();
+}
 #endif
 
 static int _primary_advertisement(bool mesh)
@@ -329,11 +342,11 @@ static int _primary_advertisement(bool mesh)
     portENTER_CRITICAL(&_mesh_adv_lock);
     size=_mesh_advertisement_size;memcpy(bytes,_mesh_advertisement,size);
     portEXIT_CRITICAL(&_mesh_adv_lock);
-    if(mesh && size){
+    if (mesh && size) {
 #if CONFIG_BT_NIMBLE_EXT_ADV
-        return _set_adv_data(bytes,size,false);
+        return _set_adv_data(bytes, size, false);
 #else
-        return ble_gap_adv_set_data(bytes,size);
+        return ble_gap_adv_set_data(bytes, size);
 #endif
     }
 #else
@@ -343,9 +356,9 @@ static int _primary_advertisement(bool mesh)
     adv.flags=BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     adv.uuids128=&_uuid_svc;adv.num_uuids128=1;adv.uuids128_is_complete=1;
 #if CONFIG_BT_NIMBLE_EXT_ADV
-    uint8_t data[31],length=0;
-    int rc=ble_hs_adv_set_fields(&adv,data,&length,sizeof data);
-    return rc ? rc:_set_adv_data(data,length,false);
+    uint8_t data[31], length = 0;
+    int rc = ble_hs_adv_set_fields(&adv, data, &length, sizeof data);
+    return rc ? rc : _set_adv_data(data, length, false);
 #else
     return ble_gap_adv_set_fields(&adv);
 #endif
@@ -364,13 +377,13 @@ static void _mesh_adv_refresh(struct ble_npl_event *event)
      * that outgoing link's disconnect belongs to a different callback. Reuse
      * this existing host event/timer to recover, with no new state or worker. */
     if(enabled)_incoming_retire();
-    if(enabled && !_advertising_active()){
+    if (enabled && !_advertising_active()) {
         _start_advertising(true);
         /* No public SDK connection-capacity count includes pending GAPs.
          * Slow stopped retries (and SDK HCI diagnostics) while capacity is
          * unavailable; successful recovery restores ordinary payload rotation. */
-        esp_err_t restarted=esp_timer_restart(_mesh_adv_timer,
-            _advertising_active() ? 500000:5000000);
+        esp_err_t restarted =
+            esp_timer_restart(_mesh_adv_timer, _advertising_active() ? 500000 : 5000000);
         if(restarted!=ESP_OK)ESP_LOGW(TAG,"advertisement retry timer failed: %s",esp_err_to_name(restarted));
     }
     _mesh_turn=enabled && !_mesh_turn;
@@ -429,27 +442,42 @@ static int _start_advertising(bool quiet_capacity)
 
     int rc;
 #if CONFIG_BT_NIMBLE_EXT_ADV
-    if(!_ext_configured){
-        unsigned profile=_radio_profile();
-        struct ble_gap_ext_adv_params ext={.connectable=1,
-            .scannable=profile==0,.legacy_pdu=profile==0,
-            .own_addr_type=_own_addr_type,.primary_phy=profile ? 3:1,
-            .secondary_phy=profile ? 3:1,.sid=0,
-            .tx_power=wendy_ble_power_advertising_request(),
-            .itvl_min=BLE_GAP_ADV_ITVL_MS(profile ? 250:ADV_ITVL_MIN_MS),
-            .itvl_max=BLE_GAP_ADV_ITVL_MS(profile ? 300:ADV_ITVL_MAX_MS),
+    if (!_ext_configured) {
+        unsigned profile = _radio_profile();
+        struct ble_gap_ext_adv_params ext = {
+            .connectable = 1,
+            .scannable = profile == 0,
+            .legacy_pdu = profile == 0,
+            .own_addr_type = _own_addr_type,
+            .primary_phy = profile ? 3 : 1,
+            .secondary_phy = profile ? 3 : 1,
+            .sid = 0,
+            .tx_power = wendy_ble_power_advertising_request(),
+            .itvl_min = BLE_GAP_ADV_ITVL_MS(profile ? 250 : ADV_ITVL_MIN_MS),
+            .itvl_max = BLE_GAP_ADV_ITVL_MS(profile ? 300 : ADV_ITVL_MAX_MS),
 #if CONFIG_BT_NIMBLE_EXT_ADV_V2
-            .primary_phy_opt=profile==1 ? 3:profile==2 ? 4:0,
-            .secondary_phy_opt=profile==1 ? 3:profile==2 ? 4:0,
+            .primary_phy_opt = profile == 1   ? 3
+                               : profile == 2 ? 4
+                                              : 0,
+            .secondary_phy_opt = profile == 1   ? 3
+                                 : profile == 2 ? 4
+                                                : 0,
 #endif
         };
-        int8_t power=0;
-        rc=ble_gap_ext_adv_configure(0,&ext,&power,_gap_event,NULL);
-        ESP_LOGI(TAG,"radio advertisement profile=%s primary=%u secondary=%u required_coding=%u power=%d rc=%d",
-            _radio_profile_name(),ext.primary_phy,ext.secondary_phy,profile==1 ? 3:profile==2 ? 4:0,power,rc);
-        if(rc)return rc;
+        int8_t power = 0;
+        rc = ble_gap_ext_adv_configure(0, &ext, &power, _gap_event, NULL);
+        ESP_LOGI(
+            TAG,
+            "radio advertisement profile=%s primary=%u secondary=%u required_coding=%u power=%d rc=%d",
+            _radio_profile_name(), ext.primary_phy, ext.secondary_phy,
+            profile == 1   ? 3
+            : profile == 2 ? 4
+                           : 0,
+            power, rc);
+        if (rc)
+            return rc;
         wendy_ble_power_advertising_selected(power);
-        _ext_configured=true;
+        _ext_configured = true;
     }
 #endif
     rc = _primary_advertisement(false);
@@ -478,11 +506,13 @@ static int _start_advertising(bool quiet_capacity)
 #if CONFIG_BT_NIMBLE_EXT_ADV
     /* Connectable extended advertisements cannot be scannable. The GATT
      * identity remains available; legacy normal mode retains scan response. */
-    if(!_radio_profile()){
-        uint8_t bytes[31],size=0;
-        rc=ble_hs_adv_set_fields(&rsp,bytes,&size,sizeof bytes);
-        if(!rc)rc=_set_adv_data(bytes,size,true);
-    }else rc=0;
+    if (!_radio_profile()) {
+        uint8_t bytes[31], size = 0;
+        rc = ble_hs_adv_set_fields(&rsp, bytes, &size, sizeof bytes);
+        if (!rc)
+            rc = _set_adv_data(bytes, size, true);
+    } else
+        rc = 0;
 #else
     rc = ble_gap_adv_rsp_set_fields(&rsp);
 #endif
@@ -492,10 +522,11 @@ static int _start_advertising(bool quiet_capacity)
     }
 
 #if CONFIG_BT_NIMBLE_EXT_ADV
-    rc=ble_gap_ext_adv_start(0,0,0);
+    rc = ble_gap_ext_adv_start(0, 0, 0);
 #else
-    rc=wendy_ble_power_apply_advertising();
-    if(rc)return rc;
+    rc = wendy_ble_power_apply_advertising();
+    if (rc)
+        return rc;
     struct ble_gap_adv_params params = {
         .conn_mode = BLE_GAP_CONN_MODE_UND,
         .disc_mode = BLE_GAP_DISC_MODE_GEN,
@@ -531,7 +562,10 @@ static int _gap_event(struct ble_gap_event *event, void *arg)
             ESP_LOGI(TAG, "connect: status=%d handle=%d",
                      event->connect.status, event->connect.conn_handle);
 #if CONFIG_WENDY_NET_BLE
-            if(!event->connect.status){_incoming_connect(event->connect.conn_handle);wble_mesh_profile_connected(event->connect.conn_handle);}
+            if (!event->connect.status) {
+                _incoming_connect(event->connect.conn_handle);
+                wble_mesh_profile_connected(event->connect.conn_handle);
+            }
 #endif
             // A failed connect leaves advertising stopped; a successful one is
             // undirected connectable, so it stops too.
@@ -574,11 +608,15 @@ static void _on_sync(void)
         return;
     }
 
-    rc=wendy_ble_power_host_sync();
-    if(rc)ESP_LOGE(TAG,"Bluetooth power unavailable: %d",rc);
+    rc = wendy_ble_power_host_sync();
+    if (rc)
+        ESP_LOGE(TAG, "Bluetooth power unavailable: %d", rc);
 #if CONFIG_WENDY_NET_BLE
-    rc=wble_mesh_profile_sync();
-    if(rc){ESP_LOGE(TAG,"BLE profile unavailable: %d",rc);return;}
+    rc = wble_mesh_profile_sync();
+    if (rc) {
+        ESP_LOGE(TAG, "BLE profile unavailable: %d", rc);
+        return;
+    }
 #endif
     ESP_LOGI(TAG, "BLE host synced");
 
@@ -594,7 +632,7 @@ static void _on_reset(int reason)
     memset(_incoming_gaps,0,sizeof _incoming_gaps);
 #endif
 #if CONFIG_BT_NIMBLE_EXT_ADV
-    _ext_configured=false;
+    _ext_configured = false;
 #endif
 }
 
