@@ -82,6 +82,46 @@ static void deliver_normal(struct wnrs *session, const uint8_t *wire, size_t siz
     assert(!complete(session, &id, wire, size) && !session->operator_verification &&
            !wnrs_receive_paused(session));
 }
+static void operator_clock_fixture(struct wnrs_node *source, struct wno_entry *entry)
+{
+    struct wnrs_node node = {0};
+    node.core.ready = true;
+    node.core.operators = source->core.operators;
+    node.clock = source->clock;
+    struct wb_route route = {.prefix = {.family = 6, .bits = 128},
+                             .router = entry->origin.router_id,
+                             .seqno = entry->origin.seqno,
+                             .metric = 128};
+    memcpy(route.prefix.bytes, entry->address, 16);
+    node.core.babel.routes = &route;
+    node.core.babel.route_count = 1;
+    uint64_t generation = topology_clock_generation(&node, 2);
+    WendyComNetTopologyPage page = WendyComNetTopologyPage_init_zero;
+    assert(!wnrs_topology(&node, 0, 0, &page) && page.record.authorized);
+    wnt_page_release(&page);
+    node.clock.verified_seconds++;
+    node.clock.verified_monotonic_us += 1000000;
+    topology_clock_cursor(&node, generation, 0);
+    node.clock.verified_monotonic_us += 500;
+    topology_clock_cursor(&node, generation, 0);
+    assert(topology_clock_generation(&node, 2) == generation);
+    entry->deadline_us--; /* Real same-revision tightening still invalidates. */
+    topology_clock_cursor(&node, generation, 1);
+    entry->deadline_us++;
+    entry->revision++;
+    topology_clock_cursor(&node, generation, 1);
+    entry->revision--;
+    route.metric++;
+    topology_clock_cursor(&node, generation, 1);
+    route.metric--;
+    int64_t saved_clock = clock_us;
+    clock_us = entry->deadline_us;
+    topology_clock_cursor(&node, generation, 1);
+    assert(topology_clock_generation(&node, 1) != generation);
+    assert(!wnrs_topology(&node, 0, 0, &page) && !page.record.authorized);
+    wnt_page_release(&page);
+    clock_us = saved_clock;
+}
 int main(int argc, char **argv)
 {
     assert(argc == 4 || argc == 5 || argc == 8);
@@ -168,6 +208,7 @@ int main(int argc, char **argv)
     /* UI rows borrow the real typed identity during scans. Only the exported
   * selected page owns a copy; it survives ordinary receipt expiry. */
     struct wno_entry *entry = node->core.operators->entries;
+    operator_clock_fixture(node, entry);
     wendy_net_memory_snapshot_t before, after;
     wendy_net_runtime_memory_snapshot(&before);
     struct wnt_record_view view = {.record = WendyComNetTopologyRecord_init_zero};
