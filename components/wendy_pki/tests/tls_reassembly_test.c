@@ -13,16 +13,22 @@
 #include <string.h>
 
 static bool recycle_mode;
-struct recycled {unsigned char *bytes;size_t expected;};
-static int recycle_input(void *context,unsigned char *p,size_t size)
+struct recycled {
+    unsigned char *bytes;
+    size_t expected;
+};
+static int recycle_input(void *context, unsigned char *p, size_t size)
 {
-    struct recycled *saved=context;
-    for(size_t i=0;i<size;i++)assert(!p[i]);
-    if(size!=saved->expected)return 0;
-    assert(!saved->bytes);saved->bytes=p;return 1;
+    struct recycled *saved = context;
+    for (size_t i = 0; i < size; i++)
+        assert(!p[i]);
+    if (size != saved->expected)
+        return 0;
+    assert(!saved->bytes);
+    saved->bytes = p;
+    return 1;
 }
-struct input
-{
+struct input {
     uint8_t *bytes;
     size_t size, offset, calls;
 };
@@ -73,8 +79,7 @@ static int next(mbedtls_ssl_context *ssl)
 {
     int r;
     unsigned calls = 0;
-    do
-    {
+    do {
         r = mbedtls_ssl_read_record(ssl, 0);
         assert(++calls < 10000);
     } while (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE);
@@ -90,8 +95,7 @@ static void exercise(size_t first, size_t fragment, size_t following, size_t res
     if (following)
         message(b, following, MBEDTLS_SSL_HS_CERTIFICATE_VERIFY);
     size_t offset = 0;
-    while (first - offset > fragment)
-    {
+    while (first - offset > fragment) {
         append_record(&in, a + offset, fragment);
         offset += fragment;
     }
@@ -109,12 +113,16 @@ static void exercise(size_t first, size_t fragment, size_t following, size_t res
     mbedtls_ssl_config_init(&config);
     assert(!mbedtls_ssl_config_defaults(&config, MBEDTLS_SSL_IS_CLIENT,
                                         MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT));
-    struct recycled saved={.expected=reserve};
-    if(recycle_mode){config.wendy_input_recycle=recycle_input;config.wendy_input_recycle_context=&saved;}
+    struct recycled saved = {.expected = reserve};
+    if (recycle_mode) {
+        config.wendy_input_recycle = recycle_input;
+        config.wendy_input_recycle_context = &saved;
+    }
     unsigned char *original = NULL;
     if (reserve) {
         unsigned char *owned = calloc(1, reserve);
-        assert(owned); original = owned;
+        assert(owned);
+        original = owned;
         assert(!mbedtls_ssl_setup_with_preallocated_input(&ssl, &config, &owned, reserve));
         assert(!owned && ssl.in_buf == original && ssl.in_buf_len == reserve);
     } else {
@@ -131,20 +139,21 @@ static void exercise(size_t first, size_t fragment, size_t following, size_t res
     size_t allocated = ssl.in_buf_len;
     if (first == 25352 && !following)
         assert(allocated < 27000);
-    if (following)
-    {
+    if (following) {
         assert(!next(&ssl));
         assert(ssl.in_hslen == following && !memcmp(ssl.in_msg, b, following));
     }
     assert(in.offset == in.size);
-    if (reserve) assert(ssl.in_buf == original && ssl.in_buf_len == reserve);
-    if(recycle_mode){
+    if (reserve)
+        assert(ssl.in_buf == original && ssl.in_buf_len == reserve);
+    if (recycle_mode) {
         /* The fixture has consumed both complete messages; no application
          * pointer, partial record or handshake fragment remains live. */
-        ssl.state=MBEDTLS_SSL_HANDSHAKE_OVER;ssl.in_offt=NULL;
-        ssl.in_left=ssl.in_msglen=ssl.in_hsfraglen=ssl.in_hslen=0;
+        ssl.state = MBEDTLS_SSL_HANDSHAKE_OVER;
+        ssl.in_offt = NULL;
+        ssl.in_left = ssl.in_msglen = ssl.in_hsfraglen = ssl.in_hslen = 0;
         mbedtls_ssl_compact_input_buffer(&ssl);
-        assert(ssl.in_buf_len==2048 && saved.bytes==original);
+        assert(ssl.in_buf_len == 2048 && saved.bytes == original);
     }
     mbedtls_ssl_free(&ssl);
     free(saved.bytes);
@@ -184,49 +193,71 @@ static void rejection(bool oversized)
     mbedtls_ssl_config_free(&config);
     free(in.bytes);
 }
-struct pending_output {const uint8_t *expected;size_t size,sent,calls;};
-static int send_pending(void *context,const unsigned char *bytes,size_t size)
+struct pending_output {
+    const uint8_t *expected;
+    size_t size, sent, calls;
+};
+static int send_pending(void *context, const unsigned char *bytes, size_t size)
 {
-    struct pending_output *pending=context;
-    if(++pending->calls%3==0)return MBEDTLS_ERR_SSL_WANT_WRITE;
-    if(size>73)size=73;
-    assert(size<=pending->size-pending->sent && !memcmp(bytes,pending->expected+pending->sent,size));
-    pending->sent+=size;return (int)size;
+    struct pending_output *pending = context;
+    if (++pending->calls % 3 == 0)
+        return MBEDTLS_ERR_SSL_WANT_WRITE;
+    if (size > 73)
+        size = 73;
+    assert(size <= pending->size - pending->sent &&
+           !memcmp(bytes, pending->expected + pending->sent, size));
+    pending->sent += size;
+    return (int)size;
 }
 static void pending_output(void)
 {
-    mbedtls_ssl_context ssl;mbedtls_ssl_config config;
-    mbedtls_ssl_init(&ssl);mbedtls_ssl_config_init(&config);
-    assert(!mbedtls_ssl_config_defaults(&config,MBEDTLS_SSL_IS_CLIENT,
-        MBEDTLS_SSL_TRANSPORT_STREAM,MBEDTLS_SSL_PRESET_DEFAULT));
-    assert(!mbedtls_ssl_setup(&ssl,&config));
-    uint8_t expected[700];for(size_t i=0;i<sizeof expected;i++)expected[i]=(uint8_t)i;
-    memcpy(ssl.out_buf+8,expected,sizeof expected);
-    ssl.out_hdr=ssl.out_buf+8+sizeof expected;ssl.out_left=sizeof expected;
-    ssl.state=MBEDTLS_SSL_HANDSHAKE_OVER;
-    ssl.in_left=ssl.in_msglen=ssl.in_hsfraglen=ssl.in_hslen=0;ssl.in_offt=NULL;
-    uint8_t *output=ssl.out_buf;size_t output_size=ssl.out_buf_len;
-    struct pending_output pending={.expected=expected,.size=sizeof expected};
-    mbedtls_ssl_set_bio(&ssl,&pending,send_pending,NULL,NULL);
-    for(;;){
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config config;
+    mbedtls_ssl_init(&ssl);
+    mbedtls_ssl_config_init(&config);
+    assert(!mbedtls_ssl_config_defaults(&config, MBEDTLS_SSL_IS_CLIENT,
+                                        MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT));
+    assert(!mbedtls_ssl_setup(&ssl, &config));
+    uint8_t expected[700];
+    for (size_t i = 0; i < sizeof expected; i++)
+        expected[i] = (uint8_t)i;
+    memcpy(ssl.out_buf + 8, expected, sizeof expected);
+    ssl.out_hdr = ssl.out_buf + 8 + sizeof expected;
+    ssl.out_left = sizeof expected;
+    ssl.state = MBEDTLS_SSL_HANDSHAKE_OVER;
+    ssl.in_left = ssl.in_msglen = ssl.in_hsfraglen = ssl.in_hslen = 0;
+    ssl.in_offt = NULL;
+    uint8_t *output = ssl.out_buf;
+    size_t output_size = ssl.out_buf_len;
+    struct pending_output pending = {.expected = expected, .size = sizeof expected};
+    mbedtls_ssl_set_bio(&ssl, &pending, send_pending, NULL, NULL);
+    for (;;) {
         mbedtls_ssl_compact_input_buffer(&ssl);
-        assert(ssl.in_buf_len==2048 && ssl.out_buf==output && ssl.out_buf_len==output_size);
-        assert(ssl.out_hdr==output+8+sizeof expected && ssl.out_left==sizeof expected-pending.sent);
-        int result=mbedtls_ssl_flush_output(&ssl);
-        if(!result)break;
-        assert(result==MBEDTLS_ERR_SSL_WANT_WRITE);
+        assert(ssl.in_buf_len == 2048 && ssl.out_buf == output && ssl.out_buf_len == output_size);
+        assert(ssl.out_hdr == output + 8 + sizeof expected &&
+               ssl.out_left == sizeof expected - pending.sent);
+        int result = mbedtls_ssl_flush_output(&ssl);
+        if (!result)
+            break;
+        assert(result == MBEDTLS_ERR_SSL_WANT_WRITE);
     }
-    assert(pending.sent==sizeof expected && pending.calls>3 && !ssl.out_left);
-    mbedtls_ssl_free(&ssl);mbedtls_ssl_config_free(&config);
+    assert(pending.sent == sizeof expected && pending.calls > 3 && !ssl.out_left);
+    mbedtls_ssl_free(&ssl);
+    mbedtls_ssl_config_free(&config);
     puts("pending ciphertext survives input compaction and repeated partial flushes");
 }
 int main(int argc, char **argv)
 {
     assert(psa_crypto_init() == PSA_SUCCESS);
-    if(argc==2 && !strcmp(argv[1],"--pending-output")){pending_output();return 0;}
-    if (argc==2 && !strcmp(argv[1],"--normal-recycle")) {
-        recycle_mode=true;exercise(25352,512,7000,32768);
-        puts("input compaction returns zeroized storage without changing record bytes");return 0;
+    if (argc == 2 && !strcmp(argv[1], "--pending-output")) {
+        pending_output();
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "--normal-recycle")) {
+        recycle_mode = true;
+        exercise(25352, 512, 7000, 32768);
+        puts("input compaction returns zeroized storage without changing record bytes");
+        return 0;
     }
     if (argc == 2 && !strcmp(argv[1], "--normal-preallocated")) {
         exercise(25352, 16384, 0, 26624);
