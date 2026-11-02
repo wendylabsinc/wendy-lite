@@ -374,3 +374,107 @@ func TestDeviceDisconnectEndsTunnel(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestTunnelSkipsUnknownRelayKindsAndFrameCategories(t *testing.T) {
+	env := newTestEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stream, ch := openTunnel(t, env, ctx)
+
+	future := &wcomrelaypb.WendyComRelayMessage{}
+	if err := proto.Unmarshal([]byte{0x7a, 0x01, 0x01}, future); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Send(future); err != nil {
+		t.Fatal(err)
+	}
+	known := payloadMsg([]byte("after-future-kind"))
+	known.ProtoReflect().SetUnknown([]byte{0x78, 0x01})
+	known.GetPayload().ProtoReflect().SetUnknown([]byte{0x78, 0x01})
+	if err := stream.Send(known); err != nil {
+		t.Fatal(err)
+	}
+	h, body := readFrame(t, env.device)
+	if h.Channel != ch || string(body) != "after-future-kind" {
+		t.Fatalf("frame after future kind = channel%d %q", h.Channel, body)
+	}
+
+	frame, err := wcomframe.Encode(ch, []byte("future-category-body"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame[2] = 15
+	env.device.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if _, err := env.device.Write(frame); err != nil {
+		t.Fatal(err)
+	}
+	writeFrame(t, env.device, ch, []byte("after-future-category"))
+	message, err := stream.Recv()
+	if err != nil || string(message.GetPayload().GetBytes()) != "after-future-category" {
+		t.Fatalf("payload after future category = %v, %v", message, err)
+	}
+	if err := stream.CloseSend(); err != nil {
+		t.Fatal(err)
+	}
+	drainCloseChannel(t, env, ch)
+	if _, err := stream.Recv(); err != io.EOF {
+		t.Fatalf("stream end = %v, want EOF", err)
+	}
+}
+
+func TestTunnelRejectsRepeatedOpen(t *testing.T) {
+	env := newTestEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, ch := openTunnel(t, env, ctx)
+	if err := stream.Send(&wcomrelaypb.WendyComRelayMessage{
+		Msg: &wcomrelaypb.WendyComRelayMessage_Open{
+			Open: &wcomrelaypb.WendyComRelayOpen{AssetId: hardcodedAssetID},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	drainCloseChannel(t, env, ch)
+	if _, err := stream.Recv(); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("repeated Open = %v, want InvalidArgument", err)
+	}
+}
+
+func TestOpenAckSkipsUnknownChannelState(t *testing.T) {
+	env := newTestEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, ch := sendTunnelOpen(t, env, ctx)
+	future := &wendypb.WendyComChannelState{}
+	if err := proto.Unmarshal([]byte{0x7a, 0x01, 0x01}, future); err != nil {
+		t.Fatal(err)
+	}
+	writeFrame(t, env.device, ch, channelStateBody(t, future))
+	writeFrame(t, env.device, ch, openAckBody(t))
+	if err := stream.Send(payloadMsg([]byte("after-known-ack"))); err != nil {
+		t.Fatal(err)
+	}
+	h, body := readFrame(t, env.device)
+	if h.Channel != ch || string(body) != "after-known-ack" {
+		t.Fatalf("frame after future state and open ack = channel%d %q", h.Channel, body)
+	}
+	if err := stream.CloseSend(); err != nil {
+		t.Fatal(err)
+	}
+	drainCloseChannel(t, env, ch)
+	if _, err := stream.Recv(); err != io.EOF {
+		t.Fatalf("stream end = %v, want EOF", err)
+	}
+}
+
+func TestOpenAckRejectsKnownClose(t *testing.T) {
+	env := newTestEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, ch := sendTunnelOpen(t, env, ctx)
+	writeFrame(t, env.device, ch, closeStateBody(t))
+	drainCloseChannel(t, env, ch)
+	if _, err := stream.Recv(); status.Code(err) != codes.Aborted {
+		t.Fatalf("Close before open ack = %v, want Aborted", err)
+	}
+}

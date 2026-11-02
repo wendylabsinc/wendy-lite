@@ -84,6 +84,11 @@ func (l *tunnelLink) recvLoop() {
 			close(l.msgs)
 			return
 		}
+		// An unknown future relay oneof has no current Msg. gRPC has
+		// already consumed its complete envelope, so it is safe to skip.
+		if msg.GetMsg() == nil {
+			continue
+		}
 		payload := msg.GetPayload()
 		if payload == nil {
 			l.recvErr = fmt.Errorf("unexpected tunnel message: %v", msg)
