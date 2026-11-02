@@ -25,6 +25,9 @@
 #include "wendy_net_carrier.h"
 extern bool wendy_net_app_ready(void);
 #include "wendy_pki_crypto.h"
+#if CONFIG_WENDY_PKI || defined(WENDY_NET_CLOCK_OBSERVATION_HOST_TEST)
+#include "wendy_pki_clock_observation.h"
+#endif
 #include "wendy_pki_work.h"
 #if ESP_PLATFORM || defined(WENDY_NET_ROUTE_CRYPTO_HOST_TEST)
 #define WN_ROUTE_ASYNC 1
@@ -986,6 +989,10 @@ static int admit_complete(void *ctx, const struct wg_id *id, const void *bytes, 
                                        e->manifest.expires, until, e->manifest.withdraw);
             if (projected)
                 return projected > 0 ? WG_DEFER : -1;
+#if CONFIG_WENDY_PKI || defined(WENDY_NET_CLOCK_OBSERVATION_HOST_TEST)
+            if (!e->manifest.withdraw)
+                wendy_pki_clock_observe_first_remote(&s->node->clock);
+#endif
             struct wg_id accepted;
             if (e->gossip_cached && memcmp(e->gossip_hash, id->hash, 32)) {
                 struct wg_id old = {.type = 1};
@@ -1095,6 +1102,10 @@ static int complete_operator(struct wnrs *s, const struct wg_id *id, const void 
          * remains useful to other peers for the rest of its verified lease. */
         if (until <= now)
             return 0;
+#if CONFIG_WENDY_PKI || defined(WENDY_NET_CLOCK_OBSERVATION_HOST_TEST)
+        if (!proof.withdraw)
+            wendy_pki_clock_observe_first_remote(&node->clock);
+#endif
         struct wg_id accepted;
         int offered = wg_offer(&node->pool, 1, bytes, size, (uint64_t)until / 1000,
                                (uint64_t)now / 1000, &accepted);
@@ -2269,6 +2280,19 @@ bool wnrs_app_endpoint(struct wnrs *s, const uint8_t device[16], uint16_t *port)
 bool wnrs_agent_endpoint(struct wnrs *s, const uint8_t device[16], uint16_t *port)
 {
     return wnr_agent_endpoint(&s->node->core, device, esp_timer_get_time(), port);
+}
+bool wnrs_peer_forwarding_ready(const struct wnrs *s, int64_t now)
+{
+    if (!s || !s->node || !s->attached || s->node->core.config.endpoint_gateway ||
+        !wendy_pki_mesh_identity_current(&s->identity, now))
+        return false;
+    struct wb_route route;
+    /* wnr_lookup checks the installed FIB, live Hello/IHU/finite TX state and
+     * the current exact signed origin/sequence authorization together. */
+    return wnr_lookup(&s->node->core, s->peer_address, now, &route) && !route.local &&
+           route.prefix.family == 6 && route.prefix.bits == 128 &&
+           !memcmp(route.prefix.bytes, s->peer_address, sizeof s->peer_address) &&
+           route.link == s->link;
 }
 uint64_t wnrs_link_id(const struct wnrs *s)
 {

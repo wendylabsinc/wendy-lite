@@ -1646,12 +1646,13 @@ static bool cheaper_ip_carrier(struct peer_state *root, const struct peer_state 
 #if !CONFIG_WENDY_NET_KEEP_REDUNDANT_BLE
     if (!candidate && (!device || !device[0]))
         return false;
+    int64_t now = esp_timer_get_time();
     for (struct peer_state *link = root; link; link = link->next)
-        if (atomic_load(&link->active) && link->candidate.medium != WN_BLE &&
-            link->candidate.cost < cost &&
+        if (atomic_load(&link->active) && !link->failed &&
+            link->candidate.medium != WN_BLE && link->candidate.cost < cost &&
             (candidate ? same_peer(link, candidate)
                        : (!link->operator_peer && !strcmp(link->authenticated_peer, device))) &&
-            identity_live(link, esp_timer_get_time()))
+            identity_live(link, now) && wnrs_peer_forwarding_ready(link->router, now))
             return true;
 #else
     (void)root;
@@ -1660,6 +1661,22 @@ static bool cheaper_ip_carrier(struct peer_state *root, const struct peer_state 
     (void)cost;
 #endif
     return false;
+}
+/* Actor-only: let Babel prime an authenticated replacement before removing
+ * the working radio. A retained socket alone never suppresses BLE fallback.
+ * Reevaluate after a radio's context loan returns instead of recording a
+ * deferred close that could outlive the cheaper path's forwarding proof. */
+static void prune_redundant_ble(struct peer_state *root)
+{
+#if !CONFIG_WENDY_NET_KEEP_REDUNDANT_BLE
+    for (struct peer_state *link = root; link; link = link->next)
+        if (atomic_load(&link->active) && link->candidate.medium == WN_BLE &&
+            !link->tls_state.lent && !wncrypto_borrowed(link->connection) &&
+            cheaper_ip_carrier(root, link, NULL, link->candidate.cost))
+            retire_link(link);
+#else
+    (void)root;
+#endif
 }
 static int admit_link(struct peer_state *root, struct peer_state *link)
 {
@@ -1711,17 +1728,12 @@ static int admit_link(struct peer_state *root, struct peer_state *link)
         atomic_fetch_add(&root->carrier_count, 1);
     pthread_mutex_unlock(&state_lock);
     link->refresh_at = link->identity.verified_monotonic_us + REFRESH_INTERVAL_US;
-    /* Replace only after the new router session is usable. Redundant BLE
-     * remains discoverable for a fresh dial after the cheaper IP link fails. */
+    /* Same-medium ownership replacement follows its existing tie-break.
+     * Cross-medium preference waits for actual forwarding readiness below. */
     for (struct peer_state *other = root; other; other = other->next) {
         if (other == link || !atomic_load(&other->active) || !same_peer(other, link))
             continue;
         bool replace = other->candidate.medium == link->candidate.medium;
-#if !CONFIG_WENDY_NET_KEEP_REDUNDANT_BLE
-        replace =
-            replace || (other->candidate.medium == WN_BLE && link->candidate.medium != WN_BLE &&
-                        link->candidate.cost < other->candidate.cost);
-#endif
         if (!replace)
             continue;
         ESP_LOGI(TAG, "retiring redundant authenticated carrier: peer=%s medium=%u",
@@ -1999,6 +2011,7 @@ static void router_run(struct peer_state *root)
             }
         }
 
+        prune_redundant_ble(root);
         update_node_status(root);
         service_topology_query(root);
         service_catalog_query(root);

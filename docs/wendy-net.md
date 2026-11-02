@@ -139,6 +139,37 @@ freshness checks and may reject announcements from a booting device with an
 uncertain clock. Use updated WendyOS and Lite receivers for clock-independent
 bootstrap.
 
+### Clock observations
+
+Firmware logs `WN_CLOCK_OBS` followed by compact JSON with events `boot`,
+`first_remote_mesh_admission` (the first admitted live foreign manifest) and
+`direct_https_time_apply`. Every marker has `monotonic_us` for capture time and
+`emitted_monotonic_us` for emission time. Boot values are captured at application
+startup and emitted unchanged once the console buffer is ready.
+Read logs soon after boot: the bounded console buffer can overwrite the record.
+The `raw_utc_before_us` and `raw_utc_after_us` fields read the actual device UTC clock;
+failed reads produce `null` with `raw_utc_read_error=true`. In contrast,
+`certificate_base_seconds` and the `anchor_*` fields describe the local
+certificate-validation clock. Topology timestamps also use that derived clock;
+they are not raw UTC readings. The boot observation does not
+initialize an anchor: it reports `anchor_available=false` and a zero base.
+
+State flags describe capture time. `boot_uncertain` reports bootstrap trust
+state. `fresh_tsa` means a genuine proof was younger than 300 seconds for the
+current configuration; it is `null` when a bounded read cannot obtain a
+consistent snapshot (`snapshot_available=false`).
+`tsa_verified_this_boot` records whether a genuine proof had already been
+verified during that boot, even after its freshness window ended. Direct-time
+events report
+`source=direct_https_signed_time` and `status=applied` or `already_sufficient`.
+The latter means the raw UTC reading was already at least the signed time.
+Direct-time events are capped at 16 per boot without stopping subsequent proof
+processing.
+
+These observations add no clock-setting command. Normal USB connection, device
+information and log reads do not synchronize time; `SyncTime` is unsupported.
+The ordinary ESP log prefix uses RTOS time, not UTC.
+
 ## Services and device capabilities
 
 The signed device manifest contains the device's management endpoint,

@@ -39,6 +39,7 @@
 #include <sys/time.h>
 #include <mbedtls/pk.h>
 #include "wendy_pki_crypto.h"
+#include "wendy_pki_clock_observation.h"
 #include <mbedtls/x509_csr.h>
 
 static const char *TAG = "wendy_pki";
@@ -427,6 +428,7 @@ esp_err_t wendy_pki_reset(const char *expected_device_id, const char *nonce_hex)
         goto done;
     }
     identity_resetting = true;
+    pki_clock_observation_reset();
     wendy_pki_certificate_reset_certainty();
     memset(&mesh_certificate_clock, 0, sizeof mesh_certificate_clock);
     mesh_certificate_generation = 0;
@@ -508,6 +510,7 @@ static void mesh_certificate_remember(uint64_t generation,
 {
     mesh_certificate_clock = *clock;
     mesh_certificate_generation = generation;
+    pki_clock_observation_publish_clock(generation, clock);
 }
 static int mesh_certificate_sync(struct wendy_pki_mesh_identity *identity, time_t when,
                                   int64_t monotonic)
@@ -662,16 +665,30 @@ static int refresh_time_source(nvs_handle_t h, const char *url,
     int64_t floor = 0;
     time_t when = 0;
     int result = -1;
+    bool direct_https = !stream && !magic;
+    struct pki_clock_observation_raw before = {0}, after = {0};
     if (esp_timer_get_time() - started <= 30000000 &&
         wendy_conf_snapshot_current(data->generation) && !clock_floor(h, &floor) &&
         !wendy_pki_verify_time(response, response_size, nonce, data->tsa_roots.data,
-                               data->tsa_roots.size, floor, &when))
+                               data->tsa_roots.size, floor, &when)) {
+        if (direct_https)
+            before = pki_clock_observation_read_raw();
         result = set_floor(h, when);
+        if (direct_https && !result)
+            after = pki_clock_observation_read_raw();
+    }
     if (!result) {
         mesh_verified_seconds = when;
         mesh_verified_monotonic_us = esp_timer_get_time();
         mesh_verified_generation = data->generation;
         wendy_pki_certificate_mark_certain(data->generation);
+        pki_clock_observation_publish_proof(data->generation, mesh_verified_seconds,
+                                            mesh_verified_monotonic_us);
+        if (direct_https) {
+            bool sufficient = before.valid && when > 0 && when <= INT64_MAX / INT64_C(1000000) &&
+                before.utc_us >= (int64_t)when * INT64_C(1000000);
+            pki_clock_observation_direct_apply(before, after, data->generation, sufficient);
+        }
     }
     free(response);
     return result;
@@ -2398,6 +2415,8 @@ esp_err_t wendy_pki_net_time_reply(struct wendy_pki_mesh_identity *identity,
     mesh_verified_monotonic_us = esp_timer_get_time();
     mesh_verified_generation = trust.generation;
     wendy_pki_certificate_mark_certain(trust.generation);
+    pki_clock_observation_publish_proof(trust.generation, mesh_verified_seconds,
+                                        mesh_verified_monotonic_us);
     identity->verified_seconds = when;
     identity->verified_monotonic_us = mesh_verified_monotonic_us;
     if (mesh_certificate_sync(identity, when, mesh_verified_monotonic_us))

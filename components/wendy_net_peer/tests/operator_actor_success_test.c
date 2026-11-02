@@ -259,7 +259,20 @@ int main(int argc, char **argv)
     assert(exported && page.record.owner_principal.arg &&
            page.record.owner_principal.arg != entry->principal);
     assert(!memcmp(page.record.owner_principal.arg, proof.principal, proof.principal_size));
-    wno_expire(node->core.operators, entry->lease_deadline_us + 1);
+    /* Advance the actor's actual monotonic clock and poll its idle effects.
+     * The actor retires the exact gossip object before freeing its owner
+     * projection; calling the directory helper alone would bypass that order. */
+    const struct wno_receipt *receipt = wno_receipt_find(
+        node->core.operators, proof.principal, proof.principal_size, proof.instance, clock_us);
+    assert(receipt && node->pool.object_count == 1 && node->pool.payload_bytes == wire_size);
+    int64_t retained_until = receipt->receipt_deadline_us;
+    clock_us = entry->lease_deadline_us + 1;
+    assert(!wnrs_poll_effects(node));
+    assert(!node->pool.object_count && !node->pool.payload_bytes);
+    receipt = wno_receipt_find(node->core.operators, proof.principal, proof.principal_size,
+                               proof.instance, clock_us);
+    assert(receipt && receipt->revision == 42 && receipt->receipt_deadline_us == retained_until &&
+           retained_until > clock_us);
     assert(!node->core.operators->entries && node->core.operators->receipt_count == 1 &&
            !memcmp(page.record.owner_principal.arg, proof.principal, proof.principal_size));
     wnt_page_release(&page);
@@ -267,6 +280,8 @@ int main(int argc, char **argv)
         /* The page lifetime case expired the active projection, retaining its
          * 10x floor. A duplicate cannot restart it; a higher revision can. */
         deliver_normal(&session, wire, wire_size);
+        assert(!node->core.operators->entries && !node->pool.object_count &&
+               !node->pool.payload_bytes && node->core.operators->receipt_count == 1);
         size_t refresh_size, stale_size, withdraw_size, other_size;
         uint8_t *refresh = load_operator(argv[4], &refresh_size),
                 *stale = load_operator(argv[5], &stale_size);
@@ -285,6 +300,16 @@ int main(int argc, char **argv)
         assert(!wno_live_address(node->core.operators, entry->address, clock_us));
         wg_prune(&node->pool, (uint64_t)clock_us / 1000 + 1);
         assert(node->pool.object_count == 1); /* The signed withdrawal is relayable. */
+        assert(node->pool.payload_bytes == withdraw_size);
+        /* Its local lease also expires without an incoming message or UTC
+         * advance, while its compact higher-revision floor remains. */
+        clock_us = entry->lease_deadline_us + 1;
+        assert(!wnrs_poll_effects(node));
+        receipt = wno_receipt_find(node->core.operators, proof.principal, proof.principal_size,
+                                   proof.instance, clock_us);
+        assert(!node->core.operators->entries && node->core.operators->receipt_count == 1 &&
+               receipt && receipt->revision == 44 && !node->pool.object_count &&
+               !node->pool.payload_bytes);
         free(refresh);
         free(stale);
         free(withdraw);

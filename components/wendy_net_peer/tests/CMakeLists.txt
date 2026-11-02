@@ -98,6 +98,21 @@ session_test(shared router_node_success_test.c "${session_key}")
 session_test(ttl_lifecycle monotonic_ttl_lifecycle_success_test.c "${session_key}")
 session_test(ttl_compact monotonic_ttl_lifecycle_success_test.c "${session_key}")
 target_compile_definitions(session_ttl_compact PRIVATE TTL_TEST_COMPACT=1)
+# Reuse the exact existing TTL fixture, changing only its executable entry name.
+file(READ "${CMAKE_CURRENT_LIST_DIR}/monotonic_ttl_lifecycle_success_test.c" clock_fixture)
+string(REPLACE "\nint main(" "\nint clock_observation_ttl_fixture_main(" clock_fixture "${clock_fixture}")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/clock_observation_ttl_fixture.h" "${clock_fixture}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_LIST_DIR}/monotonic_ttl_lifecycle_success_test.c")
+session_test(clock_observation clock_observation_router_success_test.c "${session_key}")
+target_include_directories(session_clock_observation PRIVATE "${CMAKE_CURRENT_BINARY_DIR}"
+    "${CMAKE_CURRENT_LIST_DIR}")
+target_compile_definitions(session_clock_observation PRIVATE WENDY_NET_CLOCK_OBSERVATION_HOST_TEST=1)
+session_test(clock_observation_compact clock_observation_router_success_test.c "${session_key}")
+target_include_directories(session_clock_observation_compact PRIVATE "${CMAKE_CURRENT_BINARY_DIR}"
+    "${CMAKE_CURRENT_LIST_DIR}")
+target_compile_definitions(session_clock_observation_compact PRIVATE
+    WENDY_NET_CLOCK_OBSERVATION_HOST_TEST=1 TTL_TEST_COMPACT=1)
 session_test(control control_encode_success_test.c)
 session_test(hello_extensions hello_extensions_success_test.c)
 session_test(catalog manifest_catalog_success_test.c)
@@ -256,4 +271,14 @@ session_test(endpoint_replay_regression endpoint_replay_regression_test.c "${ses
 
 add_test(NAME driver_mesh_clock COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_LIST_DIR}/mesh_clock_driver_success_test.py")
+add_test(NAME driver_clock_observation_boot COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_LIST_DIR}/clock_observation_boot_success_test.py")
+add_test(NAME driver_clock_observation_console COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_LIST_DIR}/clock_observation_console_success_test.py")
+set_tests_properties(session_clock_observation session_clock_observation_compact
+    driver_clock_observation_boot driver_clock_observation_console PROPERTIES TIMEOUT 30)
 set_tests_properties(driver_mesh_clock PROPERTIES TIMEOUT 30)
+
+add_test(NAME driver_carrier_preference COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_LIST_DIR}/carrier_preference_success_test.py")
+set_tests_properties(driver_carrier_preference PROPERTIES TIMEOUT 30)

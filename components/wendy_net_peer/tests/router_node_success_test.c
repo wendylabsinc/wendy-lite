@@ -1248,6 +1248,82 @@ static void topology_clock_fixture(void)
     assert(topology_clock_generation(&node, 2) != generation);
     clock_us = saved_clock;
 }
+/* Use the normally authenticated peers, installed Babel FIB and signed route
+ * claims together. A live socket or a cached neighbor alone is not enough to
+ * suppress an independently available carrier. */
+static void forwarding_ready_fixture(struct wnrs *s)
+{
+    struct wnr_core *core = &s->node->core;
+    assert(wnrs_peer_forwarding_ready(s, clock_us));
+    struct wb_prefix host = {.family = 6, .bits = 128};
+    memcpy(host.bytes, s->peer_address, 16);
+    struct wb_route *route = NULL;
+    for (size_t i = 0; i < core->babel.route_count; i++)
+        if (wb_prefix_equal(&core->babel.routes[i].prefix, &host))
+            route = &core->babel.routes[i];
+    struct wb_link_state *neighbor = NULL, *other = NULL;
+    for (size_t i = 0; i < core->babel.links_capacity; i++)
+        if (core->babel.links[i].config.id == s->link)
+            neighbor = &core->babel.links[i];
+        else if (core->babel.links[i].config.id)
+            other = &core->babel.links[i];
+    struct wnd_entry *claim = NULL;
+    for (struct wnd_entry *e = core->directory.entries; e; e = e->next)
+        if (!memcmp(e->address, s->peer_address, 16))
+            claim = e;
+    assert(route && neighbor && other && claim);
+    uint64_t now_ms = (uint64_t)(clock_us - core->epoch_us) / 1000;
+    struct wb_link_state saved = *neighbor;
+    neighbor->hello_expires[0] = neighbor->hello_expires[1] = now_ms;
+    assert(!wnrs_peer_forwarding_ready(s, clock_us));
+    *neighbor = saved;
+    neighbor->ihu_expires = now_ms;
+    assert(!wnrs_peer_forwarding_ready(s, clock_us));
+    *neighbor = saved;
+    neighbor->tx = WB_INFINITY;
+    assert(!wnrs_peer_forwarding_ready(s, clock_us));
+    *neighbor = saved;
+    uint16_t sequence = claim->manifest.origin.seqno;
+    claim->manifest.origin.seqno++;
+    assert(!wnrs_peer_forwarding_ready(s, clock_us));
+    claim->manifest.origin.seqno = sequence;
+    int64_t deadline = claim->deadline_us;
+    claim->deadline_us = clock_us; /* Expiry/withdrawal invalidates current routing proof. */
+    assert(!wnrs_peer_forwarding_ready(s, clock_us));
+    claim->deadline_us = deadline;
+    uint16_t metric = route->metric;
+    route->metric = WB_INFINITY;
+    assert(!wnrs_peer_forwarding_ready(s, clock_us));
+    route->metric = metric;
+    bool committed = core->ready;
+    core->ready = false; /* A computed but uncommitted route cannot veto fallback. */
+    assert(!wnrs_peer_forwarding_ready(s, clock_us));
+    core->ready = committed;
+    struct wnrs different_attachment = *s;
+    different_attachment.link = other->config.id;
+    assert(!wnrs_peer_forwarding_ready(&different_attachment, clock_us));
+    s->attached = false;
+    assert(!wnrs_peer_forwarding_ready(s, clock_us));
+    s->attached = true;
+    time_t certificate_expires = s->identity.certificate_expires;
+    s->identity.certificate_expires = 1;
+    assert(!wnrs_peer_forwarding_ready(s, clock_us));
+    s->identity.certificate_expires = certificate_expires;
+    /* Endpoint-gateway lookup deliberately synthesizes forwarding through its
+     * one neighbor, without the full signed route/neighbor checks above. */
+    bool gateway = core->config.endpoint_gateway;
+    uint64_t other_link = other->config.id;
+    core->config.endpoint_gateway = true;
+    other->config.id = 0;
+    claim->deadline_us = clock_us;
+    struct wb_route synthetic;
+    assert(wnr_lookup(core, s->peer_address, clock_us, &synthetic));
+    assert(!wnrs_peer_forwarding_ready(s, clock_us));
+    claim->deadline_us = deadline;
+    other->config.id = other_link;
+    core->config.endpoint_gateway = gateway;
+    assert(wnrs_peer_forwarding_ready(s, clock_us));
+}
 int main(int argc, char **argv)
 {
     /* The actor exists before its first authenticated carrier and after the
@@ -1332,6 +1408,8 @@ int main(int argc, char **argv)
     assert(!opens && !commits && peers[0].session->node == peers[1].session->node);
     assert(!node->core.checkpoint && !node->core.checkpoint_capacity);
     assert(wnrs_link_id(peers[0].session) != wnrs_link_id(peers[1].session));
+    assert(!wnrs_peer_forwarding_ready(peers[0].session, clock_us));
+    assert(!wnrs_peer_forwarding_ready(peers[1].session, clock_us));
     remote_open(&peers[0], FIRST_LINK_COST);
     remote_open(&peers[1], WNR_BLE_COST);
     drain();
@@ -1343,6 +1421,8 @@ int main(int argc, char **argv)
         }
         drain();
     }
+    forwarding_ready_fixture(peers[0].session);
+    forwarding_ready_fixture(peers[1].session);
     /* The live actor projection remains bounded, allocation-free and stable
      * across ordinary timer work; structural edits invalidate old cursors. */
     size_t topology_before = wnr_memory(&node->core) + wg_memory(&node->pool);
