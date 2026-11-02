@@ -114,17 +114,44 @@ static void reset_during_save(void) {
 int main(void) {
     wendy_ble_power_init();
     assert(api);
+    assert(status().desired.advertising.mode == WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_DEFAULT);
+    assert(status().desired.connections.mode == WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_DEFAULT);
+    assert(writes == 0);
+#ifdef CONFIG_BT_LE_DFT_TX_POWER_LEVEL_DBM_EFF
+    const int default_dbm = CONFIG_BT_LE_DFT_TX_POWER_LEVEL_DBM_EFF;
+#else
+    const int default_dbm = 9;
+#endif
     assert(wendy_ble_power_host_sync() == 0);
-    wendy_ble_power_advertising_selected(20);
+    assert(wendy_ble_power_advertising_request() == default_dbm);
+    assert(powers[ESP_BLE_ENHANCED_PWR_TYPE_DEFAULT][0] == ESP_PWR_LVL_N0 + default_dbm / 3);
+    assert(powers[ESP_BLE_ENHANCED_PWR_TYPE_SCAN][0] == ESP_PWR_LVL_N0 + default_dbm / 3);
+    assert(powers[ESP_BLE_ENHANCED_PWR_TYPE_INIT][0] == ESP_PWR_LVL_N0 + default_dbm / 3);
+    wendy_ble_power_advertising_selected((int8_t)default_dbm);
     wendy_ble_power_advertising_started();
     assert(status().has_applied);
     WendyComBluetoothPowerStatus s;
     uint32_t token, other;
+    WendyComBluetoothPowerConfig explicit_power = {
+        .has_advertising = true, .has_connections = true,
+        .advertising = {.mode = WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_MAXIMUM},
+        .connections = {.mode = WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_MAXIMUM}};
+    assert(api->set(&explicit_power, &s, &token) == 0 && token);
+    assert(wendy_ble_power_advertising_request() == default_dbm);
+    api->reply_complete(token);
+    pump();
+    assert(status().advertising_dbm == 20 && status().connection_default_dbm == 20);
+    explicit_power.advertising.mode = explicit_power.connections.mode =
+        WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_DEFAULT;
+    assert(api->set(&explicit_power, &s, &token) == 0 && token);
+    api->reply_complete(token);
+    pump();
+    assert(status().advertising_dbm == default_dbm && status().connection_default_dbm == default_dbm);
     WendyComBluetoothPowerConfig c = config(-5, 9);
     assert(api->set(&c, &s, &token) == 0 && token && s.pending);
-    assert(wendy_ble_power_advertising_request() == 20);
+    assert(wendy_ble_power_advertising_request() == default_dbm);
     wendy_ble_power_connected(7);
-    assert(powers[ESP_BLE_ENHANCED_PWR_TYPE_CONN][7] == ESP_PWR_LVL_P20);
+    assert(powers[ESP_BLE_ENHANCED_PWR_TYPE_CONN][7] == ESP_PWR_LVL_N0 + default_dbm / 3);
     assert(api->set(&c, &s, &other) == WendyComResult_WENDY_COM_RESULT_BUSY);
     api->reply_complete(token + 1);
     assert(!queue.queued);

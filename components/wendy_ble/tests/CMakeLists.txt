@@ -83,3 +83,13 @@ target_compile_definitions(power_policy_test PRIVATE CONFIG_IDF_TARGET_ESP32C6=1
 target_link_libraries(power_policy_test PRIVATE Threads::Threads)
 target_compile_options(power_policy_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 add_test(NAME bluetooth_power_policy COMMAND power_policy_test)
+
+# A nonstandard firmware default catches accidental hard-coding of +9 or +20 dBm.
+add_executable(power_policy_configured_default_test power_policy_test.c ../src/wendy_ble_power.c)
+target_include_directories(power_policy_configured_default_test PRIVATE power_stubs ../include
+    ../../wendy_com/include ../../nanopb)
+target_compile_definitions(power_policy_configured_default_test PRIVATE
+    CONFIG_IDF_TARGET_ESP32C6=1 CONFIG_BT_LE_DFT_TX_POWER_LEVEL_DBM_EFF=3)
+target_link_libraries(power_policy_configured_default_test PRIVATE Threads::Threads)
+target_compile_options(power_policy_configured_default_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+add_test(NAME bluetooth_power_configured_default COMMAND power_policy_configured_default_test)

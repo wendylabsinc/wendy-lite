@@ -17,8 +17,11 @@ wendy --device wendy-lite:PORT device wendy-net status
 ```
 
 A radio-mode change saves the configuration and restarts the device after the
-reply. Reconnect afterwards and check that `desired` and `applied` agree. Other
-mode values are `normal`, `coded-s2`, and `off`; `off` disables the BLE mesh
+reply. Reconnect afterwards and inspect the saved profile and runtime state with
+`wendy device bluetooth mode --device wendy-lite:PORT` and
+`wendy device wendy-net status --device wendy-lite:PORT`. Network status does not
+include an `applied` profile field; verify actual peer connectivity as well as
+the saved setting. Other mode values are `normal`, `coded-s2`, and `off`; `off` disables the BLE mesh
 carrier while retaining its saved radio profile. Choose one `--ble-mode` value;
 do not combine it with `--ble`. Firmware without the requested coded-mode support
 returns an error.
@@ -42,21 +45,66 @@ for normal mode, 90 seconds for S2, and 180 seconds for S8. Guest VIP setup allo
 over the slower carrier. These are setup limits, not delays added to each
 connection.
 
-Bluetooth power is configurable independently of the mesh mode:
+Use `normal` for ordinary connections and interoperability with WendyOS, whose
+current Linux/BlueZ backend rejects coded profiles. S2 provides faster coded data
+than S8; S8 uses stronger coding at a lower data rate. Neither promises a fixed
+range, and radio rates are not application throughput.
+
+`wendy device bluetooth mode coded-s2 --device wendy-lite:PORT` selects a profile
+without enabling BLE or changing participation. In contrast, the configure
+command with `--ble-mode=coded-s2` selects the profile and enables BLE; it still
+preserves participation unless `--participate` is supplied. `bluetooth mode` does
+not accept `off`. To disable the only mesh carrier, also stop participation or
+select another supported carrier.
+
+Bluetooth power is configurable independently of the mesh mode. Inspect first;
+then change only the settings you need:
 
 ```sh
-wendy device bt power --advertising maximum --connections maximum
-wendy device bt power --advertising -6 --connections 9
-wendy device bt power
+wendy device bluetooth power --device wendy-lite:PORT
+# Explicitly opt in to maximum power on supported C5/C6 firmware:
+wendy device bluetooth power --device wendy-lite:PORT \
+  --advertising maximum --connections maximum
+# Change advertising power while preserving connection power:
+wendy device bluetooth power --device wendy-lite:PORT --advertising -6
+# Restore both firmware controller defaults:
+wendy device bluetooth power --device wendy-lite:PORT \
+  --advertising default --connections default
 ```
 
 The policy applies to management/application Bluetooth as well as mesh, and
-survives reboot. New installations start at maximum power. Advertising and
-connection settings are independent; omitted settings are preserved. `default` restores the firmware controller default,
-`maximum` requests +20 dBm on C5/C6, and a dBm request rounds down to a supported
-level between -15 and +20 dBm. Connection power also applies to scanning and
-initiation, existing links and future links. Status distinguishes saved policy,
-applied policy, pending changes and actual controller readbacks.
+survives reboot. Without a saved policy, both settings retain the firmware
+controller default used before radio management was added; maximum power is an
+explicit opt-in. Existing saved choices survive firmware updates. A board with a
+previously saved maximum policy needs the explicit `default` command above to
+return to controller defaults.
+
+Advertising power controls announcements. Connection power controls established
+link traffic and also applies to scanning/initiation. Raising one setting does not
+raise the other or change the other peer's power. Omitted settings are preserved.
+Use integer dBm values without a unit suffix. `default` restores the firmware
+controller default, `maximum` requests +20 dBm on C5/C6, and a dBm request rounds down to a supported
+level between -15 and +20 dBm. Connection settings cover existing and future
+links. Status distinguishes saved policy,
+applied policy, pending changes and actual controller readbacks. Power changes
+require no reboot. `power` always prints JSON: query again while `pending` is true,
+check `error`, and compare `desired` with `applied`. Read `advertisingDbm`,
+`connectionDefaultDbm` and each connection's `currentDbm` as measured values only
+when the corresponding `advertisingKnown`, `connectionDefaultKnown` or
+`currentKnown` flag is true. `supportedLevelsDbm` lists the discrete levels.
+
+The CLI's text `mode` view shows the saved profile and runtime state; `--json`
+also includes `bleProfilesSupported`, where bits 0, 1 and 2 represent normal, S2
+and S8. To return a coded device to normal, use your working management path:
+
+```sh
+wendy device bluetooth mode normal --device wendy-lite:PORT
+```
+
+The maximum-power example above is specific to Lite. On WendyOS Linux/BlueZ,
+only advertising power can be set, if the adapter reports support; non-default
+connection-power requests are rejected. See the WendyOS Bluetooth command
+reference for its separate capability and advertisement-registration fields.
 
 Apply changes over USB or infrastructure Wi-Fi if reducing Bluetooth power could
 make the management link unreachable. A power change updates controller power

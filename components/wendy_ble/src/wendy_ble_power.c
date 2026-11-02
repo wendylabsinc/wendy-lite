@@ -239,9 +239,9 @@ static void initialize(void) {
     state = (WendyComBluetoothPowerStatus)WendyComBluetoothPowerStatus_init_zero;
     state.has_desired = true;
     state.desired.has_advertising = state.desired.has_connections = true;
-    /* Start at maximum power until an explicit policy is saved. */
+    /* Preserve the firmware controller default until an explicit policy is saved. */
     state.desired.advertising.mode = state.desired.connections.mode =
-        WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_MAXIMUM;
+        WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_DEFAULT;
     state.advertising_set_supported = state.connections_set_supported = POWER_SUPPORTED;
     if (POWER_SUPPORTED) {
         state.supported_levels_dbm_count = sizeof levels / sizeof levels[0];
