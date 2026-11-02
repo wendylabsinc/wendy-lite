@@ -10,9 +10,10 @@ static int read_hash(const struct wn_doc *d, int token, uint8_t out[32])
 int wncf_chain_read(const struct wn_doc *d, unsigned object, const char *tenant,
                     struct wncf_chain *out)
 {
-    static const char *const fields[] = {"principal", "hashes", NULL};
     uint8_t device[16];
-    if (!d || !out || !wn_doc_fields(d, object, fields))
+    /* These maps belong to the negotiated routing-session control version.
+     * Optional future fields do not alter the required public-chain data. */
+    if (!d || !out)
         return -1;
     memset(out, 0, sizeof *out);
     if (wn_doc_string(d, wn_doc_member(d, object, "principal"), out->principal,
@@ -64,10 +65,8 @@ int wncf_chain_write(const struct wncf_chain *chain, char *out, size_t cap)
 }
 int wncf_request_read(const struct wn_doc *d, unsigned object, struct wncf_request *out)
 {
-    static const char *const fields[] = {"hash", "offset", NULL};
     uint64_t offset;
-    if (!out || !wn_doc_fields(d, object, fields) ||
-        read_hash(d, wn_doc_member(d, object, "hash"), out->hash) ||
+    if (!out || read_hash(d, wn_doc_member(d, object, "hash"), out->hash) ||
         wn_doc_u64(d, wn_doc_member(d, object, "offset"), &offset) || offset >= WNCF_PART_MAX ||
         offset % WNCF_CHUNK)
         return -1;
@@ -95,10 +94,8 @@ int wncf_request_write(const struct wncf_request *q, char *out, size_t cap)
 int wncf_chunk_read_view(const struct wn_doc *d, unsigned object, struct wncf_chunk *out,
                          const uint8_t **data)
 {
-    static const char *const fields[] = {"hash", "offset", "total", "data", NULL};
     uint64_t offset, total;
-    if (!out || !data || !wn_doc_fields(d, object, fields) ||
-        read_hash(d, wn_doc_member(d, object, "hash"), out->hash) ||
+    if (!out || !data || read_hash(d, wn_doc_member(d, object, "hash"), out->hash) ||
         wn_doc_u64(d, wn_doc_member(d, object, "offset"), &offset) ||
         wn_doc_u64(d, wn_doc_member(d, object, "total"), &total) || !total ||
         total > WNCF_PART_MAX || offset >= total || offset % WNCF_CHUNK)
