@@ -30,9 +30,8 @@ int main(int argc, char **argv)
     /* Match the firmware allocator ABI: every Mbed TLS/PKI-owned pointer
      * carries an ownership prefix, even when its owner is uncharged. */
     assert(!mbedtls_platform_set_calloc_free(wendy_net_memory_scoped_calloc,
-                                            wendy_net_memory_scoped_free));
-    assert(mbedtls_psa_set_key_slot_table_allocator(wendy_pki_crypto_shared_calloc) ==
-           PSA_SUCCESS);
+                                             wendy_net_memory_scoped_free));
+    assert(mbedtls_psa_set_key_slot_table_allocator(wendy_pki_crypto_shared_calloc) == PSA_SUCCESS);
     assert(!wendy_pki_crypto_init());
     wendy_net_memory_t memory = WENDY_NET_MEMORY_INITIALIZER;
     assert(wendy_net_memory_open(&memory, 1024 * 1024, false));
