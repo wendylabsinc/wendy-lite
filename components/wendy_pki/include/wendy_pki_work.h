@@ -14,7 +14,7 @@ bool wendy_pki_work_available(void);
  * completion; false means nothing was retained. Callback must not await a
  * second callback on this same worker. The initiating allocation scope follows
  * the job; the worker restores its previous scope after callback completion. */
-bool wendy_pki_work_submit(void (*callback)(void *),void *context);
+bool wendy_pki_work_submit(void (*callback)(void *), void *context);
 /* Called by the dedicated task when started, otherwise the registered server.
  * Actor calls fail; while dedicated, other tasks cannot steal its callback. */
 bool wendy_pki_work_poll(void);
@@ -40,14 +40,18 @@ bool wendy_pki_work_idle(void);
 bool wendy_pki_work_is_current(void);
 
 #include <stdint.h>
-struct wendy_pki_work_metrics {uint64_t jobs,total_us,max_us;unsigned stack_free;bool running;};
+struct wendy_pki_work_metrics {
+    uint64_t jobs, total_us, max_us;
+    unsigned stack_free;
+    bool running;
+};
 void wendy_pki_work_metrics(struct wendy_pki_work_metrics *);
 /* Existing server polling provider. These callbacks may wait for network I/O;
  * their CPU-heavy TLS steps use work_run, never occupy the crypto queue while
  * waiting for bytes. No additional task is created for this provider. The
  * server must keep polling throughout accepted I/O and mesh shutdown; the actor
  * and crypto task cannot poll this queue. Quiesce producers before stop(). */
-bool wendy_pki_io_work_submit(void (*)(void *),void *);
+bool wendy_pki_io_work_submit(void (*)(void *), void *);
 bool wendy_pki_io_work_poll(void);
 bool wendy_pki_io_work_idle(void);
 /* Synchronous facade for existing non-actor callers. Actor use is rejected;
@@ -55,7 +59,7 @@ bool wendy_pki_io_work_idle(void);
  * safe. Caller retains its arguments until completion. NULL callbacks fail.
  * When no dedicated task exists baseline callers keep the inline path; this
  * does not add a task or serialize unrelated baseline work while mesh is OFF. */
-int wendy_pki_work_run(void (*)(void *),void *);
+int wendy_pki_work_run(void (*)(void *), void *);
 void wendy_pki_work_bind_actor(void);
 /* Retained heavyweight context lifetime, separate from one CPU callback.
  * SRAM has one shared slot; PSRAM has two mesh slots plus a reserved baseline
@@ -73,5 +77,5 @@ bool wendy_pki_handshake_available(void);
 unsigned wendy_pki_handshake_mesh_limit(void);
 /* Retain one uninterrupted workspace lease while preparation moves into its
  * real TLS context. A stale cookie/context cannot release a different owner. */
-bool wendy_pki_handshake_transfer(void *from,void *to);
+bool wendy_pki_handshake_transfer(void *from, void *to);
 bool wendy_pki_handshake_busy(void);

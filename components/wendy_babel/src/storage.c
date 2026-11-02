@@ -18,18 +18,16 @@ static void release(struct wb_engine *e, void *p, size_t bytes)
 }
 static void *resize(struct wb_engine *e, void *old, size_t old_count, size_t count, size_t item)
 {
-    if (!count)
-    {
+    if (!count) {
         release(e, old, old_count * item);
         return NULL;
     }
     if (count > SIZE_MAX / item)
         return NULL;
     size_t bytes = count * item;
-    void *p =
-        e->config.allocate ? e->config.allocate(e->config.memory_context, bytes) : wendy_net_malloc(bytes);
-    if (!p)
-    {
+    void *p = e->config.allocate ? e->config.allocate(e->config.memory_context, bytes)
+                                 : wendy_net_malloc(bytes);
+    if (!p) {
         e->counters.allocation_failures++;
         return NULL;
     }
@@ -99,8 +97,7 @@ struct wb_memory wb_memory(const struct wb_engine *e)
     return (struct wb_memory){sizeof *e + e->allocated_bytes, sizeof *e + e->peak_bytes};
 }
 #define COLLECT(field, live)                                                                       \
-    do                                                                                             \
-    {                                                                                              \
+    do {                                                                                           \
         size_t n = 0;                                                                              \
         for (size_t i = 0; i < e->field##_capacity; i++)                                           \
             if (e->field[i].live)                                                                  \
@@ -109,11 +106,9 @@ struct wb_memory wb_memory(const struct wb_engine *e)
             memset(e->field + n, 0, (e->field##_capacity - n) * sizeof *e->field);                 \
         if (!n)                                                                                    \
             wb_free_##field(e);                                                                    \
-        else if (n <= e->field##_capacity / 2)                                                     \
-        {                                                                                          \
+        else if (n <= e->field##_capacity / 2) {                                                   \
             void *p = resize(e, e->field, e->field##_capacity, n, sizeof *e->field);               \
-            if (p)                                                                                 \
-            {                                                                                      \
+            if (p) {                                                                               \
                 e->field = p;                                                                      \
                 e->field##_capacity = n;                                                           \
             }                                                                                      \
@@ -129,11 +124,9 @@ void wb_collect(struct wb_engine *e)
     COLLECT(requests, used);
     if (!e->route_count)
         wb_free_routes(e);
-    else if (e->route_count <= e->routes_capacity / 2)
-    {
+    else if (e->route_count <= e->routes_capacity / 2) {
         void *p = resize(e, e->routes, e->routes_capacity, e->route_count, sizeof *e->routes);
-        if (p)
-        {
+        if (p) {
             e->routes = p;
             e->routes_capacity = e->route_count;
         }
@@ -143,21 +136,17 @@ void wb_collect(struct wb_engine *e)
      * route-sized workspaces, shrink with the live topology, and release all
      * scratch space when no neighbour remains. Required protocol history is
      * independent and keeps its normal expiry. */
-#define COLLECT_WORKSPACE(field)                                                               \
-    do                                                                                        \
-    {                                                                                         \
-        if (!e->links_capacity || !e->route_count)                                            \
-            wb_free_##field(e);                                                               \
-        else if (e->route_count <= e->field##_capacity / 2)                                   \
-        {                                                                                     \
-            void *p = resize(e, e->field, e->field##_capacity, e->route_count,                 \
-                             sizeof *e->field);                                               \
-            if (p)                                                                            \
-            {                                                                                 \
-                e->field = p;                                                                 \
-                e->field##_capacity = e->route_count;                                         \
-            }                                                                                 \
-        }                                                                                     \
+#define COLLECT_WORKSPACE(field)                                                                   \
+    do {                                                                                           \
+        if (!e->links_capacity || !e->route_count)                                                 \
+            wb_free_##field(e);                                                                    \
+        else if (e->route_count <= e->field##_capacity / 2) {                                      \
+            void *p = resize(e, e->field, e->field##_capacity, e->route_count, sizeof *e->field);  \
+            if (p) {                                                                               \
+                e->field = p;                                                                      \
+                e->field##_capacity = e->route_count;                                              \
+            }                                                                                      \
+        }                                                                                          \
     } while (0)
     COLLECT_WORKSPACE(before);
     COLLECT_WORKSPACE(scratch);
