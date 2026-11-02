@@ -19,9 +19,9 @@ wendy --device wendy-lite:PORT device wendy-net status
 A radio-mode change saves the configuration and restarts the device after the
 reply. Reconnect afterwards and inspect the saved profile and runtime state with
 `wendy device bluetooth mode --device wendy-lite:PORT` and
-`wendy device wendy-net status --device wendy-lite:PORT`. Network status does not
-include an `applied` profile field; verify actual peer connectivity as well as
-the saved setting. Other mode values are `normal`, `coded-s2`, and `off`; `off` disables the BLE mesh
+`wendy device wendy-net status --device wendy-lite:PORT`. Check that the desired
+and applied profiles agree after the restart, then verify actual peer
+connectivity as well as the saved setting. Other mode values are `normal`, `coded-s2`, and `off`; `off` disables the BLE mesh
 carrier while retaining its saved radio profile. Choose one `--ble-mode` value;
 do not combine it with `--ble`. Firmware without the requested coded-mode support
 returns an error.
@@ -45,8 +45,11 @@ for normal mode, 90 seconds for S2, and 180 seconds for S8. Guest VIP setup allo
 over the slower carrier. These are setup limits, not delays added to each
 connection.
 
-Use `normal` for ordinary connections and interoperability with WendyOS, whose
-current Linux/BlueZ backend rejects coded profiles. S2 provides faster coded data
+Start with `normal` for ordinary connections. Capable WendyOS adapters can also
+use Coded mesh advertising, scanning and connections. On WendyOS, S2/S8 are
+connected-data coding preferences, while advertising coding remains
+controller-selected; HCI PHY readback confirms Coded but does not distinguish
+S2 from S8. Check the selected adapter's reported support. S2 provides faster coded data
 than S8; S8 uses stronger coding at a lower data rate. Neither promises a fixed
 range, and radio rates are not application throughput.
 
@@ -102,9 +105,12 @@ wendy device bluetooth mode normal --device wendy-lite:PORT
 ```
 
 The maximum-power example above is specific to Lite. On WendyOS Linux/BlueZ,
-only advertising power can be set, if the adapter reports support; non-default
-connection-power requests are rejected. See the WendyOS Bluetooth command
-reference for its separate capability and advertisement-registration fields.
+advertising power can be set if the adapter reports support. An explicit local
+connected-link power setter is not implemented for the tested Intel controller;
+WendyOS reports current and maximum power for mesh links when supported, and
+rejects non-default connection-power requests. Missing readbacks are unknown.
+See the WendyOS Bluetooth command reference for capability checks, coding
+preferences and advertisement-registration fields.
 
 Apply changes over USB or infrastructure Wi-Fi if reducing Bluetooth power could
 make the management link unreachable. A power change updates controller power
