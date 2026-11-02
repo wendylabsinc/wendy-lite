@@ -76,6 +76,21 @@ static int io_wait(void *context, bool write, int64_t deadline)
     struct pollfd p = {.fd = *(int *)context, .events = write ? POLLOUT : POLLIN};
     return poll(&p, 1, (int)(remain / 1000 + 1));
 }
+static struct {
+    mbedtls_x509_crt *anchor[16], *next[16];
+    unsigned count;
+    int (*verify)(void *, mbedtls_x509_crt *, int, uint32_t *);
+    void *context;
+} trust_snapshot;
+static int verify_unchanged_trust(void *context, mbedtls_x509_crt *certificate, int depth,
+                                  uint32_t *flags)
+{
+    (void)context;
+    /* Check during verification, while temporary candidate links are live. */
+    for (unsigned i = 0; i < trust_snapshot.count; i++)
+        assert(trust_snapshot.anchor[i]->next == trust_snapshot.next[i]);
+    return trust_snapshot.verify(trust_snapshot.context, certificate, depth, flags);
+}
 static unsigned cached_releases;
 static void release_cached_der(void *context)
 {
@@ -147,6 +162,27 @@ int main(int argc, char **argv)
                                                  .release = release_cached_der};
         pki_tls_net_add_issuers(c, &snapshot);
         assert(!snapshot.count && !snapshot.release);
+    }
+    for (mbedtls_x509_crt *anchor = &c->roots; anchor; anchor = anchor->next) {
+        assert(trust_snapshot.count < 16);
+        unsigned i = trust_snapshot.count++;
+        trust_snapshot.anchor[i] = anchor;
+        trust_snapshot.next[i] = anchor->next;
+    }
+    trust_snapshot.verify = c->config.MBEDTLS_PRIVATE(f_vrfy);
+    trust_snapshot.context = c->config.MBEDTLS_PRIVATE(p_vrfy);
+    assert(trust_snapshot.verify);
+    mbedtls_ssl_conf_verify(&c->config, verify_unchanged_trust, NULL);
+    /* Untrusted candidate linking must never rewrite the configured anchors.
+     * Pinned-intermediate fixtures deliberately share exact parsed objects
+     * between available inventory and the trust bundle. */
+    if (c->issuers) {
+        mbedtls_x509_crt *candidates[16];
+        size_t count = c->config.MBEDTLS_PRIVATE(f_wendy_untrusted_issuers)(
+            c, &c->certificate, candidates, 16);
+        for (size_t i = 0; i < count; i++)
+            for (mbedtls_x509_crt *anchor = &c->roots; anchor; anchor = anchor->next)
+                assert(candidates[i] != anchor);
     }
     if (!strcmp(argv[10], "-"))
         assert(!c->issuers);
