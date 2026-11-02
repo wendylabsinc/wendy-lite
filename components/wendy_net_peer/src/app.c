@@ -385,6 +385,23 @@ void wendy_net_app_accept(int fd)
     }
     app_actor_add(flow);
 }
+/* The remote input half may close while the guest still produces a reply.
+ * EOF belongs only to the read BIO; output remains valid until socket I/O
+ * fails or the flow is explicitly disposed. */
+static ssize_t app_write_bio(void *context, const void *bytes, size_t size)
+{
+    struct wna_channel *channel = context;
+    if (channel->failed)
+        return -1;
+    size_t room = wna_buffer_space(&channel->output);
+    if (!room)
+        return -3;
+    if (size > room)
+        size = room;
+    memcpy(channel->output.bytes + channel->output.size, bytes, size);
+    channel->output.size += size;
+    return (ssize_t)size;
+}
 static void app_setup_work(void *context)
 {
     struct app_flow *f = context;
@@ -396,7 +413,7 @@ static void app_setup_work(void *context)
         f->job_result = 0;
     } else if (f->state.phase == WNA_PREPARE) {
         struct wendy_pki_stream bio = {
-            .context = &f->channel, .read = wna_read, .write = wna_write, .wait = wnad_no_wait};
+            .context = &f->channel, .read = wna_read, .write = app_write_bio, .wait = wnad_no_wait};
         esp_err_t result = wendy_pki_net_begin(
             &bio, !f->outbound, f->expected[0] ? f->expected : NULL, true, &f->setup);
         f->job_result = result == ESP_OK                                          ? 0
