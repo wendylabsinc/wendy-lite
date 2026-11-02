@@ -10,12 +10,18 @@ struct wnad_wake_lifetime {
 };
 static inline int wnad_wake_borrow(struct wnad_wake_lifetime *wake)
 {
-    atomic_fetch_add(&wake->publishers,1);
+    atomic_fetch_add(&wake->publishers, 1);
     return atomic_load(&wake->descriptor);
 }
 static inline void wnad_wake_return(struct wnad_wake_lifetime *wake)
-{atomic_fetch_sub(&wake->publishers,1);}
+{
+    atomic_fetch_sub(&wake->publishers, 1);
+}
 static inline int wnad_wake_detach(struct wnad_wake_lifetime *wake)
-{return atomic_exchange(&wake->descriptor,-1);}
+{
+    return atomic_exchange(&wake->descriptor, -1);
+}
 static inline bool wnad_wake_drained(struct wnad_wake_lifetime *wake)
-{return atomic_load(&wake->publishers)==0;}
+{
+    return atomic_load(&wake->publishers) == 0;
+}

@@ -6,7 +6,10 @@
  * Keep established TCP sockets during a short ordinary reconnection. No
  * packets are queued without a carrier; TCP retains its own bounded retry. */
 #define WNNL_RECOVERY_US INT64_C(30000000)
-struct wnnl { int64_t until; bool carrier, up; };
+struct wnnl {
+    int64_t until;
+    bool carrier, up;
+};
 
 static inline bool wnnl_current(const struct wnnl *s, bool identity, int64_t now)
 {

@@ -9,4 +9,5 @@ TaskHandle_t xTaskGetCurrentTaskHandle(void);
 TaskHandle_t xTaskGetCurrentTaskHandleForCore(BaseType_t);
 TaskHandle_t xTaskGetIdleTaskHandleForCore(BaseType_t);
 void *pvTaskGetThreadLocalStoragePointer(TaskHandle_t, BaseType_t);
-void vTaskSetThreadLocalStoragePointerAndDelCallback(TaskHandle_t, BaseType_t, void *, void (*)(int, void *));
+void vTaskSetThreadLocalStoragePointerAndDelCallback(TaskHandle_t, BaseType_t, void *,
+                                                     void (*)(int, void *));

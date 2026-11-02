@@ -10,7 +10,7 @@ int wendy_pki_memory_init(void);
 int wendy_pki_crypto_init(void);
 /* Process-global PSA table metadata only, with the universal prefix/free ABI.
  * Real key bytes retain the initiating context's allocation scope. */
-void *wendy_pki_crypto_shared_calloc(size_t count,size_t bytes);
+void *wendy_pki_crypto_shared_calloc(size_t count, size_t bytes);
 /* Retire empty extra metadata tables; preserves all live keys and initial cache.
  * Actor-side closes skip synchronous work; final OFF submits its own future. */
 void wendy_pki_crypto_cleanup(void);
