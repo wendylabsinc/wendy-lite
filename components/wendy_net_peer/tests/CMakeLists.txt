@@ -186,3 +186,8 @@ driver_test(wake_lifetime wake_lifetime_success_test.c)
 target_link_libraries(driver_wake_lifetime PRIVATE Threads::Threads)
 driver_test(actor_driver actor_driver_success_test.c)
 target_include_directories(driver_actor_driver BEFORE PRIVATE io_stubs)
+
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME driver_setup_lifecycle COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_LIST_DIR}/setup_lifecycle_success_test.py")
+set_tests_properties(driver_setup_lifecycle PROPERTIES TIMEOUT 30)

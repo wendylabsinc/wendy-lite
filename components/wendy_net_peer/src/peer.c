@@ -1558,6 +1558,12 @@ static int advance_setup(struct peer_state *link, int64_t now)
             wnad_handshake_release(link);
         }
     }
+    /* A failed admission/allocation may have no BIO at all. Check terminal
+     * state before touching it or waiting for a TCP connection. A lent
+     * context is collected above before cancellation can retire its owner. */
+    if (link->tls_state.cancel || now >= (int64_t)link->tls_state.deadline ||
+        link->tls_state.phase == WNA_FAILED || !link->tls_channel)
+        return -1;
     if (link->setup_connecting) {
         int connected = wnad_connected(link->setup_fd);
         if (connected <= 0)
