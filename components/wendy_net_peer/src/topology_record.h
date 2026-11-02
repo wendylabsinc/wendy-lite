@@ -13,6 +13,10 @@ struct wnt_record_view {
     WendyComNetTopologyRecord record;
     const char *principal;
     size_t principal_size;
+    /* Generation provenance, never encoded. Wall-clock reanchoring changes
+     * the exported conversion but not an accepted receipt's actual lifetime.
+     * A zero signed expiry means this compact receipt retains only deadline. */
+    int64_t lease_deadline_us, signed_expiry_unix_ms;
 };
 /* page starts empty. Success transfers one immutable selected row into it. */
 int wnt_record_copy(WendyComNetTopologyPage *, const struct wnt_record_view *);
