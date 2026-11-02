@@ -243,13 +243,47 @@ class GeneratedExclusionTests(unittest.TestCase):
                                                f'"a/{generated}" "b/{generated}"')
         self.assertEqual(security_review.partition_generated(raw), (raw, []))
 
-    def test_generated_add_delete_and_mode_changes_are_excluded(self) -> None:
+    def test_regular_generated_add_and_delete_are_excluded(self) -> None:
         path = "components/wendy_conf/src/wendy_conf.pb.c"
         raw = diff(path).decode()
-        for section in (raw.replace(f"--- a/{path}", "--- /dev/null"),
-                        raw.replace(f"+++ b/{path}", "+++ /dev/null"),
-                        f"diff --git a/{path} b/{path}\nold mode 100644\nnew mode 100755\n"):
+        for section in (raw.replace("index ", "new file mode 100644\nindex ").replace(
+                            f"--- a/{path}", "--- /dev/null"),
+                        raw.replace("index ", "deleted file mode 100644\nindex ").replace(
+                            f"+++ b/{path}", "+++ /dev/null")):
             self.assertEqual(security_review.partition_generated(section), ("", [path]))
+
+    def test_generated_executable_symlink_and_unknown_metadata_stay_reviewed(self) -> None:
+        path = "components/wendy_conf/src/wendy_conf.pb.c"
+        for metadata_lines in (
+            "old mode 100644\nnew mode 100755",
+            "old mode 100755\nnew mode 100644",
+            "new file mode 120000",
+            "deleted file mode 120000",
+            "index 1111111..2222222 120000",
+            "new file mode 100755",
+            "index 1111111..2222222 100755",
+            "unexpected metadata",
+        ):
+            with self.subTest(metadata=metadata_lines):
+                raw = diff(path).decode().replace("index 1111111..2222222 100644", metadata_lines)
+                self.assertEqual(security_review.partition_generated(raw), (raw, []))
+        mode_only = f"diff --git a/{path} b/{path}\nold mode 100644\nnew mode 100755\n"
+        self.assertEqual(security_review.partition_generated(mode_only), (mode_only, []))
+
+    def test_git_symlink_conversion_keeps_both_sections_as_one_reviewed_file(self) -> None:
+        path = "components/wendy_conf/src/wendy_conf.pb.c"
+        # Git emits a deletion plus an addition for a file type change.
+        raw = (f"diff --git a/{path} b/{path}\ndeleted file mode 100644\n"
+               f"index 1111111..0000000\n--- a/{path}\n+++ /dev/null\n@@ -1 +0,0 @@\n-binding\n"
+               f"diff --git a/{path} b/{path}\nnew file mode 120000\n"
+               f"index 0000000..2222222\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+../source.c\n")
+        self.assertEqual(security_review.partition_generated(raw), (raw, []))
+        manifest = security_review.build_input_manifest(metadata(), raw.encode(), 42, HEAD_SHA)
+        self.assertEqual(manifest["reviewed_files"], 1)
+        self.assertEqual(manifest["prepared_bytes"], len(raw.encode()))
+        with patch.object(security_review, "review_batch", return_value=payload()) as review:
+            security_review.review_batches(None, "offline", metadata(), raw, "", manifest)
+        self.assertEqual(review.call_args.args[3], raw)
 
     def test_mixed_model_input_contains_sources_and_pins_only(self) -> None:
         raw = (diff("go/proto/wendy_com_relay_msg.proto") + diff("source-pin.json")
@@ -295,6 +329,31 @@ class GeneratedExclusionTests(unittest.TestCase):
                 self.assertIn("Model review skipped", review)
                 if prior:
                     self.assertIn(security_review.BLOCKING_MARKER, review)
+
+    def test_repeated_generated_only_runs_preserve_earlier_finding_text(self) -> None:
+        raw = diff("go/console/wendypb/wendy_com_msg.pb.go")
+        manifest = security_review.build_input_manifest(metadata(), raw, 42, HEAD_SHA)
+        previous = "# AI Security Review\n\nPrior finding: " + ("risk " * 200) + "restore the boundary\n"
+        previous += security_review.BLOCKING_MARKER
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            args = SimpleNamespace(model="offline", **{name: str(root / name) for name in
+                ("metadata", "manifest", "diff", "previous", "review_output", "result_output")})
+            pathlib.Path(args.metadata).write_text(json.dumps(metadata()))
+            pathlib.Path(args.manifest).write_text(json.dumps(manifest))
+            pathlib.Path(args.diff).write_bytes(raw)
+            comment = previous
+            sdk = SimpleNamespace(Anthropic=Mock(), BadRequestError=RuntimeError)
+            with patch.dict("sys.modules", {"anthropic": sdk}), patch("builtins.print"):
+                for _ in range(200):
+                    pathlib.Path(args.previous).write_text(comment)
+                    security_review.command_review(args)
+                    comment = security_review.prepare_comment(pathlib.Path(args.review_output).read_text())
+            sdk.Anthropic.assert_not_called()
+            self.assertIn("restore the boundary", comment)
+            self.assertIn(security_review.BLOCKING_MARKER, comment)
+            self.assertEqual(comment.count("Model review skipped"), 1)
+            self.assertNotIn("comment truncated", comment)
 
     def test_hand_written_diff_over_the_limit_still_fails(self) -> None:
         handwritten = diff("go/internal/thing.go")

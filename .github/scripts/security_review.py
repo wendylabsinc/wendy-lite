@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import html
@@ -128,6 +129,26 @@ def split_diff_sections(diff_text: str) -> list[tuple[str, str]]:
     return sections
 
 
+def _generated_content_only(path: str, section: str) -> bool:
+    """Recognize regular-file content metadata; keep everything else reviewed."""
+    lines = diff_lines(section)
+    if not lines or lines[0] != f"diff --git a/{path} b/{path}":
+        return False
+    allowed = {
+        "new file mode 100644", "deleted file mode 100644",
+        f"--- a/{path}", "--- /dev/null", f"+++ b/{path}", "+++ /dev/null",
+        f"Binary files a/{path} and b/{path} differ",
+        f"Binary files /dev/null and b/{path} differ",
+        f"Binary files a/{path} and /dev/null differ",
+    }
+    for line in lines[1:]:
+        if line.startswith("@@ "):
+            return True
+        if line not in allowed and not re.fullmatch(r"index [0-9a-f]+\.\.[0-9a-f]+(?: 100644)?", line):
+            return False
+    return len(lines) > 1
+
+
 def partition_generated(
     diff_text: str, output_paths: tuple[str, ...] | None = None
 ) -> tuple[str, list[str]]:
@@ -136,13 +157,13 @@ def partition_generated(
         output_paths = GENERATED_OUTPUT_PATHS
     kept: list[str] = []
     excluded: list[str] = []
-    for path, section in split_diff_sections(diff_text):
-        # Only unambiguous, same-path changes qualify. In particular, a
-        # handwritten file renamed/copied into an output must stay reviewed.
-        header = section.split("\n", 1)[0]
-        if (is_generated_path(path, output_paths)
-                and header == f"diff --git a/{path} b/{path}"
-                and not re.search(r"^(?:rename|copy) (?:from|to) ", section, re.MULTILINE)):
+    sections = split_diff_sections(diff_text)
+    path_counts = Counter(path for path, _ in sections)
+    for path, section in sections:
+        # Git can represent a type change as deletion plus addition at one
+        # path. Keep both sides, as well as mode changes and unknown metadata.
+        if (is_generated_path(path, output_paths) and path_counts[path] == 1
+                and _generated_content_only(path, section)):
             excluded.append(path)
             continue
         kept.append(section)
@@ -236,7 +257,9 @@ def build_input_manifest(
     except UnicodeDecodeError as error:
         raise ReviewError("The PR diff is not valid UTF-8") from error
 
-    parsed_files = len(re.findall(r"^diff --git ", diff_text, flags=re.MULTILINE))
+    # A Git file-type change has two sections with the same header but is
+    # one changed file in GitHub metadata. Both sections remain in the input.
+    parsed_files = len(set(re.findall(r"^diff --git .+", diff_text, flags=re.MULTILINE)))
     if parsed_files != changed_files:
         raise ReviewError(
             "Changed-file metadata and diff disagree: "
@@ -1071,13 +1094,21 @@ def command_review(args: argparse.Namespace) -> None:
 
     if manifest["batch_count"] == 0:
         # There is no source evidence with which to reassess earlier findings.
-        review = ("# AI Security Review\n\n"
+        notice = ("# AI Security Review\n\n"
                   "Model review skipped: only known generated outputs changed. "
-                  "Prior findings remain unchanged.\n\n"
-                  + coverage_text(manifest, reviewed=False) + "\n")
+                  "Prior findings remain unchanged.\n\n")
+        preserved = previous_review.replace(COMMENT_MARKER, "").strip()
+        # Replace earlier notices, never accumulate wrappers in front of
+        # findings until the comment limit pushes them out of the state.
+        while preserved.startswith(notice):
+            coverage, separator, rest = preserved[len(notice):].partition("\n")
+            if not separator or not coverage.startswith("**Input coverage:** "):
+                break
+            preserved = rest.lstrip("\n")
+        review = notice + coverage_text(manifest, reviewed=False) + "\n"
         has_blocking = previous_review_has_blocking(previous_review)
-        if previous_review:
-            review += "\n" + previous_review.replace(COMMENT_MARKER, "").strip() + "\n"
+        if preserved:
+            review += "\n" + preserved + "\n"
         if has_blocking and BLOCKING_MARKER not in review:
             review += "\n" + BLOCKING_MARKER + "\n"
     else:

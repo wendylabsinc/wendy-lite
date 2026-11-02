@@ -10,13 +10,14 @@ from another repository.
 `security_review.py` validates the reviewed revision and coverage, calls the
 model, and prepares the review comment. Only the exact Go/nanopb outputs of
 `tools/update_protobuf.py` and `wasm_apps/rust_blink.wasm` (compiled by
-`wasm_apps/Makefile`) are excluded. Renames, copies, ambiguous paths and unknown
-outputs stay reviewable. Their sources, `.proto`/`.options`, generator scripts,
+`wasm_apps/Makefile`) are excluded. Renames, copies, mode/type changes,
+ambiguous metadata and unknown outputs stay reviewable. Their sources, `.proto`/`.options`, generator scripts,
 manifests, lockfiles and source pins stay in review. Vendored nanopb runtime
 code is source, so it is not excluded.
 
 Generated-only changes skip the model and preserve earlier findings and their
-blocking status. Coverage reports distinguish excluded bytes from reviewed
+blocking status. Repeated skips replace the notice so earlier findings are not
+pushed out by accumulated wrappers. Coverage reports distinguish excluded bytes from reviewed
 source. The API client has no repository/upstream inspection tools: a changed
 external source pin without its upstream diff must be reported as an inspection
 limitation. Output exclusions and passing generation/build checks do not
