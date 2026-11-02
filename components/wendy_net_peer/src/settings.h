@@ -12,4 +12,4 @@ void wn_settings_poll(bool network_drained);
 void wn_peer_configuration_changed(void);
 void wn_peer_runtime_status(WendyComNetStatus *);
 
-WendyComResult wn_peer_topology(const WendyComNetTopologyParams *,WendyComNetTopologyPage *);
+WendyComResult wn_peer_topology(const WendyComNetTopologyParams *, WendyComNetTopologyPage *);
