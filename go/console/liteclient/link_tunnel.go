@@ -101,6 +101,12 @@ func (l *tunnelLink) recvLoop() {
 			close(l.msgs)
 			return
 		}
+		// The payload is a complete WendyCom envelope too. A future inner
+		// oneof is not a reply to the current handshake or command; skip it
+		// here so the caller keeps its original receive timeout.
+		if m.GetMsg() == nil {
+			continue
+		}
 		select {
 		case l.msgs <- m:
 		case <-l.ctx.Done():
