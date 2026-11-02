@@ -8,16 +8,31 @@ typedef int portMUX_TYPE;
 struct ble_npl_event {
     void (*callback)(struct ble_npl_event *);
     void *argument;
+    bool queued;
 };
+static unsigned test_event_initializations, test_event_deinitializations;
 static inline void ble_npl_event_init(struct ble_npl_event *event,
                                       void (*callback)(struct ble_npl_event *), void *argument)
 {
+    test_event_initializations++;
     event->callback = callback;
     event->argument = argument;
+    event->queued = false;
 }
 static inline void ble_npl_event_deinit(struct ble_npl_event *event)
 {
+    test_event_deinitializations++;
     memset(event, 0, sizeof *event);
+}
+static bool test_defer_events;
+static struct ble_npl_event *test_queued_event;
+static inline void test_run_event(void)
+{
+    struct ble_npl_event *event = test_queued_event;
+    assert(event && event->callback && event->queued);
+    test_queued_event = NULL;
+    event->queued = false; /* NPL clears queued before invoking the host. */
+    event->callback(event);
 }
 static inline void *nimble_port_get_dflt_eventq(void)
 {
@@ -26,7 +41,11 @@ static inline void *nimble_port_get_dflt_eventq(void)
 static inline void ble_npl_eventq_put(void *queue, struct ble_npl_event *event)
 {
     assert(queue == (void *)1);
-    if (event->callback)
+    assert(event->callback);
+    if (test_defer_events) {
+        event->queued = true;
+        test_queued_event = event;
+    } else
         event->callback(event);
 }
 typedef void *esp_timer_handle_t;

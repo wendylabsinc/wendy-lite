@@ -211,3 +211,8 @@ target_compile_options(topology_driver_success_test PRIVATE -Wall -Wextra -Werro
 target_link_libraries(topology_driver_success_test PRIVATE Threads::Threads)
 add_test(NAME topology_driver_success COMMAND topology_driver_success_test)
 set_tests_properties(topology_driver_success PROPERTIES TIMEOUT 20)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME driver_setup_lifecycle COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_LIST_DIR}/setup_lifecycle_success_test.py")
+set_tests_properties(driver_setup_lifecycle PROPERTIES TIMEOUT 30)
+session_test(endpoint_replay_regression endpoint_replay_regression_test.c "${session_key}")

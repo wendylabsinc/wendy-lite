@@ -6,9 +6,11 @@
 int main(void)
 {
     test_pki_enrollment();
+    test_defer_events = true;
     assert(_started && _enrolled && test_adv_starts);
     uint8_t mesh[30] = {0};
     assert(wendy_ble_mesh_advertisement(mesh, sizeof mesh) == ESP_OK);
+    test_run_event();
     esp_timer_handle_t timer = _mesh_adv_timer;
     assert(timer && test_timer_period == 500000);
     unsigned tasks = test_tasks_created;
@@ -41,6 +43,7 @@ int main(void)
     /* OFF restores normal management payload and deletes the mesh timer;
      * it never resurrects advertising from a stopped/late mesh event. */
     assert(!wendy_ble_mesh_advertisement(NULL, 0));
+    test_run_event();
     assert(!_mesh_adv_timer && test_adv_starts == attempts);
     _started = false;
     _mesh_adv_refresh(NULL);

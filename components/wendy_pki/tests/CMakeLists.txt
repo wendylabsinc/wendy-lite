@@ -430,3 +430,22 @@ add_test(NAME pki_time_nonce_normal COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_LIST_DIR}/time_nonce_success.py" "${GO_EXECUTABLE}"
     "${CMAKE_CURRENT_LIST_DIR}/public_time_fixtures.go" "$<TARGET_FILE:time_nonce_success_test>")
 set_tests_properties(pki_time_nonce_normal PROPERTIES TIMEOUT 240)
+add_executable(app_halfclose_composed_test app_halfclose_composed_test.c ${PKI_TLS}
+    ../../wendy_net_peer/src/binary.c ../../wendy_net_peer/src/protocol.c
+    "${IDF_COMPONENTS}/http_parser/http_parser.c"
+    ../../wendy_net_peer/src/actor.c ../../wendy_net_common/src/runtime_memory.c)
+target_include_directories(app_halfclose_composed_test BEFORE PRIVATE ../../wendy_net_peer/tests/app_stubs
+    ../../wendy_net_peer/tests/io_stubs ../../wendy_net_peer/tests/router_stubs)
+target_include_directories(app_halfclose_composed_test PRIVATE ../src ../../wendy_net_peer/include
+    ../../wendy_net_peer/src ../../wendy_com/include "${IDF_COMPONENTS}/http_parser")
+target_compile_definitions(app_halfclose_composed_test PRIVATE WENDY_NET_MEMORY_HOST_BUDGET_TEST=1
+    WENDY_PKI_INPUT_SHRINK_HOST_TEST=1 WENDY_MESH_TEST_LOG=1 CONFIG_WENDY_NET_TCP_RELAY_BUFFER_SIZE=256)
+target_compile_options(app_halfclose_composed_test PRIVATE -UNDEBUG -Wall -Wextra -Werror -Wno-unused-parameter -Wno-unused-function)
+target_link_libraries(app_halfclose_composed_test PRIVATE pki)
+foreach(profile p256 mldsa65)
+    add_test(NAME pki_app_halfclose_composed_${profile} COMMAND "${GO_EXECUTABLE}" run
+        "${CMAKE_CURRENT_LIST_DIR}/app_halfclose_composed_driver.go"
+        "$<TARGET_FILE:app_halfclose_composed_test>" ${profile})
+    set_tests_properties(pki_app_halfclose_composed_${profile} PROPERTIES TIMEOUT 90
+        WORKING_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}")
+endforeach()
