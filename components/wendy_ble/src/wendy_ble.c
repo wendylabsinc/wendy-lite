@@ -18,7 +18,6 @@ static const char *TAG = "wendy_ble";
 #include "wendy_net_profile.h"
 #endif
 
-
 #if CONFIG_WENDY_BLE
 
 #include "wendy_conf.h"
@@ -49,61 +48,70 @@ static const char *TAG = "wendy_ble";
 static uint8_t _mesh_advertisement[31];
 static size_t _mesh_advertisement_size;
 static bool _mesh_turn;
-static portMUX_TYPE _mesh_adv_lock=portMUX_INITIALIZER_UNLOCKED;
+static portMUX_TYPE _mesh_adv_lock = portMUX_INITIALIZER_UNLOCKED;
 static atomic_bool _mesh_configuring;
 static esp_timer_handle_t _mesh_adv_timer;
 static struct ble_npl_event _mesh_adv_event;
 /* Incoming advertising GAPs belong to this host, even when a new CoC is
  * refused. No application channel means a bounded idle selection lease. */
-struct incoming_gap { int64_t idle_until; uint16_t handle; bool used, terminating; };
+struct incoming_gap {
+    int64_t idle_until;
+    uint16_t handle;
+    bool used, terminating;
+};
 static struct incoming_gap _incoming_gaps[CONFIG_BT_NIMBLE_MAX_CONNECTIONS];
 static void _incoming_touch(uint16_t handle)
 {
-    for(size_t i=0;i<sizeof _incoming_gaps/sizeof *_incoming_gaps;i++)
-        if(_incoming_gaps[i].used && _incoming_gaps[i].handle==handle)
-            _incoming_gaps[i].idle_until=esp_timer_get_time()+INT64_C(30000000);
+    for (size_t i = 0; i < sizeof _incoming_gaps / sizeof *_incoming_gaps; i++)
+        if (_incoming_gaps[i].used && _incoming_gaps[i].handle == handle)
+            _incoming_gaps[i].idle_until = esp_timer_get_time() + INT64_C(30000000);
 }
 static void _incoming_connect(uint16_t handle)
 {
     struct ble_gap_conn_desc desc;
-    if(ble_gap_conn_find(handle,&desc) || desc.role!=BLE_GAP_ROLE_SLAVE)return;
-    for(size_t i=0;i<sizeof _incoming_gaps/sizeof *_incoming_gaps;i++)
-        if(!_incoming_gaps[i].used || _incoming_gaps[i].handle==handle){
-            _incoming_gaps[i]=(struct incoming_gap){.used=true,.handle=handle,
-                .idle_until=esp_timer_get_time()+INT64_C(30000000)};
-            ESP_LOGI(TAG,"incoming GAP lease: handle=%u peer=%02x:%02x:%02x:%02x:%02x:%02x",
-                handle,desc.peer_id_addr.val[5],desc.peer_id_addr.val[4],
-                desc.peer_id_addr.val[3],desc.peer_id_addr.val[2],
-                desc.peer_id_addr.val[1],desc.peer_id_addr.val[0]);
+    if (ble_gap_conn_find(handle, &desc) || desc.role != BLE_GAP_ROLE_SLAVE)
+        return;
+    for (size_t i = 0; i < sizeof _incoming_gaps / sizeof *_incoming_gaps; i++)
+        if (!_incoming_gaps[i].used || _incoming_gaps[i].handle == handle) {
+            _incoming_gaps[i] =
+                (struct incoming_gap){.used = true,
+                                      .handle = handle,
+                                      .idle_until = esp_timer_get_time() + INT64_C(30000000)};
+            ESP_LOGI(TAG, "incoming GAP lease: handle=%u peer=%02x:%02x:%02x:%02x:%02x:%02x",
+                     handle, desc.peer_id_addr.val[5], desc.peer_id_addr.val[4],
+                     desc.peer_id_addr.val[3], desc.peer_id_addr.val[2], desc.peer_id_addr.val[1],
+                     desc.peer_id_addr.val[0]);
             return;
         }
 }
 static void _incoming_disconnect(uint16_t handle)
 {
-    for(size_t i=0;i<sizeof _incoming_gaps/sizeof *_incoming_gaps;i++)
-        if(_incoming_gaps[i].used && _incoming_gaps[i].handle==handle)
-            _incoming_gaps[i]=(struct incoming_gap){0};
+    for (size_t i = 0; i < sizeof _incoming_gaps / sizeof *_incoming_gaps; i++)
+        if (_incoming_gaps[i].used && _incoming_gaps[i].handle == handle)
+            _incoming_gaps[i] = (struct incoming_gap){0};
 }
 static void _incoming_retire(void)
 {
-    int64_t now=esp_timer_get_time();
-    for(size_t i=0;i<sizeof _incoming_gaps/sizeof *_incoming_gaps;i++){
-        struct incoming_gap *g=&_incoming_gaps[i];
-        if(!g->used || g->terminating || now<g->idle_until)continue;
+    int64_t now = esp_timer_get_time();
+    for (size_t i = 0; i < sizeof _incoming_gaps / sizeof *_incoming_gaps; i++) {
+        struct incoming_gap *g = &_incoming_gaps[i];
+        if (!g->used || g->terminating || now < g->idle_until)
+            continue;
         /* Both probes are conservative/nonblocking. Pending, active and
          * closing channels, or unknown lifetime/lock contention, keep GAP. */
-        if(!wble_l2cap_connection_idle(g->handle) ||
-            wble_mesh_uses_connection(g->handle))continue;
-        int rc=ble_gap_terminate(g->handle,BLE_ERR_REM_USER_CONN_TERM);
-        if(!rc || rc==BLE_HS_EALREADY){
-            g->terminating=true;
-            ESP_LOGI(TAG,"retiring idle incoming GAP: handle=%u",g->handle);
-        }else if(rc==BLE_HS_ENOTCONN)*g=(struct incoming_gap){0};
-        else g->idle_until=now+INT64_C(5000000);
+        if (!wble_l2cap_connection_idle(g->handle) || wble_mesh_uses_connection(g->handle))
+            continue;
+        int rc = ble_gap_terminate(g->handle, BLE_ERR_REM_USER_CONN_TERM);
+        if (!rc || rc == BLE_HS_EALREADY) {
+            g->terminating = true;
+            ESP_LOGI(TAG, "retiring idle incoming GAP: handle=%u", g->handle);
+        } else if (rc == BLE_HS_ENOTCONN)
+            *g = (struct incoming_gap){0};
+        else
+            g->idle_until = now + INT64_C(5000000);
     }
 }
 #endif
-
 
 //--- literals ---//
 
@@ -299,17 +307,22 @@ static void _start_advertising(bool quiet_capacity);
 static int _primary_advertisement(bool mesh)
 {
 #if CONFIG_WENDY_NET_BLE
-    uint8_t bytes[31];size_t size;
+    uint8_t bytes[31];
+    size_t size;
     portENTER_CRITICAL(&_mesh_adv_lock);
-    size=_mesh_advertisement_size;memcpy(bytes,_mesh_advertisement,size);
+    size = _mesh_advertisement_size;
+    memcpy(bytes, _mesh_advertisement, size);
     portEXIT_CRITICAL(&_mesh_adv_lock);
-    if(mesh && size)return ble_gap_adv_set_data(bytes,size);
+    if (mesh && size)
+        return ble_gap_adv_set_data(bytes, size);
 #else
     (void)mesh;
 #endif
-    struct ble_hs_adv_fields adv={0};
-    adv.flags=BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
-    adv.uuids128=&_uuid_svc;adv.num_uuids128=1;adv.uuids128_is_complete=1;
+    struct ble_hs_adv_fields adv = {0};
+    adv.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
+    adv.uuids128 = &_uuid_svc;
+    adv.num_uuids128 = 1;
+    adv.uuids128_is_complete = 1;
     return ble_gap_adv_set_fields(&adv);
 }
 #if CONFIG_WENDY_NET_BLE
@@ -317,66 +330,83 @@ static void _mesh_adv_refresh(struct ble_npl_event *event)
 {
     (void)event;
     portENTER_CRITICAL(&_mesh_adv_lock);
-    bool enabled=_mesh_advertisement_size!=0;
+    bool enabled = _mesh_advertisement_size != 0;
     portEXIT_CRITICAL(&_mesh_adv_lock);
-    if(enabled && (!_started || !_enrolled || !wendy_conf_is_current() ||
-        wendy_pki_reset_in_progress()))return;
+    if (enabled &&
+        (!_started || !_enrolled || !wendy_conf_is_current() || wendy_pki_reset_in_progress()))
+        return;
     /* A full peer can receive a mesh GAP while its outgoing GAP is still
      * retiring. A controller-capacity failure then leaves management stopped;
      * that outgoing link's disconnect belongs to a different callback. Reuse
      * this existing host event/timer to recover, with no new state or worker. */
-    if(enabled)_incoming_retire();
-    if(enabled && !ble_gap_adv_active()){
+    if (enabled)
+        _incoming_retire();
+    if (enabled && !ble_gap_adv_active()) {
         _start_advertising(true);
         /* No public SDK connection-capacity count includes pending GAPs.
          * Slow stopped retries (and SDK HCI diagnostics) while capacity is
          * unavailable; successful recovery restores ordinary payload rotation. */
-        esp_err_t restarted=esp_timer_restart(_mesh_adv_timer,
-            ble_gap_adv_active() ? 500000:5000000);
-        if(restarted!=ESP_OK)ESP_LOGW(TAG,"advertisement retry timer failed: %s",esp_err_to_name(restarted));
+        esp_err_t restarted =
+            esp_timer_restart(_mesh_adv_timer, ble_gap_adv_active() ? 500000 : 5000000);
+        if (restarted != ESP_OK)
+            ESP_LOGW(TAG, "advertisement retry timer failed: %s", esp_err_to_name(restarted));
     }
-    _mesh_turn=enabled && !_mesh_turn;
-    int rc=_primary_advertisement(_mesh_turn);
-    if(rc)ESP_LOGW(TAG,"primary advertisement refresh failed: %d",rc);
-    if(!enabled && _mesh_adv_timer){
-        esp_timer_delete(_mesh_adv_timer);_mesh_adv_timer=NULL;
+    _mesh_turn = enabled && !_mesh_turn;
+    int rc = _primary_advertisement(_mesh_turn);
+    if (rc)
+        ESP_LOGW(TAG, "primary advertisement refresh failed: %d", rc);
+    if (!enabled && _mesh_adv_timer) {
+        esp_timer_delete(_mesh_adv_timer);
+        _mesh_adv_timer = NULL;
         ble_npl_event_deinit(&_mesh_adv_event);
     }
 }
 static void _mesh_adv_tick(void *context)
 {
     (void)context;
-    ble_npl_eventq_put(nimble_port_get_dflt_eventq(),&_mesh_adv_event);
+    ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &_mesh_adv_event);
 }
-esp_err_t wendy_ble_mesh_advertisement(const uint8_t *data,size_t size)
+esp_err_t wendy_ble_mesh_advertisement(const uint8_t *data, size_t size)
 {
-    if(size>31 || (size && !data))return ESP_ERR_INVALID_ARG;
+    if (size > 31 || (size && !data))
+        return ESP_ERR_INVALID_ARG;
 #if WENDY_NET_NON_TRANSIT
     /* Only the mesh publication is suppressed. The primary WendyCom service
      * keeps its own advertisement, GATT discovery and management listener. */
-    if(size)return ESP_ERR_NOT_SUPPORTED;
+    if (size)
+        return ESP_ERR_NOT_SUPPORTED;
 #endif
-    if(!size && !_mesh_adv_timer)return ESP_OK;
-    if(!_started || !_enrolled || !ble_hs_synced())return ESP_ERR_INVALID_STATE;
-    if(atomic_exchange(&_mesh_configuring,true))return ESP_ERR_INVALID_STATE;
-    esp_err_t result=ESP_OK;
-    if(!_mesh_adv_timer){
-        ble_npl_event_init(&_mesh_adv_event,_mesh_adv_refresh,NULL);
-        const esp_timer_create_args_t args={.callback=_mesh_adv_tick,.name="net-adv"};
-        result=esp_timer_create(&args,&_mesh_adv_timer);
-        if(result!=ESP_OK)goto done;
+    if (!size && !_mesh_adv_timer)
+        return ESP_OK;
+    if (!_started || !_enrolled || !ble_hs_synced())
+        return ESP_ERR_INVALID_STATE;
+    if (atomic_exchange(&_mesh_configuring, true))
+        return ESP_ERR_INVALID_STATE;
+    esp_err_t result = ESP_OK;
+    if (!_mesh_adv_timer) {
+        ble_npl_event_init(&_mesh_adv_event, _mesh_adv_refresh, NULL);
+        const esp_timer_create_args_t args = {.callback = _mesh_adv_tick, .name = "net-adv"};
+        result = esp_timer_create(&args, &_mesh_adv_timer);
+        if (result != ESP_OK)
+            goto done;
     }
     esp_timer_stop(_mesh_adv_timer);
     portENTER_CRITICAL(&_mesh_adv_lock);
-    if(size)memcpy(_mesh_advertisement,data,size);
-    _mesh_advertisement_size=size;
+    if (size)
+        memcpy(_mesh_advertisement, data, size);
+    _mesh_advertisement_size = size;
     portEXIT_CRITICAL(&_mesh_adv_lock);
-    if(size)result=esp_timer_start_periodic(_mesh_adv_timer,500000);
-    ble_npl_eventq_put(nimble_port_get_dflt_eventq(),&_mesh_adv_event);
+    if (size)
+        result = esp_timer_start_periodic(_mesh_adv_timer, 500000);
+    ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &_mesh_adv_event);
 done:
-    atomic_store(&_mesh_configuring,false);return result;
+    atomic_store(&_mesh_configuring, false);
+    return result;
 }
-bool wendy_ble_mesh_advertisement_idle(void){return _mesh_adv_timer==NULL;}
+bool wendy_ble_mesh_advertisement_idle(void)
+{
+    return _mesh_adv_timer == NULL;
+}
 #endif
 
 /// Advertise the service UUID in the advertisement itself so a central can
@@ -428,7 +458,7 @@ static void _start_advertising(bool quiet_capacity)
     rc = ble_gap_adv_start(_own_addr_type, NULL, BLE_HS_FOREVER,
                            &params, _gap_event, NULL);
     if (rc != 0 && rc != BLE_HS_EALREADY) {
-        if(!quiet_capacity || (rc!=BLE_HS_ENOMEM && rc!=BLE_HS_HCI_ERR(BLE_ERR_MEM_CAPACITY)))
+        if (!quiet_capacity || (rc != BLE_HS_ENOMEM && rc != BLE_HS_HCI_ERR(BLE_ERR_MEM_CAPACITY)))
             ESP_LOGE(TAG, "ble_gap_adv_start failed: %d", rc);
         return;
     }
@@ -447,7 +477,8 @@ static int _gap_event(struct ble_gap_event *event, void *arg)
             ESP_LOGI(TAG, "connect: status=%d handle=%d",
                      event->connect.status, event->connect.conn_handle);
 #if CONFIG_WENDY_NET_BLE
-            if(!event->connect.status)_incoming_connect(event->connect.conn_handle);
+            if (!event->connect.status)
+                _incoming_connect(event->connect.conn_handle);
 #endif
             // A failed connect leaves advertising stopped; a successful one is
             // undirected connectable, so it stops too.
@@ -500,7 +531,7 @@ static void _on_reset(int reason)
 {
     ESP_LOGW(TAG, "BLE host reset: reason=%d", reason);
 #if CONFIG_WENDY_NET_BLE
-    memset(_incoming_gaps,0,sizeof _incoming_gaps);
+    memset(_incoming_gaps, 0, sizeof _incoming_gaps);
 #endif
 }
 
@@ -647,9 +678,10 @@ struct handshake_request {
 };
 static void _handshake_work(void *arg)
 {
-    struct handshake_request *request=arg;
-    request->result=wble_tls_session_start(_enrolled);
-    ESP_LOGI(TAG,"BLE handshake worker stack free=%u",(unsigned)uxTaskGetStackHighWaterMark(NULL));
+    struct handshake_request *request = arg;
+    request->result = wble_tls_session_start(_enrolled);
+    ESP_LOGI(TAG, "BLE handshake worker stack free=%u",
+             (unsigned)uxTaskGetStackHighWaterMark(NULL));
     xTaskNotifyGive(request->caller);
 }
 static void _handshake_task(void *arg)
@@ -659,30 +691,31 @@ static void _handshake_task(void *arg)
 }
 static esp_err_t _run_session_handshake(void)
 {
-    struct handshake_request request={.caller=xTaskGetCurrentTaskHandle(),.result=ESP_FAIL};
+    struct handshake_request request = {.caller = xTaskGetCurrentTaskHandle(), .result = ESP_FAIL};
 #if CONFIG_WENDY_NET_PEER
-    if(_enrolled && wendy_pki_work_available()){
+    if (_enrolled && wendy_pki_work_available()) {
         /* Physical BLE is a blocking baseline transport. Its native setup must
          * await retained admission outside the CPU queue; TLS math still uses
          * the existing work_run gate from this shared I/O worker. */
-        if(!wendy_pki_io_work_submit(_handshake_work,&request))return ESP_ERR_NO_MEM;
+        if (!wendy_pki_io_work_submit(_handshake_work, &request))
+            return ESP_ERR_NO_MEM;
         /* Only this coordinator submits BLE work, retaining its request until
          * notified. The live packet actor runs while TLS uses the existing
          * server stack instead of allocating another24KiB internal stack. */
-        ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         return request.result;
     }
 #endif
     /* Only the coordinator submits work and waits for completion before the
      * next session. The expensive certificate stack exists only while needed. */
-    if (xTaskCreatePinnedToCore(_handshake_task,"ble-handshake",
-            _enrolled ? PKI_SESSION_TASK_STACK : SESSION_TASK_STACK,&request,
-            CONFIG_WENDY_BLE_TASK_PRIORITY,NULL,
-            CONFIG_WENDY_BLE_TASK_CORE_AFFINITY)!=pdPASS) {
-        ESP_LOGW(TAG,"insufficient memory for BLE handshake worker");
+    if (xTaskCreatePinnedToCore(_handshake_task, "ble-handshake",
+                                _enrolled ? PKI_SESSION_TASK_STACK : SESSION_TASK_STACK, &request,
+                                CONFIG_WENDY_BLE_TASK_PRIORITY, NULL,
+                                CONFIG_WENDY_BLE_TASK_CORE_AFFINITY) != pdPASS) {
+        ESP_LOGW(TAG, "insufficient memory for BLE handshake worker");
         return ESP_ERR_NO_MEM;
     }
-    ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     return request.result;
 }
 static void _session_task(void *arg)
@@ -834,8 +867,7 @@ esp_err_t wendy_ble_start(void)
     }
 
     // A small coordinator remains idle; the certificate worker is allocated on demand.
-    if (xTaskCreatePinnedToCore(_session_task, "wendy_ble",
-                                SESSION_TASK_STACK, NULL,
+    if (xTaskCreatePinnedToCore(_session_task, "wendy_ble", SESSION_TASK_STACK, NULL,
                                 CONFIG_WENDY_BLE_TASK_PRIORITY, NULL,
                                 CONFIG_WENDY_BLE_TASK_CORE_AFFINITY) != pdPASS) {
         ESP_LOGE(TAG, "session task creation failed");

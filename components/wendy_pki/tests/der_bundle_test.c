@@ -23,8 +23,7 @@ static uint8_t *read_fixture(const char *directory, size_t *size)
     return data;
 }
 
-static void check_chain(mbedtls_x509_crt *chain, const uint8_t *der,
-                        size_t bytes, unsigned count)
+static void check_chain(mbedtls_x509_crt *chain, const uint8_t *der, size_t bytes, unsigned count)
 {
     for (unsigned i = 0; i < count; i++) {
         assert(chain && chain->raw.len == bytes && !memcmp(chain->raw.p, der, bytes));
@@ -89,8 +88,8 @@ int main(int argc, char **argv)
     size_t offset = 0, bytes;
     const uint8_t *part;
     for (unsigned i = 0; i < WENDY_CERT_BUNDLE_MAX_CERTS; i++) {
-        assert(wendy_cert_der_next(bundle, der_size * WENDY_CERT_BUNDLE_MAX_CERTS,
-                                   &offset, &part, &bytes) == 1);
+        assert(wendy_cert_der_next(bundle, der_size * WENDY_CERT_BUNDLE_MAX_CERTS, &offset, &part,
+                                   &bytes) == 1);
         assert(part == bundle + i * der_size && bytes == der_size);
     }
     assert(wendy_cert_der_next(bundle, offset, &offset, &part, &bytes) == 0);

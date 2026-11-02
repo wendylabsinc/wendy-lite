@@ -30,7 +30,9 @@ WendyComResult wcom_cmd_net_set(const WendyComNetConfig *config, WendyComNetStat
 }
 static const struct wcom_sensor_link_delegate *_sensor_link_delegate;
 bool wcom_cmd_sensor_link_available(void)
-{return _sensor_link_delegate && _sensor_link_delegate->on_sensor_link_get_manifest;}
+{
+    return _sensor_link_delegate && _sensor_link_delegate->on_sensor_link_get_manifest;
+}
 
 // At most one push (app or conf) may be in progress at a time.
 enum _push_kind { PUSH_NONE, PUSH_APP, PUSH_CONF };

@@ -13,8 +13,7 @@ static const char *ids[] = {"00000000-0000-4000-8000-000000000001",
                             "00000000-0000-4000-8000-000000000003"};
 static const int64_t wall = INT64_C(1800000000000);
 static const int64_t epoch = INT64_C(3600000000);
-struct node
-{
+struct node {
     struct wnr_core core;
     struct wnr_core *active;
     struct wnr_config config;
@@ -30,8 +29,7 @@ struct node
 static struct node nodes[3];
 static mbedtls_pk_context key;
 static uint64_t ms;
-struct packet
-{
+struct packet {
     unsigned from, to;
     size_t size;
     uint8_t bytes[WB_PACKET_MAX];
@@ -49,8 +47,7 @@ static int persist(void *ctx, const void *bytes, size_t size)
     n->writes++;
     return 0;
 }
-static int sign_proof(void *ctx, const struct wn_origin *origin, int64_t now,
-                      int64_t monotonic)
+static int sign_proof(void *ctx, const struct wn_origin *origin, int64_t now, int64_t monotonic)
 {
     struct node *n = ctx;
     (void)monotonic;
@@ -58,34 +55,43 @@ static int sign_proof(void *ctx, const struct wn_origin *origin, int64_t now,
     uint8_t uuid[16], hash[32], sig[80];
     size_t sig_size;
     assert(!wn_uuid_parse(ids[n->index], uuid));
-    int size =
-        wn_manifest_app_write(uuid, origin, ++n->revision, now, now + 60000,
-                              5054, n->app_port, body, sizeof body);
+    int size = wn_manifest_app_write(uuid, origin, ++n->revision, now, now + 60000, 5054,
+                                     n->app_port, body, sizeof body);
     assert(size > 0 && wn_principal(tenant, ids[n->index], principal) == 105);
-    if(n->agent_disabled){
-        struct wn_doc doc;assert(!wn_doc_parse(&doc,body,(size_t)size));
-        char edited[sizeof body];struct wn_writer w={.data=(uint8_t*)edited,.capacity=sizeof edited,.maximum=sizeof edited};
-        unsigned fields=0;for(unsigned i=1;i<doc.storage[0].next;i=doc.storage[i+1].next)fields++;
-        wn_map(&w,fields);
-        for(unsigned i=1;i<doc.storage[0].next;i=doc.storage[i+1].next){
-            const struct wn_token *key_token=wn_doc_token(&doc,(int)i),*value=wn_doc_token(&doc,(int)i+1);
-            wn_raw(&w,doc.text+key_token->start,key_token->end-key_token->start);
-            if(wn_doc_equal(&doc,(int)i,wn_key_name("agentTransport")))wn_text(&w,"");
-            else wn_raw(&w,doc.text+value->start,value->end-value->start);
+    if (n->agent_disabled) {
+        struct wn_doc doc;
+        assert(!wn_doc_parse(&doc, body, (size_t)size));
+        char edited[sizeof body];
+        struct wn_writer w = {
+            .data = (uint8_t *)edited, .capacity = sizeof edited, .maximum = sizeof edited};
+        unsigned fields = 0;
+        for (unsigned i = 1; i < doc.storage[0].next; i = doc.storage[i + 1].next)
+            fields++;
+        wn_map(&w, fields);
+        for (unsigned i = 1; i < doc.storage[0].next; i = doc.storage[i + 1].next) {
+            const struct wn_token *key_token = wn_doc_token(&doc, (int)i),
+                                  *value = wn_doc_token(&doc, (int)i + 1);
+            wn_raw(&w, doc.text + key_token->start, key_token->end - key_token->start);
+            if (wn_doc_equal(&doc, (int)i, wn_key_name("agentTransport")))
+                wn_text(&w, "");
+            else
+                wn_raw(&w, doc.text + value->start, value->end - value->start);
         }
-        size=wn_finish(&w);assert(size>0);memcpy(body,edited,(size_t)size);
+        size = wn_finish(&w);
+        assert(size > 0);
+        memcpy(body, edited, (size_t)size);
     }
-    assert(!wendy_pki_artifact_digest(0,principal, body, size, hash));
-    assert(!mbedtls_pk_sign(&key, MBEDTLS_MD_SHA256, hash, sizeof hash, sig,
-                            sizeof sig, &sig_size));
-    size=wn_manifest_wire_write(principal,body,(size_t)size,sig,sig_size,n->proof,sizeof n->proof);
-    assert(size>0 && (size_t)size<sizeof n->proof);
+    assert(!wendy_pki_artifact_digest(0, principal, body, size, hash));
+    assert(
+        !mbedtls_pk_sign(&key, MBEDTLS_MD_SHA256, hash, sizeof hash, sig, sizeof sig, &sig_size));
+    size = wn_manifest_wire_write(principal, body, (size_t)size, sig, sig_size, n->proof,
+                                  sizeof n->proof);
+    assert(size > 0 && (size_t)size < sizeof n->proof);
     n->proof_size = size;
     n->publications++;
     return 0;
 }
-static int publish(void *ctx, const struct wn_origin *origin, int64_t now,
-                   int64_t monotonic)
+static int publish(void *ctx, const struct wn_origin *origin, int64_t now, int64_t monotonic)
 {
     struct node *n = ctx;
     assert(n->writes && !n->active->ready);
@@ -102,13 +108,11 @@ static int send_packet(void *ctx, uint64_t link, const void *bytes, size_t size)
     /* attach exports before returning its new ID to the caller. */
     if (destination == 3)
         for (destination = 0; destination < 3; destination++)
-            if (destination != n->index && n->links[destination] == UINT64_MAX)
-            {
+            if (destination != n->index && n->links[destination] == UINT64_MAX) {
                 n->links[destination] = link;
                 break;
             }
-    assert(destination < 3 && written - consumed < 512 &&
-           size <= WB_PACKET_MAX);
+    assert(destination < 3 && written - consumed < 512 && size <= WB_PACKET_MAX);
     struct packet *p = &packets[written++ % 512];
     p->from = n->index;
     p->to = destination;
@@ -120,26 +124,22 @@ static int send_packet(void *ctx, uint64_t link, const void *bytes, size_t size)
 static void pump(void)
 {
     unsigned iterations = 0;
-    for (;;)
-    {
+    for (;;) {
         bool changed = false;
         for (unsigned i = 0; i < 3; i++)
             for (unsigned j = 0; j < 3; j++)
-                if (i != j && nodes[j].revision > nodes[i].seen[j])
-                {
-                    assert(!wnr_manifest(&nodes[i].core, nodes[j].proof,
-                                         nodes[j].proof_size, wall + ms,
-                                         epoch + (int64_t)ms * 1000));
+                if (i != j && nodes[j].revision > nodes[i].seen[j]) {
+                    assert(!wnr_manifest(&nodes[i].core, nodes[j].proof, nodes[j].proof_size,
+                                         wall + ms, epoch + (int64_t)ms * 1000));
                     nodes[i].seen[j] = nodes[j].revision;
                     changed = true;
                 }
-        if (consumed < written)
-        {
+        if (consumed < written) {
             struct packet p = packets[consumed++ % 512];
             uint64_t incoming = nodes[p.to].links[p.from];
             assert(incoming && incoming != UINT64_MAX);
-            assert(!wnr_receive(&nodes[p.to].core, incoming, p.bytes, p.size,
-                                wall + ms, epoch + (int64_t)ms * 1000));
+            assert(!wnr_receive(&nodes[p.to].core, incoming, p.bytes, p.size, wall + ms,
+                                epoch + (int64_t)ms * 1000));
             changed = true;
         }
         assert(++iterations < 10000);
@@ -150,29 +150,30 @@ static void pump(void)
 }
 static void advance(uint64_t until)
 {
-    while (ms < until)
-    {
+    while (ms < until) {
         ms += 20;
         for (unsigned i = 0; i < 3; i++)
-            assert(!wnr_tick(&nodes[i].core, wall + ms,
-                             epoch + (int64_t)ms * 1000));
+            assert(!wnr_tick(&nodes[i].core, wall + ms, epoch + (int64_t)ms * 1000));
         pump();
     }
 }
 static void connect_nodes(unsigned a, unsigned b, uint16_t cost)
 {
     nodes[a].links[b] = nodes[b].links[a] = UINT64_MAX;
-    assert(!wnr_attach(&nodes[a].core, ids[b], cost, wall + ms,
-                       epoch + (int64_t)ms * 1000, &nodes[a].links[b]));
-    assert(!wnr_attach(&nodes[b].core, ids[a], cost, wall + ms,
-                       epoch + (int64_t)ms * 1000, &nodes[b].links[a]));
+    assert(!wnr_attach(&nodes[a].core, ids[b], cost, wall + ms, epoch + (int64_t)ms * 1000,
+                       &nodes[a].links[b]));
+    assert(!wnr_attach(&nodes[b].core, ids[a], cost, wall + ms, epoch + (int64_t)ms * 1000,
+                       &nodes[b].links[a]));
     pump();
 }
 static struct wb_route route(unsigned from, unsigned to)
 {
     struct wb_route r;
-    bool found=wnr_lookup(&nodes[from].core,nodes[to].address,epoch+(int64_t)ms*1000,&r);
-    if(!found)fprintf(stderr,"route from=%u to=%u found=%u at_ms=%llu seq=%u published=%u\n",from,to,found,(unsigned long long)ms,nodes[to].core.babel.seqno,nodes[to].core.published_seqno);
+    bool found = wnr_lookup(&nodes[from].core, nodes[to].address, epoch + (int64_t)ms * 1000, &r);
+    if (!found)
+        fprintf(stderr, "route from=%u to=%u found=%u at_ms=%llu seq=%u published=%u\n", from, to,
+                found, (unsigned long long)ms, nodes[to].core.babel.seqno,
+                nodes[to].core.published_seqno);
     assert(found);
     return r;
 }
@@ -190,8 +191,7 @@ int main(int argc, char **argv)
     uint8_t spki[128];
     int spki_size = mbedtls_pk_write_pubkey_der(&key, spki, sizeof spki);
     assert(spki_size > 0);
-    for (unsigned i = 0; i < 3; i++)
-    {
+    for (unsigned i = 0; i < 3; i++) {
         struct node *n = &nodes[i];
         n->index = i;
         n->app_port = 43022;
@@ -212,8 +212,7 @@ int main(int argc, char **argv)
         assert(!wn_uuid_parse(ids[i], uuid));
         wn_address(uuid, n->address);
         for (unsigned j = 0; j < 3; j++)
-            if (i != j)
-            {
+            if (i != j) {
                 struct wendy_pki_mesh_peer peer = {.expires = 1800003600};
                 memcpy(peer.device, ids[j], 37);
                 memcpy(peer.spki, spki + sizeof spki - spki_size, spki_size);
@@ -226,44 +225,49 @@ int main(int argc, char **argv)
     advance(12000);
     struct wb_route r = route(0, 2);
     assert(r.metric == 256 && r.link == nodes[0].links[1]);
-    uint8_t target[16]; uint16_t app_port;
+    uint8_t target[16];
+    uint16_t app_port;
     assert(!wn_uuid_parse(ids[2], target));
-    assert(wnr_app_endpoint(&nodes[0].core, target, epoch + (int64_t)ms*1000, &app_port));
+    assert(wnr_app_endpoint(&nodes[0].core, target, epoch + (int64_t)ms * 1000, &app_port));
     assert(app_port == 43022);
     uint16_t agent_port;
-    assert(wnr_agent_endpoint(&nodes[0].core, target, epoch+(int64_t)ms*1000, &agent_port));
+    assert(wnr_agent_endpoint(&nodes[0].core, target, epoch + (int64_t)ms * 1000, &agent_port));
     assert(agent_port == 5054);
     assert(!wnr_agent_endpoint(&nodes[0].core, nodes[0].core.directory.self,
-                               epoch+(int64_t)ms*1000, &agent_port));
+                               epoch + (int64_t)ms * 1000, &agent_port));
     assert(!agent_port);
-    assert(!wnr_app_endpoint(&nodes[0].core, target,
-                             epoch + (int64_t)ms*1000 + INT64_C(40000000), &app_port));
+    assert(!wnr_app_endpoint(&nodes[0].core, target, epoch + (int64_t)ms * 1000 + INT64_C(40000000),
+                             &app_port));
     assert(!app_port); /* Timed-out link cannot expose a cached capability. */
     nodes[2].app_port = 0;
     struct wn_origin service_origin = {.router_id = 3, .seqno = nodes[2].core.published_seqno};
-    service_origin.seqno=nodes[2].core.published_seqno;
-    assert(!sign_proof(&nodes[2], &service_origin, wall+ms, epoch+(int64_t)ms*1000));
-    pump();advance(ms+2000);
-    assert(!wnr_app_endpoint(&nodes[0].core, target, epoch+(int64_t)ms*1000, &app_port));
-    assert(route(0,2).metric == 256); /* Route exists; signed TLS endpoint was removed. */
-    assert(wnr_agent_endpoint(&nodes[0].core, target, epoch+(int64_t)ms*1000, &agent_port));
+    service_origin.seqno = nodes[2].core.published_seqno;
+    assert(!sign_proof(&nodes[2], &service_origin, wall + ms, epoch + (int64_t)ms * 1000));
+    pump();
+    advance(ms + 2000);
+    assert(!wnr_app_endpoint(&nodes[0].core, target, epoch + (int64_t)ms * 1000, &app_port));
+    assert(route(0, 2).metric == 256); /* Route exists; signed TLS endpoint was removed. */
+    assert(wnr_agent_endpoint(&nodes[0].core, target, epoch + (int64_t)ms * 1000, &agent_port));
     nodes[2].app_port = 43022;
-    service_origin.seqno=nodes[2].core.published_seqno;
-    assert(!sign_proof(&nodes[2], &service_origin, wall+ms, epoch+(int64_t)ms*1000));
-    pump();advance(ms+2000);
-    assert(wnr_app_endpoint(&nodes[0].core, target, epoch+(int64_t)ms*1000, &app_port));
+    service_origin.seqno = nodes[2].core.published_seqno;
+    assert(!sign_proof(&nodes[2], &service_origin, wall + ms, epoch + (int64_t)ms * 1000));
+    pump();
+    advance(ms + 2000);
+    assert(wnr_app_endpoint(&nodes[0].core, target, epoch + (int64_t)ms * 1000, &app_port));
     nodes[2].agent_disabled = true;
-    service_origin.seqno=nodes[2].core.published_seqno;
-    assert(!sign_proof(&nodes[2], &service_origin, wall+ms, epoch+(int64_t)ms*1000));
-    pump();advance(ms+2000);
-    assert(!wnr_agent_endpoint(&nodes[0].core, target, epoch+(int64_t)ms*1000, &agent_port));
-    assert(!agent_port && route(0,2).metric == 256);
-    assert(wnr_app_endpoint(&nodes[0].core, target, epoch+(int64_t)ms*1000, &app_port));
+    service_origin.seqno = nodes[2].core.published_seqno;
+    assert(!sign_proof(&nodes[2], &service_origin, wall + ms, epoch + (int64_t)ms * 1000));
+    pump();
+    advance(ms + 2000);
+    assert(!wnr_agent_endpoint(&nodes[0].core, target, epoch + (int64_t)ms * 1000, &agent_port));
+    assert(!agent_port && route(0, 2).metric == 256);
+    assert(wnr_app_endpoint(&nodes[0].core, target, epoch + (int64_t)ms * 1000, &app_port));
     nodes[2].agent_disabled = false;
-    service_origin.seqno=nodes[2].core.published_seqno;
-    assert(!sign_proof(&nodes[2], &service_origin, wall+ms, epoch+(int64_t)ms*1000));
-    pump();advance(ms+2000);
-    assert(wnr_agent_endpoint(&nodes[0].core, target, epoch+(int64_t)ms*1000, &agent_port));
+    service_origin.seqno = nodes[2].core.published_seqno;
+    assert(!sign_proof(&nodes[2], &service_origin, wall + ms, epoch + (int64_t)ms * 1000));
+    pump();
+    advance(ms + 2000);
+    assert(wnr_agent_endpoint(&nodes[0].core, target, epoch + (int64_t)ms * 1000, &agent_port));
     /* Even a blocked actor cannot keep a stale selected link forwarding. */
     assert(!wnr_lookup(&nodes[0].core, nodes[2].address,
                        epoch + (int64_t)ms * 1000 + INT64_C(40000000), &r));
@@ -273,33 +277,26 @@ int main(int argc, char **argv)
     memcpy(ip + 24, nodes[2].address, 16);
     uint64_t outgoing;
     int64_t now = epoch + (int64_t)ms * 1000;
-    assert(wnr_packet(&nodes[1].core, nodes[1].links[0], ip, sizeof ip, now,
-                      &outgoing) == 1);
+    assert(wnr_packet(&nodes[1].core, nodes[1].links[0], ip, sizeof ip, now, &outgoing) == 1);
     assert(ip[7] == 63 && outgoing == nodes[1].links[2]);
-    assert(wnr_packet(&nodes[2].core, nodes[2].links[1], ip, sizeof ip, now,
-                      &outgoing) == 0 &&
+    assert(wnr_packet(&nodes[2].core, nodes[2].links[1], ip, sizeof ip, now, &outgoing) == 0 &&
            !outgoing);
     ip[7] = 1;
-    assert(wnr_packet(&nodes[1].core, nodes[1].links[0], ip, sizeof ip, now,
-                      &outgoing) == -2 &&
+    assert(wnr_packet(&nodes[1].core, nodes[1].links[0], ip, sizeof ip, now, &outgoing) == -2 &&
            ip[7] == 1);
     ip[7] = 64;
     assert(wnr_packet(&nodes[1].core, 999, ip, sizeof ip, now, &outgoing) < 0);
     ip[23] ^= 0x10;
-    assert(wnr_packet(&nodes[1].core, nodes[1].links[0], ip, sizeof ip, now,
-                      &outgoing) < 0);
-    assert(!wnr_lookup(&nodes[0].core, nodes[2].address,
-                       now + INT64_C(61000000), &r));
+    assert(wnr_packet(&nodes[1].core, nodes[1].links[0], ip, sizeof ip, now, &outgoing) < 0);
+    assert(!wnr_lookup(&nodes[0].core, nodes[2].address, now + INT64_C(61000000), &r));
     assert(!wnr_app_endpoint(&nodes[0].core, target, now + INT64_C(61000000), &app_port));
     assert(!wnr_agent_endpoint(&nodes[0].core, target, now + INT64_C(61000000), &agent_port));
 
     connect_nodes(0, 2, WNR_BLE_COST);
     advance(22000);
     assert(route(0, 2).metric == 256);
-    assert(!wnr_detach(&nodes[1].core, nodes[1].links[2], wall + ms,
-                       epoch + (int64_t)ms * 1000));
-    assert(!wnr_detach(&nodes[2].core, nodes[2].links[1], wall + ms,
-                       epoch + (int64_t)ms * 1000));
+    assert(!wnr_detach(&nodes[1].core, nodes[1].links[2], wall + ms, epoch + (int64_t)ms * 1000));
+    assert(!wnr_detach(&nodes[2].core, nodes[2].links[1], wall + ms, epoch + (int64_t)ms * 1000));
     pump();
     advance(42000);
     r = route(0, 2);
@@ -310,8 +307,7 @@ int main(int argc, char **argv)
     struct wnr_core restored = {0};
     nodes[0].active = &restored;
     int64_t reboot = epoch + INT64_C(7200000000);
-    assert(!wnr_init(&restored, &nodes[0].config, reboot, nodes[0].journal,
-                     nodes[0].journal_size));
+    assert(!wnr_init(&restored, &nodes[0].config, reboot, nodes[0].journal, nodes[0].journal_size));
     assert(!restored.babel.route_count && !restored.babel.links_capacity);
     assert(!wnr_lookup(&restored, nodes[2].address, reboot, &r));
     assert(!wnr_start(&restored, wall + ms, reboot));
@@ -325,15 +321,12 @@ int main(int argc, char **argv)
     nodes[0].fail_storage = true;
     /* A changed, signed sequence proof requires a new durable replay receipt.
      */
-    struct wn_origin changed = {.router_id = 3,
-                                .seqno = nodes[2].core.published_seqno};
-    assert(!sign_proof(&nodes[2], &changed, wall + ms,
-                       epoch + (int64_t)ms * 1000));
-    assert(wnr_manifest(&nodes[0].core, nodes[2].proof, nodes[2].proof_size,
-                        wall + ms, epoch + (int64_t)ms * 1000) == WB_STOPPED);
+    struct wn_origin changed = {.router_id = 3, .seqno = nodes[2].core.published_seqno};
+    assert(!sign_proof(&nodes[2], &changed, wall + ms, epoch + (int64_t)ms * 1000));
+    assert(wnr_manifest(&nodes[0].core, nodes[2].proof, nodes[2].proof_size, wall + ms,
+                        epoch + (int64_t)ms * 1000) == WB_STOPPED);
     assert(nodes[0].sends == sends && !nodes[0].core.ready);
-    assert(!wnr_lookup(&nodes[0].core, nodes[2].address,
-                       epoch + (int64_t)ms * 1000, &r));
+    assert(!wnr_lookup(&nodes[0].core, nodes[2].address, epoch + (int64_t)ms * 1000, &r));
     for (unsigned i = 0; i < 3; i++)
         wnr_deinit(&nodes[i].core);
     mbedtls_pk_free(&key);

@@ -16,6 +16,6 @@ unsigned char *wendy_pki_input_workspace_borrow(size_t *capacity);
 void wendy_pki_input_workspace_release(unsigned char *);
 void pki_tls_input_discard_cached(void);
 unsigned char *pki_tls_input_take(size_t size);
-void pki_tls_input_return(unsigned char *,size_t);
+void pki_tls_input_return(unsigned char *, size_t);
 /* Mbed TLS passes already-zeroized bytes and honors a nonzero ownership claim. */
-int pki_tls_input_recycle(void *,unsigned char *,size_t);
+int pki_tls_input_recycle(void *, unsigned char *, size_t);

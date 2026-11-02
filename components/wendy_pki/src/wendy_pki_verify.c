@@ -52,12 +52,16 @@ static mbedtls_x509_crt *parse_cert(const uint8_t *data, size_t size)
  * verification call ends, avoiding a second complete public-chain payload. */
 static mbedtls_x509_crt *parse_cert_borrowed(const uint8_t *data, size_t size)
 {
-    if (wendy_pki_crypto_init()) return NULL;
+    if (wendy_pki_crypto_init())
+        return NULL;
     mbedtls_x509_crt *cert = mbedtls_calloc(1, sizeof *cert);
-    if (!cert) return NULL;
+    if (!cert)
+        return NULL;
     mbedtls_x509_crt_init(cert);
     if (mbedtls_x509_crt_parse_der_nocopy(cert, data, size) || cert->raw.len != size) {
-        mbedtls_x509_crt_free(cert); mbedtls_free(cert); return NULL;
+        mbedtls_x509_crt_free(cert);
+        mbedtls_free(cert);
+        return NULL;
     }
     return cert;
 }
@@ -67,58 +71,85 @@ static void free_cert(mbedtls_x509_crt *cert)
 }
 /* PEM is an import boundary only. Library calls always consume DER. Borrowed
  * DER must outlive the parsed chain; imported PEM necessarily uses copies. */
-int pki_parse_certificate_bundle(mbedtls_x509_crt *cert,const uint8_t *data,
-                                 size_t size,bool borrow)
+int pki_parse_certificate_bundle(mbedtls_x509_crt *cert, const uint8_t *data, size_t size,
+                                 bool borrow)
 {
-    if(!data || !size || size>65536 || wendy_pki_crypto_init())return -1;
-    uint8_t *imported=NULL;
-    if(data[0]!=0x30){
-        size_t bytes=0;
-        if(wendy_cert_bundle_measure(data,size,&bytes))return -1;
-        imported=pki_owned_malloc(bytes);
-        if(!imported)return MBEDTLS_ERR_X509_ALLOC_FAILED;
-        if(wendy_cert_bundle_import(data,size,imported,bytes,&bytes)){
-            pki_owned_free(imported);return -1;
+    if (!data || !size || size > 65536 || wendy_pki_crypto_init())
+        return -1;
+    uint8_t *imported = NULL;
+    if (data[0] != 0x30) {
+        size_t bytes = 0;
+        if (wendy_cert_bundle_measure(data, size, &bytes))
+            return -1;
+        imported = pki_owned_malloc(bytes);
+        if (!imported)
+            return MBEDTLS_ERR_X509_ALLOC_FAILED;
+        if (wendy_cert_bundle_import(data, size, imported, bytes, &bytes)) {
+            pki_owned_free(imported);
+            return -1;
         }
-        data=imported;size=bytes;borrow=false;
+        data = imported;
+        size = bytes;
+        borrow = false;
     }
-    size_t offset=0,bytes;const uint8_t *der;unsigned count=0;int next,result=0;
-    while((next=wendy_cert_der_next(data,size,&offset,&der,&bytes))==1){
-        if(++count>8){result=-1;break;}
-        result=borrow ? mbedtls_x509_crt_parse_der_nocopy(cert,der,bytes):
-                        mbedtls_x509_crt_parse_der(cert,der,bytes);
-        if(result)break;
+    size_t offset = 0, bytes;
+    const uint8_t *der;
+    unsigned count = 0;
+    int next, result = 0;
+    while ((next = wendy_cert_der_next(data, size, &offset, &der, &bytes)) == 1) {
+        if (++count > 8) {
+            result = -1;
+            break;
+        }
+        result = borrow ? mbedtls_x509_crt_parse_der_nocopy(cert, der, bytes)
+                        : mbedtls_x509_crt_parse_der(cert, der, bytes);
+        if (result)
+            break;
     }
-    pki_owned_free(imported);return result ? result : next<0 || !count ? -1:0;
+    pki_owned_free(imported);
+    return result ? result : next < 0 || !count ? -1 : 0;
 }
-static int verify_roots_direct(const uint8_t *data,size_t size)
+static int verify_roots_direct(const uint8_t *data, size_t size)
 {
-    if(!data || !size || size>16384 || wendy_pki_crypto_init())return -1;
-    uint8_t *imported=NULL;
-    if(data[0]!=0x30){
-        size_t bytes=0;
-        if(wendy_cert_bundle_measure(data,size,&bytes))return -1;
-        imported=pki_owned_malloc(bytes);
-        if(!imported)return -1;
-        if(wendy_cert_bundle_import(data,size,imported,bytes,&bytes)){
-            pki_owned_free(imported);return -1;
+    if (!data || !size || size > 16384 || wendy_pki_crypto_init())
+        return -1;
+    uint8_t *imported = NULL;
+    if (data[0] != 0x30) {
+        size_t bytes = 0;
+        if (wendy_cert_bundle_measure(data, size, &bytes))
+            return -1;
+        imported = pki_owned_malloc(bytes);
+        if (!imported)
+            return -1;
+        if (wendy_cert_bundle_import(data, size, imported, bytes, &bytes)) {
+            pki_owned_free(imported);
+            return -1;
         }
-        data=imported;size=bytes;
+        data = imported;
+        size = bytes;
     }
     /* Check one borrowed anchor at a time, without a duplicate DER payload. */
-    size_t offset=0,bytes;const uint8_t *der;unsigned count=0;int next,result=-1;
-    while((next=wendy_cert_der_next(data,size,&offset,&der,&bytes))==1){
-        if(++count>8)goto done;
-        mbedtls_x509_crt cert;mbedtls_x509_crt_init(&cert);
-        int parsed=mbedtls_x509_crt_parse_der_nocopy(&cert,der,bytes);
-        int valid=!parsed && cert.MBEDTLS_PRIVATE(ca_istrue) && !cert.next &&
-                   !wendy_pki_certificate_policy(&cert,true);
+    size_t offset = 0, bytes;
+    const uint8_t *der;
+    unsigned count = 0;
+    int next, result = -1;
+    while ((next = wendy_cert_der_next(data, size, &offset, &der, &bytes)) == 1) {
+        if (++count > 8)
+            goto done;
+        mbedtls_x509_crt cert;
+        mbedtls_x509_crt_init(&cert);
+        int parsed = mbedtls_x509_crt_parse_der_nocopy(&cert, der, bytes);
+        int valid = !parsed && cert.MBEDTLS_PRIVATE(ca_istrue) && !cert.next &&
+                    !wendy_pki_certificate_policy(&cert, true);
         mbedtls_x509_crt_free(&cert);
-        if(!valid)goto done;
+        if (!valid)
+            goto done;
     }
-    if(!next && count)result=0;
+    if (!next && count)
+        result = 0;
 done:
-    pki_owned_free(imported);return result;
+    pki_owned_free(imported);
+    return result;
 }
 
 /* Bounded DER reader. Indefinite/nonminimal lengths, high tags, integer padding,
@@ -258,11 +289,12 @@ static int ec_public_key(der spki, bool allow_p384)
 
 static int own_public_key(der spki)
 {
-    if (ec_public_key(spki, false)) return 1;
+    if (ec_public_key(spki, false))
+        return 1;
 #if defined(MBEDTLS_MLDSA65_PRIVATE_KEY)
     der id, params, key;
     return !public_key_parts(spki, &id, &params, &key) &&
-        bytes(id, mldsa65_oid, sizeof mldsa65_oid) && !params.n && key.n == 1953;
+           bytes(id, mldsa65_oid, sizeof mldsa65_oid) && !params.n && key.n == 1953;
 #else
     return 0;
 #endif
@@ -350,7 +382,9 @@ static int verify_signature(der spki, der sig_alg, der attrs, der sig)
             MBEDTLS_MD_SHA256, hash, sizeof hash, sig.p, sig.n);
     }
 done:
-    pki_owned_free(message); mbedtls_pk_free(&key); return result;
+    pki_owned_free(message);
+    mbedtls_pk_free(&key);
+    return result;
 }
 static int cert_time(const mbedtls_x509_time *t, time_t *out)
 {
@@ -388,59 +422,80 @@ static int verify_at(void *context, mbedtls_x509_crt *cert, int depth, uint32_t 
     return 0;
 }
 static int verify_chain_parsed(mbedtls_x509_crt *leaf, mbedtls_x509_crt **certs, int count,
-    mbedtls_x509_crt *anchors, time_t now, time_t *expires)
+                               mbedtls_x509_crt *anchors, time_t now, time_t *expires)
 {
-    if (!leaf || count < 1 || count > 8) return -1;
+    if (!leaf || count < 1 || count > 8)
+        return -1;
     mbedtls_x509_crt *valid[8], *anchor_next[8];
     size_t valid_count = 0, anchor_count = 0;
-    for (mbedtls_x509_crt *root=anchors; root; root=root->next) {
+    for (mbedtls_x509_crt *root = anchors; root; root = root->next) {
         if (++anchor_count > 8 || !root->raw.len || !root->MBEDTLS_PRIVATE(ca_istrue) ||
-            wendy_pki_certificate_policy(root,true)) return -1;
-        for (int i=0;i<count;i++) if (root==certs[i]) return -1;
-        if (valid_at(root,now)) valid[valid_count++]=root;
+            wendy_pki_certificate_policy(root, true))
+            return -1;
+        for (int i = 0; i < count; i++)
+            if (root == certs[i])
+                return -1;
+        if (valid_at(root, now))
+            valid[valid_count++] = root;
     }
-    if (!valid_count) return -1;
+    if (!valid_count)
+        return -1;
     mbedtls_x509_crt *path[8] = {leaf}, *saved_next[8];
     size_t path_count = 1;
     bool have_leaf = false;
     for (int i = 0; i < count; i++) {
-        if (certs[i] == leaf) { have_leaf = true; continue; }
-        if (!valid_at(certs[i], now)) continue;
-        if (path_count == 8) return -1;
-        for (size_t j = 0; j < path_count; j++) if (path[j] == certs[i]) return -1;
+        if (certs[i] == leaf) {
+            have_leaf = true;
+            continue;
+        }
+        if (!valid_at(certs[i], now))
+            continue;
+        if (path_count == 8)
+            return -1;
+        for (size_t j = 0; j < path_count; j++)
+            if (path[j] == certs[i])
+                return -1;
         path[path_count++] = certs[i];
     }
-    if (!have_leaf) return -1;
+    if (!have_leaf)
+        return -1;
     /* Both lists belong exclusively to the caller. Offer only candidates
      * valid at signed time, then restore every link even on verifier failure. */
-    for (size_t i=0;i<valid_count;i++) {
-        anchor_next[i]=valid[i]->next;
-        valid[i]->next=i+1<valid_count ? valid[i+1] : NULL;
+    for (size_t i = 0; i < valid_count; i++) {
+        anchor_next[i] = valid[i]->next;
+        valid[i]->next = i + 1 < valid_count ? valid[i + 1] : NULL;
     }
     for (size_t i = 0; i < path_count; i++) {
         saved_next[i] = path[i]->next;
-        path[i]->next = i + 1 < path_count ? path[i+1] : NULL;
+        path[i]->next = i + 1 < path_count ? path[i + 1] : NULL;
     }
-    struct verification_time verification = {.now=now, .anchors=valid[0]};
-    uint32_t flags=0;
-    int verified = mbedtls_x509_crt_verify_with_profile(leaf, valid[0], NULL,
-        wendy_pki_certificate_profile(), NULL, &flags, verify_at, &verification);
-    for (size_t i = 0; i < path_count; i++) path[i]->next = saved_next[i];
-    for (size_t i=0;i<valid_count;i++) valid[i]->next=anchor_next[i];
-    if (verified || flags) return -1;
-    if (expires) *expires=verification.expires;
+    struct verification_time verification = {.now = now, .anchors = valid[0]};
+    uint32_t flags = 0;
+    int verified =
+        mbedtls_x509_crt_verify_with_profile(leaf, valid[0], NULL, wendy_pki_certificate_profile(),
+                                             NULL, &flags, verify_at, &verification);
+    for (size_t i = 0; i < path_count; i++)
+        path[i]->next = saved_next[i];
+    for (size_t i = 0; i < valid_count; i++)
+        valid[i]->next = anchor_next[i];
+    if (verified || flags)
+        return -1;
+    if (expires)
+        *expires = verification.expires;
     return 0;
 }
 static int verify_chain(mbedtls_x509_crt *leaf, mbedtls_x509_crt **certs, int count,
-    const uint8_t *roots, size_t size, time_t now, time_t *expires)
+                        const uint8_t *roots, size_t size, time_t now, time_t *expires)
 {
-    if (!roots || !size || size>16384) return -1;
+    if (!roots || !size || size > 16384)
+        return -1;
     /* The caller's DER bundle remains immutable until this synchronous path
      * check ends. Borrow its payload while checking policy and signatures. */
     mbedtls_x509_crt anchors;
     mbedtls_x509_crt_init(&anchors);
-    int result=pki_parse_certificate_bundle(&anchors,roots,size,true) ? -1 :
-        verify_chain_parsed(leaf,certs,count,&anchors,now,expires);
+    int result = pki_parse_certificate_bundle(&anchors, roots, size, true)
+                     ? -1
+                     : verify_chain_parsed(leaf, certs, count, &anchors, now, expires);
     mbedtls_x509_crt_free(&anchors);
     return result;
 }
@@ -494,8 +549,8 @@ static int tsa_eku(der cert)
     } while (0)
 #endif
 static int verify_time_direct(const uint8_t *input, size_t size, const uint8_t nonce[32],
-                          const uint8_t *roots, size_t roots_size, time_t floor,
-                          time_t *verified_time)
+                              const uint8_t *roots, size_t roots_size, time_t floor,
+                              time_t *verified_time)
 {
     int result = -1, count = 0, signer_index = -1;
     mbedtls_x509_crt *certs[8] = {0};
@@ -632,74 +687,86 @@ static int has_eku(mbedtls_x509_crt *crt, const char *oid, size_t n)
 }
 int pki_identity_encoding(const uint8_t *pem, size_t size, const uint8_t *key, size_t key_size)
 {
-    size_t bytes=0;
-    return !pem || !size || pem[0]!=0x30 || wendy_cert_bundle_measure(pem,size,&bytes) ||
-           pki_key_encoding(key,key_size) ? -1:0;
+    size_t bytes = 0;
+    return !pem || !size || pem[0] != 0x30 || wendy_cert_bundle_measure(pem, size, &bytes) ||
+                   pki_key_encoding(key, key_size)
+               ? -1
+               : 0;
 }
-int pki_key_encoding(const uint8_t *key,size_t key_size)
+int pki_key_encoding(const uint8_t *key, size_t key_size)
 {
-    if (!key || !key_size) return -1;
+    if (!key || !key_size)
+        return -1;
     der key_der = {key, key, key_size, key_size, 0}, sequence;
     return take(&key_der, 0x30, &sequence) || key_der.n ? -1 : 0;
 }
 int pki_verify_parsed_identity(mbedtls_x509_crt *chain, mbedtls_pk_context *key,
-    const uint8_t *roots, size_t roots_size, mbedtls_x509_crt *anchors, const char *principal,
-    time_t now, time_t *expires)
+                               const uint8_t *roots, size_t roots_size, mbedtls_x509_crt *anchors,
+                               const char *principal, time_t now, time_t *expires)
 {
-    if (!chain || !key || !roots || !roots_size || !principal || !expires) return -1;
+    if (!chain || !key || !roots || !roots_size || !principal || !expires)
+        return -1;
     int count = 0;
     time_t chain_expires = 0;
     mbedtls_x509_crt *certs[8];
     der leaf_der = {chain->raw.p, chain->raw.p, chain->raw.len, chain->raw.len, 0};
     der leaf_spki, serial, issuer;
-    if (certificate_parts(leaf_der, &serial, &issuer, &leaf_spki) ||
-        !own_public_key(leaf_spki)) return -1;
-    for (mbedtls_x509_crt *c=chain; c; c=c->next) {
-        if (count==8) return -1;
-        certs[count++]=c;
+    if (certificate_parts(leaf_der, &serial, &issuer, &leaf_spki) || !own_public_key(leaf_spki))
+        return -1;
+    for (mbedtls_x509_crt *c = chain; c; c = c->next) {
+        if (count == 8)
+            return -1;
+        certs[count++] = c;
     }
-    int verified = anchors ? verify_chain_parsed(chain,certs,count,anchors,now,&chain_expires) :
-        verify_chain(chain,certs,count,roots,roots_size,now,&chain_expires);
-    if (!count || verified ||
-        chain->MBEDTLS_PRIVATE(ca_istrue) ||
+    int verified = anchors
+                       ? verify_chain_parsed(chain, certs, count, anchors, now, &chain_expires)
+                       : verify_chain(chain, certs, count, roots, roots_size, now, &chain_expires);
+    if (!count || verified || chain->MBEDTLS_PRIVATE(ca_istrue) ||
         !has_eku(chain, MBEDTLS_OID_CLIENT_AUTH, MBEDTLS_OID_SIZE(MBEDTLS_OID_CLIENT_AUTH)) ||
         !has_eku(chain, MBEDTLS_OID_SERVER_AUTH, MBEDTLS_OID_SIZE(MBEDTLS_OID_SERVER_AUTH)) ||
-        single_uri(chain, principal) || mbedtls_pk_check_pair(&chain->pk,key) ||
-        cert_time(&chain->valid_to, expires) || *expires<=now || chain_expires<=now) return -1;
-    if (chain_expires < *expires) *expires = chain_expires;
+        single_uri(chain, principal) || mbedtls_pk_check_pair(&chain->pk, key) ||
+        cert_time(&chain->valid_to, expires) || *expires <= now || chain_expires <= now)
+        return -1;
+    if (chain_expires < *expires)
+        *expires = chain_expires;
     return 0;
 }
 static int verify_identity_direct(const uint8_t *pem, size_t size, const uint8_t *roots,
-    size_t roots_size, const uint8_t *key, size_t key_size, const char *principal,
-    time_t now, time_t *expires)
+                                  size_t roots_size, const uint8_t *key, size_t key_size,
+                                  const char *principal, time_t now, time_t *expires)
 {
-    if (!pem || !size || size>65536 || !roots || !roots_size ||
-        !key || !key_size || !principal || !expires) return -1;
+    if (!pem || !size || size > 65536 || !roots || !roots_size || !key || !key_size || !principal ||
+        !expires)
+        return -1;
     mbedtls_x509_crt chain;
     mbedtls_pk_context private_key;
     mbedtls_x509_crt_init(&chain); mbedtls_pk_init(&private_key);
     int result = -1;
     der key_der = {key, key, key_size, key_size, 0}, key_sequence;
     if (take(&key_der, 0x30, &key_sequence) || key_der.n ||
-        pki_parse_certificate_bundle(&chain,pem,size,true) || mbedtls_pk_parse_key(&private_key,key,key_size,NULL,0)) goto done;
-    result = pki_verify_parsed_identity(&chain,&private_key,roots,roots_size,NULL,principal,now,expires);
+        pki_parse_certificate_bundle(&chain, pem, size, true) ||
+        mbedtls_pk_parse_key(&private_key, key, key_size, NULL, 0))
+        goto done;
+    result = pki_verify_parsed_identity(&chain, &private_key, roots, roots_size, NULL, principal,
+                                        now, expires);
 done:
     mbedtls_pk_free(&private_key); mbedtls_x509_crt_free(&chain); return result;
 }
 
-static int mesh_chain(const uint8_t* const* data, const size_t* sizes, size_t count,
-    const uint8_t* roots, size_t roots_size, mbedtls_x509_crt *anchors, const char* tenant, time_t now,
-    struct wendy_pki_mesh_peer* out)
+static int mesh_chain(const uint8_t *const *data, const size_t *sizes, size_t count,
+                      const uint8_t *roots, size_t roots_size, mbedtls_x509_crt *anchors,
+                      const char *tenant, time_t now, struct wendy_pki_mesh_peer *out)
 {
-    if (!data || !sizes || !count || count > 8 || ((!roots || !roots_size) && !anchors) || !tenant
-        || !wendy_identity_uuid((const unsigned char*)tenant, strlen(tenant)) || !out || now <= 0)
+    if (!data || !sizes || !count || count > 8 || ((!roots || !roots_size) && !anchors) ||
+        !tenant || !wendy_identity_uuid((const unsigned char *)tenant, strlen(tenant)) || !out ||
+        now <= 0)
         return -1;
     mbedtls_x509_crt* certs[8] = { 0 };
     int result = -1;
     size_t total = 0;
     /* An ML-DSA-65 key makes a peer about 2 KiB. Keep it off the TLS and mesh
      * task stacks, which also run the chain's ML-DSA verification. */
-    struct wendy_pki_mesh_peer* peer = pki_owned_calloc(1, sizeof *peer);
+    struct wendy_pki_mesh_peer *peer = pki_owned_calloc(1, sizeof *peer);
     if (!peer)
         return -1;
     for (size_t i = 0; i < count; i++)
@@ -712,12 +779,12 @@ static int mesh_chain(const uint8_t* const* data, const size_t* sizes, size_t co
             goto done;
     }
     mbedtls_x509_crt* leaf = certs[0];
-    int verified=anchors ? verify_chain_parsed(leaf,certs,(int)count,anchors,now,&peer->expires):
-        verify_chain(leaf,certs,(int)count,roots,roots_size,now,&peer->expires);
-    if (verified
-        || wendy_peer_auth_role(leaf, tenant) != WENDY_PEER_ROLE_DEVICE
-        || !has_eku(leaf, MBEDTLS_OID_SERVER_AUTH, MBEDTLS_OID_SIZE(MBEDTLS_OID_SERVER_AUTH))
-        || peer->expires <= now)
+    int verified =
+        anchors ? verify_chain_parsed(leaf, certs, (int)count, anchors, now, &peer->expires)
+                : verify_chain(leaf, certs, (int)count, roots, roots_size, now, &peer->expires);
+    if (verified || wendy_peer_auth_role(leaf, tenant) != WENDY_PEER_ROLE_DEVICE ||
+        !has_eku(leaf, MBEDTLS_OID_SERVER_AUTH, MBEDTLS_OID_SIZE(MBEDTLS_OID_SERVER_AUTH)) ||
+        peer->expires <= now)
         goto done;
     unsigned uris = 0;
     for (const mbedtls_x509_sequence* a = &leaf->subject_alt_names; a && a->buf.p; a = a->next)
@@ -816,27 +883,70 @@ int wendy_pki_verify_operator(const uint8_t *data, size_t size, const char *tena
     return wendy_pki_verify_peer(data, size, tenant) == WENDY_PEER_ROLE_OPERATOR ? 0 : -1;
 }
 
-int wendy_pki_mesh_chain(const uint8_t *const *data,const size_t *sizes,size_t count,
-    const uint8_t *roots,size_t roots_size,const char *tenant,time_t now,
-    struct wendy_pki_mesh_peer *peer)
+int wendy_pki_mesh_chain(const uint8_t *const *data, const size_t *sizes, size_t count,
+                         const uint8_t *roots, size_t roots_size, const char *tenant, time_t now,
+                         struct wendy_pki_mesh_peer *peer)
 {
-    return mesh_chain(data,sizes,count,roots,roots_size,NULL,tenant,now,peer);
+    return mesh_chain(data, sizes, count, roots, roots_size, NULL, tenant, now, peer);
 }
-int pki_mesh_chain_anchors(const uint8_t *const *data,const size_t *sizes,size_t count,
-    mbedtls_x509_crt *anchors,const char *tenant,time_t now,struct wendy_pki_mesh_peer *peer)
+int pki_mesh_chain_anchors(const uint8_t *const *data, const size_t *sizes, size_t count,
+                           mbedtls_x509_crt *anchors, const char *tenant, time_t now,
+                           struct wendy_pki_mesh_peer *peer)
 {
-    return mesh_chain(data,sizes,count,NULL,0,anchors,tenant,now,peer);
+    return mesh_chain(data, sizes, count, NULL, 0, anchors, tenant, now, peer);
 }
 
-struct roots_cpu {const uint8_t *data;size_t size;int result;};
-static void roots_cpu(void *context){struct roots_cpu *j=context;j->result=verify_roots_direct(j->data,j->size);}
-int wendy_pki_verify_roots(const uint8_t *data,size_t size)
-{struct roots_cpu j={data,size,-1};return wendy_pki_work_run(roots_cpu,&j) ? -1:j.result;}
-struct time_cpu {const uint8_t *input,*nonce,*roots;size_t size,roots_size;time_t floor,*verified;int result;};
-static void time_cpu(void *context){struct time_cpu *j=context;j->result=verify_time_direct(j->input,j->size,j->nonce,j->roots,j->roots_size,j->floor,j->verified);}
-int wendy_pki_verify_time(const uint8_t *input,size_t size,const uint8_t nonce[32],const uint8_t *roots,size_t roots_size,time_t floor,time_t *verified)
-{struct time_cpu j={input,nonce,roots,size,roots_size,floor,verified,-1};return wendy_pki_work_run(time_cpu,&j) ? -1:j.result;}
-struct identity_cpu {const uint8_t *cert,*roots,*key;size_t cert_size,roots_size,key_size;const char *principal;time_t now,*expires;int result;};
-static void identity_cpu(void *context){struct identity_cpu *j=context;j->result=verify_identity_direct(j->cert,j->cert_size,j->roots,j->roots_size,j->key,j->key_size,j->principal,j->now,j->expires);}
-int wendy_pki_verify_identity(const uint8_t *cert,size_t size,const uint8_t *roots,size_t roots_size,const uint8_t *key,size_t key_size,const char *principal,time_t now,time_t *expires)
-{struct identity_cpu j={cert,roots,key,size,roots_size,key_size,principal,now,expires,-1};return wendy_pki_work_run(identity_cpu,&j) ? -1:j.result;}
+struct roots_cpu {
+    const uint8_t *data;
+    size_t size;
+    int result;
+};
+static void roots_cpu(void *context)
+{
+    struct roots_cpu *j = context;
+    j->result = verify_roots_direct(j->data, j->size);
+}
+int wendy_pki_verify_roots(const uint8_t *data, size_t size)
+{
+    struct roots_cpu j = {data, size, -1};
+    return wendy_pki_work_run(roots_cpu, &j) ? -1 : j.result;
+}
+struct time_cpu {
+    const uint8_t *input, *nonce, *roots;
+    size_t size, roots_size;
+    time_t floor, *verified;
+    int result;
+};
+static void time_cpu(void *context)
+{
+    struct time_cpu *j = context;
+    j->result = verify_time_direct(j->input, j->size, j->nonce, j->roots, j->roots_size, j->floor,
+                                   j->verified);
+}
+int wendy_pki_verify_time(const uint8_t *input, size_t size, const uint8_t nonce[32],
+                          const uint8_t *roots, size_t roots_size, time_t floor, time_t *verified)
+{
+    struct time_cpu j = {input, nonce, roots, size, roots_size, floor, verified, -1};
+    return wendy_pki_work_run(time_cpu, &j) ? -1 : j.result;
+}
+struct identity_cpu {
+    const uint8_t *cert, *roots, *key;
+    size_t cert_size, roots_size, key_size;
+    const char *principal;
+    time_t now, *expires;
+    int result;
+};
+static void identity_cpu(void *context)
+{
+    struct identity_cpu *j = context;
+    j->result = verify_identity_direct(j->cert, j->cert_size, j->roots, j->roots_size, j->key,
+                                       j->key_size, j->principal, j->now, j->expires);
+}
+int wendy_pki_verify_identity(const uint8_t *cert, size_t size, const uint8_t *roots,
+                              size_t roots_size, const uint8_t *key, size_t key_size,
+                              const char *principal, time_t now, time_t *expires)
+{
+    struct identity_cpu j = {cert,     roots,     key, size,    roots_size,
+                             key_size, principal, now, expires, -1};
+    return wendy_pki_work_run(identity_cpu, &j) ? -1 : j.result;
+}
