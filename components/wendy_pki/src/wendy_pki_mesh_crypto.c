@@ -60,14 +60,19 @@ static int mesh_digest(const char *principal, const void *body, size_t size, uin
                              PSA_SUCCESS &&
                          wendy_pki_hash_update_bounded(&op, body, size) == PSA_SUCCESS &&
                          psa_hash_finish(&op, hash, 32, &written) == PSA_SUCCESS && written == 32
-                     ? 0
-                     : -1;
+        ? 0
+        : -1;
     psa_hash_abort(&op);
     return result;
 }
 int wendy_pki_mesh_digest(const char *principal, const void *body, size_t size, uint8_t hash[32])
 {
     return mesh_digest(principal, body, size, hash, leaf_domain, sizeof leaf_domain);
+}
+int wendy_pki_artifact_digest(unsigned kind, const char *principal, const void *body, size_t size,
+                              uint8_t hash[32])
+{
+    return kind ? -1 : mesh_digest(principal, body, size, hash, domain, sizeof domain);
 }
 /* Pure ML-DSA verifies the complete preimage, not its SHA-256. This matches
  * the Linux router's crypto.Hash(0) signature and mldsa.Verify(..., nil). */
@@ -113,10 +118,10 @@ static int mesh_verify_key(const struct wendy_pki_mesh_key *peer, const char *pr
                 mbedtls_pk_parse_public_key(&key, peer->spki, peer->spki_size) ||
                 (mldsa ? verify_mldsa65(&key, principal, body, size, signature, signature_size,
                                         domain, domain_size)
-                       : mbedtls_pk_verify_ext(MBEDTLS_PK_SIGALG_ECDSA, &key, MBEDTLS_MD_SHA256,
-                                               hash, sizeof hash, signature, signature_size))
-            ? -1
-            : 0;
+                      : mbedtls_pk_verify_ext(MBEDTLS_PK_SIGALG_ECDSA, &key, MBEDTLS_MD_SHA256,
+                            hash, sizeof hash, signature, signature_size))
+        ? -1
+        : 0;
     mbedtls_pk_free(&key);
     return result;
 }

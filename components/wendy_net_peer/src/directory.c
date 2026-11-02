@@ -215,7 +215,7 @@ int wnd_identity(struct wnd_directory *d, const struct wendy_pki_mesh_peer *peer
         return -1;
     struct wnd_entry *e = find(d, uuid);
     bool changed = !e || e->peer.spki_size != peer->spki_size ||
-                   memcmp(e->peer.spki, peer->spki, peer->spki_size);
+        memcmp(e->peer.spki, peer->spki, peer->spki_size);
     if (changed) {
         bool adding = !e || !e->peer.spki_size;
         struct wnd_entry *evict = NULL;
@@ -444,6 +444,8 @@ static int accept_manifest(struct wnd_directory *d, const void *data, size_t siz
     int64_t deadline = m.withdraw ? 0 : monotonic + (m.expires - now) * 1000;
     if (m.revision == e->revision && e->deadline_us > 0 && deadline > e->deadline_us)
         deadline = e->deadline_us;
+    if (m.revision > e->revision)
+        e->pending_receipt = true;
     e->revision = m.revision;
     memcpy(e->body_hash, hash, 32);
     e->manifest = m;

@@ -52,7 +52,7 @@ int wendy_pki_mesh_public_index_snapshot(wendy_pki_connection *,
                                          struct wendy_pki_mesh_public_index *);
 /* RAM-only current-enrollment and own-certificate-epoch check. */
 bool wendy_pki_mesh_public_index_current(const struct wendy_pki_mesh_public_index *,
-                                         const struct wendy_pki_mesh_identity *);
+    const struct wendy_pki_mesh_identity *);
 /* RAM-only publication counter after carrier bootstrap has reserved this
  * boot's durable range. No NVS or identity-worker lock on the actor path.
  * TIMEOUT means the short counter lock is busy; INVALID_STATE means not yet
@@ -109,7 +109,7 @@ int wendy_pki_mesh_verify_bundle(wendy_pki_connection* connection, const uint8_t
  * derives time from an already verified native-peer clock snapshot. */
 int wendy_pki_mesh_verify_snapshot(const struct wendy_pki_mesh_identity *,
                                    const uint8_t *const *der, const size_t *sizes, size_t count,
-                                   struct wendy_pki_mesh_peer *);
+    struct wendy_pki_mesh_peer *);
 /* Portable synchronous verifier. DER inputs remain caller-owned and must be
  * immutable until return. The returned peer contains only copied metadata. */
 int wendy_pki_mesh_chain(const uint8_t* const* der, const size_t* sizes, size_t count,
@@ -127,6 +127,9 @@ int wendy_pki_service_verify_key(const struct wendy_pki_mesh_key *, const void *
 int wendy_pki_inventory_verify_key(const struct wendy_pki_mesh_key *, const void *, size_t,
                                    const uint8_t *, size_t);
 int wendy_pki_mesh_digest(const char* principal, const void* body, size_t size, uint8_t hash[32]);
+/* Explicit native artifact domain; never selects the staged legacy leaf ABI. */
+int wendy_pki_artifact_digest(unsigned kind, const char *principal, const void *body, size_t size,
+                              uint8_t hash[32]);
 
 /* Signed service records use the WendyOS service-specific domain. The
  * catalogue must separately bind the record owner/fingerprint and lease to
@@ -194,14 +197,14 @@ int wendy_pki_mesh_authenticated_peer(wendy_pki_connection *, struct wendy_pki_m
 /* Refresh nonce-bound signed time without replacing the authenticated carrier.
  * Identity/trust changes and original certificate expiry still revoke it. */
 esp_err_t wendy_pki_net_refresh(wendy_pki_connection *connection,
-                                struct wendy_pki_mesh_identity *identity);
+    struct wendy_pki_mesh_identity *identity);
 /* Two-stage renewal for continuously running packet actors. The worker owns
  * only an identity snapshot, never a TLS connection. This layer uses direct
  * HTTPS; relay_host is a reserved staging argument. Apply from the owning actor;
  * a busy identity lock returns ESP_ERR_TIMEOUT for a later bounded retry.
  * Neither failure nor a stale/retired result changes the original deadline. */
 esp_err_t wendy_pki_net_refresh_time(struct wendy_pki_mesh_identity *identity,
-                                     const char *relay_host);
+                                    const char *relay_host);
 /* Apply a fresh nonce-bound public TSA reply after its transport is closed.
  * Trust, configuration generation and persistent clock floor remain local. */
 esp_err_t wendy_pki_net_time_reply(struct wendy_pki_mesh_identity *, const uint8_t nonce[32],
@@ -220,7 +223,7 @@ esp_err_t wendy_pki_net_time_tunnel(const struct wendy_pki_stream *);
 void wendy_pki_net_time_relay(int fd);
 esp_err_t wendy_pki_time_query(const uint8_t *, size_t, uint8_t **reply, size_t *size);
 esp_err_t wendy_pki_net_apply_time(wendy_pki_connection *connection,
-                                   const struct wendy_pki_mesh_identity *identity);
+                                  const struct wendy_pki_mesh_identity *identity);
 /* App TLS is a separate same-tenant device session. It has no routing/signing
  * authority and does not reserve a persistent route revision per app flow. */
 esp_err_t wendy_pki_app_accept(int fd, wendy_pki_connection **connection,
