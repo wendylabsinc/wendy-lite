@@ -52,6 +52,13 @@ static portMUX_TYPE _mesh_adv_lock = portMUX_INITIALIZER_UNLOCKED;
 static atomic_bool _mesh_configuring;
 static esp_timer_handle_t _mesh_adv_timer;
 static struct ble_npl_event _mesh_adv_event;
+/* The default NimBLE host has firmware lifetime. Keep one lazily initialized
+ * event with that host: a dequeued event may not have entered its callback yet,
+ * so mesh OFF cannot prove its backing state is safe to deinitialize. Timers
+ * are still retired on OFF; late timer/host callbacks use only this static event
+ * and the current advertisement, never a retired timer/context. */
+static bool _mesh_adv_event_initialized;
+static bool _mesh_adv_publishing;
 /* Incoming advertising GAPs belong to this host, even when a new CoC is
  * refused. No application channel means a bounded idle selection lease. */
 struct incoming_gap {
@@ -329,12 +336,16 @@ static int _primary_advertisement(bool mesh)
 static void _mesh_adv_refresh(struct ble_npl_event *event)
 {
     (void)event;
+    /* The host cannot wait behind the actor. Its update publishes again after
+     * releasing this gate; OFF is retried until advertisement_idle() is true. */
+    if (atomic_exchange(&_mesh_configuring, true))
+        return;
     portENTER_CRITICAL(&_mesh_adv_lock);
     bool enabled = _mesh_advertisement_size != 0;
     portEXIT_CRITICAL(&_mesh_adv_lock);
     if (enabled &&
         (!_started || !_enrolled || !wendy_conf_is_current() || wendy_pki_reset_in_progress()))
-        return;
+        goto done;
     /* A full peer can receive a mesh GAP while its outgoing GAP is still
      * retiring. A controller-capacity failure then leaves management stopped;
      * that outgoing link's disconnect belongs to a different callback. Reuse
@@ -356,14 +367,27 @@ static void _mesh_adv_refresh(struct ble_npl_event *event)
     if (rc)
         ESP_LOGW(TAG, "primary advertisement refresh failed: %d", rc);
     if (!enabled && _mesh_adv_timer) {
-        esp_timer_delete(_mesh_adv_timer);
-        _mesh_adv_timer = NULL;
-        ble_npl_event_deinit(&_mesh_adv_event);
+        portENTER_CRITICAL(&_mesh_adv_lock);
+        _mesh_adv_publishing = false;
+        portEXIT_CRITICAL(&_mesh_adv_lock);
+        esp_timer_stop(_mesh_adv_timer);
+        if (esp_timer_delete(_mesh_adv_timer) == ESP_OK) {
+            portENTER_CRITICAL(&_mesh_adv_lock);
+            _mesh_adv_timer = NULL;
+            portEXIT_CRITICAL(&_mesh_adv_lock);
+        }
     }
+done:
+    atomic_store(&_mesh_configuring, false);
 }
 static void _mesh_adv_tick(void *context)
 {
     (void)context;
+    portENTER_CRITICAL(&_mesh_adv_lock);
+    bool publish = _mesh_adv_publishing;
+    portEXIT_CRITICAL(&_mesh_adv_lock);
+    if (!publish)
+        return;
     ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &_mesh_adv_event);
 }
 esp_err_t wendy_ble_mesh_advertisement(const uint8_t *data, size_t size)
@@ -376,36 +400,53 @@ esp_err_t wendy_ble_mesh_advertisement(const uint8_t *data, size_t size)
     if (size)
         return ESP_ERR_NOT_SUPPORTED;
 #endif
-    if (!size && !_mesh_adv_timer)
-        return ESP_OK;
-    if (!_started || !_enrolled || !ble_hs_synced())
-        return ESP_ERR_INVALID_STATE;
     if (atomic_exchange(&_mesh_configuring, true))
         return ESP_ERR_INVALID_STATE;
     esp_err_t result = ESP_OK;
+    if (!size && !_mesh_adv_timer)
+        goto done;
+    if (!_started || !_enrolled || !ble_hs_synced()) {
+        result = ESP_ERR_INVALID_STATE;
+        goto done;
+    }
     if (!_mesh_adv_timer) {
-        ble_npl_event_init(&_mesh_adv_event, _mesh_adv_refresh, NULL);
         const esp_timer_create_args_t args = {.callback = _mesh_adv_tick, .name = "net-adv"};
-        result = esp_timer_create(&args, &_mesh_adv_timer);
+        esp_timer_handle_t timer;
+        result = esp_timer_create(&args, &timer);
         if (result != ESP_OK)
             goto done;
+        if (!_mesh_adv_event_initialized) {
+            ble_npl_event_init(&_mesh_adv_event, _mesh_adv_refresh, NULL);
+            _mesh_adv_event_initialized = true;
+        }
+        portENTER_CRITICAL(&_mesh_adv_lock);
+        _mesh_adv_timer = timer;
+        portEXIT_CRITICAL(&_mesh_adv_lock);
     }
     esp_timer_stop(_mesh_adv_timer);
     portENTER_CRITICAL(&_mesh_adv_lock);
     if (size)
         memcpy(_mesh_advertisement, data, size);
     _mesh_advertisement_size = size;
+    _mesh_adv_publishing = size != 0;
     portEXIT_CRITICAL(&_mesh_adv_lock);
     if (size)
         result = esp_timer_start_periodic(_mesh_adv_timer, 500000);
+    /* The host may process the request immediately. All timer configuration
+     * is complete before it acquires the same nonblocking gate. */
+    atomic_store(&_mesh_configuring, false);
     ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &_mesh_adv_event);
+    return result;
 done:
     atomic_store(&_mesh_configuring, false);
     return result;
 }
 bool wendy_ble_mesh_advertisement_idle(void)
 {
-    return _mesh_adv_timer == NULL;
+    portENTER_CRITICAL(&_mesh_adv_lock);
+    bool idle = _mesh_adv_timer == NULL && !atomic_load(&_mesh_configuring);
+    portEXIT_CRITICAL(&_mesh_adv_lock);
+    return idle;
 }
 #endif
 
