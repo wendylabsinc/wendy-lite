@@ -131,6 +131,15 @@ static int gossip_read(const void *data, size_t size, struct wg_message *out,
     const struct wn_token *group = wn_doc_token(&d, g);
     if (!group || group->type != '{')
         return -1;
+    /* Select the envelope and artifact schema before decoding their fields. */
+    if (number(&d, g, "v", &version))
+        return -1;
+    if (version != 1)
+        return 1;
+    if (number(&d, g, "type", &type))
+        return -1;
+    if (type != 1)
+        return 1;
     int op = wn_doc_member(&d, g, "op");
     const struct wn_token *operation = wn_doc_token(&d, op);
     if (!operation || operation->type != '"' ||
@@ -141,10 +150,6 @@ static int gossip_read(const void *data, size_t size, struct wg_message *out,
         if (wn_doc_equal(&d, op, ops[i]))
             break;
     if (i == sizeof ops / sizeof *ops)
-        return 1;
-    if (number(&d, g, "v", &version) || number(&d, g, "type", &type))
-        return -1;
-    if (version != 1 || type != 1)
         return 1;
     /* Unknown additive transport fields are ignored. Signed object fields are
      * still validated independently by their exact existing parsers. */
