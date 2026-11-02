@@ -5,12 +5,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-struct heap
-{
+struct heap {
     size_t live, peak, calls, fail_at;
 };
-struct allocation
-{
+struct allocation {
     max_align_t alignment;
     size_t bytes;
 };
@@ -45,8 +43,7 @@ static int drain(struct wb_engine *e, int result)
 {
     if (result < 0)
         return result;
-    if (result == WB_PENDING)
-    {
+    if (result == WB_PENDING) {
         uint8_t blocked[WB_PACKET_MAX];
         uint64_t id;
         assert(wb_next_packet(e, &id, blocked, sizeof blocked) == WB_BUSY);
@@ -55,8 +52,7 @@ static int drain(struct wb_engine *e, int result)
     uint8_t history[WB_HISTORY_MAX], packet[WB_PACKET_MAX];
     uint64_t id;
     assert(wb_save(e, history, sizeof history) >= 40);
-    while ((result = wb_next_packet(e, &id, packet, sizeof packet)) > 0)
-    {
+    while ((result = wb_next_packet(e, &id, packet, sizeof packet)) > 0) {
     }
     assert(result == 0 && !e->messages);
     if (!e->links_capacity)
@@ -120,8 +116,7 @@ static size_t scenario(size_t fail_at, bool measure)
     if (r < 0)
         goto done;
     report(&e, &h, "own_address_only", measure);
-    for (unsigned i = 1; i <= 2; i++)
-    {
+    for (unsigned i = 1; i <= 2; i++) {
         struct wb_link l = link(i);
         r = drain(&e, wb_add_link(&e, 0, &l));
         if (r < 0)
@@ -130,8 +125,7 @@ static size_t scenario(size_t fail_at, bool measure)
         if (r < 0)
             goto done;
         assert(e.route_count >= 1);
-        if (!fail_at)
-        {
+        if (!fail_at) {
             /* Settle snapshot growth after a newly learned route. Repeating
              * an unchanged event must not need heap just to reselect routes. */
             assert(drain(&e, wb_tick(&e, 0)) == 0);
@@ -140,8 +134,8 @@ static size_t scenario(size_t fail_at, bool measure)
                 assert(drain(&e, wb_tick(&e, 0)) == 0);
             assert(h.calls == prior_calls);
             if (measure)
-                printf("steady_%u_peer allocation_calls_per_1000_ticks=%zu\n",
-                       i, h.calls - prior_calls);
+                printf("steady_%u_peer allocation_calls_per_1000_ticks=%zu\n", i,
+                       h.calls - prior_calls);
         }
         report(&e, &h, i == 1 ? "one_peer" : "two_peers_transit_tables", measure);
         if (!fail_at)
@@ -169,11 +163,9 @@ static size_t scenario(size_t fail_at, bool measure)
     assert(!h.live && !e.route_count);
     report(&e, &h, "expired_back_to_inactive", measure);
 done:
-    if (r < 0)
-    {
+    if (r < 0) {
         assert(fail_at && (r == WB_STOPPED || r == WB_LIMIT));
-        if (r == WB_STOPPED)
-        {
+        if (r == WB_STOPPED) {
             uint8_t packet[WB_PACKET_MAX];
             uint64_t id;
             assert(wb_next_packet(&e, &id, packet, sizeof packet) == WB_STOPPED);

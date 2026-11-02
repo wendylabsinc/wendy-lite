@@ -21,13 +21,14 @@ int main(void)
     unsigned char *state_buffer = wendy_net_calloc(1, state_bytes);
     void *transfer = wendy_net_malloc(transfer_bytes);
     assert(state_buffer && transfer);
-    for (size_t i = 0; i < state_bytes; ++i) assert(!state_buffer[i]);
+    for (size_t i = 0; i < state_bytes; ++i)
+        assert(!state_buffer[i]);
     assert(!wendy_net_malloc(state.limit_bytes * 3 / 32)); /* Ordinary bounded queue admission. */
     char *name = wendy_net_strdup("mesh neighbour");
     assert(name && !strcmp(name, "mesh neighbour"));
     wendy_net_memory_reservation_t stack = {0};
-    assert(wendy_net_memory_reserve(wendy_net_runtime_memory_ledger(), &stack,
-                                   8192, WENDY_NET_MEMORY_INTERNAL));
+    assert(wendy_net_memory_reserve(wendy_net_runtime_memory_ledger(), &stack, 8192,
+                                    WENDY_NET_MEMORY_INTERNAL));
     void *task_state = wendy_net_internal_calloc(1, 256);
     assert(task_state);
     wendy_net_memory_scope_t previous = wendy_net_runtime_scope_enter();

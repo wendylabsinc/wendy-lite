@@ -31,8 +31,7 @@ static struct wb_link make_link(unsigned a, unsigned b, uint16_t c)
     l.peer[15] = (uint8_t)(b + 1);
     return l;
 }
-struct packet
-{
+struct packet {
     unsigned from, to;
     size_t size;
     uint8_t data[WB_PACKET_MAX];
@@ -48,16 +47,14 @@ static void complete(unsigned index, int result)
                 index, (unsigned long long)now, result, e->stopped, (unsigned long long)e->pending,
                 e->message_cursor, e->message_count);
     assert(result >= 0);
-    if (result == WB_PENDING)
-    {
+    if (result == WB_PENDING) {
         assert(wb_tick(e, now) == WB_BUSY);
         assert(wb_commit(e, e->pending, true) == WB_OK);
     }
     uint8_t history[WB_HISTORY_MAX];
     int history_size = wb_save(e, history, sizeof history);
     assert(history_size > 0);
-    for (;;)
-    {
+    for (;;) {
         uint8_t packet[WB_PACKET_MAX];
         uint64_t link = 0;
         int n = wb_next_packet(e, &link, packet, sizeof packet);
@@ -75,8 +72,7 @@ static void complete(unsigned index, int result)
 static void deliver(void)
 {
     unsigned count = 0;
-    while (read_at < written)
-    {
+    while (read_at < written) {
         struct packet p = packets[read_at++ % 512];
         assert(p.to < 3);
         assert(++count < 10000);
@@ -86,8 +82,7 @@ static void deliver(void)
 }
 static void advance(uint64_t end)
 {
-    while (now < end)
-    {
+    while (now < end) {
         now += 20;
         for (unsigned i = 0; i < 3; i++)
             complete(i, wb_tick(&engines[i], now));
@@ -101,8 +96,7 @@ static void init(void)
     memset(link_ids, 0, sizeof link_ids);
     written = read_at = 0;
     deny = false;
-    for (unsigned i = 0; i < 3; i++)
-    {
+    for (unsigned i = 0; i < 3; i++) {
         struct wb_config c = {.router = i + 1, .hello_ms = 1000, .update_ms = 4000, .allow = allow};
         assert(wb_init(&engines[i], &c) == 0);
         struct wb_prefix p = host(i + 1);
@@ -213,8 +207,7 @@ static void test_capacity_and_commit(void)
 {
     struct wb_config c = {.router = 42};
     assert(wb_init(&spare, &c) == 0);
-    for (unsigned i = 0; i < WB_ROUTES; i++)
-    {
+    for (unsigned i = 0; i < WB_ROUTES; i++) {
         struct wb_prefix p = host(i + 1);
         assert(wb_originate(&spare, 0, &p, 0) == WB_PENDING);
         assert(wb_next_packet(&spare, &now, NULL, 0) == WB_BUSY);
@@ -268,8 +261,7 @@ static void test_wire(void)
     packet[3] = (uint8_t)(n + 2);
     visits = 0;
     assert(wb_decode(packet, n + 6, source, visit, NULL) == 0 && visits == 0);
-    for (size_t size = 0; size < n + 6; size++)
-    {
+    for (size_t size = 0; size < n + 6; size++) {
         visits = 0;
         (void)wb_decode(packet, size, source, visit, NULL);
     }

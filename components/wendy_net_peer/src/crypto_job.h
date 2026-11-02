@@ -12,27 +12,37 @@ struct wncrypto_job;
  * signing additionally binds the live session and own certificate fingerprint. */
 struct wncrypto_verdict {
     uint8_t input[32]; /* Includes the exact certified key bytes. */
-    int result;unsigned kind;bool valid;
+    int result;
+    unsigned kind;
+    bool valid;
 };
 struct wncrypto_signature {
-    uint8_t digest[32],fingerprint[32];
+    uint8_t digest[32], fingerprint[32];
     uint8_t *signature;
     wendy_pki_connection *connection;
-    size_t signature_size;int result;unsigned kind;bool valid;
+    size_t signature_size;
+    int result;
+    unsigned kind;
+    bool valid;
 };
 static inline void wncrypto_signature_clear(struct wncrypto_signature *completed)
 {
-    if(completed){wendy_net_free(completed->signature);*completed=(struct wncrypto_signature){0};}
+    if (completed) {
+        wendy_net_free(completed->signature);
+        *completed = (struct wncrypto_signature){0};
+    }
 }
-bool wncrypto_take_verification(struct wncrypto_job **,struct wncrypto_verdict *);
-bool wncrypto_take_signature(struct wncrypto_job **,struct wncrypto_signature *);
-int wncrypto_verify_cached(struct wncrypto_job **,struct wncrypto_verdict *,unsigned,
-    const struct wendy_pki_mesh_key *,const char *,const void *,size_t,const uint8_t *,size_t);
-int wncrypto_sign_cached(struct wncrypto_job **,struct wncrypto_signature *,unsigned,
-    wendy_pki_connection *,const char *,const void *,size_t,const uint8_t **,size_t *);
+bool wncrypto_take_verification(struct wncrypto_job **, struct wncrypto_verdict *);
+bool wncrypto_take_signature(struct wncrypto_job **, struct wncrypto_signature *);
+int wncrypto_verify_cached(struct wncrypto_job **, struct wncrypto_verdict *, unsigned,
+                           const struct wendy_pki_mesh_key *, const char *, const void *, size_t,
+                           const uint8_t *, size_t);
+int wncrypto_sign_cached(struct wncrypto_job **, struct wncrypto_signature *, unsigned,
+                         wendy_pki_connection *, const char *, const void *, size_t,
+                         const uint8_t **, size_t *);
 /* kind: 0 complete device manifest. 0 complete, 1 pending, -1 failure. */
-int wncrypto_verify(struct wncrypto_job **,unsigned,const struct wendy_pki_mesh_key *,
-    const char *,const void *,size_t,const uint8_t *,size_t);
+int wncrypto_verify(struct wncrypto_job **, unsigned, const struct wendy_pki_mesh_key *,
+                    const char *, const void *, size_t, const uint8_t *, size_t);
 void wncrypto_cancel(struct wncrypto_job **);
 bool wncrypto_borrowed(wendy_pki_connection *);
 

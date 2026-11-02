@@ -140,13 +140,15 @@ static struct wcom_link *_get_link(int link_id)
     return ch;
 }
 
-void wcom_link_reply_barrier(int link_id,uint32_t token,void (*done)(uint32_t))
+void wcom_link_reply_barrier(int link_id, uint32_t token, void (*done)(uint32_t))
 {
-    struct wcom_link *link=_get_link(link_id);
-    if(link && link->state==WCOM_LINK_STATE_CONNECTED &&
-       (link->type==LINK_TYPE_STREAM || link->type==LINK_TYPE_SOCKET) && link->ops->reply_barrier)
-        link->ops->reply_barrier(link->stream_ctx,token,done);
-    else done(token);
+    struct wcom_link *link = _get_link(link_id);
+    if (link && link->state == WCOM_LINK_STATE_CONNECTED &&
+        (link->type == LINK_TYPE_STREAM || link->type == LINK_TYPE_SOCKET) &&
+        link->ops->reply_barrier)
+        link->ops->reply_barrier(link->stream_ctx, token, done);
+    else
+        done(token);
 }
 
 static void _fire_state_change_handlers(int link_id, enum wcom_link_state state)
@@ -753,15 +755,16 @@ int wcom_add_uart_link(wendy_com_uart_t *uart, wcom_interruption_handler_t inter
     return -1;
 }
 
-static int _add_custom_link(enum link_type type, const struct wcom_stream_ops *ops,
-                            void *ctx, wcom_interruption_handler_t interruption_handler,
+static int _add_custom_link(enum link_type type, const struct wcom_stream_ops *ops, void *ctx,
+                            wcom_interruption_handler_t interruption_handler,
                             enum wcom_link_permission permission, bool routed)
 {
     assert(xTaskGetCurrentTaskHandle() == _main_task);
     if (!_valid_permission(permission)) return -1;
     assert(ops && ops->read && ops->write && ops->wakeup_fd);
     assert(type != LINK_TYPE_STREAM || (ops->can_read && ops->can_write));
-    if ((ops->allocate_buffer == NULL) != (ops->free_buffer == NULL)) return -1;
+    if ((ops->allocate_buffer == NULL) != (ops->free_buffer == NULL))
+        return -1;
 
     for (int i = 0; i < WCOM_LINK_COUNT; i++) {
         struct wcom_link *ch = &_links[i];
@@ -812,10 +815,12 @@ int wcom_add_routed_stream_link_with_permission(const struct wcom_stream_ops *op
 
 bool wcom_link_get_buffer_allocator(int link_id, struct wcom_link_buffer_allocator *out)
 {
-    if (!out) return false;
+    if (!out)
+        return false;
     *out = (struct wcom_link_buffer_allocator){0};
     struct wcom_link *link = _get_link(link_id);
-    if (!link || link->state != WCOM_LINK_STATE_CONNECTED) return false;
+    if (!link || link->state != WCOM_LINK_STATE_CONNECTED)
+        return false;
     if ((link->type == LINK_TYPE_STREAM || link->type == LINK_TYPE_SOCKET) &&
         link->ops->allocate_buffer && link->ops->free_buffer) {
         out->context = link->stream_ctx;

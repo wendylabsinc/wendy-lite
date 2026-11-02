@@ -14,7 +14,10 @@
 static const char *TAG = "wcom_cmd";
 static const struct wcom_app_delegate *_app_delegate;
 static const struct wcom_net_delegate *net_delegate;
-void wcom_cmd_set_net_delegate(const struct wcom_net_delegate *delegate){net_delegate=delegate;}
+void wcom_cmd_set_net_delegate(const struct wcom_net_delegate *delegate)
+{
+    net_delegate = delegate;
+}
 static const struct wcom_bluetooth_power_delegate *bluetooth_power;
 void wcom_cmd_set_bluetooth_power_delegate(const struct wcom_bluetooth_power_delegate *delegate)
 {
@@ -40,14 +43,27 @@ void wcom_cmd_bluetooth_power_reply_complete(uint32_t token)
         bluetooth_power->reply_complete(token);
 }
 WendyComResult wcom_cmd_net_get(WendyComNetStatus *status)
-{return net_delegate && net_delegate->get ? net_delegate->get(status):WendyComResult_WENDY_COM_RESULT_BAD_STATE;}
-WendyComResult wcom_cmd_net_set(const WendyComNetConfig *config,WendyComNetStatus *status,uint32_t *token)
-{*token=0;return net_delegate && net_delegate->set ? net_delegate->set(config,status,token):WendyComResult_WENDY_COM_RESULT_BAD_STATE;}
+{
+    return net_delegate && net_delegate->get ? net_delegate->get(status)
+                                             : WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+}
+WendyComResult wcom_cmd_net_set(const WendyComNetConfig *config, WendyComNetStatus *status,
+                                uint32_t *token)
+{
+    *token = 0;
+    return net_delegate && net_delegate->set ? net_delegate->set(config, status, token)
+                                             : WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+}
 void wcom_cmd_net_reply_complete(uint32_t token)
-{if(token && net_delegate && net_delegate->reply_complete)net_delegate->reply_complete(token);}
+{
+    if (token && net_delegate && net_delegate->reply_complete)
+        net_delegate->reply_complete(token);
+}
 static const struct wcom_sensor_link_delegate *_sensor_link_delegate;
 bool wcom_cmd_sensor_link_available(void)
-{return _sensor_link_delegate && _sensor_link_delegate->on_sensor_link_get_manifest;}
+{
+    return _sensor_link_delegate && _sensor_link_delegate->on_sensor_link_get_manifest;
+}
 
 // At most one push (app or conf) may be in progress at a time.
 enum _push_kind { PUSH_NONE, PUSH_APP, PUSH_CONF };

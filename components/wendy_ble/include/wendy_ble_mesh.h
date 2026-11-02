@@ -18,14 +18,12 @@ void wble_mesh_profile_connected(uint16_t handle);   /* host only */
 void wble_mesh_profile_event(const void *gap_event); /* host only */
 
 struct wble_mesh_pipe;
-struct wble_mesh_peer
-{
+struct wble_mesh_peer {
     uint8_t address[6], address_type;
     uint16_t psm;
     bool server;
 };
-typedef void (*wble_mesh_report)(void *, const uint8_t address[6],
-                                 uint8_t address_type,
+typedef void (*wble_mesh_report)(void *, const uint8_t address[6], uint8_t address_type,
                                  const void *advertisement, size_t, int rssi);
 /* Requires the existing NimBLE host to be synchronized. Initialization is an
  * asynchronous host effect: INVALID_STATE also means pending; poll again from
@@ -46,8 +44,7 @@ bool wble_mesh_incoming_available(void);
  * Changes coalesce on the existing host mailbox, without an HCI wait here. */
 void wble_mesh_scan_interest(bool available);
 esp_err_t wble_mesh_scan(wble_mesh_report, void *context);
-esp_err_t wble_mesh_dial(const uint8_t address[6], uint8_t address_type,
-                         uint16_t psm);
+esp_err_t wble_mesh_dial(const uint8_t address[6], uint8_t address_type, uint16_t psm);
 /* Scan/dial APIs only submit bounded host effects. Collect a command error
  * without waiting; procedure completion and pipes arrive through normal I/O. */
 int wble_mesh_poll_error(unsigned *operation);
