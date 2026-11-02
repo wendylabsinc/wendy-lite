@@ -58,7 +58,9 @@ static int mesh_digest(const char* principal, const void* body, size_t size, uin
     return result;
 }
 int wendy_pki_mesh_digest(const char *principal,const void *body,size_t size,uint8_t hash[32])
-{return mesh_digest(principal,body,size,hash,domain,sizeof domain);}
+{
+    return mesh_digest(principal, body, size, hash, domain, sizeof domain);
+}
 int wendy_pki_artifact_digest(unsigned kind,const char *principal,const void *body,size_t size,uint8_t hash[32])
 {return kind ? -1:mesh_digest(principal,body,size,hash,domain,sizeof domain);}
 /* Pure ML-DSA verifies the complete preimage, not its SHA-256. This matches
@@ -185,7 +187,8 @@ int wendy_pki_mesh_verify(const struct wendy_pki_mesh_peer *peer,const char *pri
     const void *body,size_t size,const uint8_t *signature,size_t signature_size)
 {
     struct wendy_pki_mesh_key view=key_view(peer);
-    return mesh_verify_key(&view,principal,body,size,signature,signature_size,domain,sizeof domain);
+    return mesh_verify_key(&view, principal, body, size, signature, signature_size, domain,
+                           sizeof domain);
 }
 int wendy_pki_service_verify(const struct wendy_pki_mesh_peer *peer,
     const void *body,size_t size,const uint8_t *signature,size_t signature_size)

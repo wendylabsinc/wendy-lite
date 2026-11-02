@@ -183,12 +183,16 @@ static void _done_sending_msg(int link_id, const struct wcom_tx_chunk *chunk, bo
     assert(link);
     if (link_id != link->link_id)
         return;
-    uint32_t token=link->net_reply_token;link->net_reply_token=0;
-    if(token){
-        if(success)wcom_link_reply_barrier(link_id,token,wcom_cmd_net_reply_complete);
-        else wcom_cmd_net_reply_complete(token);
+    uint32_t token = link->net_reply_token;
+    link->net_reply_token = 0;
+    if (token) {
+        if (success)
+            wcom_link_reply_barrier(link_id, token, wcom_cmd_net_reply_complete);
+        else
+            wcom_cmd_net_reply_complete(token);
     }
-    if(success)_start_recv_header(link);
+    if (success)
+        _start_recv_header(link);
 }
 
 static void _start_sending_msg(struct _agent_link *link, void *body, size_t size)
@@ -417,9 +421,10 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
         break;
     case WendyComCommand_net_set_tag:
         resp->which_data=WendyComResponse_net_status_tag;
-        resp->result=cmd->params.net_set.has_config ?
-            wcom_cmd_net_set(&cmd->params.net_set.config,&resp->data.net_status,&link->net_reply_token):
-            WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+        resp->result = cmd->params.net_set.has_config
+                           ? wcom_cmd_net_set(&cmd->params.net_set.config, &resp->data.net_status,
+                                              &link->net_reply_token)
+                           : WendyComResult_WENDY_COM_RESULT_BAD_STATE;
         break;
     case WendyComCommand_enrollment_challenge_tag:
         resp->which_data = WendyComResponse_enrollment_challenge_tag;
@@ -761,8 +766,10 @@ static void _on_link_state_changed(
         for (int i = 0; i < WCOM_LINK_COUNT; i++) {
             struct _agent_link *link = &_links[i];
             if (link->link_id == link_id) {
-                uint32_t token=link->net_reply_token;link->net_reply_token=0;
-                if(token)wcom_cmd_net_reply_complete(token);
+                uint32_t token = link->net_reply_token;
+                link->net_reply_token = 0;
+                if (token)
+                    wcom_cmd_net_reply_complete(token);
                 for (int j = 0; j < _CHANNELS_PER_LINK_COUNT; j++) {
                     if (link->channels[j].client_id != 0) {
                         wcom_cmd_client_disconnected(link->channels[j].client_id);

@@ -571,18 +571,23 @@ static uint32_t _reply_token;
 static void (*_reply_done)(uint32_t);
 static void _complete_reply(void)
 {
-    uint32_t token=_reply_token;_reply_token=0;
-    if(token)_reply_done(token);
+    uint32_t token = _reply_token;
+    _reply_token = 0;
+    if (token)
+        _reply_done(token);
 }
 static void _poll_reply(void)
 {
-    if(_reply_token && wble_l2cap_can_write())_complete_reply();
+    if (_reply_token && wble_l2cap_can_write())
+        _complete_reply();
 }
-static void _stream_reply_barrier(void *context,uint32_t token,void (*done)(uint32_t))
+static void _stream_reply_barrier(void *context, uint32_t token, void (*done)(uint32_t))
 {
     (void)context;
     _complete_reply(); /* Superseded/timed-out configuration; one bounded slot. */
-    _reply_done=done;_reply_token=token;_poll_reply();
+    _reply_done = done;
+    _reply_token = token;
+    _poll_reply();
 }
 
 static ssize_t _stream_read(void *ctx, void *buf, size_t len)
@@ -632,10 +637,10 @@ static bool _stream_can_write(void *ctx)
 }
 
 static const struct wcom_stream_ops _stream_ops = {
-    .read      = _stream_read,
-    .write     = _stream_write,
+    .read = _stream_read,
+    .write = _stream_write,
     .wakeup_fd = _stream_wakeup_fd,
-    .can_read  = _stream_can_read,
+    .can_read = _stream_can_read,
     .can_write = _stream_can_write,
     .reply_barrier = _stream_reply_barrier,
 };

@@ -746,14 +746,14 @@ static void test_normal_boot_persistence(void)
     assert(mesh_reserved==MESH_REVISION_BOOT_RANGE && revision_writes==1);
     int commits=commit_calls;
     uint64_t value;
-    assert(wendy_pki_mesh_revision_next(&value)==ESP_OK && value==1);
+    assert(wendy_pki_mesh_revision_next(&value) == ESP_OK && value == 1);
     /* Reconnect/off/on and certificate replacement reuse this boot range. */
     assert(!reserve_boot_revisions(1));
-    assert(wendy_pki_mesh_revision_next(&value)==ESP_OK && value==2);
+    assert(wendy_pki_mesh_revision_next(&value) == ESP_OK && value == 2);
     snapshot_generation++;
     assert(!reserve_boot_revisions(1));
-    assert(wendy_pki_mesh_revision_next(&value)==ESP_OK && value==3);
-    assert(commit_calls==commits && revision_writes==1);
+    assert(wendy_pki_mesh_revision_next(&value) == ESP_OK && value == 3);
+    assert(commit_calls == commits && revision_writes == 1);
     /* Verified refreshes use the RAM high-water even though only the first
      * advancement is durable. Normal clock refresh makes no subsequent NVS
      * writes, and the wall clock continues to advance. */
@@ -791,7 +791,8 @@ int main(int argc, char **argv)
     if(argc==3 && !strcmp(argv[2],"--normal-boot-persistence")) {
         FILE *key=fopen(argv[1],"rb");assert(key);
         key_der_size=fread(key_der,1,sizeof key_der,key);fclose(key);assert(key_der_size);
-        test_normal_boot_persistence();return 0;
+        test_normal_boot_persistence();
+        return 0;
     }
 #endif
     test_signed_clock_generation();

@@ -1036,9 +1036,8 @@ static int finish_mesh(wendy_pki_connection *c,const char *tenant,const char *de
         const mbedtls_x509_crt* peer = mbedtls_ssl_get_peer_cert(&c->ssl);
         char expected_prefix[70];
         snprintf(expected_prefix,sizeof expected_prefix,"spiffe://wendy.sh/tenant/%s/device/",tenant);
-        if (!alpn || strcmp(alpn, protocol) || !peer
-            || wendy_pki_certificate_policy(peer,false) ||
-               wendy_peer_auth_role(peer,tenant)!=WENDY_PEER_ROLE_DEVICE)
+        if (!alpn || strcmp(alpn, protocol) || !peer || wendy_pki_certificate_policy(peer, false) ||
+            wendy_peer_auth_role(peer, tenant) != WENDY_PEER_ROLE_DEVICE)
             goto fail;
         unsigned count = 0;
         for (const mbedtls_x509_sequence* a = &peer->subject_alt_names; a && a->buf.p; a = a->next)
@@ -1081,7 +1080,7 @@ static int finish_mesh(wendy_pki_connection *c,const char *tenant,const char *de
         c->device_expires=self_verified_until;
         if (pki_limit_session(c,now,esp_timer_get_time())) goto fail;
         c->peer_role = WENDY_PEER_ROLE_DEVICE;
-        if (protocol && !strcmp(protocol,"wendy-app-mesh-tls/1")) {
+        if (protocol && !strcmp(protocol, "wendy-app-mesh-tls/1")) {
             release_verified_paths(c);
         } else if (native_router) {
             if(c->public_chain) {
@@ -1185,7 +1184,7 @@ static int open_tls(const char* host, unsigned port, const uint8_t* key, size_t 
     if (mesh) snprintf(self_principal, sizeof self_principal,
         "spiffe://wendy.sh/tenant/%s/device/%s", tenant, device);
     time_t verify_at = owned ? owned->verify_at : 0;
-    bool compact=owned && protocol && !strcmp(protocol,"wendy-app-mesh-tls/1");
+    bool compact = owned && protocol && !strcmp(protocol, "wendy-app-mesh-tls/1");
     bool native_router=owned && protocol && !strcmp(protocol,"wendy-local-mesh-ble/2");
     bool stream_identity=owned && owned->read_der &&
         (compact || (native_router && owned->public_chain));
@@ -1197,7 +1196,8 @@ static int open_tls(const char* host, unsigned port, const uint8_t* key, size_t 
     {
         static const char* const app_protocols[] = { "wendy-app-mesh-tls/1", NULL };
         static const char* const router_protocols[] = { "wendy-local-mesh-ble/2", NULL };
-        const char* const* protocols = !strcmp(protocol,"wendy-app-mesh-tls/1") ? app_protocols : router_protocols;
+        const char *const *protocols =
+            !strcmp(protocol, "wendy-app-mesh-tls/1") ? app_protocols : router_protocols;
         if (configure_mesh_alpn(c, protocols))
             goto fail;
         /* Mesh identity is the exact SPIFFE principal, checked below after
@@ -1292,7 +1292,7 @@ static int open_tls(const char* host, unsigned port, const uint8_t* key, size_t 
     }
     stage = "TLS handshake";
     int r;
-    bool compact_server=owned && protocol && !strcmp(protocol,"wendy-app-mesh-tls/1");
+    bool compact_server = owned && protocol && !strcmp(protocol, "wendy-app-mesh-tls/1");
     while (c->ssl.MBEDTLS_PRIVATE(state)!=MBEDTLS_SSL_HANDSHAKE_OVER)
     {
         r=handshake_step(c,compact_server);
@@ -2223,8 +2223,7 @@ int pki_tls_net_connect(const char* host, unsigned port, const char* tenant, con
     if (out) *out = NULL;
     int result = -1;
     if (owned && owned->key && (owned->certificate || owned->read_der) && protocol &&
-        (!strcmp(protocol,"wendy-local-mesh-ble/2") ||
-         !strcmp(protocol,"wendy-app-mesh-tls/1")))
+        (!strcmp(protocol, "wendy-local-mesh-ble/2") || !strcmp(protocol, "wendy-app-mesh-tls/1")))
         result = open_tls(host, port, owned->key, owned->key_size, (struct wendy_conf_span){owned->certificate,owned->certificate_size}, roots, out,
             tenant, device, peer, NULL, false, false, NULL, NULL, protocol, owned, NULL);
     release_identity_input(owned);
@@ -2237,9 +2236,9 @@ int pki_tls_net_accept(int *fd,const char *tenant,const char *device,
 {
     if (out) *out=NULL;
     int result=-1;
-    if (fd && *fd>=0 && owned && owned->key && (owned->certificate || owned->read_der) && protocol &&
-        (!strcmp(protocol,"wendy-local-mesh-ble/2") ||
-         !strcmp(protocol,"wendy-app-mesh-tls/1")))
+    if (fd && *fd >= 0 && owned && owned->key && (owned->certificate || owned->read_der) &&
+        protocol &&
+        (!strcmp(protocol, "wendy-local-mesh-ble/2") || !strcmp(protocol, "wendy-app-mesh-tls/1")))
         result=open_tls(NULL,0,owned->key,owned->key_size,(struct wendy_conf_span){owned->certificate,owned->certificate_size},roots,out,
             tenant,device,NULL,NULL,true,false,NULL,NULL,protocol,owned,fd);
     if (fd && *fd>=0) {close(*fd);*fd=-1;}

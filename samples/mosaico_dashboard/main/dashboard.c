@@ -232,30 +232,43 @@ static void render_mesh(const WendyComNetStatus *snapshot)
 {
     const char *status = "Mesh unavailable";
     switch (snapshot->state) {
-    case WendyComNetState_WENDY_COM_NET_OFF: status = "Mesh off"; break;
-    case WendyComNetState_WENDY_COM_NET_STARTING: status = "Joining mesh"; break;
-    case WendyComNetState_WENDY_COM_NET_RUNNING: status = "Mesh running"; break;
-    case WendyComNetState_WENDY_COM_NET_STOPPING: status = "Stopping mesh"; break;
-    case WendyComNetState_WENDY_COM_NET_FAILED: status = "Mesh unavailable / retrying"; break;
+    case WendyComNetState_WENDY_COM_NET_OFF:
+        status = "Mesh off";
+        break;
+    case WendyComNetState_WENDY_COM_NET_STARTING:
+        status = "Joining mesh";
+        break;
+    case WendyComNetState_WENDY_COM_NET_RUNNING:
+        status = "Mesh running";
+        break;
+    case WendyComNetState_WENDY_COM_NET_STOPPING:
+        status = "Stopping mesh";
+        break;
+    case WendyComNetState_WENDY_COM_NET_FAILED:
+        status = "Mesh unavailable / retrying";
+        break;
     default: break;
     }
-    if(snapshot->restarting)status = "Settings saved / restarting";
+    if (snapshot->restarting)
+        status = "Settings saved / restarting";
     lv_label_set_text(ui.mesh_state, status);
     bool connected = snapshot->active_links != 0;
     lv_obj_set_style_text_color(ui.mesh_state,
-        lv_color_hex(connected ? COLOR_ACCENT : COLOR_WARNING), 0);
+                                lv_color_hex(connected ? COLOR_ACCENT : COLOR_WARNING), 0);
     lv_label_set_text_fmt(ui.mesh_local, "%.8s", wendy_conf_get_device_id());
     lv_label_set_text_fmt(ui.mesh_peer, "%u links", (unsigned)snapshot->active_links);
     lv_label_set_text(ui.mesh_carrier, "Authenticated");
-    if(connected)lv_obj_remove_flag(ui.mesh_link, LV_OBJ_FLAG_HIDDEN);
+    if (connected)
+        lv_obj_remove_flag(ui.mesh_link, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(ui.mesh_link, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text(ui.mesh_count, "Native Wendy Net peer");
-    if(snapshot->has_allocated_bytes)
+    if (snapshot->has_allocated_bytes)
         lv_label_set_text_fmt(ui.mesh_members, "Mesh RAM: %lu / %lu bytes\nInternal: %lu bytes",
-            (unsigned long)snapshot->allocated_bytes,
-            (unsigned long)snapshot->memory_limit_bytes,
-            (unsigned long)snapshot->internal_bytes);
-    else lv_label_set_text(ui.mesh_members, "Memory counters unavailable");
+                              (unsigned long)snapshot->allocated_bytes,
+                              (unsigned long)snapshot->memory_limit_bytes,
+                              (unsigned long)snapshot->internal_bytes);
+    else
+        lv_label_set_text(ui.mesh_members, "Memory counters unavailable");
 }
 
 static void create_dashboard(lv_display_t *display)

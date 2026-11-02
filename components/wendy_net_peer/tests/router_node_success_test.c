@@ -455,9 +455,10 @@ int main(int argc,char **argv)
     parser_pressure_recovery_fixture();
 #endif
     uint8_t spki[128];int spki_size=mbedtls_pk_write_pubkey_der(&key,spki,sizeof spki);assert(spki_size>0);
-    struct wendy_pki_mesh_identity identity={.verified_seconds=1800000000,
-        .verified_monotonic_us=1000000,.certificate_expires=1800003600,
-        .config_generation=1};
+    struct wendy_pki_mesh_identity identity = {.verified_seconds = 1800000000,
+                                               .verified_monotonic_us = 1000000,
+                                               .certificate_expires = 1800003600,
+                                               .config_generation = 1};
     strcpy(identity.tenant,tenant);strcpy(identity.device,ids[0]);
     struct wnrs_node *node=NULL;struct endpoint peers[2]={{.index=1,.control_backpressure=1},{.index=2}};
     wendy_pki_connection connections[2]={0};

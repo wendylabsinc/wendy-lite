@@ -38,6 +38,7 @@ int main(void)
     strcpy(view.device,principal+69);
     assert(!wendy_pki_mesh_verify_key(&view,principal,body,sizeof body,signature,written));
     uint8_t legacy[32];assert(!wendy_pki_mesh_digest(principal,body,sizeof body,legacy));
-    reference("wendy-local-mesh/manifest/4",principal,body,sizeof body,hash);assert(!memcmp(hash,legacy,32));
+    reference("wendy-local-mesh/manifest/4", principal, body, sizeof body, hash);
+    assert(!memcmp(hash, legacy, 32));
     mbedtls_pk_free(&key);return 0;
 }

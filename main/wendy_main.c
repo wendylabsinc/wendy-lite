@@ -32,9 +32,9 @@ void app_main(void)
     }
 #endif
 #if CONFIG_WENDY_NET_SELECT_RADIO_AT_BOOT
-    bool boot_ble,boot_wifi;
-    ESP_ERROR_CHECK(wendy_net_peer_boot_radios(&boot_ble,&boot_wifi));
-    ESP_ERROR_CHECK(wendy_core_set_boot_radios(boot_ble,boot_wifi));
+    bool boot_ble, boot_wifi;
+    ESP_ERROR_CHECK(wendy_net_peer_boot_radios(&boot_ble, &boot_wifi));
+    ESP_ERROR_CHECK(wendy_core_set_boot_radios(boot_ble, boot_wifi));
 #endif
     ESP_ERROR_CHECK(wendy_core_init());
 #if CONFIG_WENDY_NET_PEER

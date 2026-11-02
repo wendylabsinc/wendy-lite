@@ -611,7 +611,7 @@ static int refresh_time_source(nvs_handle_t h, const char *url,
 static int refresh_time_via(nvs_handle_t h,const char *url,
     const struct wendy_conf_enrollment_data *data,const struct wendy_pki_stream *stream)
 {
-    return refresh_time_source(h,url,data,stream,NULL);
+    return refresh_time_source(h, url, data, stream, NULL);
 }
 #if CONFIG_WENDY_NET_PEER
 static ssize_t time_recv(void *context,void *bytes,size_t size)
@@ -1480,7 +1480,7 @@ static esp_err_t mesh_connect(const char* host, unsigned port, const char* route
     if (!protocol || !connection || !identity || (!incoming && !native_stream && !router) ||
         (native_stream && (!stream->read || !stream->write || !stream->wait || !accepted_peer)) ||
         (incoming && (!server || !protocol || !accepted_peer)) ||
-        (router && !wendy_identity_uuid((const unsigned char*)router,strlen(router)))) {
+        (router && !wendy_identity_uuid((const unsigned char *)router, strlen(router)))) {
         if (accepted_fd>=0) close(accepted_fd);
         return ESP_ERR_INVALID_ARG;
     }
@@ -1544,13 +1544,13 @@ static esp_err_t mesh_connect(const char* host, unsigned port, const char* route
     opened = true;
     stage = "trusted time";
     bool recent=mesh_time_recent() && mesh_verified_generation==data.generation;
-    bool need_time=!recent;
+    bool need_time = !recent;
 #if CONFIG_WENDY_NET_PEER
     if(device_only && !recent)goto done; /* Retry through full cold bootstrap. */
 #endif
     if(async && need_time)goto done; /* Outer driver bootstraps time separately. */
-    if (need_time && (seed_clock(h, data.signed_time, data.tsa_roots)
-        || refresh_time_via(h, cfg.time_url, &data, NULL)))
+    if (need_time && (seed_clock(h, data.signed_time, data.tsa_roots) ||
+                      refresh_time_via(h, cfg.time_url, &data, NULL)))
         goto done;
 #if CONFIG_WENDY_NET_PEER
     if (protocol) {
@@ -1635,18 +1635,18 @@ static esp_err_t mesh_connect(const char* host, unsigned port, const char* route
                          router,&owned,data.device_roots,connection)
                      : pki_tls_net_connect(host,port,cfg.tenant_id,cfg.device_id,router,
                          &owned,data.device_roots,protocol,connection);
-    } else tls_result=-1;
+    } else
+        tls_result = -1;
 #endif
     if (tls_result)
         goto done;
     if (!expires) expires = (*connection)->device_expires;
     if (!async && (*connection)->operator_expires < expires)
         expires = (*connection)->operator_expires;
-    if (!wendy_conf_is_current() || !wendy_conf_snapshot_current(data.generation) || wendy_pki_reset_in_progress()
-        || esp_timer_get_time() - mesh_verified_monotonic_us >= INT64_C(300000000)
-        || expires <= mesh_verified_seconds + 30
-)
-    {
+    if (!wendy_conf_is_current() || !wendy_conf_snapshot_current(data.generation) ||
+        wendy_pki_reset_in_progress() ||
+        esp_timer_get_time() - mesh_verified_monotonic_us >= INT64_C(300000000) ||
+        expires <= mesh_verified_seconds + 30) {
         wendy_pki_close(*connection);
         *connection = NULL;
         goto done;
@@ -1655,7 +1655,8 @@ static esp_err_t mesh_connect(const char* host, unsigned port, const char* route
         data.device_roots_source_hash : identity->trust_hash,32);
     stage = "route revision reservation";
     if (!application) {
-        if (reserve_boot_revisions(h)) goto done;
+        if (reserve_boot_revisions(h))
+            goto done;
     }
     memcpy(identity->tenant, cfg.tenant_id, 37);
     memcpy(identity->device, cfg.device_id, 37);

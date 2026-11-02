@@ -45,9 +45,19 @@ static bool resetting;
 static unsigned net_receipts;
 static uint32_t fence_token;
 static void (*fence_done)(uint32_t);
-static WendyComResult net_set(const WendyComNetConfig *config,WendyComNetStatus *status,uint32_t *token)
-{assert(config->enabled);*token=123;status->restarting=true;return WendyComResult_WENDY_COM_RESULT_APPLIED_RESTARTING;}
-static void net_reply(uint32_t token){assert(token==123);net_receipts++;}
+static WendyComResult net_set(const WendyComNetConfig *config, WendyComNetStatus *status,
+                              uint32_t *token)
+{
+    assert(config->enabled);
+    *token = 123;
+    status->restarting = true;
+    return WendyComResult_WENDY_COM_RESULT_APPLIED_RESTARTING;
+}
+static void net_reply(uint32_t token)
+{
+    assert(token == 123);
+    net_receipts++;
+}
 
 int64_t esp_timer_get_time(void) { return 1000; }
 
@@ -247,15 +257,23 @@ static void free_buffer(void *context,void *buffer)
     if(wire->removing){struct wcom_link_buffer_allocator out;assert(!wcom_link_get_buffer_allocator(wire->link_id,&out));}
     wire->live-=owned->size;wire->releases++;free(owned);
 }
-static void wire_barrier(void *context,uint32_t token,void (*done)(uint32_t))
+static void wire_barrier(void *context, uint32_t token, void (*done)(uint32_t))
 {
- struct wire *wire=context;
- assert(wire->output_size>sizeof(struct wcom_agent_msg_header));
- assert(!fence_token);fence_token=token;fence_done=done;
+    struct wire *wire = context;
+    assert(wire->output_size > sizeof(struct wcom_agent_msg_header));
+    assert(!fence_token);
+    fence_token = token;
+    fence_done = done;
 }
-static const struct wcom_stream_ops allocated_ops={
-    .core_read=read_wire,.core_write=write_wire,.wakeup_fd=wire_fd,.can_read=wire_readable,.can_write=ready,
-    .allocate_buffer=allocate_buffer,.free_buffer=free_buffer,.reply_barrier=wire_barrier,
+static const struct wcom_stream_ops allocated_ops = {
+    .core_read = read_wire,
+    .core_write = write_wire,
+    .wakeup_fd = wire_fd,
+    .can_read = wire_readable,
+    .can_write = ready,
+    .allocate_buffer = allocate_buffer,
+    .free_buffer = free_buffer,
+    .reply_barrier = wire_barrier,
 };
 static void interrupted(int id,enum wcom_interruption_reason reason){wcom_remove_link(id);}
 static int open_routed(struct wire *wire,enum wcom_link_permission permission,bool allocated)
@@ -306,19 +324,23 @@ int main(void)
     assert(active==4&&WCOM_LINK_COUNT==4);
     assert(command(&full,full_id,0,WendyComCommand_app_start_tag)==WendyComResult_WENDY_COM_RESULT_OK);
     console_input(&full,full_id,0);assert(stdin_calls==1);
-    static const struct wcom_net_delegate net={.set=net_set,.reply_complete=net_reply};
+    static const struct wcom_net_delegate net = {.set = net_set, .reply_complete = net_reply};
     wcom_cmd_set_net_delegate(&net);
-    WendyComMessage configure=WendyComMessage_init_zero;
-    configure.which_msg=WendyComMessage_command_tag;
-    configure.msg.command.which_params=WendyComCommand_net_set_tag;
-    configure.msg.command.params.net_set.has_config=true;
-    configure.msg.command.params.net_set.config.enabled=true;
-    assert(exchange(&full,full_id,0,&configure).msg.response.result==WendyComResult_WENDY_COM_RESULT_APPLIED_RESTARTING);
-    assert(fence_token==123&&!net_receipts); /* full reply accepted, provider still draining */
-    fence_done(fence_token);fence_token=0;assert(net_receipts==1);
+    WendyComMessage configure = WendyComMessage_init_zero;
+    configure.which_msg = WendyComMessage_command_tag;
+    configure.msg.command.which_params = WendyComCommand_net_set_tag;
+    configure.msg.command.params.net_set.has_config = true;
+    configure.msg.command.params.net_set.config.enabled = true;
+    assert(exchange(&full, full_id, 0, &configure).msg.response.result ==
+           WendyComResult_WENDY_COM_RESULT_APPLIED_RESTARTING);
+    assert(fence_token == 123 && !net_receipts); /* full reply accepted, provider still draining */
+    fence_done(fence_token);
+    fence_token = 0;
+    assert(net_receipts == 1);
     /* Direct stream transports without deferred output finish at write. */
-    assert(exchange(&reserved_a,reserved_a.link_id,0,&configure).msg.response.result==WendyComResult_WENDY_COM_RESULT_APPLIED_RESTARTING);
-    assert(net_receipts==2&&!fence_token);
+    assert(exchange(&reserved_a, reserved_a.link_id, 0, &configure).msg.response.result ==
+           WendyComResult_WENDY_COM_RESULT_APPLIED_RESTARTING);
+    assert(net_receipts == 2 && !fence_token);
 
     long_identity=true;
     assert(command(&full,full_id,0,WendyComCommand_get_device_identity_tag)==WendyComResult_WENDY_COM_RESULT_OK);
