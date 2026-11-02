@@ -284,7 +284,6 @@ static void _server_task(void *arg)
         }
     }
 
-
 #if CONFIG_WENDY_NET_PEER
     wendy_pki_work_enable();
 #endif
@@ -293,10 +292,13 @@ static void _server_task(void *arg)
         (void)wendy_pki_work_poll();
         (void)wendy_pki_io_work_poll();
         wendy_net_peer_maintain();
-        fd_set reading;FD_ZERO(&reading);FD_SET(listen_fd,&reading);
-        struct timeval poll={.tv_usec=250000};
-        int available=select(listen_fd+1,&reading,NULL,NULL,&poll);
-        if(available<=0 || !FD_ISSET(listen_fd,&reading))continue;
+        fd_set reading;
+        FD_ZERO(&reading);
+        FD_SET(listen_fd, &reading);
+        struct timeval poll = {.tv_usec = 250000};
+        int available = select(listen_fd + 1, &reading, NULL, NULL, &poll);
+        if (available <= 0 || !FD_ISSET(listen_fd, &reading))
+            continue;
 #endif
         struct sockaddr_storage client_addr;
         socklen_t client_len = sizeof(client_addr);
