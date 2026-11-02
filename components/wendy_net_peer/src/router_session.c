@@ -2130,7 +2130,7 @@ static int topology_record(struct wnrs_node *n, unsigned wanted, int64_t now,
 int wnrs_topology(struct wnrs_node *n, uint32_t cursor, uint64_t generation,
                   WendyComNetTopologyPage *page)
 {
-    if (!n || cursor > 1024)
+    if (cursor > 1024)
         return -1;
     wnt_page_release(page);
     page->has_record = false;
@@ -2138,6 +2138,13 @@ int wnrs_topology(struct wnrs_node *n, uint32_t cursor, uint64_t generation,
     page->next_cursor = 0;
     page->generation = 0;
     page->truncated = false;
+    page->runtime_available = false;
+    page->partial = false;
+    page->captured_at_unix_ms = 0;
+    /* The actor may be running without a node before its first carrier or
+     * after its last carrier retires. Preserve management identity/status. */
+    if (!n)
+        return cursor || generation ? 1 : 0;
     int64_t now = esp_timer_get_time();
     wn_uuid_parse(n->clock.tenant, page->tenant);
     wn_uuid_parse(n->clock.device, page->device);

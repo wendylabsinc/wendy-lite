@@ -813,6 +813,18 @@ static void large_manifest_repair_fixture(void)
 }
 int main(int argc, char **argv)
 {
+    /* The actor exists before its first authenticated carrier and after the
+     * last carrier retires. It must still report unavailable runtime state. */
+    WendyComNetTopologyPage absent = WendyComNetTopologyPage_init_zero;
+    absent.has_status = true;
+    memset(absent.tenant, 0x11, sizeof absent.tenant);
+    memset(absent.device, 0x22, sizeof absent.device);
+    assert(!wnrs_topology(NULL, 0, 0, &absent));
+    assert(!absent.runtime_available && !absent.has_record && !absent.next_cursor &&
+           !absent.generation && absent.has_status && absent.tenant[0] == 0x11 &&
+           absent.device[0] == 0x22);
+    assert(wnrs_topology(NULL, 1, 0, &absent) == 1);
+    assert(wnrs_topology(NULL, 0, 42, &absent) == 1);
     assert(argc == 2 && !wendy_pki_crypto_init());
 #if defined(WENDY_NET_MEMORY_HOST_BUDGET_TEST)
     assert(wendy_net_runtime_memory_open());
