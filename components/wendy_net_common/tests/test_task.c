@@ -6,7 +6,10 @@
 #include <stdio.h>
 #include <setjmp.h>
 
-struct mock_task { void *context; void (*deleted)(int, void *); };
+struct mock_task {
+    void *context;
+    void (*deleted)(int, void *);
+};
 static struct mock_task child;
 static struct mock_task idle_tasks[CONFIG_FREERTOS_NUMBER_OF_CORES], parent;
 static TaskHandle_t current = &parent;
@@ -17,19 +20,35 @@ static bool fail_creation, fail_registration;
 static bool keep_running;
 static TaskHandle_t *published_handle;
 
-unsigned xPortGetCoreID(void) { return core; }
-TaskHandle_t xTaskGetCurrentTaskHandle(void) { return current; }
-TaskHandle_t xTaskGetCurrentTaskHandleForCore(BaseType_t cpu) { return &idle_tasks[cpu]; }
-TaskHandle_t xTaskGetIdleTaskHandleForCore(BaseType_t cpu) { return &idle_tasks[cpu]; }
+unsigned xPortGetCoreID(void)
+{
+    return core;
+}
+TaskHandle_t xTaskGetCurrentTaskHandle(void)
+{
+    return current;
+}
+TaskHandle_t xTaskGetCurrentTaskHandleForCore(BaseType_t cpu)
+{
+    return &idle_tasks[cpu];
+}
+TaskHandle_t xTaskGetIdleTaskHandleForCore(BaseType_t cpu)
+{
+    return &idle_tasks[cpu];
+}
 void *pvTaskGetThreadLocalStoragePointer(TaskHandle_t task, BaseType_t slot)
 {
     assert(task == &child && slot == 1);
     return task->context;
 }
-void vTaskSuspend(TaskHandle_t task) { assert(task == &child); }
+void vTaskSuspend(TaskHandle_t task)
+{
+    assert(task == &child);
+}
 int esp_register_freertos_idle_hook_for_cpu(bool (*hook)(void), UBaseType_t cpu)
 {
-    if (fail_registration && cpu == 1) return -1;
+    if (fail_registration && cpu == 1)
+        return -1;
     assert(!idle[cpu]);
     idle[cpu] = hook;
     ++registrations;
@@ -57,9 +76,12 @@ BaseType_t xSemaphoreTake(SemaphoreHandle_t semaphore, uint32_t timeout)
     semaphore->count = 0;
     return pdPASS;
 }
-void vSemaphoreDelete(SemaphoreHandle_t semaphore) { assert(!semaphore->count); }
+void vSemaphoreDelete(SemaphoreHandle_t semaphore)
+{
+    assert(!semaphore->count);
+}
 void vTaskSetThreadLocalStoragePointerAndDelCallback(TaskHandle_t task, BaseType_t slot,
-    void *context, void (*deleted)(int, void *))
+                                                     void *context, void (*deleted)(int, void *))
 {
     assert(!task && slot == 1);
     child.context = context;
@@ -68,22 +90,26 @@ void vTaskSetThreadLocalStoragePointerAndDelCallback(TaskHandle_t task, BaseType
 void vTaskDelete(TaskHandle_t task)
 {
     assert((!task || task == &child) && child.deleted);
-    if (!task) current = &idle_tasks[core];
+    if (!task)
+        current = &idle_tasks[core];
     child.deleted(1, child.context);
     /* Match the SDK order: callback first, stack and TCB cleanup afterward. */
     assert(!wendy_net_runtime_memory_drained());
     child.deleted = NULL;
     current = &parent;
 }
-BaseType_t xTaskCreate(TaskFunction_t function, const char *name, uint32_t bytes,
-    void *argument, UBaseType_t priority, TaskHandle_t *handle)
+BaseType_t xTaskCreate(TaskFunction_t function, const char *name, uint32_t bytes, void *argument,
+                       UBaseType_t priority, TaskHandle_t *handle)
 {
-    (void)name; (void)priority;
+    (void)name;
+    (void)priority;
     assert(bytes == 4096 && !*published_handle);
-    if (fail_creation) return pdFAIL;
+    if (fail_creation)
+        return pdFAIL;
     *handle = &child;
     current = &child;
-    if (!setjmp(dispatch)) function(argument);
+    if (!setjmp(dispatch))
+        function(argument);
     current = &parent;
     return pdPASS;
 }
@@ -91,7 +117,8 @@ static void work(void *argument)
 {
     assert(argument == &calls && child.deleted);
     ++calls;
-    if (keep_running) longjmp(dispatch,1);
+    if (keep_running)
+        longjmp(dispatch, 1);
 }
 int main(void)
 {
@@ -99,16 +126,16 @@ int main(void)
     published_handle = &handle;
     assert(wendy_net_runtime_memory_open());
     fail_registration = true;
-    assert(wendy_net_task_create(work,"owned",4096,&calls,1,&handle) != pdPASS);
+    assert(wendy_net_task_create(work, "owned", 4096, &calls, 1, &handle) != pdPASS);
     assert(!idle[0] && !idle[1] && wendy_net_runtime_memory_drained());
     fail_registration = false;
     fail_creation = true;
-    assert(wendy_net_task_create(work,"owned",4096,&calls,1,&handle) != pdPASS);
+    assert(wendy_net_task_create(work, "owned", 4096, &calls, 1, &handle) != pdPASS);
     assert(wendy_net_runtime_memory_drained());
     fail_creation = false;
     for (core = 0; core < CONFIG_FREERTOS_NUMBER_OF_CORES; ++core) {
         handle = NULL;
-        assert(wendy_net_task_create(work,"owned",4096,&calls,1,&handle) == pdPASS);
+        assert(wendy_net_task_create(work, "owned", 4096, &calls, 1, &handle) == pdPASS);
         assert(handle == &child && !wendy_net_runtime_memory_drained());
         wendy_net_memory_snapshot_t state;
         wendy_net_runtime_memory_snapshot(&state);
@@ -127,7 +154,7 @@ int main(void)
     core = 0;
     handle = NULL;
     keep_running = true;
-    assert(wendy_net_task_create(work,"owned",4096,&calls,1,&handle) == pdPASS);
+    assert(wendy_net_task_create(work, "owned", 4096, &calls, 1, &handle) == pdPASS);
     assert(!wendy_net_runtime_memory_drained());
     wendy_net_task_delete(handle);
     assert(wendy_net_runtime_memory_drained());
