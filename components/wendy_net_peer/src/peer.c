@@ -28,6 +28,7 @@
 #endif
 #include "crypto_job.h"
 #include "settings.h"
+#include "topology_query.h"
 #include "esp_vfs.h"
 #include "netif_lifetime.h"
 #include "netif_effect.h"
@@ -189,6 +190,79 @@ static atomic_uint runtime_error;
 static WendyComNetConfig applied_config;
 static void lifecycle_poll(void);
 static pthread_mutex_t state_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct topology_query *topology_query;
+static _Atomic(TaskHandle_t) topology_actor;
+static void topology_release(struct topology_query *query)
+{
+    wnqt_release(query, wendy_net_free);
+}
+static void service_topology_query(struct peer_state *root)
+{
+    pthread_mutex_lock(&state_lock);
+    struct topology_query *query = wnqt_take(&topology_query);
+    pthread_mutex_unlock(&state_lock);
+    if (!query)
+        return;
+    int result = wnrs_topology(root->router_node, query->params.cursor, query->params.generation,
+                               &query->page);
+    if (!result && query->page.has_record && query->page.record.kind == 1)
+        for (struct peer_state *link = root; link; link = link->next)
+            if (link->router && wnrs_link_id(link->router) == query->page.record.link_id) {
+                query->page.record.transport = (unsigned)link->candidate.medium;
+                break;
+            }
+    pthread_mutex_lock(&state_lock);
+    wnqt_finish(&topology_query, query, result, wendy_net_free);
+    pthread_mutex_unlock(&state_lock);
+}
+WendyComResult wn_peer_topology(const WendyComNetTopologyParams *params,
+                                WendyComNetTopologyPage *page)
+{
+    if (params->cursor > 1024)
+        return WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+    char tenant[37], device[65];
+    wendy_conf_enrollment_identity(tenant, device);
+    if (wn_uuid_parse(tenant, page->tenant) || wn_uuid_parse(device, page->device))
+        return WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+    pthread_mutex_lock(&state_lock);
+    struct peer_state *root = state;
+    if (!root || atomic_load(&stopping)) {
+        pthread_mutex_unlock(&state_lock);
+        return params->cursor ? WendyComResult_WENDY_COM_RESULT_BUSY
+                              : WendyComResult_WENDY_COM_RESULT_OK;
+    }
+    if (topology_query || xTaskGetCurrentTaskHandle() == atomic_load(&topology_actor)) {
+        pthread_mutex_unlock(&state_lock);
+        return WendyComResult_WENDY_COM_RESULT_BUSY;
+    }
+    struct topology_query *query = wendy_net_calloc(1, sizeof *query);
+    if (!query) {
+        pthread_mutex_unlock(&state_lock);
+        return WendyComResult_WENDY_COM_RESULT_BUSY;
+    }
+    atomic_init(&query->references, 2);
+    query->params = *params;
+    query->page = *page;
+    topology_query = query;
+    wnad_wake();
+    int64_t deadline = esp_timer_get_time() + INT64_C(2000000);
+    while (!query->complete && esp_timer_get_time() < deadline) {
+        pthread_mutex_unlock(&state_lock);
+        vTaskDelay(1);
+        pthread_mutex_lock(&state_lock);
+    }
+    WendyComResult result = WendyComResult_WENDY_COM_RESULT_BUSY;
+    if (query->complete && !query->result) {
+        *page = query->page;
+        /* Transfer the selected immutable row to the synchronous encoder. */
+        query->page.record.owner_principal = (pb_callback_t){0};
+        result = WendyComResult_WENDY_COM_RESULT_OK;
+    }
+    wnqt_cancel(&topology_query, query, wendy_net_free);
+    pthread_mutex_unlock(&state_lock);
+    topology_release(query);
+    return result;
+}
 static const char *TAG = "wendy_net_peer";
 #if CONFIG_WENDY_NET_BLE
 static void delete_ble_reports(struct peer_state *s)
@@ -2005,6 +2079,7 @@ static void router_run(struct peer_state *root)
         }
 
         update_node_status(root);
+        service_topology_query(root);
         service_catalog_query(root);
         if (atomic_load(&root->node_active)) {
             service_app_query(root);
@@ -2289,6 +2364,7 @@ static bool shutdown_step(struct peer_state *root)
     }
     pthread_mutex_lock(&state_lock);
     atomic_store(&root->node_active, false);
+    wnqt_abort(&topology_query, wendy_net_free);
     if (root->service_query) {
         struct service_query *q = root->service_query;
         root->service_query = NULL;
@@ -2367,6 +2443,7 @@ static void run(void *argument)
 {
     wendy_net_memory_scope_t previous = wendy_net_runtime_scope_enter();
     struct peer_state *s = argument;
+    atomic_store(&topology_actor, xTaskGetCurrentTaskHandle());
     if (wnad_start()) {
         ESP_LOGE(TAG, "actor driver initialization failed");
         atomic_store(&runtime_error, ESP_ERR_NO_MEM);
@@ -2376,6 +2453,7 @@ static void run(void *argument)
         s->crypto_cleanup_submitted = true;
         atomic_store(&s->crypto_cleanup_done, true);
         finish_shutdown(s);
+        atomic_store(&topology_actor, NULL);
         wendy_net_memory_scope_leave(previous);
         vTaskDelete(NULL);
         return;
@@ -2389,6 +2467,7 @@ static void run(void *argument)
     atomic_store(&runtime_state, WendyComNetState_WENDY_COM_NET_RUNNING);
     router_run(s);
     finish_shutdown(s);
+    atomic_store(&topology_actor, NULL);
     wendy_net_memory_scope_leave(previous);
     vTaskDelete(NULL);
     return;

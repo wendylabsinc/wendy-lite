@@ -1,6 +1,7 @@
 /* Normal routed plaintext protocol/allocator integration. The encryption and
  * authenticated permission belong to the provider; this fixture drives the
  * production link, framing, dispatcher and allowed command delegates only. */
+#include "../../wendy_net_peer/src/topology_record.h"
 #include <assert.h>
 #include <errno.h>
 #include <limits.h>
@@ -58,6 +59,36 @@ static void net_reply(uint32_t token)
 {
     assert(token == 123);
     net_receipts++;
+}
+static unsigned topology_rows, topology_releases;
+static bool topology_long;
+static WendyComResult net_topology(const WendyComNetTopologyParams *params,
+                                   WendyComNetTopologyPage *page)
+{
+    assert(!params->cursor);
+    topology_rows++;
+    char principal[WNT_TOPOLOGY_PRINCIPAL_MAX + 1] =
+        "spiffe://wendy.sh/tenant/11111111-1111-4111-8111-111111111111/operator/Alice";
+    if (topology_long) {
+        size_t prefix = strlen(principal) - 5;
+        memset(principal + prefix, 'A', WNT_TOPOLOGY_PRINCIPAL_MAX - prefix);
+        principal[WNT_TOPOLOGY_PRINCIPAL_MAX] = 0;
+    }
+    struct wnt_record_view view = {.record = WendyComNetTopologyRecord_init_zero,
+                                   .principal = principal,
+                                   .principal_size = strlen(principal)};
+    view.record.kind = 3;
+    view.record.owner_role = WNT_TOPOLOGY_OPERATOR;
+    view.record.owner_instance.size = 16;
+    memset(view.record.owner_instance.bytes, 0xaa, 16);
+    return wnt_record_copy(page, &view) ? WendyComResult_WENDY_COM_RESULT_BUSY
+                                        : WendyComResult_WENDY_COM_RESULT_OK;
+}
+static void topology_release(WendyComNetTopologyPage *page)
+{
+    assert(page->record.owner_principal.arg);
+    topology_releases++;
+    wnt_page_release(page);
 }
 
 int64_t esp_timer_get_time(void)
@@ -128,7 +159,7 @@ esp_err_t wendy_pki_reset(const char *device, const char *nonce)
     return ESP_OK;
 }
 esp_err_t wendy_pki_sync_time(const char *server, const uint8_t *reply, size_t size,
-                              bool *synchronized, int64_t *seconds)
+                            bool *synchronized, int64_t *seconds)
 {
     management_calls++;
     return ESP_OK;
@@ -624,7 +655,10 @@ int main(void)
     assert(wcom_cmd_app_push_begin(full_client, 16, WendyComAppType_WENDY_COM_APP_TYPE_NATIVE) ==
            WendyComResult_WENDY_COM_RESULT_OK);
     assert(wcom_cmd_app_push_end(full_client) == WendyComResult_WENDY_COM_RESULT_OK);
-    static const struct wcom_net_delegate net = {.set = net_set, .reply_complete = net_reply};
+    static const struct wcom_net_delegate net = {.set = net_set,
+                                                 .reply_complete = net_reply,
+                                                 .topology = net_topology,
+                                                 .topology_release = topology_release};
     wcom_cmd_set_net_delegate(&net);
     WendyComMessage configure = WendyComMessage_init_zero;
     configure.which_msg = WendyComMessage_command_tag;
@@ -641,6 +675,14 @@ int main(void)
     assert(exchange(&reserved_a, reserved_a.link_id, 0, &configure).msg.response.result ==
            WendyComResult_WENDY_COM_RESULT_APPLIED_RESTARTING);
     assert(net_receipts == 2 && !fence_token);
+
+    WendyComMessage topology = WendyComMessage_init_zero;
+    topology.which_msg = WendyComMessage_command_tag;
+    topology.msg.command.which_params = WendyComCommand_net_topology_tag;
+    WendyComMessage projected = exchange(&full, full_id, 0, &topology);
+    assert(projected.msg.response.result == WendyComResult_WENDY_COM_RESULT_OK);
+    assert(projected.msg.response.data.net_topology.record.owner_role == WNT_TOPOLOGY_OPERATOR);
+    assert(topology_rows == 1 && topology_releases == 1 && !fence_token && net_receipts == 2);
 
     long_identity = true;
     assert(command(&full, full_id, 0, WendyComCommand_get_device_identity_tag) ==
@@ -720,6 +762,16 @@ int main(void)
     (void)exchange(&tx_budget, tx_id, 0, &request);
     assert(!_get_link(tx_id) && tx_budget.refusals == 1 && !tx_budget.live);
     tx_budget.alive = false;
+
+    /* A normal maximum-length operator subject can exceed this provider's
+     * admitted output budget. The immutable selected row still retires. */
+    struct wire topology_budget = {.budget = 256};
+    int topology_id = open_routed(&topology_budget, WCOM_LINK_PERMISSION_FULL, true);
+    topology_long = true;
+    (void)exchange(&topology_budget, topology_id, 0, &topology);
+    assert(!_get_link(topology_id) && topology_budget.refusals == 1 && !topology_budget.live);
+    assert(topology_rows == 2 && topology_releases == 2);
+    topology_budget.alive = false;
 
     /* Two routed providers share the permanent baseline wake fd. The com loop
      * drains it once, while a new producer edge after that drain remains set. */

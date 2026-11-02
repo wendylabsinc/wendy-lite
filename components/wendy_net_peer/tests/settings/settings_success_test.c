@@ -28,6 +28,17 @@ void wn_peer_configuration_changed(void)
 {
     changes++;
 }
+WendyComResult wn_peer_topology(const WendyComNetTopologyParams *params,
+                                WendyComNetTopologyPage *page)
+{
+    assert(!params->cursor);
+    assert(page->has_status && !page->status.desired.enabled);
+    return WendyComResult_WENDY_COM_RESULT_OK;
+}
+void wnt_page_release(WendyComNetTopologyPage *page)
+{
+    (void)page;
+}
 void wcom_cmd_set_net_delegate(const struct wcom_net_delegate *d)
 {
     delegate = d;
@@ -91,6 +102,10 @@ int main(void)
     assert(delegate->get(&status) == WendyComResult_WENDY_COM_RESULT_OK && !status.desired.enabled);
     assert(status.ble_supported == !!CONFIG_WENDY_NET_BLE &&
            status.wifi_supported == !!CONFIG_WENDY_WIFI_ENABLED && !status.nan_supported);
+    WendyComNetTopologyParams query = WendyComNetTopologyParams_init_zero;
+    WendyComNetTopologyPage page = WendyComNetTopologyPage_init_zero;
+    assert(delegate->topology(&query, &page) == WendyComResult_WENDY_COM_RESULT_OK &&
+           !page.runtime_available && !writes);
     WendyComNetConfig config = status.desired;
     config.enabled = true;
     if (!config.ble && !config.infrastructure_wifi) {

@@ -6,6 +6,8 @@
  * scheduling and indirect certificate fetching are integrated separately.
  */
 #include "router_session.h"
+#include "wendy_com_msg.pb.h"
+#include "topology_record.h"
 #include "catalog_node.h"
 #include "certificate_fetch.h"
 #include "certificate_store.h"
@@ -371,7 +373,7 @@ static int publish(void *ctx, const struct wn_origin *origin, int64_t now, int64
     if (signed_result) {
         ESP_LOGW(TAG, "route proof signing failed: result=%d heap=%u largest=%u", signed_result,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
         return -1;
     }
 #endif
@@ -807,7 +809,7 @@ static int admit_complete(void *ctx, const struct wg_id *id, const void *bytes, 
                         if (!memcmp(endpoint->device, uuid, 16)) {
                             memcpy(endpoint->artifact_hash, id->hash, 32);
                             break;
-                        }
+            }
             }
             int projected =
                 wnsc_manifest_services(s->node->catalog, &d, (unsigned)wn_doc_member(&d, 0, "body"),
@@ -1258,7 +1260,7 @@ static uint64_t catalog_next_hop(void *context, const uint8_t device[16], uint64
     struct wb_route route;
     if (!wnr_lookup(&node->core, address, esp_timer_get_time(), &route) || route.link == exclude)
         return 0;
-    return route.link;
+ return route.link;
 }
 static void catalog_changed(void *context)
 {
@@ -1319,7 +1321,7 @@ static bool certificate_index_current(void *context,
 /* A newly admitted TLS context is actor-owned after its worker loan returned.
  * Snapshot availability only; actual DER output keeps the existing I/O path. */
 static void refresh_certificate_index(struct wnrs_node *node, wendy_pki_connection *connection,
-                                      const struct wendy_pki_mesh_identity *identity)
+    const struct wendy_pki_mesh_identity *identity)
 {
     if (!node->certificates.opened)
         return;
@@ -1520,7 +1522,7 @@ void wnrs_close(struct wnrs *s)
                 if (!memcmp(e->address, s->peer_address, 16)) {
                     (void)wnd_key_pin(&node->core.directory, e->device, false);
                     break;
-                }
+            }
     }
     if (node->fetch_owner == s)
         node->fetch_owner = NULL;
@@ -1558,8 +1560,8 @@ int wnrs_tick(struct wnrs *s)
                  "router tick failed: result=%d stage=%s error=%d checkpoint=%u heap=%u largest=%u",
                  r, s->node->core.stop_stage ? s->node->core.stop_stage : "unknown",
                  s->node->core.stop_error, (unsigned)s->node->core.checkpoint_bytes,
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+            (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
         return -1;
     }
     bool owned = false;
@@ -1617,14 +1619,14 @@ int wnrs_tick(struct wnrs *s)
         s->selected_metric = route.metric;
         ESP_LOGI(
             TAG,
-            "native Babel peer route ready: cost=%u selected_link=%llu carrier_link=%llu state=%u gossip=%u "
-            "heap=%u internal=%u largest_internal=%u stack_free=%u",
+                 "native Babel peer route ready: cost=%u selected_link=%llu carrier_link=%llu state=%u gossip=%u "
+                 "heap=%u internal=%u largest_internal=%u stack_free=%u",
             (unsigned)route.metric, (unsigned long long)route.link, (unsigned long long)s->link,
             (unsigned)wnr_memory(&s->node->core), (unsigned)wg_memory(&s->node->pool),
-            (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-            (unsigned)uxTaskGetStackHighWaterMark(NULL));
+                 (unsigned)uxTaskGetStackHighWaterMark(NULL));
     }
 #undef TICK_PROBE
     return 0;
@@ -1754,12 +1756,12 @@ static int control_parsed(struct wnrs *s, const void *data, size_t size, const s
                     if (!strcmp(p->principal, description.principal)) {
                         needed = true;
                         break;
-                    }
+            }
                 for (struct wnrs *peer = s->node->sessions; identity && peer; peer = peer->next)
                     if (!memcmp(peer->peer_address, identity->address, 16)) {
                         needed = true;
                         break;
-                    }
+        }
                 if (!needed)
                     return 0;
             }
@@ -1856,7 +1858,7 @@ bool wnrs_app_endpoint(struct wnrs *s, const uint8_t device[16], uint16_t *port)
                 if (peer->link == s->node->endpoint_request_supplier) {
                     supplier = peer->next ? peer->next : s->node->sessions;
                     break;
-                }
+        }
         }
         if (n > 0 && !send_control(supplier, wire, (size_t)n)) {
             memcpy(s->node->endpoint_request_device, device, 16);
@@ -1997,4 +1999,217 @@ int wnrs_poll_effects(struct wnrs_node *node)
 void wnrs_service_clear(struct wnsc_registry **registry)
 {
     wnsc_guest_clear(registry);
+}
+
+/* A structural fingerprint, independent of periodic Babel ticks/clock refresh.
+ * Repeating a page after ordinary maintenance must not invalidate pagination. */
+static uint64_t topology_hash(uint64_t h, const void *bytes, size_t size)
+{
+    const uint8_t *p = bytes;
+    while (size--)
+        h = (h ^ *p++) * UINT64_C(1099511628211);
+    return h;
+}
+static int64_t topology_expiry(const struct wnrs_node *n, int64_t deadline, int64_t signed_expiry)
+{
+    int64_t bound = (int64_t)n->clock.verified_seconds * 1000 +
+                    (deadline - n->clock.verified_monotonic_us) / 1000;
+    return signed_expiry > 0 && signed_expiry < bound ? signed_expiry : bound;
+}
+/* Typed operator state is added by the following authority delivery. This
+ * generic hook deliberately creates neither a registry nor authority on C6. */
+int wnrs_topology_operator_row(struct wnrs_node *node, unsigned category, unsigned index,
+                               int64_t now, struct wnt_record_view *view)
+{
+    (void)node;
+    (void)category;
+    (void)index;
+    (void)now;
+    (void)view;
+    return 0;
+}
+static int topology_record(struct wnrs_node *n, unsigned wanted, int64_t now,
+                           struct wnt_record_view *view)
+{
+    WendyComNetTopologyRecord *out = &view->record;
+    unsigned at = 0;
+    for (struct wnrs *s = n->sessions; s; s = s->next)
+        if (s->attached) {
+            if (at++ != wanted)
+                continue;
+            out->kind = 1;
+            out->owner_role = WNT_TOPOLOGY_DEVICE;
+            out->device.size = 16;
+            wn_uuid_parse(s->identity.peer, out->device.bytes);
+            out->address.size = 16;
+            memcpy(out->address.bytes, s->peer_address, 16);
+            out->link_id = s->link;
+            for (size_t i = 0; i < n->core.babel.links_capacity; i++)
+                if (n->core.babel.links[i].config.id == s->link) {
+                    out->metric = n->core.babel.links[i].config.cost;
+                    break;
+                }
+            return true;
+        }
+    for (size_t i = 0; i < n->core.babel.route_count; i++) {
+        const struct wb_route *r = &n->core.babel.routes[i];
+        if (r->prefix.family != 6 || r->prefix.bits != 128)
+            continue;
+        if (at++ != wanted)
+            continue;
+        out->kind = 2;
+        out->address.size = 16;
+        memcpy(out->address.bytes, r->prefix.bytes, 16);
+        out->link_id = r->link;
+        out->router_id = r->router;
+        out->sequence = r->seqno;
+        out->metric = r->metric;
+        out->local = r->local;
+        out->unreachable = r->unreachable;
+        if (r->local) {
+            out->owner_role = WNT_TOPOLOGY_DEVICE;
+            out->device.size = 16;
+            memcpy(out->device.bytes, n->core.directory.self, 16);
+            out->authorized = true;
+        }
+        for (struct wnrs *s = n->sessions; s; s = s->next)
+            if (s->attached && s->link == r->link) {
+                out->next_hop_device.size = 16;
+                wn_uuid_parse(s->identity.peer, out->next_hop_device.bytes);
+                break;
+            }
+        for (const struct wnd_entry *e = n->core.directory.entries; e; e = e->next)
+            if (!memcmp(e->address, r->prefix.bytes, 16) && e->deadline_us > now &&
+                !e->pending_receipt && !e->manifest.withdraw) {
+                out->owner_role = WNT_TOPOLOGY_DEVICE;
+                out->device.size = 16;
+                memcpy(out->device.bytes, e->device, 16);
+                out->authorized =
+                    wnd_authorizes(&n->core.directory, r->prefix.bytes, r->router, r->seqno, now);
+                out->expires_at_unix_ms = topology_expiry(n, e->deadline_us, e->manifest.expires);
+                view->lease_deadline_us = e->deadline_us;
+                view->signed_expiry_unix_ms = e->manifest.expires;
+                break;
+            }
+        if (!out->device.size && wnrs_topology_operator_row(n, 2, 0, now, view) < 0)
+            return -1;
+        return true;
+    }
+    for (const struct wnd_entry *e = n->core.directory.entries; e; e = e->next) {
+        if (e->deadline_us <= now || e->pending_receipt || !e->revision || e->manifest.withdraw)
+            continue;
+        if (at++ != wanted)
+            continue;
+        out->kind = 3;
+        out->owner_role = WNT_TOPOLOGY_DEVICE;
+        out->device.size = 16;
+        memcpy(out->device.bytes, e->device, 16);
+        out->address.size = 16;
+        memcpy(out->address.bytes, e->address, 16);
+        out->router_id = e->manifest.origin.router_id;
+        out->sequence = e->manifest.origin.seqno;
+        out->revision = e->revision;
+        out->issued_at_unix_ms = e->manifest.issued;
+        out->expires_at_unix_ms = topology_expiry(n, e->deadline_us, e->manifest.expires);
+        view->lease_deadline_us = e->deadline_us;
+        view->signed_expiry_unix_ms = e->manifest.expires;
+        out->authorized = true;
+        return true;
+    }
+    /* Constrained endpoint projections have verified identity/revision/deadline,
+     * but intentionally omit full signed origin tuples and remote route tables. */
+    for (const struct wne_entry *e = n->core.endpoints.entries; e; e = e->next) {
+        if (e->deadline_us <= now || e->withdraw)
+            continue;
+        if (at++ != wanted)
+            continue;
+        out->kind = 3;
+        out->owner_role = WNT_TOPOLOGY_DEVICE;
+        out->device.size = 16;
+        memcpy(out->device.bytes, e->device, 16);
+        out->address.size = 16;
+        wn_address(e->device, out->address.bytes);
+        out->revision = e->revision;
+        out->expires_at_unix_ms = topology_expiry(n, e->deadline_us, 0);
+        view->lease_deadline_us = e->deadline_us;
+        out->authorized = true;
+        return true;
+    }
+    return wnrs_topology_operator_row(n, 3, wanted - at, now, view);
+}
+int wnrs_topology(struct wnrs_node *n, uint32_t cursor, uint64_t generation,
+                  WendyComNetTopologyPage *page)
+{
+    if (cursor > 1024)
+        return -1;
+    wnt_page_release(page);
+    page->has_record = false;
+    page->record = (WendyComNetTopologyRecord)WendyComNetTopologyRecord_init_zero;
+    page->next_cursor = 0;
+    page->generation = 0;
+    page->truncated = false;
+    page->runtime_available = false;
+    page->partial = false;
+    page->captured_at_unix_ms = 0;
+    /* The actor may be running without a node before its first carrier or
+     * after its last carrier retires. Preserve management identity/status. */
+    if (!n)
+        return cursor || generation ? 1 : 0;
+    int64_t now = esp_timer_get_time();
+    wn_uuid_parse(n->clock.tenant, page->tenant);
+    wn_uuid_parse(n->clock.device, page->device);
+    page->captured_at_unix_ms =
+        (int64_t)n->clock.verified_seconds * 1000 + (now - n->clock.verified_monotonic_us) / 1000;
+    page->runtime_available = n->core.ready && !n->core.stopped;
+    page->partial = n->core.config.endpoint_gateway;
+    if (!page->runtime_available)
+        return cursor || generation ? 1 : 0;
+    uint64_t hash = UINT64_C(1469598103934665603);
+    /* Hash only semantic fields, never struct padding, timers or counters. */
+    hash = topology_hash(hash, &n->core.config.router, sizeof n->core.config.router);
+    hash = topology_hash(hash, &n->core.config.endpoint_gateway,
+                         sizeof n->core.config.endpoint_gateway);
+    unsigned count = 0;
+    struct wnt_record_view view = {.record = WendyComNetTopologyRecord_init_zero};
+    int found = 0;
+    while (count < 1024 && (found = topology_record(n, count, now, &view)) > 0) {
+        const WendyComNetTopologyRecord *row = &view.record;
+        hash = topology_hash(hash, &row->kind, sizeof row->kind);
+        hash = topology_hash(hash, row->device.bytes, row->device.size);
+        hash = topology_hash(hash, row->address.bytes, row->address.size);
+        hash = topology_hash(hash, &row->link_id, sizeof row->link_id);
+        hash = topology_hash(hash, &row->router_id, sizeof row->router_id);
+        hash = topology_hash(hash, &row->sequence, sizeof row->sequence);
+        hash = topology_hash(hash, &row->metric, sizeof row->metric);
+        hash = topology_hash(hash, &row->local, sizeof row->local);
+        hash = topology_hash(hash, &row->unreachable, sizeof row->unreachable);
+        hash = topology_hash(hash, &row->authorized, sizeof row->authorized);
+        hash = topology_hash(hash, &row->revision, sizeof row->revision);
+        /* Hash the accepted lifetime, not its wall-clock display conversion.
+         * Fractional reanchoring must not turn an unchanged page into BUSY. */
+        hash = topology_hash(hash, &view.lease_deadline_us, sizeof view.lease_deadline_us);
+        hash = topology_hash(hash, &view.signed_expiry_unix_ms, sizeof view.signed_expiry_unix_ms);
+        hash = topology_hash(hash, &row->owner_role, sizeof row->owner_role);
+        hash = topology_hash(hash, row->owner_instance.bytes, row->owner_instance.size);
+        hash = topology_hash(hash, view.principal, view.principal_size);
+        count++;
+        view = (struct wnt_record_view){.record = WendyComNetTopologyRecord_init_zero};
+    }
+    if (found < 0)
+        return -1;
+    hash = hash ? hash : 1;
+    if ((generation && generation != hash) || cursor > count)
+        return 1;
+    page->generation = hash;
+    page->truncated = count == 1024;
+    /* A terminal cursor is empty even when more rows exist beyond the bounded
+     * scan; never return a row that was not covered by this generation. */
+    if (cursor == count)
+        return 0;
+    view = (struct wnt_record_view){.record = WendyComNetTopologyRecord_init_zero};
+    found = topology_record(n, cursor, now, &view);
+    if (found < 0 || (found > 0 && wnt_record_copy(page, &view)))
+        return -1;
+    page->next_cursor = cursor + 1 < count ? cursor + 1 : 0;
+    return 0;
 }

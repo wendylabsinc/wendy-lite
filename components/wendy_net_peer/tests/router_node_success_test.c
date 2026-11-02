@@ -162,8 +162,8 @@ void wncv_release(struct wncv_job *job)
 #define FIRST_LINK_COST WNR_LAN_COST
 static const char tenant[] = "2558fd76-afc7-466e-9613-6b715296a526";
 static const char *ids[] = {"00000000-0000-4000-8000-000000000004",
-                            "00000000-0000-4000-8000-000000000005",
-                            "00000000-0000-4000-8000-000000000006"};
+                         "00000000-0000-4000-8000-000000000005",
+                         "00000000-0000-4000-8000-000000000006"};
 static int64_t clock_us = 1000000;
 static mbedtls_pk_context key;
 static unsigned opens, closes, commits;
@@ -1022,8 +1022,139 @@ static void optional_projection_fixture(void)
     wnrs_close(session);
     assert(!node);
 }
+/* Continuation identity follows accepted monotonic leases and signed
+ * provenance, not fractional changes in their wall-clock display anchor. */
+static uint64_t topology_clock_generation(struct wnrs_node *node, unsigned expected_rows)
+{
+    WendyComNetTopologyPage page = WendyComNetTopologyPage_init_zero;
+    uint32_t cursor = 0;
+    uint64_t generation = 0;
+    unsigned rows = 0;
+    do {
+        assert(!wnrs_topology(node, cursor, generation, &page));
+        generation = page.generation;
+        rows += page.has_record;
+        cursor = page.next_cursor;
+    } while (cursor);
+    assert(rows == expected_rows);
+    wnt_page_release(&page);
+    return generation;
+}
+static void topology_clock_cursor(struct wnrs_node *node, uint64_t generation, int expected)
+{
+    WendyComNetTopologyPage page = WendyComNetTopologyPage_init_zero;
+    assert(wnrs_topology(node, 1, generation, &page) == expected);
+    wnt_page_release(&page);
+}
+static void topology_clock_fixture(void)
+{
+    int64_t saved_clock = clock_us;
+    clock_us = 3000000;
+    struct wnrs_node node = {0};
+    node.core.ready = true;
+    node.core.config.endpoint_gateway = true;
+    node.clock.verified_seconds = 1800000000;
+    node.clock.verified_monotonic_us = 1000000;
+    strcpy(node.clock.tenant, tenant);
+    strcpy(node.clock.device, ids[0]);
+    struct wne_entry endpoints[2] = {0};
+    for (unsigned i = 0; i < 2; i++) {
+        assert(!wn_uuid_parse(ids[i + 1], endpoints[i].device));
+        endpoints[i].revision = 100 + i;
+        endpoints[i].deadline_us = clock_us + 900000000;
+        endpoints[i].next = i ? NULL : &endpoints[1];
+    }
+    node.core.endpoints.entries = endpoints;
+    uint64_t generation = topology_clock_generation(&node, 2);
+    WendyComNetTopologyPage before = WendyComNetTopologyPage_init_zero;
+    assert(!wnrs_topology(&node, 0, 0, &before));
+    int64_t expiry = before.record.expires_at_unix_ms;
+    wnt_page_release(&before);
+    node.clock.verified_seconds++;
+    node.clock.verified_monotonic_us += 1000000;
+    topology_clock_cursor(&node, generation, 0);
+    node.clock.verified_monotonic_us += 500;
+    topology_clock_cursor(&node, generation, 0);
+    assert(topology_clock_generation(&node, 2) == generation);
+    assert(!wnrs_topology(&node, 0, 0, &before));
+    assert(before.record.expires_at_unix_ms == expiry - 1); /* Wire conversion unchanged. */
+    wnt_page_release(&before);
+    endpoints[0].deadline_us--; /* Same-revision sub-ms tightening stays structural. */
+    topology_clock_cursor(&node, generation, 1);
+    endpoints[0].deadline_us++;
+    endpoints[0].revision++;
+    topology_clock_cursor(&node, generation, 1);
+    endpoints[0].revision--;
+    endpoints[0].withdraw = true;
+    topology_clock_cursor(&node, generation, 1);
+    endpoints[0].withdraw = false;
+    clock_us = endpoints[0].deadline_us;
+    topology_clock_cursor(&node, generation, 1);
+    assert(topology_clock_generation(&node, 0) != generation);
+    clock_us = 3000000;
+    topology_clock_cursor(&node, generation, 0);
+
+    /* Full-router device peer, signed route and announcement rows use the
+     * same lifetime provenance without retaining a converted timestamp. */
+    node.core.config.endpoint_gateway = false;
+    node.core.endpoints.entries = NULL;
+    node.clock.verified_seconds = 1800000000;
+    node.clock.verified_monotonic_us = 1000000;
+    struct wnd_entry origin = {0};
+    assert(!wn_uuid_parse(ids[1], origin.device));
+    wn_address(origin.device, origin.address);
+    origin.revision = 91;
+    origin.deadline_us = clock_us + 900000000;
+    origin.manifest.origin = (struct wn_origin){.router_id = 49, .seqno = 7};
+    origin.manifest.issued = 1800000000000;
+    origin.manifest.expires = 1800000903000;
+    node.core.directory.entries = &origin;
+    struct wb_route route = {
+        .prefix = {.family = 6, .bits = 128}, .router = 49, .seqno = 7, .metric = 128, .link = 17};
+    memcpy(route.prefix.bytes, origin.address, 16);
+    node.core.babel.routes = &route;
+    node.core.babel.route_count = 1;
+    struct wnrs peer = {.attached = true, .link = 17};
+    strcpy(peer.identity.peer, ids[1]);
+    node.sessions = &peer;
+    generation = topology_clock_generation(&node, 3);
+    node.clock.verified_monotonic_us += 500;
+    topology_clock_cursor(&node, generation, 0);
+    assert(topology_clock_generation(&node, 3) == generation);
+    origin.deadline_us--;
+    topology_clock_cursor(&node, generation, 1);
+    origin.deadline_us++;
+    origin.manifest.expires++;
+    topology_clock_cursor(&node, generation, 1);
+    origin.manifest.expires--;
+    origin.revision++;
+    topology_clock_cursor(&node, generation, 1);
+    origin.revision--;
+    route.metric++;
+    topology_clock_cursor(&node, generation, 1);
+    route.metric--;
+    peer.link++;
+    topology_clock_cursor(&node, generation, 1);
+    peer.link--;
+    clock_us = origin.deadline_us;
+    topology_clock_cursor(&node, generation, 1);
+    assert(topology_clock_generation(&node, 2) != generation);
+    clock_us = saved_clock;
+}
 int main(int argc, char **argv)
 {
+    /* The actor exists before its first authenticated carrier and after the
+     * last carrier retires. It must still report unavailable runtime state. */
+    WendyComNetTopologyPage absent = WendyComNetTopologyPage_init_zero;
+    absent.has_status = true;
+    memset(absent.tenant, 0x11, sizeof absent.tenant);
+    memset(absent.device, 0x22, sizeof absent.device);
+    assert(!wnrs_topology(NULL, 0, 0, &absent));
+    assert(!absent.runtime_available && !absent.has_record && !absent.next_cursor &&
+           !absent.generation && absent.has_status && absent.tenant[0] == 0x11 &&
+           absent.device[0] == 0x22);
+    assert(wnrs_topology(NULL, 1, 0, &absent) == 1);
+    assert(wnrs_topology(NULL, 0, 42, &absent) == 1);
     assert(argc == 2 && !wendy_pki_crypto_init());
 #if defined(WENDY_NET_MEMORY_HOST_BUDGET_TEST)
     assert(wendy_net_runtime_memory_open());
@@ -1067,7 +1198,7 @@ int main(int argc, char **argv)
             assert(peers[i].session->own_descriptor_pending);
             assert(!wnrs_tick(peers[i].session));
             assert(!peers[i].session->own_descriptor_pending);
-        }
+    }
     }
     assert(node->core.directory.count == 2);
     const char exact_type[16] = {'_', 's', 'e', 'n', 's', 'o', 'r', 'l',
@@ -1105,6 +1236,49 @@ int main(int argc, char **argv)
         }
         drain();
     }
+    /* The live actor projection remains bounded, allocation-free and stable
+     * across ordinary timer work; structural edits invalidate old cursors. */
+    size_t topology_before = wnr_memory(&node->core) + wg_memory(&node->pool);
+    WendyComNetTopologyPage page = WendyComNetTopologyPage_init_zero;
+    assert(!wnrs_topology(node, 0, 0, &page));
+    assert(page.runtime_available && page.has_record && page.record.kind == 1 && page.next_cursor);
+    assert(sizeof page <= 384);
+    uint64_t generation = page.generation;
+    unsigned cursor = page.next_cursor, rows = 1;
+    unsigned kinds[4] = {0};
+    kinds[page.record.kind]++;
+    node->core.babel.revision++; /* Maintenance counters are not structural. */
+    clock_us += 1000;
+    while (cursor) {
+        page = (WendyComNetTopologyPage)WendyComNetTopologyPage_init_zero;
+        assert(!wnrs_topology(node, cursor, generation, &page));
+        assert(page.has_record && page.generation == generation && page.record.kind <= 3);
+        rows++;
+        kinds[page.record.kind]++;
+        cursor = page.next_cursor;
+        assert(rows < 1024);
+    }
+    assert(kinds[1] == 2 && kinds[2] >= 3 && kinds[3] >= 2);
+    assert(wnr_memory(&node->core) + wg_memory(&node->pool) == topology_before);
+    uint32_t old_metric = node->core.babel.routes[0].metric;
+    node->core.babel.routes[0].metric++;
+    assert(wnrs_topology(node, 1, generation, &page) == 1);
+    node->core.babel.routes[0].metric = (uint16_t)old_metric;
+    assert(!wnrs_topology(node, 1, generation, &page));
+    /* Partial/full is part of the view, even if its current rows coincide. */
+    bool gateway = node->core.config.endpoint_gateway;
+    node->core.config.endpoint_gateway = true;
+    assert(wnrs_topology(node, 1, generation, &page) == 1);
+    assert(!wnrs_topology(node, 0, 0, &page) && page.partial);
+    assert(page.generation != generation);
+    assert(!wnrs_topology(node, rows, page.generation, &page) && !page.has_record &&
+           !page.next_cursor);
+    node->core.config.endpoint_gateway = gateway;
+    node->core.stopped = true;
+    assert(!wnrs_topology(node, 0, 0, &page) && !page.runtime_available && !page.has_record &&
+           !page.next_cursor);
+    node->core.stopped = false;
+    printf("topology pages: records=%u dto=%zu heap_delta=0\n", rows, sizeof page);
     uint8_t uuid[2][16], address[2][16];
     uint16_t port;
     for (unsigned i = 0; i < 2; i++) {
@@ -1173,6 +1347,7 @@ int main(int argc, char **argv)
     assert(!opens && !closes && !commits && !journal_size && !service_journal_size);
     for (unsigned i = 0; i < 2; i++)
         wb_deinit(&peers[i].remote);
+    topology_clock_fixture();
     optional_projection_fixture();
     mbedtls_pk_free(&key);
 #if defined(WENDY_NET_MEMORY_HOST_BUDGET_TEST)
