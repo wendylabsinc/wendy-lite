@@ -21,13 +21,13 @@ bool wn_nan_presence_read(const uint8_t tenant[16], const uint8_t mesh[8], const
         return false;
     const uint8_t *p = bytes;
     // IDF exposes the optional WFA generic service envelope; Linux strips it.
-    if (size == WN_NAN_PRESENCE_SIZE + 4 && !memcmp(p, "\x50\x6f\x9a\x00", 4)) {
+    if (size >= 4 && !memcmp(p, "\x50\x6f\x9a\x00", 4)) {
         p += 4;
         size -= 4;
     }
-    if (size != WN_NAN_PRESENCE_SIZE)
+    if (size < WN_NAN_PRESENCE_SIZE || size > WN_NAN_PRESENCE_MAX_SIZE)
         return false;
-    if (memcmp(p, "WNAN", 4) || p[4] != 1 || (p[5] & ~3) || !(p[5] & 1) ||
+    if (memcmp(p, "WNAN", 4) || p[4] != 1 || !(p[5] & 1) ||
         memcmp(p + 6, tenant, 16) || memcmp(p + 38, mesh, 8))
         return false;
     memcpy(out->device, p + 22, 16);
