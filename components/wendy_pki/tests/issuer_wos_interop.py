@@ -18,6 +18,8 @@ def run():
     parser.add_argument('--go', required=True)
     parser.add_argument('--wendyos-root', type=Path, required=True, help='WendyOS/go module root')
     parser.add_argument('--driver', type=Path, required=True)
+    parser.add_argument('--constrained-native', action='store_true')
+    parser.add_argument('--native-resident-bytes', type=int, default=0)
     args = parser.parse_args()
     module = args.wendyos_root.resolve()
     if (module / 'go/internal/agent/bleprovider').is_dir():
@@ -56,6 +58,10 @@ def run():
         overlay.write_text(json.dumps({'Replace': replacements}))
         print('WendyOS issuer helper SHA256=' + hashlib.sha256(helper.encode()).hexdigest(), flush=True)
         environment = dict(os.environ, WENDY_LITE_ISSUER_DRIVER=str(args.driver.resolve()))
+        if args.native_resident_bytes:
+            environment['WENDY_LITE_ISSUER_RESIDENT_BYTES'] = str(args.native_resident_bytes)
+        if args.constrained_native:
+            environment['WENDY_LITE_CONSTRAINED_NATIVE'] = '1'
         subprocess.run([args.go, 'test', '-timeout', '90s', '-count=1', '-overlay=' + str(overlay),
                         '-run', '^TestLiteIssuerInteropNormal$', '-v', './internal/agent/bleprovider'],
                        cwd=module, env=environment, check=True)
