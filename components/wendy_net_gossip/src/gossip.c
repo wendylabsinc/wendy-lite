@@ -657,8 +657,12 @@ int wg_receive(struct wg_session *s, const struct wg_message *m, uint64_t now, w
     if (f->size == f->total) {
         uint8_t digest[32];
         if (p->config.identify(p->config.context, f->id.type, f->data, f->size, digest) ||
-            memcmp(digest, f->id.hash, 32))
+            memcmp(digest, f->id.hash, 32)) {
+            /* A rejected body must not look like a deferred, digest-checked
+             * completion to either resume entry point. Keep other suppliers. */
+            drop_supplier(p, f, s->owner);
             return -1;
+        }
         int r = deliver(s, f, complete, ctx);
         return r == WG_DEFER ? 0 : r;
     }

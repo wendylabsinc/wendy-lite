@@ -446,6 +446,51 @@ static void full_receive_window(void)
     SLIST_REMOVE(&connections, &conn, ble_hs_conn, bhc_next);
 }
 #if TEST_RX_SLOTS > 1
+
+static void segmented_sdu_with_parked_buffer(bool pool_pressure)
+{
+    struct ble_hs_conn conn;
+    struct ble_l2cap_chan sig, chan;
+    struct os_mbuf first_rx, parked_rx;
+    const uint8_t first[] = {6, 0, 'a', 'b', 'c'};
+    const uint8_t middle[] = {'d', 'e'};
+    const uint8_t last[] = {'f'};
+    const uint8_t next[] = {1, 0, 'g'};
+    int before_sdus = received_sdus;
+    connect_channel(&conn, &sig, &chan, 7, 70);
+    chan.initial_credits = 4;
+    init_mbuf(&first_rx);
+    init_mbuf(&parked_rx);
+    assert(ble_l2cap_coc_recv_ready(&chan, &first_rx) == 0);
+    assert(ble_l2cap_coc_recv_ready(&chan, &parked_rx) == 0);
+    assert(chan.coc_rx.credits == 2);
+    incoming(&chan, first, sizeof first);
+    incoming(&chan, middle, sizeof middle);
+    assert(chan.coc_rx.credits == 1);
+    struct os_mbuf *busy0 = NULL, *busy1 = NULL;
+    if (pool_pressure) {
+        busy0 = ble_hs_mbuf_l2cap_pkt();
+        busy1 = ble_hs_mbuf_l2cap_pkt();
+        assert(busy0 && busy1);
+    }
+    incoming(&chan, last, sizeof last);
+    assert(received_sdus == before_sdus + 1);
+    assert(chan.coc_rx.sdus[0] == NULL && chan.coc_rx.sdus[1] == &parked_rx);
+    if (pool_pressure) {
+        assert(chan.coc_rx.credits == 0);
+        assert(ble_l2cap_sig_timer() == 10);
+        os_mbuf_free_chain(busy0);
+        os_mbuf_free_chain(busy1);
+    }
+    assert(ble_l2cap_sig_timer() == BLE_HS_FOREVER);
+    assert(chan.coc_rx.credits == 1 && chan.coc_rx.flags == 0);
+    incoming(&chan, next, sizeof next);
+    assert(received_sdus == before_sdus + 2 && chan.coc_rx.credits == 0);
+    assert(chan.coc_rx.sdus[1] == NULL && pool_in_use == 0);
+    assert(ble_l2cap_sig_timer() == BLE_HS_FOREVER);
+    SLIST_REMOVE(&connections, &conn, ble_hs_conn, bhc_next);
+}
+
 static void deferred_backed_window(void)
 {
     struct ble_hs_conn conn;
@@ -574,6 +619,10 @@ int main(void)
 #endif
     for (unsigned i = 0; i <= TEST_RX_SLOTS; ++i)
         incoming_initial_backed_window(i);
+#if TEST_RX_SLOTS > 1
+    segmented_sdu_with_parked_buffer(false);
+    segmented_sdu_with_parked_buffer(true);
+#endif
     printf(
         "credit fixture RXslots=%u PASS: %d exact grants, %d bytes, pool peak %d, allocations %d, no extra SDUs\n",
         TEST_RX_SLOTS, grant_pdus, received_bytes, pool_peak, pool_allocations);

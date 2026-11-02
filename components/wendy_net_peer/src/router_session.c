@@ -829,6 +829,11 @@ static int admit_complete(void *ctx, const struct wg_id *id, const void *bytes, 
                     return WG_DEFER;
                 if (cached == 2)
                     return -1;
+                /* The compact receipt outlives the verified-key FIFO. A
+                 * reacquired key must not let an older manifest restore
+                 * service rows already omitted by a newer revision. */
+                if (cached == 1)
+                    return 0;
                 if (!cached)
                     for (struct wne_entry *endpoint = s->node->core.endpoints.entries; endpoint;
                          endpoint = endpoint->next)
@@ -2381,7 +2386,7 @@ static int topology_record(struct wnrs_node *n, unsigned wanted, int64_t now,
 int wnrs_topology(struct wnrs_node *n, uint32_t cursor, uint64_t generation,
                   WendyComNetTopologyPage *page)
 {
-    if (!n || cursor > 1024)
+    if (cursor > 1024)
         return -1;
     wnt_page_release(page);
     page->has_record = false;
@@ -2389,6 +2394,13 @@ int wnrs_topology(struct wnrs_node *n, uint32_t cursor, uint64_t generation,
     page->next_cursor = 0;
     page->generation = 0;
     page->truncated = false;
+    page->runtime_available = false;
+    page->partial = false;
+    page->captured_at_unix_ms = 0;
+    /* The actor may be running without a node before its first carrier or
+     * after its last carrier retires. Preserve management identity/status. */
+    if (!n)
+        return cursor || generation ? 1 : 0;
     int64_t now = esp_timer_get_time();
     wn_uuid_parse(n->clock.tenant, page->tenant);
     wn_uuid_parse(n->clock.device, page->device);

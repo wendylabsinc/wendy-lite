@@ -385,6 +385,12 @@ static size_t known_peer_issuers(void *context, const mbedtls_x509_crt *peer,
         used[chosen] = true;
         processed++;
         mbedtls_x509_crt *candidate = c->issuers->known[chosen];
+        /* Borrowed objects already belong to the configured trust chain.
+         * The TLS candidate adapter temporarily rewrites next pointers, so
+         * linking one here would also change which certificates are anchors.
+         * Only independently owned untrusted objects may enter that list. */
+        if (!c->issuers->owned[chosen])
+            continue;
         bool duplicate = false;
         for (size_t j = 0; j < unique; j++)
             if (candidates[j] == candidate)
