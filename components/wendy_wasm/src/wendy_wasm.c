@@ -28,6 +28,7 @@ struct wendy_wasm_module {
     wendy_wasm_state_t     state;
     uint8_t *wasm_buf; /* owned binary or mapped AOT XIP */
     uint32_t               wasm_len;
+    uint32_t max_memory_pages; /* admitted before WAMR can rewrite owned bytecode */
     esp_partition_mmap_handle_t flash_mapping;
     bool mapped;
 };
@@ -161,13 +162,9 @@ esp_err_t wendy_wasm_prealloc_pool(uint32_t pool_size)
 static wasm_module_inst_t instantiate(struct wendy_wasm_module *mod, char *error,
                                       uint32_t error_size)
 {
-    uint32_t max_pages;
-    if (!wendy_wasm_memory_limit(mod->wasm_buf, mod->wasm_len, CONFIG_WENDY_WASM_MAX_MEMORY_PAGES,
-                                 s_config.heap_size, &max_pages, error, error_size))
-        return NULL;
     InstantiationArgs args = {.default_stack_size = s_config.stack_size,
                               .host_managed_heap_size = s_config.heap_size,
-                              .max_memory_pages = max_pages};
+                              .max_memory_pages = mod->max_memory_pages};
     wasm_module_inst_t instance =
         wasm_runtime_instantiate_ex(mod->wasm_module, &args, error, error_size);
     if (instance && CONFIG_WENDY_WASM_MAX_MEMORY_PAGES) {
@@ -369,6 +366,17 @@ esp_err_t wendy_wasm_load(const uint8_t *wasm_buf, uint32_t wasm_len,
 
     char error_buf[128] = { 0 };
 
+    /* The loader interns import/export names in place. Inspect the original
+     * memory declarations first and retain only the admitted scalar bound. */
+    if (!wendy_wasm_memory_limit(mod->wasm_buf, mod->wasm_len, CONFIG_WENDY_WASM_MAX_MEMORY_PAGES,
+                                 s_config.heap_size, &mod->max_memory_pages, error_buf,
+                                 sizeof error_buf)) {
+        ESP_LOGE(TAG, "memory admission failed: %s", error_buf);
+        release_module_bytes(mod);
+        free(mod);
+        return ESP_FAIL;
+    }
+
     /* Load module */
     mod->wasm_module = wasm_runtime_load(mod->wasm_buf, wasm_len,
                                           error_buf, sizeof(error_buf));
@@ -482,6 +490,17 @@ esp_err_t wendy_wasm_load_from_partition(const char *partition_label,
     }
 
     char error_buf[128] = { 0 };
+
+    /* The loader interns import/export names in place. Inspect the original
+     * memory declarations first and retain only the admitted scalar bound. */
+    if (!wendy_wasm_memory_limit(mod->wasm_buf, mod->wasm_len, CONFIG_WENDY_WASM_MAX_MEMORY_PAGES,
+                                 s_config.heap_size, &mod->max_memory_pages, error_buf,
+                                 sizeof error_buf)) {
+        ESP_LOGE(TAG, "memory admission failed: %s", error_buf);
+        release_module_bytes(mod);
+        free(mod);
+        return ESP_FAIL;
+    }
 
     mod->wasm_module = wasm_runtime_load(mod->wasm_buf, wasm_len,
                                           error_buf, sizeof(error_buf));
