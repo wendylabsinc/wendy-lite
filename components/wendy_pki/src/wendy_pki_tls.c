@@ -1036,20 +1036,21 @@ static int finish_mesh(wendy_pki_connection *c,const char *tenant,const char *de
         const mbedtls_x509_crt* peer = mbedtls_ssl_get_peer_cert(&c->ssl);
         char expected_prefix[70];
         snprintf(expected_prefix,sizeof expected_prefix,"spiffe://wendy.sh/tenant/%s/device/",tenant);
-        enum wendy_peer_role role=peer ? wendy_peer_auth_role(peer,tenant):WENDY_PEER_ROLE_NONE;
+        enum wendy_peer_role role =
+            peer ? wendy_peer_auth_role(peer, tenant) : WENDY_PEER_ROLE_NONE;
         /* A primary operator terminates the ordinary incoming app protocol.
          * It has no enrolled UUID: keep its typed role and never put its URI in
          * mesh_peer. Carrier and outgoing device pins remain device-only. */
-        bool operator_app=role==WENDY_PEER_ROLE_OPERATOR && !gateway && !router &&
-            protocol && !strcmp(protocol,"wendy-app-mesh-tls/1") &&
-            c->config.MBEDTLS_PRIVATE(endpoint)==MBEDTLS_SSL_IS_SERVER;
-        if (!alpn || !protocol || strcmp(alpn,protocol) || !peer
-            || wendy_pki_certificate_policy(peer,false) ||
-               (role!=WENDY_PEER_ROLE_DEVICE && !operator_app))
+        bool operator_app = role == WENDY_PEER_ROLE_OPERATOR && !gateway && !router && protocol &&
+                            !strcmp(protocol, "wendy-app-mesh-tls/1") &&
+                            c->config.MBEDTLS_PRIVATE(endpoint) == MBEDTLS_SSL_IS_SERVER;
+        if (!alpn || !protocol || strcmp(alpn, protocol) || !peer ||
+            wendy_pki_certificate_policy(peer, false) ||
+            (role != WENDY_PEER_ROLE_DEVICE && !operator_app))
             goto fail;
         unsigned count = 0;
-        for (const mbedtls_x509_sequence* a = &peer->subject_alt_names; !operator_app && a && a->buf.p; a = a->next)
-        {
+        for (const mbedtls_x509_sequence *a = &peer->subject_alt_names;
+             !operator_app && a && a->buf.p; a = a->next) {
             mbedtls_x509_subject_alternative_name san;
             if (mbedtls_x509_parse_subject_alt_name(&a->buf, &san)
                 || san.type != MBEDTLS_X509_SAN_UNIFORM_RESOURCE_IDENTIFIER)

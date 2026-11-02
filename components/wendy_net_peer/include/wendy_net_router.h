@@ -107,5 +107,6 @@ bool wnr_busy(const struct wnr_core *);
 /* Actor continuation only: primary chain and this exact v4 signature completed
  * on the crypto worker. Operator origins use ordinary manifest gossip. Gateway
  * profiles deliberately do not learn/cache remote operator authorities. */
-int wnr_operator_manifest_verified(struct wnr_core *,const struct wno_manifest *,
-    const struct wendy_pki_operator_peer *,int64_t unix_ms,int64_t monotonic_us);
+int wnr_operator_manifest_verified(struct wnr_core *, const struct wno_manifest *,
+                                   const struct wendy_pki_operator_peer *, int64_t unix_ms,
+                                   int64_t monotonic_us);

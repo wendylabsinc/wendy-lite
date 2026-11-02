@@ -65,10 +65,22 @@ void wncv_release(struct wncv_job *job){assert(!job);}
 #endif
 
 #ifndef WENDY_NET_REAL_OPERATOR_RELAY_TEST
-int wnop_job_start(struct wnop_job **out,struct wncs_store *store,const void *wire,size_t size,
-    const struct wendy_pki_mesh_identity *clock,const struct wnop_primary_key *cached)
-{(void)out;(void)store;(void)wire;(void)size;(void)clock;(void)cached;return 1;}
-void wnop_job_release(struct wnop_job *job){assert(!job);}
+int wnop_job_start(struct wnop_job **out, struct wncs_store *store, const void *wire, size_t size,
+                   const struct wendy_pki_mesh_identity *clock,
+                   const struct wnop_primary_key *cached)
+{
+    (void)out;
+    (void)store;
+    (void)wire;
+    (void)size;
+    (void)clock;
+    (void)cached;
+    return 1;
+}
+void wnop_job_release(struct wnop_job *job)
+{
+    assert(!job);
+}
 #endif
 
 #define FIRST_LINK_COST WNR_LAN_COST
