@@ -26,6 +26,25 @@ int main(void)
     memcpy(corrupt, adv, WN_BLE_ADVERTISEMENT_SIZE);
     corrupt[21] = 2;
     assert(!wn_ble_adv_read(&scope, corrupt, WN_BLE_ADVERTISEMENT_SIZE, &hint));
+    assert(!hint.psm);
+    /* Future versions do not shadow a usable current record in either order. */
+    memcpy(corrupt + WN_BLE_ADVERTISEMENT_SIZE, adv, WN_BLE_ADVERTISEMENT_SIZE);
+    assert(wn_ble_adv_read(&scope, corrupt, sizeof corrupt, &hint));
+    assert(hint.psm == 129 && !memcmp(hint.device_hint, "\x7c\xd5\x12\xeb", 4));
+    memcpy(corrupt, adv, WN_BLE_ADVERTISEMENT_SIZE);
+    corrupt[WN_BLE_ADVERTISEMENT_SIZE + 21] = 2;
+    assert(wn_ble_adv_read(&scope, corrupt, sizeof corrupt, &hint));
+    assert(hint.psm == 129);
+    /* Optional v1 fields extend the AD payload after its stable known prefix. */
+    memcpy(corrupt, adv, WN_BLE_ADVERTISEMENT_SIZE);
+    corrupt[3] += 2;
+    corrupt[WN_BLE_ADVERTISEMENT_SIZE] = 0xa5;
+    corrupt[WN_BLE_ADVERTISEMENT_SIZE + 1] = 0x5a;
+    assert(wn_ble_adv_read(&scope, corrupt, WN_BLE_ADVERTISEMENT_SIZE + 2, &hint));
+    assert(hint.psm == 129 && !memcmp(hint.device_hint, "\x7c\xd5\x12\xeb", 4));
+    /* The stable prefix remains required for a supported version. */
+    corrupt[3] = 26;
+    assert(!wn_ble_adv_read(&scope, corrupt, WN_BLE_ADVERTISEMENT_SIZE - 1, &hint));
     memcpy(corrupt, adv, WN_BLE_ADVERTISEMENT_SIZE);
     corrupt[23] = 1;
     assert(!wn_ble_adv_read(&scope, corrupt, WN_BLE_ADVERTISEMENT_SIZE, &hint));
