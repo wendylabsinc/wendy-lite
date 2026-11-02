@@ -134,8 +134,7 @@ struct wcom_link_buffer_allocator {
     void *(*allocate)(void *context, size_t size);
     void (*release)(void *context, void *buffer);
 };
-bool wcom_link_get_buffer_allocator(int link_id,
-                                    struct wcom_link_buffer_allocator *out);
+bool wcom_link_get_buffer_allocator(int link_id, struct wcom_link_buffer_allocator *out);
 
 struct wcom_stream_ops {
     /// Byte count, 0 at end of stream, or a WCOM_STREAM_ERR_*.
