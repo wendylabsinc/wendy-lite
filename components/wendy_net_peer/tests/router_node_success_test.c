@@ -3,6 +3,7 @@
  * not certificate policy or adversarial inputs. */
 #include "wendy_pki_mesh.h"
 #include "nvs.h"
+#include "catalog_internal.h"
 #include <assert.h>
 #include <mbedtls/pk.h>
 #include <stdio.h>
@@ -811,6 +812,216 @@ static void large_manifest_repair_fixture(void)
     free(wire);
     free(value);
 }
+/* Optional future records must not suppress the signed route, supported
+ * siblings, immutable relay payload, or subsequent controls on this carrier. */
+static int optional_send(void *context, const void *bytes, size_t size, bool control)
+{
+    (void)context;
+    (void)bytes;
+    (void)size;
+    (void)control;
+    return 0;
+}
+static void optional_service(struct wn_writer *w, const char *app, const char *name,
+                             const char *type, bool known, unsigned port)
+{
+    wn_map(w, known ? 6 : type ? 5 : 4);
+    wn_text(w, "a");
+    wn_text(w, app);
+    wn_text(w, "m");
+    wn_text(w, "default");
+    wn_text(w, "s");
+    wn_text(w, name);
+    if (type) {
+        wn_text(w, "t");
+        wn_text(w, type);
+    }
+    if (known) {
+        wn_text(w, "n");
+        wn_text(w, "Known");
+        wn_text(w, "p");
+        wn_uint(w, port);
+    } else {
+        wn_text(w, "z");
+        wn_map(w, 1);
+        wn_text(w, "future");
+        wn_bool(w, true);
+    }
+}
+static int optional_body(const uint8_t device[16], const struct wn_origin *origin,
+                         uint64_t revision, int64_t wall, unsigned mode, char out[4096])
+{
+    char services[1024], base[2048];
+    struct wn_writer service = {
+        .data = (uint8_t *)services, .capacity = sizeof services, .maximum = sizeof services};
+    wn_array(&service, 3);
+    optional_service(&service, "app.test", "known",
+                     mode == 5   ? "_sensor._sctp"
+                     : mode == 9 ? "_sensor._TCP"
+                                 : "_sensor._tcp",
+                     mode != 5, mode == 7 ? 0 : 28461);
+    optional_service(&service, "app.test", mode == 8 ? "known" : "future", "_sensor._sctp", false,
+                     0);
+    optional_service(&service, "wendy.mesh.system", "future-gateway", NULL, false, 0);
+    int size = wn_finish(&service);
+    assert(size > 0);
+    int n =
+        wn_manifest_services_write(device, origin, revision, wall, wall + 60000, 5054, 43022,
+                                   "Optional", false, services, (size_t)size, base, sizeof base);
+    struct wn_doc d;
+    assert(n > 0 && !wn_doc_parse_array_view(&d, base, (size_t)n, sizeof base, "s"));
+    struct wn_writer w = {.data = (uint8_t *)out, .capacity = 4096, .maximum = 4096};
+    wn_map(&w, mode == 1 ? 14 : 13);
+    for (unsigned i = 1; i < d.storage[0].next; i = d.storage[i + 1].next) {
+        const struct wn_token *k = &d.storage[i], *v = &d.storage[i + 1];
+        wn_raw(&w, d.text + k->start, k->end - k->start);
+        if (wn_doc_equal(&d, (int)i, wn_key_name("appEndpoints"))) {
+            wn_array(&w, mode == 3 ? 17 : 4);
+            unsigned count = mode == 3 ? 17 : 2;
+            for (unsigned j = 0; j < count; j++) {
+                wn_map(&w, 2);
+                wn_text(&w, "t");
+                wn_text(&w, "future-v2");
+                wn_text(&w, "p");
+                wn_map(&w, 0); /* Future owns its schema. */
+            }
+            if (mode != 3) {
+                wn_map(&w, 2);
+                wn_text(&w, "t");
+                wn_text(&w, "tls-v1");
+                wn_text(&w, "p");
+                wn_uint(&w, 43022);
+                wn_map(&w, 2);
+                wn_text(&w, "t");
+                wn_text(&w, mode == 2 ? "tls-v1" : "quic-v1");
+                wn_text(&w, "p");
+                wn_uint(&w, 43023);
+            }
+        } else if (mode == 4 && wn_doc_equal(&d, (int)i, wn_key_name("agentTransport")))
+            wn_text(&w, "future-agent-v2");
+        else
+            wn_raw(&w, d.text + v->start, v->end - v->start);
+    }
+    if (mode == 1) {
+        wn_text(&w, "q");
+        wn_array(&w, 1);
+        wn_text(&w, "future-routing");
+    }
+    return wn_finish(&w);
+}
+struct optional_relay {
+    const uint8_t *expected;
+    size_t size, received;
+};
+static int optional_chunk(void *context, const struct wg_message *m)
+{
+    struct optional_relay *r = context;
+    if (m->op == WG_DATA) {
+        assert(m->offset == r->received && m->total == r->size);
+        assert(m->size <= r->size - r->received &&
+               !memcmp(m->data, r->expected + r->received, m->size));
+        r->received += m->size;
+    }
+    return 0;
+}
+static int optional_complete(void *context, const struct wg_id *id, const void *bytes, size_t size)
+{
+    (void)context;
+    (void)id;
+    (void)bytes;
+    (void)size;
+    assert(false); /* This fixture requests a verified cached object only. */
+    return -1;
+}
+static void optional_projection_fixture(void)
+{
+    struct wendy_pki_mesh_identity identity = {.verified_seconds = 1800000000,
+                                               .verified_monotonic_us = clock_us,
+                                               .certificate_expires = 1800003600,
+                                               .config_generation = 1};
+    strcpy(identity.tenant, tenant);
+    strcpy(identity.device, ids[0]);
+    struct wendy_pki_connection connection = {0};
+    strcpy(connection.peer.device, ids[1]);
+    connection.peer.expires = 1800003600;
+    uint8_t spki[128];
+    int public_size = mbedtls_pk_write_pubkey_der(&key, spki, sizeof spki);
+    assert(public_size > 0);
+    connection.peer.spki_size = (size_t)public_size;
+    memcpy(connection.peer.spki, spki + sizeof spki - public_size, (size_t)public_size);
+    struct wnrs_node *node = NULL;
+    struct wnrs *session = NULL;
+    assert(!wnrs_open(&session, &node, &connection, &identity, ids[1], 128, optional_send, NULL));
+    for (unsigned i = 0; i < 8; i++) {
+        clock_us += 1000;
+        assert(!wnrs_tick(session));
+    }
+    assert(node->core.durable && !node->core.stopped);
+    uint8_t device[16], address[16];
+    assert(!wn_uuid_parse(ids[1], device));
+    wn_address(device, address);
+    struct wn_origin origin = {.router_id = 901, .seqno = 7};
+    char body[4096], wire[8192], principal[106];
+    assert(wn_principal(tenant, ids[1], principal) == 105);
+    int64_t wall = node_unix(node);
+    size_t accepted_size = 0;
+    for (unsigned mode = 0; mode < 10; mode++) {
+        int n = optional_body(device, &origin, mode + 10, wall, mode, body);
+        assert(n > 0);
+        uint8_t signature[80];
+        size_t signature_size;
+        assert(!wendy_pki_mesh_sign(NULL, principal, body, (size_t)n, signature, &signature_size));
+        int size = wn_manifest_wire_write(principal, body, (size_t)n, signature, signature_size,
+                                          wire, sizeof wire);
+        assert(size > 0);
+        struct wg_id id = {.type = 1};
+        assert(!wn_gossip_identify(NULL, 1, wire, (size_t)size, id.hash));
+        if (mode == 1) { /* Explicit must-understand extension is still a gate. */
+            assert(wnr_manifest(&node->core, wire, (size_t)size, wall, clock_us) ==
+                   WND_UNSUPPORTED);
+            assert(wnd_authorizes(&node->core.directory, address, 901, 7, clock_us));
+            continue;
+        }
+        if (mode == 2 || mode == 3 || mode >= 7) {
+            assert(wnr_manifest(&node->core, wire, (size_t)size, wall, clock_us) < 0);
+            continue;
+        }
+        struct wendy_pki_mesh_key verified = {.spki = connection.peer.spki,
+                                              .spki_size = connection.peer.spki_size,
+                                              .expires = connection.peer.expires};
+        strcpy(verified.device, ids[1]);
+        assert(!wendy_pki_mesh_verify_key(&verified, principal, body, (size_t)n, signature,
+                                          signature_size));
+        assert(!admit_complete(session, &id, wire, (size_t)size));
+        assert(wnd_authorizes(&node->core.directory, address, 901, 7, clock_us));
+        struct wnd_entry *entry = node->core.directory.entries;
+        while (entry && memcmp(entry->device, device, 16))
+            entry = entry->next;
+        assert(entry && entry->manifest.tls_app_port == 43022 &&
+               entry->manifest.quic_app_port == 43023);
+        assert(entry->manifest.agent_mtls == (mode != 4));
+        assert(entry->manifest.agent_port == (mode == 4 ? 0 : 5054));
+        assert(node->catalog->records.count == (mode == 5 ? 0 : 1));
+        if (mode != 5)
+            assert(!strcmp(wns_entry_service(node->catalog->records.entries), "known"));
+        assert(entry->gossip_cached && !memcmp(entry->gossip_hash, id.hash, 32));
+        struct wg_message want = {.op = WG_WANT, .id = id, .request = 91 + mode};
+        struct optional_relay relay = {.expected = (const uint8_t *)wire, .size = (size_t)size};
+        assert(!wg_receive(&session->gossip, &want, clock_us / 1000, optional_chunk,
+                           optional_complete, &relay));
+        for (unsigned j = 0; j < 16 && relay.received < relay.size; j++)
+            assert(!wg_poll(&session->gossip, clock_us / 1000, optional_chunk, &relay));
+        assert(relay.received == relay.size);
+        char control[192];
+        n = wn_manifest_request_write(principal, control, sizeof control);
+        assert(n > 0 && !wnrs_control(session, control, (size_t)n));
+        assert(!node->core.stopped);
+        accepted_size = (size_t)size;
+    }
+    assert(accepted_size && node->pool.payload_bytes >= accepted_size);
+    wnrs_close(session);
+    assert(!node);
+}
 int main(int argc, char **argv)
 {
     assert(argc == 2 && !wendy_pki_crypto_init());
@@ -962,6 +1173,7 @@ int main(int argc, char **argv)
     assert(!opens && !closes && !commits && !journal_size && !service_journal_size);
     for (unsigned i = 0; i < 2; i++)
         wb_deinit(&peers[i].remote);
+    optional_projection_fixture();
     mbedtls_pk_free(&key);
 #if defined(WENDY_NET_MEMORY_HOST_BUDGET_TEST)
     wendy_net_runtime_memory_close();
