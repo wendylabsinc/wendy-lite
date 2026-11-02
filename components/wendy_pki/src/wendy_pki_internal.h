@@ -71,7 +71,7 @@ struct wendy_pki_connection
     char mesh_peer[37];
     uint8_t *mesh_roots;
     size_t mesh_roots_size;
-    bool compact_records,allow_operator_router;
+    bool compact_records, allow_operator_router;
     /* Temporary native-DER setup guard. Cleanup owns it until ssl_setup. */
     unsigned char *setup_input_reservation;
     size_t setup_input_capacity;

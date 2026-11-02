@@ -54,13 +54,17 @@ struct os_mbuf {
 struct ble_l2cap_chan;
 struct ble_l2cap_event {
     int type;
-    struct {struct ble_l2cap_chan *chan; uint16_t conn_handle, peer_sdu_size;} accept;
+    struct {
+        struct ble_l2cap_chan *chan;
+        uint16_t conn_handle, peer_sdu_size;
+    } accept;
 };
 typedef int ble_l2cap_event_fn(struct ble_l2cap_event *event, void *arg);
 struct ble_l2cap_chan {
     SLIST_ENTRY(ble_l2cap_chan) next;
     uint16_t conn_handle, scid, dcid, psm, initial_credits, my_coc_mps;
-    ble_l2cap_event_fn *cb; void *cb_arg;
+    ble_l2cap_event_fn *cb;
+    void *cb_arg;
     int (*rx_fn)(struct ble_l2cap_chan *, struct os_mbuf **);
     uint8_t flags;
     bool disable_auto_credit_update;
@@ -177,14 +181,22 @@ static void ble_l2cap_sig_coc_connect_cb(struct ble_l2cap_sig_proc *p, int rc) {
 static void ble_l2cap_sig_coc_disconnect_cb(struct ble_l2cap_sig_proc *p, int rc) { (void)p; (void)rc; }
 static void ble_l2cap_sig_proc_free(struct ble_l2cap_sig_proc *p) { (void)p; }
 static struct ble_l2cap_chan allocated_channel;
-static struct ble_l2cap_chan *ble_l2cap_chan_alloc(uint16_t handle) {
+static struct ble_l2cap_chan *ble_l2cap_chan_alloc(uint16_t handle)
+{
     memset(&allocated_channel, 0, sizeof allocated_channel);
     allocated_channel.conn_handle = handle;
     return &allocated_channel;
 }
-static int ble_l2cap_coc_get_cid(uint32_t *mask) { (void)mask; return 64; }
-static void ble_l2cap_chan_free(struct ble_hs_conn *conn, struct ble_l2cap_chan *chan) {
-    (void)conn; (void)chan; assert(!"unexpected channel allocation failure");
+static int ble_l2cap_coc_get_cid(uint32_t *mask)
+{
+    (void)mask;
+    return 64;
+}
+static void ble_l2cap_chan_free(struct ble_hs_conn *conn, struct ble_l2cap_chan *chan)
+{
+    (void)conn;
+    (void)chan;
+    assert(!"unexpected channel allocation failure");
 }
 #include "nimble_credit_production.inc"
 
@@ -192,7 +204,9 @@ static void init_mbuf(struct os_mbuf *om) { memset(om, 0, sizeof(*om)); om->om_d
 static void connect_channel(struct ble_hs_conn *conn, struct ble_l2cap_chan *sig,
                             struct ble_l2cap_chan *chan, uint16_t handle, uint16_t cid) {
     memset(conn, 0, sizeof(*conn)); memset(sig, 0, sizeof(*sig)); memset(chan, 0, sizeof(*chan));
-    conn->handle = conn->bhc_handle = handle; SLIST_INIT(&conn->bhc_channels); STAILQ_INIT(&conn->bhc_tx_q);
+    conn->handle = conn->bhc_handle = handle;
+    SLIST_INIT(&conn->bhc_channels);
+    STAILQ_INIT(&conn->bhc_tx_q);
     SLIST_INSERT_HEAD(&connections, conn, bhc_next);
     sig->scid = sig->dcid = BLE_L2CAP_CID_SIG;
     SLIST_INSERT_HEAD(&conn->bhc_channels, sig, next);
@@ -206,8 +220,12 @@ static void incoming(struct ble_l2cap_chan *chan, const uint8_t *bytes, unsigned
     struct os_mbuf *p = &packet;
     assert(ble_l2cap_coc_rx_fn(chan, &p) == 0);
 }
-struct initial_receive {struct os_mbuf buffers[TEST_RX_SLOTS]; unsigned count;};
-static int accept_initial(struct ble_l2cap_event *event, void *context) {
+struct initial_receive {
+    struct os_mbuf buffers[TEST_RX_SLOTS];
+    unsigned count;
+};
+static int accept_initial(struct ble_l2cap_event *event, void *context)
+{
     struct initial_receive *rx = context;
     assert(event->type == BLE_L2CAP_EVENT_COC_ACCEPT && event->accept.peer_sdu_size == 512);
     for (unsigned i = 0; i < rx->count; ++i) {
@@ -216,13 +234,14 @@ static int accept_initial(struct ble_l2cap_event *event, void *context) {
     }
     return 0;
 }
-static void incoming_initial_backed_window(unsigned count) {
+static void incoming_initial_backed_window(unsigned count)
+{
     struct ble_hs_conn conn;
     struct ble_l2cap_chan sig, dummy;
     struct initial_receive rx = {.count = count};
     connect_channel(&conn, &sig, &dummy, 5, 68);
-    struct ble_l2cap_chan *chan = ble_l2cap_coc_chan_alloc(&conn, 128, 512,
-                                                        NULL, accept_initial, &rx);
+    struct ble_l2cap_chan *chan =
+        ble_l2cap_coc_chan_alloc(&conn, 128, 512, NULL, accept_initial, &rx);
     assert(chan && chan->initial_credits == 3);
     SLIST_INSERT_HEAD(&conn.bhc_channels, chan, next);
     int before = grant_pdus;
@@ -231,7 +250,8 @@ static void incoming_initial_backed_window(unsigned count) {
      * extra credit PDU emitted during the application's ACCEPT callback. */
     assert(grant_pdus == before && chan->coc_rx.credits == count);
     const uint8_t short_sdu[] = {3, 0, 'a', 'b', 'c'};
-    for (unsigned i = 0; i < count; ++i) incoming(chan, short_sdu, sizeof short_sdu);
+    for (unsigned i = 0; i < count; ++i)
+        incoming(chan, short_sdu, sizeof short_sdu);
     assert(!chan->coc_rx.credits);
     if (count) {
         init_mbuf(&rx.buffers[0]);
@@ -242,7 +262,8 @@ static void incoming_initial_backed_window(unsigned count) {
     }
     SLIST_REMOVE(&connections, &conn, ble_hs_conn, bhc_next);
 }
-static void initial_backed_window(void) {
+static void initial_backed_window(void)
+{
     struct ble_hs_conn conn;
     struct ble_l2cap_chan sig, dummy;
     struct os_mbuf first;
@@ -251,15 +272,17 @@ static void initial_backed_window(void) {
     /* The configured 512-byte management MTU spans three MPS-sized PDUs,
      * but a peer may send separate short SDUs instead. One lent buffer
      * therefore backs one initial credit, independently of MTU/MPS. */
-    struct ble_l2cap_chan *chan = ble_l2cap_coc_chan_alloc(&conn, 128, 512,
-                                                        &first, NULL, NULL);
+    struct ble_l2cap_chan *chan = ble_l2cap_coc_chan_alloc(&conn, 128, 512, &first, NULL, NULL);
     assert(chan && chan->coc_rx.sdus[0] == &first);
     assert(chan->initial_credits == 3 && chan->coc_rx.credits == 1);
     SLIST_INSERT_HEAD(&conn.bhc_channels, chan, next);
     /* A full-sized segmented SDU still progresses with that backed window.
      * Continuations reuse the same buffer and get exactly one more credit. */
-    uint8_t fragment[242]; fragment[0] = 0; fragment[1] = 2;
-    for (unsigned i = 2; i < sizeof fragment; ++i) fragment[i] = 'x';
+    uint8_t fragment[242];
+    fragment[0] = 0;
+    fragment[1] = 2;
+    for (unsigned i = 2; i < sizeof fragment; ++i)
+        fragment[i] = 'x';
     int before = grant_pdus;
     incoming(chan, fragment, sizeof fragment);
     assert(chan->coc_rx.credits == 1 && first.len == 240);
@@ -268,18 +291,20 @@ static void initial_backed_window(void) {
     incoming(chan, fragment + 2, 32);
     assert(!chan->coc_rx.credits && received_bytes >= 512);
     assert(grant_pdus == before + 2);
-    for (unsigned i = 0; i < 512; ++i) assert(completed[i] == 'x');
+    for (unsigned i = 0; i < 512; ++i)
+        assert(completed[i] == 'x');
     SLIST_REMOVE(&connections, &conn, ble_hs_conn, bhc_next);
 }
 #if TEST_RX_SLOTS > 1
-static void outgoing_connected_spare(void) {
+static void outgoing_connected_spare(void)
+{
     struct ble_hs_conn conn;
     struct ble_l2cap_chan sig, dummy;
     struct os_mbuf first, spare;
     connect_channel(&conn, &sig, &dummy, 5, 68);
-    init_mbuf(&first); init_mbuf(&spare);
-    struct ble_l2cap_chan *chan = ble_l2cap_coc_chan_alloc(&conn, 129, 490,
-                                                        &first, NULL, NULL);
+    init_mbuf(&first);
+    init_mbuf(&spare);
+    struct ble_l2cap_chan *chan = ble_l2cap_coc_chan_alloc(&conn, 129, 490, &first, NULL, NULL);
     SLIST_INSERT_HEAD(&conn.bhc_channels, chan, next);
     assert(chan->initial_credits == 2 && chan->coc_rx.credits == 1);
     int before = grant_pdus;
@@ -427,7 +452,8 @@ int main(void) {
 #if TEST_RX_SLOTS > 1
     outgoing_connected_spare();
 #endif
-    for (unsigned i = 0; i <= TEST_RX_SLOTS; ++i) incoming_initial_backed_window(i);
+    for (unsigned i = 0; i <= TEST_RX_SLOTS; ++i)
+        incoming_initial_backed_window(i);
     printf("credit fixture RXslots=%u PASS: %d exact grants, %d bytes, pool peak %d, allocations %d, no extra SDUs\n",TEST_RX_SLOTS,
            grant_pdus, received_bytes, pool_peak, pool_allocations);
     return 0;

@@ -358,10 +358,11 @@ int wnr_operator_manifest_verified(struct wnr_core *c,const struct wno_manifest 
     if(finish(c,wnr_busy(c) ? 0:wb_tick(&c->babel,babel_now(c))))return WB_STOPPED;
     return r;
 }
-static int attach(struct wnr_core *c,bool first,uint16_t cost,
-    int64_t unix_ms,int64_t now,uint64_t *id)
+static int attach(struct wnr_core *c, bool first, uint16_t cost, int64_t unix_ms, int64_t now,
+                  uint64_t *id)
 {
-    if(!c || !id || !cost || cost==WB_INFINITY)return WB_INVALID;
+    if (!c || !id || !cost || cost == WB_INFINITY)
+        return WB_INVALID;
     int r = clock_at(c, unix_ms, now);
     if (r)
         return r;
@@ -382,19 +383,21 @@ static int attach(struct wnr_core *c,bool first,uint16_t cost,
         *id = link.id;
     return r;
 }
-int wnr_attach(struct wnr_core *c,const char *peer,uint16_t cost,
-    int64_t unix_ms,int64_t now,uint64_t *id)
+int wnr_attach(struct wnr_core *c, const char *peer, uint16_t cost, int64_t unix_ms, int64_t now,
+               uint64_t *id)
 {
     uint8_t uuid[16];
-    if(!c || wn_uuid_parse(peer,uuid) || !memcmp(uuid,c->directory.self,16))return WB_INVALID;
-    return attach(c,memcmp(c->directory.self,uuid,16)<0,cost,unix_ms,now,id);
+    if (!c || wn_uuid_parse(peer, uuid) || !memcmp(uuid, c->directory.self, 16))
+        return WB_INVALID;
+    return attach(c, memcmp(c->directory.self, uuid, 16) < 0, cost, unix_ms, now, id);
 }
-int wnr_attach_operator(struct wnr_core *c,uint16_t cost,
-    int64_t unix_ms,int64_t now,uint64_t *id)
+int wnr_attach_operator(struct wnr_core *c, uint16_t cost, int64_t unix_ms, int64_t now,
+                        uint64_t *id)
 {
-    if(!c || c->config.non_transit || c->config.endpoint_gateway)return WB_INVALID;
+    if (!c || c->config.non_transit || c->config.endpoint_gateway)
+        return WB_INVALID;
     /* meshid.Compare orders the same-tenant device principal before operator. */
-    return attach(c,true,cost,unix_ms,now,id);
+    return attach(c, true, cost, unix_ms, now, id);
 }
 int wnr_detach(struct wnr_core *c,uint64_t link,int64_t unix_ms,int64_t now)
 {
