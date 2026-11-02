@@ -3,17 +3,19 @@
 #include "wendy_cert_bundle.h"
 #include <stdlib.h>
 
-int pki_parse_certificate_bundle(mbedtls_x509_crt *cert, const uint8_t *data,
-                                 size_t size, bool borrow)
+int pki_parse_certificate_bundle(mbedtls_x509_crt *cert, const uint8_t *data, size_t size,
+                                 bool borrow)
 {
-    if (!cert || !data || !size || size > WENDY_CERT_BUNDLE_MAX_BYTES ||
-        wendy_pki_crypto_init()) return -1;
+    if (!cert || !data || !size || size > WENDY_CERT_BUNDLE_MAX_BYTES || wendy_pki_crypto_init())
+        return -1;
     uint8_t *imported = NULL;
     if (data[0] != 0x30) {
         size_t bytes = 0;
-        if (wendy_cert_bundle_measure(data, size, &bytes)) return -1;
+        if (wendy_cert_bundle_measure(data, size, &bytes))
+            return -1;
         imported = malloc(bytes);
-        if (!imported) return MBEDTLS_ERR_X509_ALLOC_FAILED;
+        if (!imported)
+            return MBEDTLS_ERR_X509_ALLOC_FAILED;
         if (wendy_cert_bundle_import(data, size, imported, bytes, &bytes)) {
             free(imported);
             return -1;
@@ -31,9 +33,10 @@ int pki_parse_certificate_bundle(mbedtls_x509_crt *cert, const uint8_t *data,
             result = -1;
             break;
         }
-        result = borrow ? mbedtls_x509_crt_parse_der_nocopy(cert, der, bytes) :
-                          mbedtls_x509_crt_parse_der(cert, der, bytes);
-        if (result) break;
+        result = borrow ? mbedtls_x509_crt_parse_der_nocopy(cert, der, bytes)
+                        : mbedtls_x509_crt_parse_der(cert, der, bytes);
+        if (result)
+            break;
     }
     free(imported);
     return result ? result : (next < 0 || !count ? -1 : 0);

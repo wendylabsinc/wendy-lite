@@ -417,13 +417,13 @@ static void assert_span(struct wendy_conf_span span, const void *bytes, size_t s
     assert(size ? span.data && !memcmp(span.data, bytes, size) : !span.data);
 }
 
-static void assert_source_hash(const struct wendy_conf_enrollment_data *data,
-                               const uint8_t *source, size_t size)
+static void assert_source_hash(const struct wendy_conf_enrollment_data *data, const uint8_t *source,
+                               size_t size)
 {
     uint8_t expected[32];
     size_t written;
-    assert(psa_hash_compute(PSA_ALG_SHA_256, source, size, expected,
-                           sizeof expected, &written) == PSA_SUCCESS);
+    assert(psa_hash_compute(PSA_ALG_SHA_256, source, size, expected, sizeof expected, &written) ==
+           PSA_SUCCESS);
     assert(written == sizeof expected);
     assert(!memcmp(data->device_roots_source_hash, expected, sizeof expected));
 }
@@ -501,7 +501,8 @@ static void test_der_snapshots(const char *fixtures)
     assert_span(encoded.device_roots, pem, pem_size);
     assert_span(full.device_roots, der, der_size);
     assert_span(device.device_roots, der, der_size);
-    for (unsigned i = 0; i < 4; i++) assert_span(time[i].tsa_roots, der, der_size);
+    for (unsigned i = 0; i < 4; i++)
+        assert_span(time[i].tsa_roots, der, der_size);
     _load_conf();
     assert(!wendy_conf_snapshot_current(full.generation));
     assert(wendy_conf_copy_enrollment_der(&cfg, &next) == ESP_OK);
@@ -529,7 +530,8 @@ static void test_der_snapshots(const char *fixtures)
     uint8_t encoded_builtin[32];
     pb_ostream_t out = pb_ostream_from_buffer(encoded_builtin, sizeof encoded_builtin);
     assert(pb_encode(&out, WendyConf_fields, &builtin));
-    assert(wendy_conf_write(encoded_builtin, out.bytes_written, WENDY_CONF_WRITE_MODE_UPDATE) == ESP_OK);
+    assert(wendy_conf_write(encoded_builtin, out.bytes_written, WENDY_CONF_WRITE_MODE_UPDATE) ==
+           ESP_OK);
     _load_conf();
     assert(wendy_conf_copy_enrollment_der(&cfg, &next) == ESP_OK);
     assert(!next.storage && next.generation && !cfg.provision_trust);
@@ -539,7 +541,8 @@ static void test_der_snapshots(const char *fixtures)
     free(encoded.storage);
     free(full.storage);
     free(device.storage);
-    for (unsigned i = 0; i < 4; i++) free(time[i].storage);
+    for (unsigned i = 0; i < 4; i++)
+        free(time[i].storage);
     free(der);
     free(pem);
 }

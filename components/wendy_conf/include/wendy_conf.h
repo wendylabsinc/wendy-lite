@@ -168,16 +168,17 @@ esp_err_t wendy_conf_copy_enrollment(WendyConfEnrollment *, struct wendy_conf_en
  * All spans survive configuration writes. PEM is decoded from mapped flash at
  * this import boundary, without allocating a second encoded bundle. */
 esp_err_t wendy_conf_copy_enrollment_der(WendyConfEnrollment *config,
-                                     struct wendy_conf_enrollment_data *data);
+                                         struct wendy_conf_enrollment_data *data);
 
 /* Metadata plus an owned DER device-root snapshot only. Intended
  * for service TLS using the already established system clock. */
 esp_err_t wendy_conf_copy_device_trust(WendyConfEnrollment *config,
-                                     struct wendy_conf_enrollment_data *data);
+                                       struct wendy_conf_enrollment_data *data);
 /* Time-only owned snapshot: TSA roots, optional bootstrap seed and HTTPS
  * roots. Excludes device CA bytes. Generation pins the exact configuration,
  * so refresh can reject any intervening write without reparsing device CAs. */
 esp_err_t wendy_conf_copy_time_trust(WendyConfEnrollment *config,
-    struct wendy_conf_enrollment_data *data, bool bootstrap, bool https);
+                                     struct wendy_conf_enrollment_data *data, bool bootstrap,
+                                     bool https);
 /* A point-in-time check, not a lease: later writes can invalidate it. */
 bool wendy_conf_snapshot_current(uint64_t generation);
