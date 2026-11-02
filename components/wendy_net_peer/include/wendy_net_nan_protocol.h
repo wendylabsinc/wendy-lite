@@ -4,12 +4,15 @@
 #include <stdint.h>
 
 #define WN_NAN_PRESENCE_SIZE 46
+#define WN_NAN_PRESENCE_MAX_SIZE 255
 struct wn_nan_hint {
     uint8_t device[16];
     bool tls_only;
 };
 /* Discovery metadata only. Full TLS identity and signed routing admission
- * remain independent. UUIDs and the eight-byte mesh hash use network order. */
+ * remain independent. UUIDs and the eight-byte mesh hash use network order.
+ * Version 1 has a stable prefix; optional trailing fields and unknown advisory
+ * flag bits are ignored. Unsupported versions yield no candidate. */
 int wn_nan_presence_write(const uint8_t tenant[16], const uint8_t device[16], const uint8_t mesh[8],
                           bool tls_only, uint8_t out[WN_NAN_PRESENCE_SIZE]);
 bool wn_nan_presence_read(const uint8_t tenant[16], const uint8_t mesh[8], const void *bytes,

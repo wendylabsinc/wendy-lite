@@ -77,6 +77,11 @@ WendyComResult wcom_cmd_app_push_begin(int client_id, size_t size, WendyComAppTy
 {
     ESP_LOGI(TAG, "APP_PUSH_BEGIN client=%d size=%zu type=%s", client_id, size,
              app_type == WendyComAppType_WENDY_COM_APP_TYPE_NATIVE ? "native" : "wasm");
+    // A future app format must not fall through to the WASM delegate or
+    // acquire upload ownership on firmware that cannot interpret it.
+    if (app_type != WendyComAppType_WENDY_COM_APP_TYPE_WASM &&
+        app_type != WendyComAppType_WENDY_COM_APP_TYPE_NATIVE)
+        return WendyComResult_WENDY_COM_RESULT_BAD_APP_TYPE;
     if (_push_kind != PUSH_NONE) {
         ESP_LOGW(TAG, "APP_PUSH_BEGIN from client=%d while client=%d is pushing", client_id, _pushing_client_id);
         return WendyComResult_WENDY_COM_RESULT_BUSY;
@@ -118,6 +123,10 @@ WendyComResult wcom_cmd_conf_push_begin(int client_id, size_t size, WendyComConf
 {
     ESP_LOGI(TAG, "CONF_PUSH_BEGIN client=%d size=%zu mode=%s", client_id, size,
              mode == WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE ? "update" : "replace");
+    // Unknown update semantics cannot safely be interpreted as REPLACE.
+    if (mode != WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_REPLACE &&
+        mode != WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE)
+        return WendyComResult_WENDY_COM_RESULT_BAD_STATE;
     if (_push_kind != PUSH_NONE) {
         ESP_LOGW(TAG, "CONF_PUSH_BEGIN from client=%d while client=%d is pushing", client_id, _pushing_client_id);
         return WendyComResult_WENDY_COM_RESULT_BUSY;

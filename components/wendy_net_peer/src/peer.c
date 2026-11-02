@@ -1093,6 +1093,8 @@ static void time_backend(void *argument)
 }
 static int time_receive(void *context, const struct wn_doc *doc, unsigned at)
 {
+    if (!wnt_version_supported(doc, at))
+        return 0;
     struct peer_state *s = context;
     int op = wn_doc_member(doc, at, "op");
     pthread_mutex_lock(&state_lock);
