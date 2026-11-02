@@ -149,6 +149,8 @@ struct wn_assembler {
     uint8_t parts;
     int64_t deadline_us;
 };
+/* Zero means incomplete or an unsupported datagram kind (state unchanged).
+ * Kind1 is the current fragment schema; Babel kind2 is dispatched separately. */
 int wn_assemble(struct wn_assembler *, const uint8_t *fragment, size_t size, int64_t now_us);
 size_t wn_fragment(uint8_t out[WN_DATAGRAM_MAX], const uint8_t *packet, size_t size, uint32_t id,
                    size_t offset);

@@ -52,6 +52,25 @@ int main(void)
     assert(!strcmp(record.service, "room.temperature") && record.port == 7000);
     char txt[256];
     assert(wns_record_txt(&record, 0, txt, sizeof txt) == 12 && !strcmp(txt, "unit=celsius"));
+    /* Optional future CBOR fields do not change this service's known view. */
+    char extended[2048];
+    assert(bytes > 0 && (uint8_t)binary[0] == 0xa5 && bytes < sizeof extended);
+    memcpy(extended, binary, bytes);
+    extended[0] = (char)0xa6;
+    struct wn_writer extension = {.data = (uint8_t *)extended,
+                                  .capacity = sizeof extended,
+                                  .maximum = sizeof extended,
+                                  .size = bytes};
+    wn_text(&extension, "z");
+    wn_array(&extension, 2);
+    wn_bool(&extension, true);
+    wn_map(&extension, 1);
+    wn_text(&extension, "future");
+    wn_uint(&extension, 9);
+    int extended_size = wn_finish(&extension);
+    assert(extended_size > 0 && !wns_spec_read(extended, (size_t)extended_size, &record));
+    assert(!strcmp(record.service, "room.temperature") && record.port == 7000 &&
+           record.txt_count == 1);
     free(binary);
     assert(wns_label_valid("room.temperature") && wns_label_valid("room_1"));
     assert(wns_type_valid("_-sensor._udp") && wns_type_valid("_sensor._tcp"));

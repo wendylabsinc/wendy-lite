@@ -25,7 +25,9 @@ int main(int argc, char **argv)
     struct wn_doc doc;
     assert(!wn_doc_parse(&doc, wire, (size_t)size));
     int at = wn_doc_member(&doc, 0, "time");
-    assert(at >= 0);
+    assert(at >= 0 && wnt_version_supported(&doc, (unsigned)at));
+    uint64_t version;
+    assert(!wn_doc_u64(&doc, wn_doc_member(&doc, (unsigned)at, "v"), &version) && version == 1);
     struct wnt_job *server = wnt_request_read(&doc, (unsigned)at, 30000);
     assert(server);
     assert(server->query_size == sizeof query && !memcmp(server->query, query, sizeof query));
@@ -35,6 +37,67 @@ int main(int argc, char **argv)
     for (size_t i = 0; i < server->size; i++)
         server->reply[i] = (uint8_t)(i * 31 + 7);
     server->result = 0;
+    /* A future operation without today's id/total/data is ignored, preserving
+     * the active request. Known malformed replies still fail validation. */
+    struct wn_writer future = {
+        .data = (uint8_t *)wire, .capacity = sizeof wire, .maximum = sizeof wire};
+    wn_map(&future, 1);
+    wn_key(&future, "op");
+    wn_text(&future, "future-progress");
+    size = wn_finish(&future);
+    assert(size > 0 && !wn_doc_parse(&doc, wire, (size_t)size));
+    assert(!wnt_reply_read(client, &doc, 0));
+    assert(!atomic_load(&client->done) && !client->reply && !client->offset);
+    future = (struct wn_writer){
+        .data = (uint8_t *)wire, .capacity = sizeof wire, .maximum = sizeof wire};
+    wn_map(&future, 2);
+    wn_key(&future, "op");
+    wn_text(&future, "reply");
+    wn_key(&future, "id");
+    wn_uint(&future, client->id);
+    size = wn_finish(&future);
+    assert(size > 0 && !wn_doc_parse(&doc, wire, (size_t)size));
+    assert(wnt_reply_read(client, &doc, 0) < 0);
+    assert(!atomic_load(&client->done) && !client->reply && !client->offset);
+    /* Unsupported versions are independent of today's operation schema. */
+    future = (struct wn_writer){
+        .data = (uint8_t *)wire, .capacity = sizeof wire, .maximum = sizeof wire};
+    wn_map(&future, 2);
+    wn_key(&future, "op");
+    wn_map(&future, 1);
+    wn_key(&future, "future-shape");
+    wn_uint(&future, 7);
+    wn_key(&future, "v");
+    wn_uint(&future, 2);
+    size = wn_finish(&future);
+    assert(size > 0 && !wn_doc_parse(&doc, wire, (size_t)size));
+    assert(!wnt_version_supported(&doc, 0));
+    assert(!wnt_reply_read(client, &doc, 0));
+    assert(!wnt_request_read(&doc, 0, 30000));
+    assert(!atomic_load(&client->done) && !client->reply && !client->offset);
+    /* Old senders omit v or leave its scalar zero; both retain version1. */
+    for (unsigned legacy = 0; legacy < 3; legacy++) {
+        future = (struct wn_writer){
+            .data = (uint8_t *)wire, .capacity = sizeof wire, .maximum = sizeof wire};
+        wn_map(&future, legacy ? 4 : 3);
+        if (legacy) {
+            wn_key(&future, "v");
+            wn_uint(&future, legacy - 1);
+        }
+        wn_key(&future, "op");
+        wn_text(&future, "request");
+        wn_key(&future, "id");
+        wn_uint(&future, 42);
+        wn_key(&future, "data");
+        wn_bytes(&future, query, sizeof query);
+        size = wn_finish(&future);
+        assert(size > 0 && !wn_doc_parse(&doc, wire, (size_t)size));
+        assert(wnt_version_supported(&doc, 0));
+        struct wnt_job *old = wnt_request_read(&doc, 0, 30000);
+        assert(old && old->id == 42 && old->query_size == sizeof query &&
+               !memcmp(old->query, query, sizeof query));
+        wnt_release(old);
+    }
     while (!atomic_load(&client->done)) {
         size = wnt_reply_write(server, wire, sizeof wire);
         assert(size > 0);
