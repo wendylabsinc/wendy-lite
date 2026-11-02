@@ -396,7 +396,8 @@ static esp_err_t wasm_app_stop_on_control_thread(uint32_t *replacement)
     if (err != ESP_OK) return err;
     if (!wait_for_wasm_inactive(5000)) return ESP_ERR_TIMEOUT;
     reset_guest_resources();
-    if (replacement) *replacement = wendy_wasm_replacement_begin(s_current_module);
+    if (replacement)
+        *replacement = wendy_wasm_replacement_begin(s_current_module);
     wendy_wasm_unload(s_current_module);
     mark_current_module_unloaded();
     return ESP_OK;
