@@ -112,6 +112,22 @@ esp_err_t wendy_pki_net_begin(const struct wendy_pki_stream *bio, bool server, c
     (*out)->connection->bio = *bio;
     return ESP_OK;
 }
+void wendy_net_peer_issuer_snapshot(struct wendy_pki_net_issuers *snapshot)
+{
+    memset(snapshot, 0, sizeof *snapshot);
+}
+void wendy_pki_net_release_issuers(struct wendy_pki_net_issuers *snapshot)
+{
+    if (snapshot->release)
+        snapshot->release(snapshot->context);
+    memset(snapshot, 0, sizeof *snapshot);
+}
+void wendy_pki_net_add_issuers(struct wendy_pki_net_setup *op,
+                               struct wendy_pki_net_issuers *snapshot)
+{
+    assert(in_job);
+    wendy_pki_net_release_issuers(snapshot);
+}
 int wendy_pki_net_step(struct wendy_pki_net_setup *op)
 {
     assert(in_job);

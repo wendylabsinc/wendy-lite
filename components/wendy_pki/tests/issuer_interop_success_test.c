@@ -1,5 +1,6 @@
 /* Normal interop driver: the same native async DER constructor used on ESP. */
 #include "wendy_pki_internal.h"
+#include "wendy_pki_issuers.h"
 #include "wendy_pki_crypto.h"
 #include "wendy_pki_parsed_identity.h"
 #include "wendy_cert_bundle.h"
@@ -75,9 +76,30 @@ static int io_wait(void *context, bool write, int64_t deadline)
     struct pollfd p = {.fd = *(int *)context, .events = write ? POLLOUT : POLLIN};
     return poll(&p, 1, (int)(remain / 1000 + 1));
 }
+static struct {
+    mbedtls_x509_crt *anchor[16], *next[16];
+    unsigned count;
+    int (*verify)(void *, mbedtls_x509_crt *, int, uint32_t *);
+    void *context;
+} trust_snapshot;
+static int verify_unchanged_trust(void *context, mbedtls_x509_crt *certificate, int depth,
+                                  uint32_t *flags)
+{
+    (void)context;
+    /* Check during verification, while temporary candidate links are live. */
+    for (unsigned i = 0; i < trust_snapshot.count; i++)
+        assert(trust_snapshot.anchor[i]->next == trust_snapshot.next[i]);
+    return trust_snapshot.verify(trust_snapshot.context, certificate, depth, flags);
+}
+static unsigned cached_releases;
+static void release_cached_der(void *context)
+{
+    cached_releases++;
+    free(context);
+}
 int main(int argc, char **argv)
 {
-    assert(argc == 13);
+    assert(argc == 14 || argc == 15);
     signal(SIGPIPE, SIG_IGN);
     assert(!mbedtls_platform_set_calloc_free(wendy_net_memory_scoped_calloc,
                                              wendy_net_memory_scoped_free));
@@ -112,24 +134,74 @@ int main(int argc, char **argv)
                                          .der_context = &source};
     struct wendy_pki_stream stream = {
         .context = &fd, .read = io_read, .write = io_write, .wait = io_wait};
-    bool server = !strcmp(argv[4], "server"), application = atoi(argv[11]) != 0;
+    unsigned profile = (unsigned)atoi(argv[11]);
+    bool server = !strcmp(argv[4], "server"), application = profile == 1, agent = profile == 2;
+    assert(!agent || server);
+    size_t resident_bytes = agent && getenv("WENDY_LITE_ISSUER_RESIDENT_BYTES")
+                                ? strtoul(getenv("WENDY_LITE_ISSUER_RESIDENT_BYTES"), NULL, 10)
+                                : 0;
     wendy_net_memory_t memory = WENDY_NET_MEMORY_INITIALIZER;
-    assert(wendy_net_memory_open(&memory, 1024 * 1024, true));
-    wendy_net_memory_scope_t previous =
-        wendy_net_memory_scope_enter(&memory, WENDY_NET_MEMORY_EXTERNAL);
+    assert(wendy_net_memory_open(&memory, resident_bytes ? 160 * 1024 : 1024 * 1024,
+                                  !resident_bytes));
+    wendy_net_memory_reservation_t resident = {0};
+    if (resident_bytes)
+        assert(wendy_net_memory_reserve(&memory, &resident, resident_bytes,
+                                         WENDY_NET_MEMORY_INTERNAL));
+    wendy_net_memory_scope_t previous = wendy_net_memory_scope_enter(
+        &memory, resident_bytes ? WENDY_NET_MEMORY_INTERNAL : WENDY_NET_MEMORY_EXTERNAL);
+    if (argc == 15) {
+        assert(!strcmp(argv[14], "cooldown"));
+        assert(pki_issuer_recovery_failed(&pki_issuer_process_recovery, esp_timer_get_time()));
+    }
     wendy_pki_connection *c = NULL;
-    assert(!pki_tls_net_begin(&stream, server, argv[7], argv[8], &own,
-                              (struct wendy_conf_span){roots, rn}, application, &c));
+    if (agent)
+        assert(!pki_tls_agent_begin(&stream, argv[7], argv[8], &own,
+                                    (struct wendy_conf_span){roots, rn}, &c));
+    else
+        assert(!pki_tls_net_begin(&stream, server, argv[7], argv[8], &own,
+                                  (struct wendy_conf_span){roots, rn}, application, &c));
+    if (strcmp(argv[13], "-")) {
+        size_t size = 0;
+        uint8_t *der = load(argv[13], &size);
+        struct wendy_pki_net_issuers snapshot = {.count = 1,
+                                                 .der = {der},
+                                                 .sizes = {size},
+                                                 .context = der,
+                                                 .release = release_cached_der};
+        pki_tls_net_add_issuers(c, &snapshot);
+        assert(!snapshot.count && !snapshot.release);
+    }
+    for (mbedtls_x509_crt *anchor = &c->roots; anchor; anchor = anchor->next) {
+        assert(trust_snapshot.count < 16);
+        unsigned i = trust_snapshot.count++;
+        trust_snapshot.anchor[i] = anchor;
+        trust_snapshot.next[i] = anchor->next;
+    }
+    trust_snapshot.verify = c->config.MBEDTLS_PRIVATE(f_vrfy);
+    trust_snapshot.context = c->config.MBEDTLS_PRIVATE(p_vrfy);
+    assert(trust_snapshot.verify);
+    mbedtls_ssl_conf_verify(&c->config, verify_unchanged_trust, NULL);
+    /* Untrusted candidate linking must never rewrite the configured anchors.
+     * Pinned-intermediate fixtures deliberately share exact parsed objects
+     * between available inventory and the trust bundle. */
+    if (c->issuers) {
+        mbedtls_x509_crt *candidates[16];
+        size_t count = c->config.MBEDTLS_PRIVATE(f_wendy_untrusted_issuers)(c, &c->certificate,
+                                                                            candidates, 16);
+        for (size_t i = 0; i < count; i++)
+            for (mbedtls_x509_crt *anchor = &c->roots; anchor; anchor = anchor->next)
+                assert(candidates[i] != anchor);
+    }
     if (!strcmp(argv[10], "-"))
         assert(!c->issuers);
     else
-        assert(c->issuers && !strcmp(c->issuers->hint, argv[10]));
+        assert(c->issuers && c->issuers->chain_count == (unsigned)atoi(argv[10]));
     if (atoi(argv[12]))
         goto done;
     int result = 1;
     unsigned steps = 0;
     while (result && ++steps < 10000) {
-        result = pki_tls_net_advance(c, application, argv[9]);
+        result = agent ? pki_tls_agent_advance(c) : pki_tls_net_advance(c, application, argv[9]);
         if (result == -2 || result == -3) {
             assert(io_wait(&fd, result == -3, esp_timer_get_time() + 10000000) > 0);
             result = 1;
@@ -145,8 +217,12 @@ int main(int argc, char **argv)
             c->issuers ? c->issuers->peer_presented_certificates : 0,
             c->issuers ? c->issuers->hint : "(none)");
     assert((c->issuers && c->issuers->omit) == (atoi(argv[6]) == 1));
-    assert(!strcmp(mbedtls_ssl_get_alpn_protocol(&c->ssl),
-                   application ? "wendy-app-mesh-tls/1" : "wendy-local-mesh-ble/2"));
+    if (strcmp(argv[13], "-") && c->issuers)
+        assert(c->issuers->peer_presented_certificates == 1);
+    assert(!strcmp(mbedtls_ssl_get_alpn_protocol(&c->ssl), agent ? "wendy-com/2"
+                                                           : application
+                                                               ? "wendy-app-mesh-tls/1"
+                                                               : "wendy-local-mesh-ble/2"));
     printf("native role=%s omit=%u received_count=%u hint=%s\n", argv[4],
            c->issuers && c->issuers->omit, c->issuers ? c->issuers->peer_presented_certificates : 0,
            c->issuers ? c->issuers->hint : "(none)");
@@ -175,7 +251,9 @@ int main(int argc, char **argv)
 done:
     wendy_pki_close(c);
     close(fd);
+    assert(cached_releases == (unsigned)(strcmp(argv[13], "-") != 0));
     wendy_net_memory_scope_leave(previous);
+    wendy_net_memory_release(&resident);
     wendy_net_memory_snapshot_t snapshot;
     wendy_net_memory_snapshot(&memory, &snapshot);
     fprintf(stderr, "issuer scoped peak=%zu retained=%zu allocations=%zu reservations=%zu\n",

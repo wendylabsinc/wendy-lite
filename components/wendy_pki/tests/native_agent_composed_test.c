@@ -65,6 +65,15 @@ esp_err_t wendy_pki_agent_begin(const struct wendy_pki_stream *bio,
     *out = op;
     return ESP_OK;
 }
+void wendy_net_peer_issuer_snapshot(struct wendy_pki_net_issuers *snapshot)
+{
+    memset(snapshot, 0, sizeof *snapshot);
+}
+void wendy_pki_agent_add_issuers(struct wendy_pki_agent_setup *op,
+                                 struct wendy_pki_net_issuers *snapshot)
+{
+    pki_tls_net_add_issuers(op->connection, snapshot);
+}
 int wendy_pki_agent_step(struct wendy_pki_agent_setup *op)
 {
     int result = pki_tls_agent_advance(op->connection);
@@ -202,7 +211,7 @@ int main(int argc, char **argv)
         if (flows && flows->input_eof) {
             saw_eof = true;
             break;
-        }
+    }
         if (!flows && authenticated)
             break;
         if (!progress && !worked) {

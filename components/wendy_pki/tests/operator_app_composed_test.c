@@ -63,6 +63,15 @@ esp_err_t wendy_pki_net_begin(const struct wendy_pki_stream *bio, bool server, c
     *out = op;
     return ESP_OK;
 }
+void wendy_net_peer_issuer_snapshot(struct wendy_pki_net_issuers *snapshot)
+{
+    memset(snapshot, 0, sizeof *snapshot);
+}
+void wendy_pki_net_add_issuers(struct wendy_pki_net_setup *op,
+                               struct wendy_pki_net_issuers *snapshot)
+{
+    pki_tls_net_add_issuers(op->connection, snapshot);
+}
 int wendy_pki_net_step(struct wendy_pki_net_setup *op)
 {
     int r = pki_tls_net_advance(op->connection, true, NULL);

@@ -84,6 +84,22 @@ bool wendy_pki_work_submit(void (*fn)(void *), void *context)
     cpu_argument = context;
     return true;
 }
+void wendy_net_peer_issuer_snapshot(struct wendy_pki_net_issuers *snapshot)
+{
+    memset(snapshot, 0, sizeof *snapshot);
+}
+void wendy_pki_net_release_issuers(struct wendy_pki_net_issuers *snapshot)
+{
+    if (snapshot->release)
+        snapshot->release(snapshot->context);
+    memset(snapshot, 0, sizeof *snapshot);
+}
+void wendy_pki_agent_add_issuers(struct wendy_pki_agent_setup *op,
+                                 struct wendy_pki_net_issuers *snapshot)
+{
+    assert(op);
+    wendy_pki_net_release_issuers(snapshot);
+}
 static void finish_cpu(void)
 {
     assert(cpu_callback);
@@ -444,7 +460,7 @@ int main(void)
                     have = (size_t)n;
                 } else
                     assert(n == -2);
-        }
+            }
             if (offset < have) {
                 ssize_t n = com_ops->write(com_context, echo + offset, have - offset);
                 if (n > 0)
@@ -474,7 +490,7 @@ int main(void)
             else {
                 struct pollfd wait = {.fd = client, .events = POLLIN};
                 (void)poll(&wait, 1, 1);
-        }
+            }
         }
         assert(got == 4 && !memcmp(tail, "tail", 4));
         stop();

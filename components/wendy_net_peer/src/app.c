@@ -81,6 +81,7 @@ struct app_flow {
     struct wna_channel channel;
     struct wna_session state;
     struct wendy_pki_net_setup *setup;
+    struct wendy_pki_net_issuers issuers;
     atomic_bool job_done;
     int job_result, fd, pair_listener, pair_guest;
     bool connecting, backend_connecting, negotiated, local_half;
@@ -136,7 +137,7 @@ static int datagram_step(struct datagram_flow *d)
                 d->wanted = wn_get16(d->header);
                 if (d->wanted > flow->datagram_max)
                     return -1;
-            }
+    }
         } else if (!n || (n != -2 && n != -3))
             return -1;
     }
@@ -145,7 +146,7 @@ static int datagram_step(struct datagram_flow *d)
         if (!flow->datagram_in) {
             ESP_LOGW(TAG, "UDP input allocation failed: bytes=%u heap=%u largest=%u",
                      (unsigned)d->wanted, (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
             return -1;
         }
     }
@@ -318,7 +319,7 @@ static int guest_mesh_begin(int handle, const char *host, uint16_t port, bool da
          * lookup and completion retain the ordinary stop/reset ownership. */
         int owner = -1;
         int fd = datagram ? wendy_net_guest_datagram_connect(port, &owner)
-                          : wendy_net_guest_service_connect(port);
+                        : wendy_net_guest_service_connect(port);
         (void)wendy_net_mesh_connected(handle, fd);
         return 1;
     }
@@ -339,7 +340,7 @@ static int guest_mesh_begin(int handle, const char *host, uint16_t port, bool da
         if (accepted) {
             wnad_wake();
             return 1;
-        }
+    }
     }
     wendy_net_free(request);
     atomic_fetch_sub(&outbound_flows, 1);
@@ -408,6 +409,7 @@ static void app_setup_work(void *context)
     if (f->disposing) {
         wendy_pki_net_dispose(f->setup);
         f->setup = NULL;
+        wendy_pki_net_release_issuers(&f->issuers);
         wendy_pki_close(f->connection);
         f->connection = NULL;
         f->job_result = 0;
@@ -416,6 +418,10 @@ static void app_setup_work(void *context)
             .context = &f->channel, .read = wna_read, .write = app_write_bio, .wait = wnad_no_wait};
         esp_err_t result = wendy_pki_net_begin(
             &bio, !f->outbound, f->expected[0] ? f->expected : NULL, true, &f->setup);
+        if (result == ESP_OK)
+            wendy_pki_net_add_issuers(f->setup, &f->issuers);
+        else
+            wendy_pki_net_release_issuers(&f->issuers);
         f->job_result = result == ESP_OK                                          ? 0
                         : (result == ESP_ERR_TIMEOUT || result == ESP_ERR_NO_MEM) ? 2
                                                                                   : -1;
@@ -438,7 +444,7 @@ static bool dispose_flow(struct app_flow *f)
         if (f->fd >= 0) {
             close(f->fd);
             f->fd = -1;
-        }
+    }
         if (f->backend >= 0) {
             close(f->backend);
             f->backend = -1;
@@ -458,6 +464,7 @@ static bool dispose_flow(struct app_flow *f)
             f->state.lent = true;
         return false;
     }
+    wendy_pki_net_release_issuers(&f->issuers);
     close_flow(f);
     return true;
 }
@@ -660,7 +667,7 @@ static int app_step(struct app_flow *f, int64_t now)
         if (f->job_result == 2) {
             f->state.retry_at = (uint64_t)now + 50000;
             wnad_handshake_release(f);
-        }
+    }
     }
     if (f->state.cancel || !wendy_conf_is_current() || wendy_pki_reset_in_progress() ||
         (f->connection && !wendy_conf_snapshot_current(f->config_generation)))
@@ -695,6 +702,8 @@ static int app_step(struct app_flow *f, int64_t now)
         if (e == WNA_CRYPTO_PREPARE && !wnad_handshake_claim(f))
             return progress;
         if (e == WNA_CRYPTO_PREPARE || e == WNA_CRYPTO_STEP) {
+            if (e == WNA_CRYPTO_PREPARE && !f->issuers.release)
+                wendy_net_peer_issuer_snapshot(&f->issuers);
             atomic_store(&f->job_done, false);
             if (wendy_pki_work_submit(app_setup_work, f))
                 wna_lend(&f->state);
@@ -726,7 +735,7 @@ bool wendy_net_app_yield_setup(void)
     for (struct datagram_flow *d = datagram_flows; d; d = d->next) {
         struct app_flow *f = &d->flow;
         if (wna_yield_guest_setup(&f->state, WENDY_NET_NON_TRANSIT, f->outbound,
-                                  f->connection || f->negotiated || f->native_agent,
+            f->connection || f->negotiated || f->native_agent,
                                   wendy_pki_handshake_owned(f))) {
             ESP_LOGI(TAG,
                      "yielding outgoing guest TLS setup for native management: peer=%s lent=%u",
@@ -747,7 +756,7 @@ int wendy_net_app_poll(void)
         }
     }
 #if CONFIG_WENDY_NET
-    pthread_mutex_lock(&request_lock);
+            pthread_mutex_lock(&request_lock);
     struct guest_connect *q = pending_guest;
     pending_guest = NULL;
     pthread_mutex_unlock(&request_lock);
@@ -773,7 +782,7 @@ int wendy_net_app_poll(void)
                 char host[INET6_ADDRSTRLEN];
                 inet_ntop(AF_INET6, address, host, sizeof host);
                 f->fd = wnad_connect(host, port, &f->connecting);
-            }
+        }
             if (f && f->fd >= 0) {
                 f->guest_handle = q->handle;
                 f->service_port = q->port;
@@ -784,7 +793,7 @@ int wendy_net_app_poll(void)
                 memcpy(f->request, q->datagram ? "WAU3" : "WAS1", 4);
                 wn_put16(f->request + 4, q->port);
                 wn_put16(f->request + 6, f->datagram_max);
-                app_actor_add(f);
+            app_actor_add(f);
             } else {
                 if (f)
                     close_flow(f);
@@ -885,7 +894,7 @@ void wendy_net_app_watch(fd_set *rd, fd_set *wr, int *maximum, int64_t *deadline
             !f->negotiated || f->datagram_max ||
             (f->buffers && f->buffers[0].offset == f->buffers[0].size && !f->buffers[0].eof);
         if (can_read && f->state.phase == WNA_READY &&
-            (f->channel.input.size || (f->connection && wendy_pki_pending(f->connection))))
+           (f->channel.input.size || (f->connection && wendy_pki_pending(f->connection))))
             *deadline = esp_timer_get_time();
         fd = f->fd;
         if (fd >= 0) {

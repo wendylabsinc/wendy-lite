@@ -272,6 +272,13 @@ target_include_directories(issuer_interop_success_test PRIVATE ../src "${IDF_COM
 target_link_libraries(issuer_interop_success_test PRIVATE pki)
 target_compile_definitions(issuer_interop_success_test PRIVATE WENDY_MESH_TEST_LOG=1)
 target_compile_options(issuer_interop_success_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_executable(issuer_constrained_interop_test issuer_interop_success_test.c ${PKI_TLS}
+    "${IDF_COMPONENTS}/http_parser/http_parser.c")
+target_include_directories(issuer_constrained_interop_test PRIVATE ../src "${IDF_COMPONENTS}/http_parser")
+target_link_libraries(issuer_constrained_interop_test PRIVATE pki)
+target_compile_definitions(issuer_constrained_interop_test PRIVATE WENDY_MESH_TEST_LOG=1
+    CONFIG_WENDY_NET_CONSTRAINED_PROFILE=1)
+target_compile_options(issuer_constrained_interop_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 set(WENDYOS_GO_ROOT "" CACHE PATH "Optional WendyOS module root for issuer ALPN interop")
 if(WENDYOS_GO_ROOT)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
@@ -279,6 +286,11 @@ if(WENDYOS_GO_ROOT)
         "${CMAKE_CURRENT_LIST_DIR}/issuer_wos_interop.py" --go "${GO_EXECUTABLE}"
         --wendyos-root "${WENDYOS_GO_ROOT}" --driver "$<TARGET_FILE:issuer_interop_success_test>")
     set_tests_properties(pki_issuer_wos_interop_normal PROPERTIES TIMEOUT 120)
+    add_test(NAME pki_issuer_wos_interop_constrained COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_LIST_DIR}/issuer_wos_interop.py" --go "${GO_EXECUTABLE}"
+        --wendyos-root "${WENDYOS_GO_ROOT}" --driver "$<TARGET_FILE:issuer_constrained_interop_test>"
+        --constrained-native --native-resident-bytes 81920)
+    set_tests_properties(pki_issuer_wos_interop_constrained PROPERTIES TIMEOUT 120)
 endif()
 
 add_executable(issuer_helpers_test issuer_helpers_test.c)

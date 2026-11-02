@@ -85,7 +85,9 @@ function(wendy_patch_mbedtls source)
         "${component_dir}/patches/esp-pqc-mbedtls-defer-handshake-input-shrink.patch"
         "${component_dir}/patches/esp-pqc-mbedtls-psa-global-key-tables.patch"
         "${component_dir}/patches/esp-pqc-mbedtls-mldsa65-private-key.patch"
-        "${component_dir}/patches/esp-pqc-mbedtls-mldsa65-certificate-verify.patch")
+        "${component_dir}/patches/esp-pqc-mbedtls-mldsa65-certificate-verify.patch"
+        "${component_dir}/patches/esp-pqc-mbedtls-known-issuer-candidates.patch"
+        "${component_dir}/patches/esp-pqc-mbedtls-binary-alpn.patch")
     foreach(target __idf_mbedtls mbedtls mbedx509 tfpsacrypto builtin extras platform utilities everest p256-m)
         wendy_redirect_dependency_target(${target} "${source}" "${destination}")
         if(ESP_PLATFORM)

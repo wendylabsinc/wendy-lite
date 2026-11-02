@@ -1,8 +1,10 @@
 # TLS identity and connection layers
 
 Identity certificates and trust material use DER directly in storage, on the
-mesh wire and in the TLS library. Connections with exactly shared pinned issuer
-sets can omit the shared issuer chain; other connections send their full chain.
+mesh wire and in the TLS library. Connections negotiate individual known CA
+certificates and send the leaf plus any missing intermediates. Locally available
+intermediates remain untrusted path candidates; configured anchors are unchanged.
+See [certificate availability negotiation](ISSUER_ALPN.md).
 
 A carrier authenticates neighbouring peers. A routed service connection has
 its own end-to-end TLS session with the destination, independent of the route's
