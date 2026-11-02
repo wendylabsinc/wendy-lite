@@ -22,6 +22,7 @@ typedef struct {
 #define MALLOC_CAP_INTERNAL 1
 #define MALLOC_CAP_8BIT 2
 #define CONFIG_WENDY_WASM_AOT_XIP 1
+#define CONFIG_WENDY_WASM_MAX_MEMORY_PAGES 80
 #define CONFIG_WENDY_WASM_PREFER_RTC_RAM 0
 #define ESP_LOGI(...) ((void)0)
 #define ESP_LOGE(...) ((void)0)
@@ -31,13 +32,14 @@ struct wendy_wasm_module {
     unsigned state;
     uint8_t *wasm_buf;
     uint32_t wasm_len;
+    uint32_t max_memory_pages;
     esp_partition_mmap_handle_t flash_mapping;
     bool mapped;
 };
 typedef struct wendy_wasm_module *wendy_wasm_module_handle_t;
 static bool s_initialized = true;
 static struct {
-    uint32_t stack_size;
+    uint32_t stack_size, heap_size;
 } s_config;
 static esp_partition_t partition = {128};
 static uint32_t binary[32] = {16};
@@ -91,6 +93,16 @@ static void wasm_runtime_free(void *p)
     assert(p && allocated);
     allocated--;
     free(p);
+}
+static bool wendy_wasm_memory_limit(const void *bytes, size_t size, uint32_t limit, uint32_t heap,
+                                    uint32_t *out, char *error, size_t n)
+{
+    (void)heap;
+    (void)error;
+    (void)n;
+    assert(bytes && size == 16 && limit == 80 && !loaded);
+    *out = 1;
+    return fail_stage != 5;
 }
 static void *wasm_runtime_load(void *bytes, uint32_t size, char *error, size_t n)
 {
@@ -151,7 +163,7 @@ int main(void)
 {
     /* Mapped XIP, ordinary bytecode, and unavailable instruction mapping. */
     for (unsigned mode = 0; mode < 3; mode++)
-        for (fail_stage = 0; fail_stage <= 4; fail_stage++) {
+        for (fail_stage = 0; fail_stage <= 5; fail_stage++) {
             xip = mode == 0;
             map_failure = mode == 2;
             reads = 0;

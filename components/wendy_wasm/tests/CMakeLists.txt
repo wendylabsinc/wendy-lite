@@ -53,6 +53,9 @@ if(DEFINED WAMR_ROOT_DIR)
     target_compile_options(memory_grow_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
     target_link_libraries(memory_grow_test PRIVATE wamr_memory_runtime)
     add_test(NAME wasm_actual_memory_grow COMMAND memory_grow_test)
+    add_test(NAME wasm_module_admission_before_load COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_LIST_DIR}/module_admission_test.py --wamr ${WAMR_ROOT_DIR}
+        --library $<TARGET_FILE:wamr_memory_runtime>)
 endif()
 
 # Standalone positive mapping-lifetime fixture; dependency sources are copied
