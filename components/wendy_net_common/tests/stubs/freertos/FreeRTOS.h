@@ -5,8 +5,12 @@
 #include <stdint.h>
 typedef int BaseType_t;
 typedef unsigned UBaseType_t;
-typedef struct { unsigned char storage[256]; } StaticTask_t;
-typedef struct { unsigned count; } StaticSemaphore_t;
+typedef struct {
+    unsigned char storage[256];
+} StaticTask_t;
+typedef struct {
+    unsigned count;
+} StaticSemaphore_t;
 typedef pthread_mutex_t portMUX_TYPE;
 #define portMUX_INITIALIZER_UNLOCKED PTHREAD_MUTEX_INITIALIZER
 #define portENTER_CRITICAL(lock) ((void)pthread_mutex_lock(lock))
