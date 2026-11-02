@@ -5,7 +5,10 @@ esp_err_t wendy_net_app_start(void)
 {
     return ESP_OK;
 }
-bool wendy_net_app_ready(void){return false;}
+bool wendy_net_app_ready(void)
+{
+    return false;
+}
 int wendy_net_app_listener(void)
 {
     return -1;

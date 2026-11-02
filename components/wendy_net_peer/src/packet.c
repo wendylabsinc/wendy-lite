@@ -10,16 +10,14 @@ int wn_assemble(struct wn_assembler *s, const uint8_t *p, size_t n, int64_t now)
     if (total < 40 || total > WN_MTU || (offset != 0 && offset != 1091) || offset >= total ||
         count != (size_t)(total - offset < 1091 ? total - offset : 1091))
         return -1;
-    if (!s->parts || now >= s->deadline_us || s->id != id)
-    {
+    if (!s->parts || now >= s->deadline_us || s->id != id) {
         memset(s, 0, sizeof *s);
         s->id = id;
         s->total = total;
         s->deadline_us = now + INT64_C(2000000);
     }
     unsigned part = offset ? 2 : 1;
-    if (s->total != total || (s->parts & part))
-    {
+    if (s->total != total || (s->parts & part)) {
         s->parts = 0;
         return -1;
     }

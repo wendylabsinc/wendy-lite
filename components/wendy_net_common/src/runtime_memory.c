@@ -17,8 +17,8 @@ static bool external_available(void)
 
 size_t wendy_net_runtime_memory_limit(void)
 {
-    return external_available() ? WENDY_NET_RUNTIME_EXTERNAL_MEMORY_LIMIT :
-                                  WENDY_NET_RUNTIME_INTERNAL_MEMORY_LIMIT;
+    return external_available() ? WENDY_NET_RUNTIME_EXTERNAL_MEMORY_LIMIT
+                                : WENDY_NET_RUNTIME_INTERNAL_MEMORY_LIMIT;
 }
 
 bool wendy_net_runtime_memory_open(void)
@@ -97,10 +97,12 @@ void *wendy_net_internal_calloc(size_t count, size_t bytes)
 
 char *wendy_net_strdup(const char *text)
 {
-    if (!text) return NULL;
+    if (!text)
+        return NULL;
     size_t size = strlen(text) + 1;
     char *copy = wendy_net_malloc(size);
-    if (copy) memcpy(copy, text, size);
+    if (copy)
+        memcpy(copy, text, size);
     return copy;
 }
 #endif
