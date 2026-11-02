@@ -206,8 +206,8 @@ int main(void)
     bool enabled_before = config.enabled, ble_before = config.ble;
     bool wifi_before = config.infrastructure_wifi;
     config.ble_profile = WendyComBleProfile_WENDY_COM_BLE_CODED_S8;
-    assert(delegate->set(&config, &status, &token) == WendyComResult_WENDY_COM_RESULT_OK &&
-           token && !status.restarting && (stored.flags >> 4) == 2);
+    assert(delegate->set(&config, &status, &token) == WendyComResult_WENDY_COM_RESULT_OK && token &&
+           !status.restarting && (stored.flags >> 4) == 2);
     applied(token, true);
     loaded = false;
     assert(wn_settings_init() == ESP_OK);
