@@ -10,6 +10,8 @@ endif()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME wasm_partition_loader COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_LIST_DIR}/partition_loader_test.py)
+add_test(NAME wasm_sdk_component_fixture COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_LIST_DIR}/sdk_component_fixture_test.py)
 add_executable(memory_limit_test memory_limit_test.c ../src/memory_limit.c)
 target_include_directories(memory_limit_test PRIVATE ../src)
 target_compile_options(memory_limit_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)

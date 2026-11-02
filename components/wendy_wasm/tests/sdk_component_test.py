@@ -30,6 +30,9 @@ shutil.copytree(root / 'components/wendy_wasm', work / 'components/wendy_wasm')
 shutil.copytree(root / 'patches', work / 'patches')
 (work / 'cmake').mkdir()
 shutil.copyfile(root / 'cmake/dependency_patches.cmake', work / 'cmake/dependency_patches.cmake')
+(work / 'components/wendy_pki/cmake').mkdir(parents=True)
+shutil.copyfile(root / 'components/wendy_pki/cmake/pqc_patches.cmake',
+                work / 'components/wendy_pki/cmake/pqc_patches.cmake')
 (work / 'main').mkdir()
 (work / 'CMakeLists.txt').write_text('''cmake_minimum_required(VERSION 3.16)
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
@@ -63,8 +66,8 @@ sdkconfig = (work / 'sdkconfig').read_text()
 assert 'CONFIG_WENDY_WASM=y' in sdkconfig
 if args.profile == 'default':
     assert 'CONFIG_WENDY_WASM_MAX_MEMORY_PAGES=0' in sdkconfig
-    assert '# CONFIG_WENDY_WASM_AOT_XIP is not set' in sdkconfig or 'CONFIG_WAMR_ENABLE_AOT=y' not in sdkconfig
-    assert '# CONFIG_WENDY_WASM_PREFER_RTC_RAM is not set' in sdkconfig or 'CONFIG_ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP=y' not in sdkconfig
+    assert 'CONFIG_WENDY_WASM_AOT_XIP=y' not in sdkconfig
+    assert 'CONFIG_WENDY_WASM_PREFER_RTC_RAM=y' not in sdkconfig
 if args.profile == 'psram':
     assert 'CONFIG_SPIRAM=y' in sdkconfig and 'CONFIG_WENDY_WASM_USE_PSRAM=y' in sdkconfig
 if args.profile == 'rtc-xip':
