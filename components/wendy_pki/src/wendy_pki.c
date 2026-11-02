@@ -1758,7 +1758,10 @@ int wendy_pki_net_step(struct wendy_pki_net_setup *op)
     op->complete=true;
     /* Certificate presentation has finished on this worker. Taking the ready
      * TLS context on the actor must never close even a read-only NVS handle. */
-    if(op->source_open){nvs_close(op->source.handle);op->source_open=false;}
+    if (op->source_open) {
+        nvs_close(op->source.handle);
+        op->source_open = false;
+    }
     return 0;
 }
 wendy_pki_connection *wendy_pki_net_take(struct wendy_pki_net_setup *op,struct wendy_pki_mesh_identity *identity)

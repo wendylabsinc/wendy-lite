@@ -134,8 +134,7 @@ struct wcom_link_buffer_allocator {
     void *(*allocate)(void *context, size_t size);
     void (*release)(void *context, void *buffer);
 };
-bool wcom_link_get_buffer_allocator(int link_id,
-                                    struct wcom_link_buffer_allocator *out);
+bool wcom_link_get_buffer_allocator(int link_id, struct wcom_link_buffer_allocator *out);
 
 struct wcom_stream_ops {
     /// Byte count, 0 at end of stream, or a WCOM_STREAM_ERR_*.
@@ -157,8 +156,8 @@ int wcom_add_stream_link(const struct wcom_stream_ops *ops, void *ctx,
  * before CONNECTED callbacks; retains the normal four-slot bound and 45s
  * write-progress allowance. No TLS is added by WendyCom itself. */
 int wcom_add_routed_stream_link_with_permission(const struct wcom_stream_ops *ops, void *ctx,
-                         wcom_interruption_handler_t interruption_handler,
-                         enum wcom_link_permission permission);
+                                                wcom_interruption_handler_t interruption_handler,
+                                                enum wcom_link_permission permission);
 // Socket-backed custom TLS transport. wakeup_fd returns the transport socket,
 // selected but never drained as eventfd. can_read/can_write are not used.
 int wcom_add_socket_link(const struct wcom_stream_ops *ops, void *ctx,
@@ -172,8 +171,8 @@ int wcom_add_socket_link_with_permission(const struct wcom_stream_ops *ops, void
 /* Routed mesh TCP: allow 45s without write progress for carrier/route recovery.
  * All queue and buffer limits remain identical; ordinary transports use 15s. */
 int wcom_add_routed_socket_link_with_permission(const struct wcom_stream_ops *ops, void *ctx,
-                         wcom_interruption_handler_t interruption_handler,
-                         enum wcom_link_permission permission);
+                                                wcom_interruption_handler_t interruption_handler,
+                                                enum wcom_link_permission permission);
 bool wcom_link_is_local(int link_id);
 enum wcom_link_permission wcom_link_get_permission(int link_id);
 int wcom_add_tls_link(esp_tls_t *tls, wcom_interruption_handler_t interruption_handler);

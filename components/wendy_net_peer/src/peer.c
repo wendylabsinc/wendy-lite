@@ -646,9 +646,11 @@ static int guest_listener_owner(void *context,uint16_t port,bool datagram)
 {
     (void)context;
 #if CONFIG_WENDY_NET
-    return wendy_net_guest_listener_owner(port,datagram);
+    return wendy_net_guest_listener_owner(port, datagram);
 #else
-    (void)port;(void)datagram;return -1;
+    (void)port;
+    (void)datagram;
+    return -1;
 #endif
 }
 static void service_catalog_query(struct peer_state *s)

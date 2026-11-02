@@ -13,7 +13,7 @@ extern "C" {
 
 struct wcom_net_delegate {
     WendyComResult (*get)(WendyComNetStatus *);
-    WendyComResult (*set)(const WendyComNetConfig *,WendyComNetStatus *);
+    WendyComResult (*set)(const WendyComNetConfig *, WendyComNetStatus *);
 };
 
 struct wcom_app_delegate {
