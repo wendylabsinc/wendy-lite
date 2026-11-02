@@ -84,14 +84,18 @@ static int on_body(http_parser *p, const char *bytes, size_t size)
     while (size) {
         if (!r->tail || r->tail->used == sizeof r->tail->bytes) {
             struct response_chunk *chunk = calloc(1, sizeof *chunk);
-            if (!chunk) return -1;
-            if (r->tail) r->tail->next = chunk;
-            else r->head = chunk;
+            if (!chunk)
+                return -1;
+            if (r->tail)
+                r->tail->next = chunk;
+            else
+                r->head = chunk;
             r->tail = chunk;
             r->capacity += sizeof chunk->bytes;
         }
         size_t count = sizeof r->tail->bytes - r->tail->used;
-        if (count > size) count = size;
+        if (count > size)
+            count = size;
         memcpy(r->tail->bytes + r->tail->used, bytes, count);
         r->tail->used += count;
         r->size += count;
@@ -115,7 +119,8 @@ static void response_free_chunks(struct response *r)
 static int response_flatten(struct response *r)
 {
     uint8_t *bytes = malloc(r->size + 1);
-    if (!bytes) return -1;
+    if (!bytes)
+        return -1;
     size_t offset = 0;
     for (struct response_chunk *chunk = r->head; chunk; chunk = chunk->next) {
         memcpy(bytes + offset, chunk->bytes, chunk->used);

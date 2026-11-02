@@ -134,8 +134,7 @@ struct wcom_link_buffer_allocator {
     void *(*allocate)(void *context, size_t size);
     void (*release)(void *context, void *buffer);
 };
-bool wcom_link_get_buffer_allocator(int link_id,
-                                    struct wcom_link_buffer_allocator *out);
+bool wcom_link_get_buffer_allocator(int link_id, struct wcom_link_buffer_allocator *out);
 
 struct wcom_stream_ops {
     /// Byte count, 0 at end of stream, or a WCOM_STREAM_ERR_*.
@@ -152,11 +151,11 @@ struct wcom_stream_ops {
     /* Optional transport fence after a complete management response was
      * accepted. The provider calls done exactly once after its buffered
      * plaintext/ciphertext drains, or when the transport retires. */
-    void (*reply_barrier)(void *ctx,uint32_t token,void (*done)(uint32_t));
+    void (*reply_barrier)(void *ctx, uint32_t token, void (*done)(uint32_t));
 };
 /* Called only from the com owner. Socket/TLS/UART writes have already crossed
  * their transport; memory streams may defer the completion to their owner. */
-void wcom_link_reply_barrier(int link_id,uint32_t token,void (*done)(uint32_t));
+void wcom_link_reply_barrier(int link_id, uint32_t token, void (*done)(uint32_t));
 
 int wcom_add_stream_link(const struct wcom_stream_ops *ops, void *ctx,
                          wcom_interruption_handler_t interruption_handler);
