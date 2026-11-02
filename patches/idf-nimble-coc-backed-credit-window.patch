@@ -46,3 +46,19 @@
      if (rx->credits >= target) {
          rx->flags &= ~BLE_L2CAP_COC_RX_CREDITS_PENDING;
          return;
+@@ -434,5 +464,15 @@
+         rx->data_offset = 0;
+ 
++#if BLE_L2CAP_SDU_BUFF_CNT > 1
++        /* A segmented SDU can consume the entire capped window. Keep a
++         * remaining parked buffer usable without requiring the application
++         * to return the just-completed SDU first. Refill before its callback,
++         * which may disconnect and retire this channel. */
++        ble_hs_lock();
++        ble_l2cap_coc_credit_request(chan, BLE_L2CAP_COC_RX_CREDITS_INITIAL);
++        ble_hs_unlock();
++#endif
++
+         ble_l2cap_event_coc_received_data(chan, sdu_rx);
+ 
+         return 0;
