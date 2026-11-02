@@ -86,16 +86,21 @@ bool wn_ble_adv_read(const struct wn_ble_scope *scope, const void *bytes, size_t
             if (n < 17)
                 return false;
             if (!memcmp(data + 1, scope->tenant_wire, 16)) {
-                if (found || n != 27 || data[17] != WN_BLE_ADVERTISEMENT_VERSION ||
-                    memcmp(data + 21, scope->network_hash, 2))
+                if (n < 18)
                     return false;
-                uint16_t psm = wn_get16(data + 19);
-                if (psm < 128 || psm > 255)
-                    return false;
-                result.psm = psm;
-                result.capabilities = data[18];
-                memcpy(result.device_hint, data + 23, 4);
-                found = true;
+                /* Each AD element is independently length-delimited. A future
+                 * format may coexist with the supported version in one report. */
+                if (data[17] == WN_BLE_ADVERTISEMENT_VERSION) {
+                    if (found || n < 27 || memcmp(data + 21, scope->network_hash, 2))
+                        return false;
+                    uint16_t psm = wn_get16(data + 19);
+                    if (psm < 128 || psm > 255)
+                        return false;
+                    result.psm = psm;
+                    result.capabilities = data[18];
+                    memcpy(result.device_hint, data + 23, 4);
+                    found = true;
+                }
             }
         }
         data += n;
