@@ -237,7 +237,11 @@ TLS 1.3 ClientHello/Certificate message layouts. With `WENDYOS_GO_ROOT` set,
 helpers. Normal handshakes cover carrier, guest VIP and native WendyCom TLS,
 both applicable roles, shared ancestors, distinct issuing CAs, root-only trust,
 cached CA loans and full-chain fallback. Pre-handshake cancellation checks early
-cleanup. All Lite fixture inputs are DER. Actual TLS allocation hooks and the
+cleanup. Cooldown fixtures cover full-chain carrier, VIP and native management
+exchanges in both applicable roles while the Go peer still offers hints. The
+issuer helper tests check the exact monotonic deadline, no extension, and date,
+revocation, usage and policy exclusions (including combined flags).
+All Lite fixture inputs are DER. Actual TLS allocation hooks and the
 owner ledger require zero retained bytes, allocations and reservations on close.
 
 `pki_owned_der_source_without_root_{p256,mldsa65}` supplies an ordinary local

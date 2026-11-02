@@ -2,6 +2,14 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdatomic.h>
+
+/* Process-wide in production, independently owned by deterministic host tests. */
+struct pki_issuer_recovery { atomic_int_fast64_t until_us; };
+extern struct pki_issuer_recovery pki_issuer_process_recovery;
+bool pki_issuer_failure_recoverable(uint32_t flags);
+bool pki_issuer_recovery_active(struct pki_issuer_recovery *,int64_t now_us);
+bool pki_issuer_recovery_failed(struct pki_issuer_recovery *,int64_t now_us);
 /* Auxiliary offer understood by WendyOS. Never a selected application ALPN. */
 #define PKI_ISSUER_HINT_SIZE 256
 #define PKI_ISSUER_CHAIN_MAX 8
@@ -19,7 +27,7 @@ struct pki_issuer_state {
     unsigned char cached_hint[3][17+PKI_ISSUER_CHAIN_MAX*16];
     unsigned peer_presented_certificates;
     size_t peer_der_bytes;
-    bool omit;
+    bool omit, hinted;
     unsigned known_count;
     struct mbedtls_x509_crt *known[16], *owned[16];
     uint8_t *der[16];

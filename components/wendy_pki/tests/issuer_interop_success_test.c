@@ -1,5 +1,6 @@
 /* Normal interop driver: the same native async DER constructor used on ESP. */
 #include "wendy_pki_internal.h"
+#include "wendy_pki_issuers.h"
 #include "wendy_pki_crypto.h"
 #include "wendy_pki_parsed_identity.h"
 #include "wendy_cert_bundle.h"
@@ -45,7 +46,7 @@ static unsigned cached_releases;
 static void release_cached_der(void *context){cached_releases++;free(context);}
 int main(int argc,char **argv)
 {
-    assert(argc==14);signal(SIGPIPE,SIG_IGN);
+    assert(argc==14 || argc==15);signal(SIGPIPE,SIG_IGN);
     assert(!mbedtls_platform_set_calloc_free(wendy_net_memory_scoped_calloc,wendy_net_memory_scoped_free));
     assert(!wendy_pki_crypto_init());
     size_t kn,cn,rn;uint8_t *key=load(argv[1],&kn),*cert=load(argv[2],&cn),*roots=load(argv[3],&rn);
@@ -65,6 +66,7 @@ int main(int argc,char **argv)
     wendy_net_memory_t memory=WENDY_NET_MEMORY_INITIALIZER;
     assert(wendy_net_memory_open(&memory,1024*1024,true));
     wendy_net_memory_scope_t previous=wendy_net_memory_scope_enter(&memory,WENDY_NET_MEMORY_EXTERNAL);
+    if(argc==15){assert(!strcmp(argv[14],"cooldown"));assert(pki_issuer_recovery_failed(&pki_issuer_process_recovery,esp_timer_get_time()));}
     wendy_pki_connection *c=NULL;
     if(agent)assert(!pki_tls_agent_begin(&stream,argv[7],argv[8],&own,(struct wendy_conf_span){roots,rn},&c));
     else assert(!pki_tls_net_begin(&stream,server,argv[7],argv[8],&own,(struct wendy_conf_span){roots,rn},application,&c));

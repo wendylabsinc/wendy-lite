@@ -319,13 +319,17 @@ static int select_server_issuers(mbedtls_ssl_context *ssl)
         struct pki_issuer_state *s=c->issuers;
         const uint8_t *hello=ssl->MBEDTLS_PRIVATE(in_msg);
         size_t size=ssl->MBEDTLS_PRIVATE(in_hslen);
-        size_t selected=pki_issuer_select(s,hello,size);
+        size_t selected=pki_issuer_recovery_active(&pki_issuer_process_recovery,esp_timer_get_time()) ?
+            0:pki_issuer_select(s,hello,size);
+        s->hinted=selected!=0;
         if(selected){
             ssl->MBEDTLS_PRIVATE(alpn_chosen)=s->hint;
             ssl->MBEDTLS_PRIVATE(wendy_alpn_chosen_length)=selected;
         }
         s->omit_mask=0;
-        for(unsigned i=1;c->presented_chain && i<c->presented_chain->count;i++)
+        /* Ordinary selected ALPN requests full chains, even when the client
+         * also advertised auxiliary cached fingerprints. */
+        for(unsigned i=1;selected && c->presented_chain && i<c->presented_chain->count;i++)
             if(pki_issuer_peer_has(hello,size,s->application,c->presented_chain->part[i].hash))s->omit_mask|=1u<<i;
         issuer_omit_status(c);
         if(!selected)release_known_issuers(s);
@@ -335,6 +339,8 @@ static int select_server_issuers(mbedtls_ssl_context *ssl)
 
 static int configure_mesh_alpn(wendy_pki_connection *c,const char *const *protocols)
 {
+    if(pki_issuer_recovery_active(&pki_issuer_process_recovery,esp_timer_get_time()))
+        return mbedtls_ssl_conf_alpn_protocols(&c->config,protocols);
     wendy_net_memory_scope_t previous=connection_scope(c);
     c->issuers=prepare_issuer_hint(c);
     wendy_net_memory_scope_leave(previous);
@@ -344,6 +350,7 @@ static int configure_mesh_alpn(wendy_pki_connection *c,const char *const *protoc
         c->config.MBEDTLS_PRIVATE(p_wendy_peer_issuers)=c;
         if(pki_issuer_protocols(c->issuers,protocols[0]))return -1;
         if(c->config.MBEDTLS_PRIVATE(endpoint)==MBEDTLS_SSL_IS_CLIENT){
+            c->issuers->hinted=true;
             int result=mbedtls_ssl_conf_alpn_protocols(&c->config,c->issuers->protocols);
             c->config.MBEDTLS_PRIVATE(wendy_alpn_lengths)=c->issuers->protocol_lengths;
             return result;
@@ -618,6 +625,14 @@ static int handshake_step_direct(wendy_pki_connection *c,bool compact_server)
         issuer_omit_status(c);
     }
     int result=mbedtls_ssl_handshake_step(&c->ssl);
+    if(result==MBEDTLS_ERR_X509_CERT_VERIFY_FAILED && issuers && issuers->hinted){
+        uint32_t flags=mbedtls_ssl_get_verify_result(&c->ssl);
+        /* Date, usage, identity, revocation and other policy flags exclude
+         * recovery. Generic peer alerts and transport errors never arm it. */
+        if(pki_issuer_failure_recoverable(flags) &&
+           pki_issuer_recovery_failed(&pki_issuer_process_recovery,esp_timer_get_time()))
+            ESP_LOGW("wendy_pki","TLS issuer hints paused for 120 seconds after issuer path failure");
+    }
     if(!result && issuers && state==MBEDTLS_SSL_SERVER_CERTIFICATE &&
        c->config.MBEDTLS_PRIVATE(endpoint)==MBEDTLS_SSL_IS_CLIENT &&
        c->ssl.MBEDTLS_PRIVATE(state)==MBEDTLS_SSL_CERTIFICATE_VERIFY)

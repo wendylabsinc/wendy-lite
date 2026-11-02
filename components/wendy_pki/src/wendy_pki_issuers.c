@@ -1,6 +1,24 @@
 #include "wendy_pki_issuers.h"
 #include "wendy_pki_crypto.h"
 #include <string.h>
+#include <mbedtls/x509_crt.h>
+
+struct pki_issuer_recovery pki_issuer_process_recovery;
+
+bool pki_issuer_failure_recoverable(uint32_t flags)
+{ return flags==MBEDTLS_X509_BADCERT_NOT_TRUSTED; }
+
+bool pki_issuer_recovery_active(struct pki_issuer_recovery *r,int64_t now)
+{ return now<atomic_load_explicit(&r->until_us,memory_order_relaxed); }
+bool pki_issuer_recovery_failed(struct pki_issuer_recovery *r,int64_t now)
+{
+    int_fast64_t until=atomic_load_explicit(&r->until_us,memory_order_relaxed);
+    while(now>=until){
+        if(atomic_compare_exchange_weak_explicit(&r->until_us,&until,
+            now+INT64_C(120000000),memory_order_relaxed,memory_order_relaxed))return true;
+    }
+    return false;
+}
 static size_t u16(const uint8_t *p){return ((size_t)p[0]<<8)|p[1];}
 static size_t u24(const uint8_t *p){return ((size_t)p[0]<<16)|((size_t)p[1]<<8)|p[2];}
 static bool message_body(const uint8_t **p,size_t *size,unsigned type)

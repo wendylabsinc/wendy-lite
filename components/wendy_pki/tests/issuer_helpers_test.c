@@ -2,12 +2,29 @@
 #include "wendy_pki_issuers.h"
 #include "wendy_pki_crypto.h"
 #include <assert.h>
+#include <mbedtls/x509_crt.h>
 #include <string.h>
 static void header(uint8_t *out,unsigned type,size_t size)
 {out[0]=(uint8_t)type;out[1]=(uint8_t)(size>>16);out[2]=(uint8_t)(size>>8);out[3]=(uint8_t)size;}
 static void u16(uint8_t *out,size_t size){out[0]=(uint8_t)(size>>8);out[1]=(uint8_t)size;}
 int main(void)
 {
+    struct pki_issuer_recovery recovery={0};
+    assert(!pki_issuer_recovery_active(&recovery,100));
+    assert(pki_issuer_recovery_failed(&recovery,100));
+    assert(pki_issuer_recovery_active(&recovery,120000099));
+    assert(!pki_issuer_recovery_failed(&recovery,120000099));
+    assert(!pki_issuer_recovery_active(&recovery,120000100));
+    assert(pki_issuer_failure_recoverable(MBEDTLS_X509_BADCERT_NOT_TRUSTED));
+    const uint32_t excluded[]={MBEDTLS_X509_BADCERT_EXPIRED,MBEDTLS_X509_BADCERT_FUTURE,
+        MBEDTLS_X509_BADCERT_REVOKED,MBEDTLS_X509_BADCERT_CN_MISMATCH,
+        MBEDTLS_X509_BADCERT_KEY_USAGE,MBEDTLS_X509_BADCERT_EXT_KEY_USAGE,
+        MBEDTLS_X509_BADCERT_OTHER};
+    assert(!pki_issuer_failure_recoverable(0));
+    for(unsigned i=0;i<sizeof excluded/sizeof excluded[0];i++){
+        assert(!pki_issuer_failure_recoverable(excluded[i]));
+        assert(!pki_issuer_failure_recoverable(excluded[i]|MBEDTLS_X509_BADCERT_NOT_TRUSTED));
+    }
     const char *service="wendy-local-mesh-ble/2";
     struct pki_issuer_state client={.chain_count=3},server={0};
     for(unsigned i=0;i<3;i++){
