@@ -41,7 +41,7 @@ vendor patches. Resolve the managed cJSON component and initialize esp-pqc first
 
 ```sh
 cmake -S components/wendy_net_peer/tests -B build/peer-formats \
-  -DESP_PQC_ROOT=/path/to/esp-pqc \
+  -DFETCHCONTENT_SOURCE_DIR_ESP_PQC=/path/to/esp-pqc \
   -DIDF_COMPONENTS=/path/to/esp-idf/components \
   -DCJSON_ROOT=/path/to/espressif__cjson/cJSON
 cmake --build build/peer-formats --target \
