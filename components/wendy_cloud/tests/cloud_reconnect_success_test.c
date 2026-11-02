@@ -13,7 +13,9 @@ static int worker_close(int fd);
 #undef calloc
 #undef close
 
-struct wendy_pki_connection { int fd; };
+struct wendy_pki_connection {
+    int fd;
+};
 struct step {
     bool allocation_fails, connection_fails, stop_after_connect, stop_after_upgrade;
     int result;
@@ -43,13 +45,25 @@ static int worker_close(int fd)
     dropped_fds++;
     return 0;
 }
-bool wendy_conf_has_enrollment(void) { return true; }
-SemaphoreHandle_t xSemaphoreCreateBinary(void) { return (void *)1; }
-BaseType_t xTaskCreatePinnedToCore(void (*entry)(void *), const char *name,
-    unsigned stack, void *arg, unsigned priority, TaskHandle_t *handle, unsigned core)
+bool wendy_conf_has_enrollment(void)
 {
-    (void)entry; (void)name; (void)stack; (void)arg;
-    (void)priority; (void)handle; (void)core;
+    return true;
+}
+SemaphoreHandle_t xSemaphoreCreateBinary(void)
+{
+    return (void *)1;
+}
+BaseType_t xTaskCreatePinnedToCore(void (*entry)(void *), const char *name, unsigned stack,
+                                   void *arg, unsigned priority, TaskHandle_t *handle,
+                                   unsigned core)
+{
+    (void)entry;
+    (void)name;
+    (void)stack;
+    (void)arg;
+    (void)priority;
+    (void)handle;
+    (void)core;
     return pdPASS;
 }
 BaseType_t xSemaphoreTake(SemaphoreHandle_t handle, TickType_t ticks)
@@ -67,13 +81,18 @@ BaseType_t xSemaphoreGive(SemaphoreHandle_t handle)
     completed++;
     return pdTRUE;
 }
-void vTaskDelete(TaskHandle_t task) { assert(!task); }
+void vTaskDelete(TaskHandle_t task)
+{
+    assert(!task);
+}
 esp_err_t wendy_pki_connect(wendy_pki_connection **out)
 {
     connects++;
     assert(!*out && wendy_cloud_get_state() == WENDY_CLOUD_STATE_CONNECTING);
-    if (current()->stop_after_connect) atomic_store(&s_stop, true);
-    if (current()->connection_fails) return ESP_FAIL;
+    if (current()->stop_after_connect)
+        atomic_store(&s_stop, true);
+    if (current()->connection_fails)
+        return ESP_FAIL;
     connection.fd = 100;
     connection_owned = true;
     *out = &connection;
@@ -89,14 +108,17 @@ int wendy_pki_relay_upgrade(wendy_pki_connection *outer, struct wendy_lite_trust
     assert(outer == &connection && trust && connection_owned);
     assert(s_outer_fd == connection.fd && wendy_cloud_is_connected());
     assert(!wendy_cloud_connect_failures());
-    if (current()->stop_after_upgrade) atomic_store(&s_stop, true);
-    if (current()->result >= 0) connection.fd = -1; /* Detached fd belongs to caller. */
+    if (current()->stop_after_upgrade)
+        atomic_store(&s_stop, true);
+    if (current()->result >= 0)
+        connection.fd = -1; /* Detached fd belongs to caller. */
     return current()->result;
 }
 void wendy_pki_close(wendy_pki_connection *outer)
 {
     assert(s_outer_fd == -1);
-    if (!outer) return;
+    if (!outer)
+        return;
     assert(outer == &connection && connection_owned);
     connection_owned = false;
     closes++;
@@ -113,7 +135,9 @@ static void run(const struct step *plan, size_t count)
     attempts = connects = closes = delays = handoffs = dropped_fds = completed = 0;
     atomic_store(&s_stop, false);
     atomic_store(&s_failures, 0);
-    s_wake = (void *)2; s_stopped = (void *)3; s_task = (void *)4;
+    s_wake = (void *)2;
+    s_stopped = (void *)3;
+    s_task = (void *)4;
     cloud_task(NULL);
     assert(attempts == count && completed == 1 && !s_task && s_outer_fd == -1);
     assert(!connection_owned && wendy_cloud_get_state() == WENDY_CLOUD_STATE_IDLE);
