@@ -139,12 +139,15 @@ static void _free_dynamic_buffer(struct _agent_link *link)
 
 static void *_get_buffer(struct _agent_link *link, size_t size)
 {
-    if (size <= sizeof(link->static_buf)) return link->static_buf;
+    if (size <= sizeof(link->static_buf))
+        return link->static_buf;
     if (size > link->dynamic_buf_size) {
         /* Bound the resize peak to one protocol buffer on constrained boards. */
         _free_dynamic_buffer(link);
-        link->dynamic_buf = link->buffer_allocator.allocate
-            ? link->buffer_allocator.allocate(link->buffer_allocator.context, size) : malloc(size);
+        link->dynamic_buf =
+            link->buffer_allocator.allocate
+                ? link->buffer_allocator.allocate(link->buffer_allocator.context, size)
+                : malloc(size);
         if (!link->dynamic_buf) {
             ESP_LOGE(TAG, "allocation failed for protocol buffer of size %zu", size);
             return NULL;
@@ -224,7 +227,10 @@ static void _send_message(struct _agent_link *link, const WendyComMessage *out)
     }
 
     void *buf = _get_buffer(link, sizing.bytes_written);
-    if (!buf) { wcom_close(link->link_id); return; }
+    if (!buf) {
+        wcom_close(link->link_id);
+        return;
+    }
     pb_ostream_t out_stream = pb_ostream_from_buffer(buf, sizing.bytes_written);
     if (!pb_encode(&out_stream, WendyComMessage_fields, out)) {
         ESP_LOGE(TAG, "link %d pb_encode message: %s", link->link_id, PB_GET_ERROR(&out_stream));
@@ -408,14 +414,14 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
     }
     switch (cmd->which_params) {
     case WendyComCommand_net_get_tag:
-        resp->which_data=WendyComResponse_net_status_tag;
-        resp->result=wcom_cmd_net_get(&resp->data.net_status);
+        resp->which_data = WendyComResponse_net_status_tag;
+        resp->result = wcom_cmd_net_get(&resp->data.net_status);
         break;
     case WendyComCommand_net_set_tag:
-        resp->which_data=WendyComResponse_net_status_tag;
-        resp->result=cmd->params.net_set.has_config ?
-            wcom_cmd_net_set(&cmd->params.net_set.config,&resp->data.net_status):
-            WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+        resp->which_data = WendyComResponse_net_status_tag;
+        resp->result = cmd->params.net_set.has_config
+                           ? wcom_cmd_net_set(&cmd->params.net_set.config, &resp->data.net_status)
+                           : WendyComResult_WENDY_COM_RESULT_BAD_STATE;
         break;
     case WendyComCommand_enrollment_challenge_tag:
         resp->which_data = WendyComResponse_enrollment_challenge_tag;
@@ -688,7 +694,10 @@ static void _start_recv_body(struct _agent_link *link)
         return;
     }
     link->rx_chunk.data = _get_buffer(link, body_size);
-    if (!link->rx_chunk.data) { wcom_close(link->link_id); return; }
+    if (!link->rx_chunk.data) {
+        wcom_close(link->link_id);
+        return;
+    }
     link->rx_chunk.size = body_size;
     link->rx_chunk.done_handler = _done_recv_body;
     link->rx_chunk.next = NULL;

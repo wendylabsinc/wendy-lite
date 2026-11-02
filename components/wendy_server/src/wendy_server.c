@@ -42,7 +42,7 @@
 #define TAG                       "wendy_server"
 #define WENDY_SERVER_PORT         5054
 #define WENDY_SERVER_BACKLOG      4
-#define WENDY_SERVER_TASK_STACK   CONFIG_WENDY_SERVER_TASK_STACK_SIZE
+#define WENDY_SERVER_TASK_STACK CONFIG_WENDY_SERVER_TASK_STACK_SIZE
 #define WENDY_SERVER_MAX_LINKS    4
 
 
@@ -79,7 +79,6 @@ static bool _mesh_accepting(void)
 }
 #endif
 
-
 //--- internal functions ---//
 
 #if CONFIG_WENDY_PKI
@@ -103,28 +102,34 @@ static const struct wcom_stream_ops pki_ops = {
  * returned. Actor/crypto loans never own these management connections. */
 static void _remove_pki_link(unsigned slot)
 {
-    struct wendy_server_link *link=&_links[slot];
-    wendy_pki_connection *connection=link->pki;
+    struct wendy_server_link *link = &_links[slot];
+    wendy_pki_connection *connection = link->pki;
     wcom_remove_link(link->link_id);
 #if CONFIG_WENDY_NET_PEER
-    if(link->mesh)atomic_fetch_sub(&_mesh_link_count,1);
+    if (link->mesh)
+        atomic_fetch_sub(&_mesh_link_count, 1);
 #endif
-    link->pki=NULL;link->link_id=0;link->mesh=false;
+    link->pki = NULL;
+    link->link_id = 0;
+    link->mesh = false;
     wendy_pki_close(connection);
 }
 #if CONFIG_WENDY_NET_PEER
 static void _mesh_sweep_exec(struct wcom_operation *unused)
 {
     (void)unused;
-    if(!_mesh_accepting())for(unsigned i=0;i<WENDY_SERVER_MAX_LINKS;i++)
-        if(_links[i].pki && _links[i].mesh)_remove_pki_link(i);
-    atomic_store(&_mesh_sweep_pending,false);
+    if (!_mesh_accepting())
+        for (unsigned i = 0; i < WENDY_SERVER_MAX_LINKS; i++)
+            if (_links[i].pki && _links[i].mesh)
+                _remove_pki_link(i);
+    atomic_store(&_mesh_sweep_pending, false);
 }
-static struct wcom_operation _mesh_sweep_op={.func=_mesh_sweep_exec};
+static struct wcom_operation _mesh_sweep_op = {.func = _mesh_sweep_exec};
 static void _mesh_shutdown_poll(void)
 {
-    if(atomic_load(&_mesh_link_count) && !_mesh_accepting() &&
-       !atomic_exchange(&_mesh_sweep_pending,true))wcom_core_exec(&_mesh_sweep_op);
+    if (atomic_load(&_mesh_link_count) && !_mesh_accepting() &&
+        !atomic_exchange(&_mesh_sweep_pending, true))
+        wcom_core_exec(&_mesh_sweep_op);
 }
 #endif
 #endif
@@ -160,9 +165,9 @@ static void _add_link_exec(struct wcom_operation *op)
 
 #if CONFIG_WENDY_PKI
     if (aop->pki) {
-        bool retired=false;
+        bool retired = false;
 #if CONFIG_WENDY_NET_PEER
-        retired=aop->mesh && !_mesh_accepting();
+        retired = aop->mesh && !_mesh_accepting();
 #endif
         if (retired || !wendy_conf_has_enrollment() || wendy_pki_reset_in_progress()) {
             wendy_pki_close(aop->pki);
@@ -172,16 +177,18 @@ static void _add_link_exec(struct wcom_operation *op)
         for (int i = 0; i < WENDY_SERVER_MAX_LINKS; i++) {
             if (_links[i].tls || _links[i].pki) continue;
             bool routed = aop->mesh;
-            int id = (routed ? wcom_add_routed_socket_link_with_permission :
-                              wcom_add_socket_link_with_permission)(&pki_ops, aop->pki,
-                _on_interruption, _peer_permission(wendy_pki_get_peer_role(aop->pki)));
+            int id = (routed ? wcom_add_routed_socket_link_with_permission
+                             : wcom_add_socket_link_with_permission)(
+                &pki_ops, aop->pki, _on_interruption,
+                _peer_permission(wendy_pki_get_peer_role(aop->pki)));
             if (id < 0) break;
             ESP_LOGI(TAG, "authenticated agent socket: link=%d routed=%u", id, (unsigned)routed);
             _links[i].pki = aop->pki;
             _links[i].link_id = id;
             _links[i].mesh = aop->mesh;
 #if CONFIG_WENDY_NET_PEER
-            if(aop->mesh)atomic_fetch_add(&_mesh_link_count,1);
+            if (aop->mesh)
+                atomic_fetch_add(&_mesh_link_count, 1);
 #endif
             free(aop);
             return;
@@ -252,9 +259,11 @@ static void _server_task(void *arg)
     }
 
 #if CONFIG_WENDY_NET_PEER
-    if(listen_fd>=FD_SETSIZE){
-        ESP_LOGE(TAG,"listener exceeds select descriptor limit");
-        close(listen_fd);vTaskDelete(NULL);return;
+    if (listen_fd >= FD_SETSIZE) {
+        ESP_LOGE(TAG, "listener exceeds select descriptor limit");
+        close(listen_fd);
+        vTaskDelete(NULL);
+        return;
     }
 #endif
     int opt = 1;
@@ -304,21 +313,26 @@ static void _server_task(void *arg)
 
 #if !CONFIG_WENDY_NET_TEST_NO_WIFI_RADIO
     struct wcom_service description;
-    if(wcom_service_snapshot(&description)==0){
+    if (wcom_service_snapshot(&description) == 0) {
         mdns_txt_item_t txt[WCOM_SERVICE_TXT_MAX];
-        for(size_t i=0;i<description.count;i++)txt[i]=(mdns_txt_item_t){
-            .key=description.txt[i].key,.value=description.txt[i].value};
-        esp_err_t advertised=mdns_service_add(description.instance,WCOM_SERVICE_NAME,
-            WCOM_SERVICE_PROTOCOL,description.port,txt,description.count);
-        if(advertised!=ESP_OK)ESP_LOGE(TAG,"mDNS service add failed: %s",esp_err_to_name(advertised));
-        else ESP_LOGI(TAG,"registered mDNS service %s on port%u",WCOM_SERVICE_TYPE,(unsigned)description.port);
+        for (size_t i = 0; i < description.count; i++)
+            txt[i] =
+                (mdns_txt_item_t){.key = description.txt[i].key, .value = description.txt[i].value};
+        esp_err_t advertised =
+            mdns_service_add(description.instance, WCOM_SERVICE_NAME, WCOM_SERVICE_PROTOCOL,
+                             description.port, txt, description.count);
+        if (advertised != ESP_OK)
+            ESP_LOGE(TAG, "mDNS service add failed: %s", esp_err_to_name(advertised));
+        else
+            ESP_LOGI(TAG, "registered mDNS service %s on port%u", WCOM_SERVICE_TYPE,
+                     (unsigned)description.port);
     }
 
 #endif /* !CONFIG_WENDY_NET_TEST_NO_WIFI_RADIO */
 
 #if CONFIG_WENDY_NET_PEER
     wendy_pki_work_enable();
-    struct wendy_server_pending pending={.fd=-1};
+    struct wendy_server_pending pending = {.fd = -1};
 #endif
     for (;;) {
 #if CONFIG_WENDY_NET_PEER
@@ -330,41 +344,53 @@ static void _server_task(void *arg)
 #if CONFIG_WENDY_PKI
         _mesh_shutdown_poll();
 #endif
-        int apps=wendy_net_app_listener();
-        int clock=wendy_net_app_time_listener();
-        bool management_ready=wendy_net_app_management_ready();
-        fd_set reading;FD_ZERO(&reading);
+        int apps = wendy_net_app_listener();
+        int clock = wendy_net_app_time_listener();
+        bool management_ready = wendy_net_app_management_ready();
+        fd_set reading;
+        FD_ZERO(&reading);
         /* Always classify cheap accepted sockets. A native VIP must reach the
          * actor even when an outbound handshake owns its SRAM workspace. */
-        FD_SET(listen_fd,&reading);
-        if (apps>=0) FD_SET(apps,&reading);
-        if (clock>=0) FD_SET(clock,&reading);
-        int maximum=apps>listen_fd ? apps : listen_fd;
-        if(clock>maximum)maximum=clock;
+        FD_SET(listen_fd, &reading);
+        if (apps >= 0)
+            FD_SET(apps, &reading);
+        if (clock >= 0)
+            FD_SET(clock, &reading);
+        int maximum = apps > listen_fd ? apps : listen_fd;
+        if (clock > maximum)
+            maximum = clock;
         struct timeval poll={.tv_usec=250000};
-        int available=select(maximum+1,&reading,NULL,NULL,&poll);
-        if (available<0) continue;
-        if(available>0 && clock>=0 && FD_ISSET(clock,&reading)){
-            int incoming=accept(clock,NULL,NULL);
-            if(incoming>=0)wendy_pki_net_time_relay(incoming);
+        int available = select(maximum + 1, &reading, NULL, NULL, &poll);
+        if (available < 0)
+            continue;
+        if (available > 0 && clock >= 0 && FD_ISSET(clock, &reading)) {
+            int incoming = accept(clock, NULL, NULL);
+            if (incoming >= 0)
+                wendy_pki_net_time_relay(incoming);
         }
-        if (available>0 && apps>=0 && FD_ISSET(apps,&reading)) {
-            int incoming=accept(apps,NULL,NULL);
-            if (incoming>=0) wendy_net_app_accept(incoming);
+        if (available > 0 && apps >= 0 && FD_ISSET(apps, &reading)) {
+            int incoming = accept(apps, NULL, NULL);
+            if (incoming >= 0)
+                wendy_net_app_accept(incoming);
         }
-        management_ready=wendy_net_app_management_ready();
-        bool expired=false;
-        uint64_t deferred_deadline=pending.deadline_ms;
-        int deferred=wendy_server_pending_take(&pending,management_ready,
-            (uint64_t)esp_timer_get_time()/1000,&expired);
-        if(expired){close(deferred);deferred=-1;}
-        if(deferred<0 && (available==0 || !FD_ISSET(listen_fd,&reading)))continue;
+        management_ready = wendy_net_app_management_ready();
+        bool expired = false;
+        uint64_t deferred_deadline = pending.deadline_ms;
+        int deferred = wendy_server_pending_take(&pending, management_ready,
+                                                 (uint64_t)esp_timer_get_time() / 1000, &expired);
+        if (expired) {
+            close(deferred);
+            deferred = -1;
+        }
+        if (deferred < 0 && (available == 0 || !FD_ISSET(listen_fd, &reading)))
+            continue;
 #endif
-        struct sockaddr_storage client_addr={0};
+        struct sockaddr_storage client_addr = {0};
         socklen_t client_len = sizeof(client_addr);
 #if CONFIG_WENDY_NET_PEER
-        int client_fd=deferred>=0 ? deferred :
-            accept(listen_fd,(struct sockaddr *)&client_addr,&client_len);
+        int client_fd = deferred >= 0
+                            ? deferred
+                            : accept(listen_fd, (struct sockaddr *)&client_addr, &client_len);
 #else
         int client_fd = accept(listen_fd, (struct sockaddr *)&client_addr, &client_len);
 #endif
@@ -386,16 +412,24 @@ static void _server_task(void *arg)
         if (wendy_conf_has_enrollment()) {
 #if CONFIG_WENDY_PKI
 #if CONFIG_WENDY_NET_PEER
-            int classification=wendy_server_mesh_socket(client_fd);
-            if(classification<0){close(client_fd);continue;}
-            if(classification>0){wendy_net_agent_accept(client_fd);continue;}
+            int classification = wendy_server_mesh_socket(client_fd);
+            if (classification < 0) {
+                close(client_fd);
+                continue;
+            }
+            if (classification > 0) {
+                wendy_net_agent_accept(client_fd);
+                continue;
+            }
             /* Baseline physical TLS still obeys the previous headroom gate.
              * Retain one raw fd, with a fixed deadline, rather than repeatedly
              * accepting/closing that client while mesh crypto is in flight. */
-            if(!wendy_net_app_management_ready()){
-                if(!wendy_server_pending_put(&pending,client_fd,
-                    (uint64_t)esp_timer_get_time()/1000))close(client_fd);
-                else if(deferred>=0)pending.deadline_ms=deferred_deadline;
+            if (!wendy_net_app_management_ready()) {
+                if (!wendy_server_pending_put(&pending, client_fd,
+                                              (uint64_t)esp_timer_get_time() / 1000))
+                    close(client_fd);
+                else if (deferred >= 0)
+                    pending.deadline_ms = deferred_deadline;
                 continue;
             }
             wendy_net_peer_prepare_handshake();
@@ -403,19 +437,22 @@ static void _server_task(void *arg)
             struct _add_link_op *op = calloc(1, sizeof *op);
             if (!op) { close(client_fd); continue; }
 #if CONFIG_WENDY_NET_PEER
-            wendy_net_memory_scope_t previous=wendy_net_memory_scope_enter(NULL,WENDY_NET_MEMORY_INTERNAL);
+            wendy_net_memory_scope_t previous =
+                wendy_net_memory_scope_enter(NULL, WENDY_NET_MEMORY_INTERNAL);
 #endif
-            esp_err_t accepted=wendy_pki_accept_lan(client_fd, &op->pki);
+            esp_err_t accepted = wendy_pki_accept_lan(client_fd, &op->pki);
 #if CONFIG_WENDY_NET_PEER
             wendy_net_memory_scope_leave(previous);
 #endif
             if (accepted != ESP_OK) {
                 ESP_LOGW(TAG, "PKI LAN authentication failed");
-                ESP_LOGI(TAG, "LAN worker stack free=%u",(unsigned)uxTaskGetStackHighWaterMark(NULL));
+                ESP_LOGI(TAG, "LAN worker stack free=%u",
+                         (unsigned)uxTaskGetStackHighWaterMark(NULL));
                 free(op);
                 continue;
             }
-            ESP_LOGI(TAG, "LAN authenticated; worker stack free=%u",(unsigned)uxTaskGetStackHighWaterMark(NULL));
+            ESP_LOGI(TAG, "LAN authenticated; worker stack free=%u",
+                     (unsigned)uxTaskGetStackHighWaterMark(NULL));
             op->base.func = _add_link_exec;
             wcom_core_exec(&op->base);
 #else
