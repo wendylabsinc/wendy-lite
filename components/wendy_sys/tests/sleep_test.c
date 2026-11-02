@@ -8,7 +8,7 @@ typedef uint32_t TickType_t;
 #define pdMS_TO_TICKS(ms) ((TickType_t)(ms) / TICK_MS)
 
 static bool terminating;
-static TickType_t elapsed, stop_at;
+static TickType_t elapsed, stop_at, busy_until;
 static unsigned delay_calls;
 
 static bool wendy_wasm_is_terminating(void)
@@ -16,10 +16,17 @@ static bool wendy_wasm_is_terminating(void)
     return terminating;
 }
 
+static TickType_t xTaskGetTickCount(void)
+{
+    return elapsed;
+}
+
 static void vTaskDelay(TickType_t ticks)
 {
     assert(ticks > 0);
     elapsed += ticks;
+    /* A higher-priority task can prevent execution after the block expires. */
+    if (elapsed < busy_until) elapsed = busy_until;
     delay_calls++;
     if (stop_at && elapsed >= stop_at) {
         terminating = true;
@@ -31,7 +38,7 @@ static void vTaskDelay(TickType_t ticks)
 static void reset(bool stopped)
 {
     terminating = stopped;
-    elapsed = stop_at = delay_calls = 0;
+    elapsed = stop_at = busy_until = delay_calls = 0;
 }
 
 int main(void)
@@ -54,6 +61,25 @@ int main(void)
     reset(false);
     sys_sleep_ms_wrapper(NULL, 250);
     assert(elapsed == pdMS_TO_TICKS(250));
+
+    /* Time ready but not scheduled counts toward the requested duration. */
+    reset(false);
+    busy_until = pdMS_TO_TICKS(2000);
+    sys_sleep_ms_wrapper(NULL, 1000);
+    assert(elapsed == busy_until);
+    assert(delay_calls == 1);
+
+    reset(false);
+    busy_until = pdMS_TO_TICKS(500);
+    sys_sleep_ms_wrapper(NULL, 1000);
+    assert(elapsed == pdMS_TO_TICKS(1000));
+
+    /* Unsigned elapsed arithmetic must also handle a tick counter wrap. */
+    reset(false);
+    elapsed = UINT32_MAX - pdMS_TO_TICKS(100);
+    TickType_t started = elapsed;
+    sys_sleep_ms_wrapper(NULL, 500);
+    assert((TickType_t)(elapsed - started) == pdMS_TO_TICKS(500));
 
     reset(false);
     sys_sleep_ms_wrapper(NULL, 1);

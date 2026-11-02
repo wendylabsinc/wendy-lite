@@ -95,10 +95,15 @@ static void sys_sleep_ms_wrapper(wasm_exec_env_t exec_env, int ms)
         if (quantum == 0) {
             quantum = 1;
         }
-        while (ticks && !wendy_wasm_is_terminating()) {
-            TickType_t part = ticks < quantum ? ticks : quantum;
+        TickType_t started = xTaskGetTickCount();
+        TickType_t remaining = ticks;
+        while (remaining && !wendy_wasm_is_terminating()) {
+            TickType_t part = remaining < quantum ? remaining : quantum;
             vTaskDelay(part);
-            ticks -= part;
+            /* Time spent ready but not scheduled counts toward the sleep.
+             * Unsigned subtraction also handles the tick counter wrapping. */
+            TickType_t elapsed = xTaskGetTickCount() - started;
+            remaining = elapsed < ticks ? ticks - elapsed : 0;
         }
     }
 }
