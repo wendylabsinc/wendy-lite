@@ -40,8 +40,12 @@ static void rejected_complete(bool digest_failure, bool alternate)
     struct state state = {0};
     struct wg_pool pool;
     struct wg_session first, other;
-    struct wg_config config = {.identify = guarded_identify, .context = &state,
-                               .objects = 4, .pending = 4, .bytes = 4096, .downloads = 1};
+    struct wg_config config = {.identify = guarded_identify,
+                               .context = &state,
+                               .objects = 4,
+                               .pending = 4,
+                               .bytes = 4096,
+                               .downloads = 1};
     assert(!wg_init(&pool, &config));
     assert(!wg_open(&pool, &first, 2) && !wg_open(&pool, &other, 2));
     unsigned char bytes[1500];
