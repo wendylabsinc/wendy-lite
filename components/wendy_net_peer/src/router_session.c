@@ -2286,6 +2286,7 @@ static int topology_record(struct wnrs_node *n, unsigned wanted, int64_t now,
                 view->principal = s->operator_peer->principal;
                 view->principal_size = strlen(view->principal);
                 out->expires_at_unix_ms = (int64_t)s->operator_peer->expires * 1000;
+                view->signed_expiry_unix_ms = out->expires_at_unix_ms;
             } else {
                 out->owner_role = WNT_TOPOLOGY_DEVICE;
                 out->device.size = 16;
