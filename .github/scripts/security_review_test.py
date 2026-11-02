@@ -127,7 +127,7 @@ class InputManifestTests(unittest.TestCase):
 class GeneratedExclusionTests(unittest.TestCase):
     """Generated files must not spend the byte budget or reach the reviewer."""
 
-    GLOBS = security_review.DEFAULT_GENERATED_GLOBS
+    OUTPUT_PATHS = security_review.GENERATED_OUTPUT_PATHS
 
     def test_generated_paths_are_recognized(self) -> None:
         for path in (
@@ -138,9 +138,10 @@ class GeneratedExclusionTests(unittest.TestCase):
             "components/wendy_conf/src/wendy_conf.pb.c",
             "components/wendy_conf/include/wendy_conf.pb.h",
             "go/console/sensorlinkpb/sensorlink.pb.go",
+            "wasm_apps/rust_blink.wasm",
         ):
             self.assertTrue(
-                security_review.is_generated_path(path, self.GLOBS), path
+                security_review.is_generated_path(path, self.OUTPUT_PATHS), path
             )
 
     def test_hand_written_paths_are_not_excluded(self) -> None:
@@ -153,7 +154,7 @@ class GeneratedExclusionTests(unittest.TestCase):
             ".github/scripts/security_review.py",
         ):
             self.assertFalse(
-                security_review.is_generated_path(path, self.GLOBS), path
+                security_review.is_generated_path(path, self.OUTPUT_PATHS), path
             )
 
     def test_pr_attributes_cannot_hide_hand_written_code(self) -> None:
@@ -161,7 +162,7 @@ class GeneratedExclusionTests(unittest.TestCase):
             root = pathlib.Path(directory)
             (root / ".gitattributes").write_text("secret.go linguist-generated=true\n*.go linguist-generated=true\n")
             with patch("pathlib.Path.cwd", return_value=root):
-                globs = security_review.generated_globs()
+                globs = security_review.GENERATED_OUTPUT_PATHS
                 self.assertFalse(security_review.is_generated_path("secret.go", globs))
                 self.assertFalse(security_review.is_generated_path("internal/secret.pb.go", globs))
                 self.assertTrue(security_review.is_generated_path("components/wendy_conf/include/wendy_conf.pb.h", globs))
@@ -179,7 +180,7 @@ class GeneratedExclusionTests(unittest.TestCase):
         generated = diff("go/console/wendypb/wendy_com_msg.pb.go")
         raw = handwritten + generated
         manifest = security_review.build_input_manifest(
-            metadata(2), raw, 42, HEAD_SHA, len(handwritten), self.GLOBS
+            metadata(2), raw, 42, HEAD_SHA, len(handwritten), self.OUTPUT_PATHS
         )
         self.assertEqual(manifest["diff_bytes"], len(raw))
         self.assertEqual(manifest["reviewable_bytes"], len(handwritten))
@@ -195,15 +196,15 @@ class GeneratedExclusionTests(unittest.TestCase):
     def test_reviewed_diff_drops_the_generated_sections(self) -> None:
         raw = (
             diff("go/internal/thing.go", line="handWrittenMarker := 1")
-            + diff("go/console/wendypb/x.pb.go", line="generatedMarker := 2")
+            + diff("go/console/wendypb/wendy_com_msg.pb.go", line="generatedMarker := 2")
         ).decode()
-        kept, excluded = security_review.partition_generated(raw, self.GLOBS)
+        kept, excluded = security_review.partition_generated(raw, self.OUTPUT_PATHS)
         self.assertIn("handWrittenMarker", kept)
         self.assertNotIn("generatedMarker", kept)
-        self.assertEqual(excluded, ["go/console/wendypb/x.pb.go"])
+        self.assertEqual(excluded, ["go/console/wendypb/wendy_com_msg.pb.go"])
 
     def test_generated_only_pr_prepares_zero_batches_without_model_calls(self) -> None:
-        raw = diff("go/console/wendypb/x.pb.go")
+        raw = diff("go/console/wendypb/wendy_com_msg.pb.go")
         meta = metadata()
         manifest = security_review.build_input_manifest(meta, raw, 42, HEAD_SHA)
         self.assertEqual(manifest["batch_count"], 0)
@@ -217,18 +218,96 @@ class GeneratedExclusionTests(unittest.TestCase):
         self.assertIn("1 generated file(s) excluded", rendered)
         self.assertIn("no handwritten changes require review", rendered)
 
+    def test_sources_and_unknown_outputs_stay_reviewable(self) -> None:
+        for path in (
+            "go/console/wendypb/unknown.pb.go", "tools/update_protobuf.py",
+            "Cargo.lock", "wasm_apps/rust_blink/Cargo.lock", "dependencies.lock",
+            "main/idf_component.yml", "go/wcomrelaypb/go.mod",
+            "go/wcomrelaypb/go.sum", "wasm_apps/rust_blink/src/lib.rs",
+            "components/nanopb/pb_common.c", "source-pin.json",
+        ):
+            with self.subTest(path=path):
+                raw = diff(path, "// Code generated. DO NOT EDIT.").decode()
+                self.assertEqual(security_review.partition_generated(raw), (raw, []))
+
+    def test_rename_copy_and_ambiguous_headers_stay_reviewable(self) -> None:
+        generated = "go/console/wendypb/wendy_com_msg.pb.go"
+        for old, new in (("go/source.go", generated), (generated, "go/source.go"),
+                         (generated, "go/console/wendypb/wendy_conf.pb.go")):
+            for operation in ("rename", "copy"):
+                raw = (f"diff --git a/{old} b/{new}\n"
+                       f"similarity index 95%\n{operation} from {old}\n{operation} to {new}\n"
+                       f"--- a/{old}\n+++ b/{new}\n@@ -1 +1 @@\n-old\n+new\n")
+                self.assertEqual(security_review.partition_generated(raw), (raw, []))
+        raw = diff(generated).decode().replace(f"a/{generated} b/{generated}",
+                                               f'"a/{generated}" "b/{generated}"')
+        self.assertEqual(security_review.partition_generated(raw), (raw, []))
+
+    def test_generated_add_delete_and_mode_changes_are_excluded(self) -> None:
+        path = "components/wendy_conf/src/wendy_conf.pb.c"
+        raw = diff(path).decode()
+        for section in (raw.replace(f"--- a/{path}", "--- /dev/null"),
+                        raw.replace(f"+++ b/{path}", "+++ /dev/null"),
+                        f"diff --git a/{path} b/{path}\nold mode 100644\nnew mode 100755\n"):
+            self.assertEqual(security_review.partition_generated(section), ("", [path]))
+
+    def test_mixed_model_input_contains_sources_and_pins_only(self) -> None:
+        raw = (diff("go/proto/wendy_com_relay_msg.proto") + diff("source-pin.json")
+               + diff("go/wcomrelaypb/wendy_com_relay_msg.pb.go", "generatedPayload"))
+        meta = metadata(3)
+        manifest = security_review.build_input_manifest(meta, raw, 42, HEAD_SHA)
+        with patch.object(security_review, "review_batch", return_value=payload()) as review:
+            security_review.review_batches(None, "offline", meta, raw.decode(), "", manifest)
+        sent = review.call_args.args[3]
+        self.assertIn("wendy_com_relay_msg.proto", sent)
+        self.assertIn("source-pin.json", sent)
+        self.assertNotIn("generatedPayload", sent)
+        with patch.object(security_review, "review_batch") as review:
+            with self.assertRaisesRegex(security_review.ReviewError, "input manifest"):
+                security_review.review_batches(None, "offline", meta,
+                    raw.decode().replace("generatedPayload", "tamperedPayload"), "", manifest)
+        review.assert_not_called()
+
+    def test_generated_only_command_preserves_prior_findings_without_client(self) -> None:
+        raw = diff("go/console/wendypb/wendy_com_msg.pb.go")
+        manifest = security_review.build_input_manifest(metadata(), raw, 42, HEAD_SHA)
+        previous_manifest = security_review.build_input_manifest(metadata(), diff(), 42, HEAD_SHA)
+        previous, _ = security_review.render_review(payload(finding(severity="high")),
+                                                    diff().decode(), previous_manifest)
+        legacy = "# AI Security Review\n\n#### 🛑 Error — Open HIGH: Prior risk\n"
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            args = SimpleNamespace(model="offline", **{name: str(root / name) for name in
+                ("metadata", "manifest", "diff", "previous", "review_output", "result_output")})
+            pathlib.Path(args.metadata).write_text(json.dumps(metadata()))
+            pathlib.Path(args.manifest).write_text(json.dumps(manifest))
+            pathlib.Path(args.diff).write_bytes(raw)
+            for prior in ("", previous, legacy):
+                pathlib.Path(args.previous).write_text(prior)
+                sdk = SimpleNamespace(Anthropic=Mock(), BadRequestError=RuntimeError)
+                with patch.dict("sys.modules", {"anthropic": sdk}):
+                    security_review.command_review(args)
+                sdk.Anthropic.assert_not_called()
+                result = json.loads(pathlib.Path(args.result_output).read_text())
+                review = pathlib.Path(args.review_output).read_text()
+                self.assertEqual(result["has_blocking"], bool(prior))
+                self.assertIn(prior, review)
+                self.assertIn("Model review skipped", review)
+                if prior:
+                    self.assertIn(security_review.BLOCKING_MARKER, review)
+
     def test_hand_written_diff_over_the_limit_still_fails(self) -> None:
         handwritten = diff("go/internal/thing.go")
-        raw = handwritten + diff("go/console/wendypb/x.pb.go")
+        raw = handwritten + diff("go/console/wendypb/wendy_com_msg.pb.go")
         with self.assertRaisesRegex(security_review.ReviewError, "no partial review"):
             security_review.build_input_manifest(
-                metadata(2), raw, 42, HEAD_SHA, len(handwritten) - 1, self.GLOBS
+                metadata(2), raw, 42, HEAD_SHA, len(handwritten) - 1, self.OUTPUT_PATHS
             )
 
     def test_coverage_names_the_exclusion(self) -> None:
-        raw = diff("go/internal/thing.go") + diff("go/console/wendypb/x.pb.go")
+        raw = diff("go/internal/thing.go") + diff("go/console/wendypb/wendy_com_msg.pb.go")
         manifest = security_review.build_input_manifest(
-            metadata(2), raw, 42, HEAD_SHA, security_review.MAX_DIFF_BYTES, self.GLOBS
+            metadata(2), raw, 42, HEAD_SHA, security_review.MAX_DIFF_BYTES, self.OUTPUT_PATHS
         )
         text = security_review.coverage_text(manifest, reviewed=True)
         self.assertIn("1/2 changed files", text)

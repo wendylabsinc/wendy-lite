@@ -65,71 +65,29 @@ class ReviewError(RuntimeError):
     """A deterministic security-review failure that must fail the check."""
 
 
-# Paths whose contents no human wrote and no reviewer can act on. They are
-# excluded from the byte budget and from the diff the model reads.
-#
-# WHY THIS EXISTS. The budget is a guard against a partial review: a diff that
-# does not fit is rejected outright rather than truncated, so that nobody
-# mistakes a review of the first half for a review. Regenerated protobuf stubs
-# defeat that guard from the other side. A Go and nanopb binding refresh runs
-# to tens of thousands of bytes of code that is a mechanical function of the
-# .proto files in the same pull request, so a change with a few hand-written
-# lines exceeded the limit and received no review at all. Excluding them keeps
-# the reviewer on the lines a person actually wrote, which are also the lines
-# the .proto diff itself still shows.
-DEFAULT_GENERATED_GLOBS = (
-    "go/console/wendypb/*.pb.go",
-    "go/console/sensorlinkpb/*.pb.go",
-    "go/wcomrelaypb/*.pb.go",
-    "components/wendy_com/include/*.pb.h",
-    "components/wendy_com/src/*.pb.c",
-    "components/wendy_conf/include/*.pb.h",
-    "components/wendy_conf/src/*.pb.c",
+# Exact committed outputs of tools/update_protobuf.py. Keep unknown paths,
+# source schemas/options, generator scripts and dependency pins reviewable.
+GENERATED_OUTPUT_PATHS = (
+    "go/console/wendypb/wendy_com_msg.pb.go",
+    "go/console/wendypb/wendy_conf.pb.go",
+    "go/console/sensorlinkpb/sensorlink.pb.go",
+    "go/wcomrelaypb/wendy_com_relay_msg.pb.go",
+    "go/wcomrelaypb/wendy_com_relay_service.pb.go",
+    "go/wcomrelaypb/wendy_com_relay_service_grpc.pb.go",
+    "components/wendy_com/include/wendy_com_msg.pb.h",
+    "components/wendy_com/include/sensorlink.pb.h",
+    "components/wendy_com/src/wendy_com_msg.pb.c",
+    "components/wendy_com/src/sensorlink.pb.c",
+    "components/wendy_conf/include/wendy_conf.pb.h",
+    "components/wendy_conf/src/wendy_conf.pb.c",
+    # Compiled from wasm_apps/rust_blink by wasm_apps/Makefile.
+    "wasm_apps/rust_blink.wasm",
 )
 DIFF_SECTION_RE = re.compile(r"^diff --git ", re.MULTILINE)
 
 
-def _glob_to_regex(pattern: str) -> re.Pattern[str]:
-    """Translate one gitattributes/gitignore-style path glob into a regex.
-
-    Git's rules, as far as they matter here: a pattern with no slash matches the
-    basename at any depth, a trailing slash means "everything under it", `**`
-    crosses directory separators and a single `*` does not.
-    """
-    pattern = pattern.strip().lstrip("/")
-    if pattern.endswith("/"):
-        pattern += "**"
-    if "/" not in pattern.rstrip("*"):
-        pattern = "**/" + pattern
-    out: list[str] = []
-    index = 0
-    while index < len(pattern):
-        if pattern.startswith("**/", index):
-            out.append("(?:.*/)?")
-            index += 3
-        elif pattern.startswith("**", index):
-            out.append(".*")
-            index += 2
-        elif pattern[index] == "*":
-            out.append("[^/]*")
-            index += 1
-        elif pattern[index] == "?":
-            out.append("[^/]")
-            index += 1
-        else:
-            out.append(re.escape(pattern[index]))
-            index += 1
-    return re.compile("".join(out) + r"\Z")
-
-
-def generated_globs() -> tuple[str, ...]:
-    """Fixed generated roots only; PR-controlled attributes are not policy."""
-    return DEFAULT_GENERATED_GLOBS
-
-
-def is_generated_path(path: str, globs: tuple[str, ...]) -> bool:
-    path = path.strip().lstrip("/")
-    return any(_glob_to_regex(pattern).match(path) for pattern in globs)
+def is_generated_path(path: str, output_paths: tuple[str, ...]) -> bool:
+    return path in output_paths
 
 
 def _section_path(section: str) -> str:
@@ -171,23 +129,28 @@ def split_diff_sections(diff_text: str) -> list[tuple[str, str]]:
 
 
 def partition_generated(
-    diff_text: str, globs: tuple[str, ...] | None = None
+    diff_text: str, output_paths: tuple[str, ...] | None = None
 ) -> tuple[str, list[str]]:
     """Return (reviewable diff, paths excluded as generated)."""
-    if globs is None:
-        globs = generated_globs()
+    if output_paths is None:
+        output_paths = GENERATED_OUTPUT_PATHS
     kept: list[str] = []
     excluded: list[str] = []
     for path, section in split_diff_sections(diff_text):
-        if path and is_generated_path(path, globs):
+        # Only unambiguous, same-path changes qualify. In particular, a
+        # handwritten file renamed/copied into an output must stay reviewed.
+        header = section.split("\n", 1)[0]
+        if (is_generated_path(path, output_paths)
+                and header == f"diff --git a/{path} b/{path}"
+                and not re.search(r"^(?:rename|copy) (?:from|to) ", section, re.MULTILINE)):
             excluded.append(path)
             continue
         kept.append(section)
     return "".join(kept), excluded
 
 
-def reviewable_diff(diff_text: str, globs: tuple[str, ...] | None = None) -> str:
-    return partition_generated(diff_text, globs)[0]
+def reviewable_diff(diff_text: str, output_paths: tuple[str, ...] | None = None) -> str:
+    return partition_generated(diff_text, output_paths)[0]
 
 
 def _load_json(path: str | pathlib.Path) -> Any:
@@ -234,7 +197,7 @@ def build_input_manifest(
     expected_pr_number: int,
     expected_head_sha: str,
     max_diff_bytes: int = MAX_DIFF_BYTES,
-    globs: tuple[str, ...] | None = None,
+    output_paths: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     if not isinstance(metadata, dict):
         raise ReviewError("PR metadata must be a JSON object")
@@ -287,7 +250,7 @@ def build_input_manifest(
     # full diff's size and digest are still recorded, so the exclusion is
     # visible rather than silent. What survives the filter is then batched, so
     # a large hand-written change is still reviewed completely.
-    reviewable_text, generated_paths = partition_generated(diff_text, globs)
+    reviewable_text, generated_paths = partition_generated(diff_text, output_paths)
     reviewable_bytes = len(reviewable_text.encode("utf-8"))
     try:
         batches = split_diff(reviewable_text, max_diff_bytes) if reviewable_text else []
@@ -470,6 +433,12 @@ def system_prompt() -> str:
         "Analyze the diff for security issues including injection vulnerabilities, authentication and authorization flaws, sensitive data exposure, cryptographic weaknesses, input validation and output encoding issues, security misconfiguration, insecure dependencies, race conditions, path traversal, SSRF, and denial-of-service vectors.\n\n"
         "## Wendy Lite and ESP32 threat checklist\n"
         "Pay particular attention to C buffer and object lifetimes, FreeRTOS task ownership, bounded internal RAM and PSRAM use, BLE L2CAP channel and credit handling, Wi-Fi lifecycle, device and organization identity binding, mTLS peer validation, enrollment and credential lifecycle, signed mesh manifests and routing authorization, WASM guest and host-call boundaries, flash persistence and OTA trust, shell-command and path injection in host tools, mDNS discovery data, telemetry and log secret leakage, and GitHub Actions permissions, immutable pins, PR-controlled execution, secret boundaries, and Dependabot behavior.\n\n"
+        "## Source-only coverage\n"
+        "Known generated outputs are omitted before batching. Review schemas, .options, generator configuration/templates/scripts, source references and pins, manifests, lockfiles and handwritten changes. "
+        "For any tool-based reread, inspect these sources rather than generated output bodies. "
+        "No repository or upstream fetching tools are provided in this review. If a changed external source pin lacks its upstream source diff, state that inspection limitation in the summary. "
+        "Do not claim API or behavior coverage from output exclusion or passing generation/build checks. "
+        "Do not clear prior findings based on code absent from the source-only input.\n\n"
         "## Compliance analysis\n"
         "Evaluate relevant risks against SOC 2, ISO/IEC 27001:2022, PCI DSS v4.0 when payment/card data is touched, GDPR/privacy, HIPAA when health/medical data is touched, and NIST SP 800-53 / CSF 2.0.\n\n"
         "## Stateful review behavior\n"
@@ -1008,7 +977,7 @@ def review_batches(client: Any, model: str, metadata: dict[str, Any], diff: str,
     reviewable_text = reviewable_diff(diff)
     if not reviewable_text:
         return {
-            "summary": "All changed files are generated bindings; no handwritten changes require review.",
+            "summary": "All changed files are known generated outputs; no handwritten changes require review.",
             "findings": [],
             "compliance_summary": "",
         }
@@ -1067,7 +1036,7 @@ def command_review(args: argparse.Namespace) -> None:
     # exactly the bytes the budget was costed on.
     diff = pathlib.Path(args.diff).read_bytes().decode("utf-8")
     previous_review = pathlib.Path(args.previous).read_text(encoding="utf-8")
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic() if manifest["batch_count"] else None
 
     try:
         payload = review_batches(client, args.model, metadata, diff, previous_review, manifest)
@@ -1100,7 +1069,19 @@ def command_review(args: argparse.Namespace) -> None:
             return
         raise
 
-    review, has_blocking = render_review(payload, diff, manifest)
+    if manifest["batch_count"] == 0:
+        # There is no source evidence with which to reassess earlier findings.
+        review = ("# AI Security Review\n\n"
+                  "Model review skipped: only known generated outputs changed. "
+                  "Prior findings remain unchanged.\n\n"
+                  + coverage_text(manifest, reviewed=False) + "\n")
+        has_blocking = previous_review_has_blocking(previous_review)
+        if previous_review:
+            review += "\n" + previous_review.replace(COMMENT_MARKER, "").strip() + "\n"
+        if has_blocking and BLOCKING_MARKER not in review:
+            review += "\n" + BLOCKING_MARKER + "\n"
+    else:
+        review, has_blocking = render_review(payload, reviewable_diff(diff), manifest)
     pathlib.Path(args.review_output).write_text(review, encoding="utf-8")
     _write_json(
         args.result_output,

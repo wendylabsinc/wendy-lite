@@ -8,10 +8,20 @@ from another repository.
 
 `review_diff.py` divides the complete handwritten diff into bounded batches.
 `security_review.py` validates the reviewed revision and coverage, calls the
-model, and prepares the review comment. Generated bindings are excluded using
-the fixed paths in that script; their `.proto` and `.options` inputs remain
-reviewable. Lite retains its existing model and comment-only finding policy.
-Incomplete review coverage still fails the workflow.
+model, and prepares the review comment. Only the exact Go/nanopb outputs of
+`tools/update_protobuf.py` and `wasm_apps/rust_blink.wasm` (compiled by
+`wasm_apps/Makefile`) are excluded. Renames, copies, ambiguous paths and unknown
+outputs stay reviewable. Their sources, `.proto`/`.options`, generator scripts,
+manifests, lockfiles and source pins stay in review. Vendored nanopb runtime
+code is source, so it is not excluded.
+
+Generated-only changes skip the model and preserve earlier findings and their
+blocking status. Coverage reports distinguish excluded bytes from reviewed
+source. The API client has no repository/upstream inspection tools: a changed
+external source pin without its upstream diff must be reported as an inspection
+limitation. Output exclusions and passing generation/build checks do not
+establish API or behavior coverage. Lite retains its existing model and
+comment-only finding policy. Incomplete review coverage still fails the workflow.
 
 The workflow loads scripts from its immutable base commit. While introducing
 these files to a base that does not have them, it uses the explicitly pinned
