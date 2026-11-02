@@ -391,7 +391,6 @@ int wnd_manifest_read(const struct wn_doc *d, unsigned body, struct wnd_manifest
 static int accept_manifest(struct wnd_directory *d, const void *data, size_t size, int64_t now,
                            int64_t monotonic, bool verified)
 {
-    static const char *const fields[] = {"principal", "body", "signature", NULL};
     struct wn_doc doc;
     struct wnd_manifest m;
     char principal[106];
@@ -400,9 +399,10 @@ static int accept_manifest(struct wnd_directory *d, const void *data, size_t siz
     size_t signature_size = 0;
     if (!d || now <= 0 || now > INT64_MAX - 905000 || monotonic < 0 ||
         monotonic > INT64_MAX - INT64_C(905000000) ||
-        wn_doc_parse_array_view(&doc, data, size, 40 * 1024, "s") ||
-        !wn_doc_fields(&doc, 0, fields))
+        wn_doc_parse_array_view(&doc, data, size, 40 * 1024, "s"))
         return -1;
+    /* Envelope extensions are optional. The exact principal and body bytes
+     * below remain the signed preimage; ignored metadata cannot alter them. */
     int body = wn_doc_member(&doc, 0, "body");
     if (body < 0)
         return -1;

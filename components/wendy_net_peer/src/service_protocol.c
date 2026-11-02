@@ -152,8 +152,9 @@ int wns_spec_read(const void *data, size_t size, struct wns_record *r)
     struct wn_doc *d = &w->doc;
     uint64_t port;
     int result = -1;
-    static const char *const fields[] = {"serviceId", "type", "instance", "port", "txt", NULL};
-    if (wn_doc_parse_bounded(d, data, size, WNS_BODY_MAX) || !wn_doc_fields(d, 0, fields) ||
+    /* Additive metadata is optional; required service fields retain their
+     * existing validation. The enclosing manifest supplies the wire version. */
+    if (wn_doc_parse_bounded(d, data, size, WNS_BODY_MAX) ||
         field(d, 0, "serviceId", r->service, sizeof r->service) < 0 ||
         !wns_label_valid(r->service) || !strcmp(r->service, "internet-gateway") ||
         field(d, 0, "type", r->type, sizeof r->type) < 0 || !wns_type_valid(r->type) ||
