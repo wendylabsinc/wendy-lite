@@ -63,6 +63,39 @@ static int extra_field(char *data, int size, size_t capacity)
     wn_bool(&w, true);
     return wn_finish(&w);
 }
+static int optional_transports(const char *base, int size, char *out, size_t capacity)
+{
+    struct wn_doc d;
+    assert(!wn_doc_parse(&d, base, (size_t)size));
+    struct wn_writer w = {.data = (uint8_t *)out, .capacity = capacity, .maximum = capacity};
+    wn_map(&w, 13);
+    for (unsigned i = 1; i < d.storage[0].next; i = d.storage[i + 1].next) {
+        const struct wn_token *k = &d.storage[i], *v = &d.storage[i + 1];
+        wn_raw(&w, d.text + k->start, k->end - k->start);
+        if (wn_doc_equal(&d, (int)i, wn_key_name("agentTransport")))
+            wn_text(&w, "future-agent-v2");
+        else if (wn_doc_equal(&d, (int)i, wn_key_name("appEndpoints"))) {
+            wn_array(&w, 3);
+            wn_map(&w, 2);
+            wn_text(&w, "t");
+            wn_text(&w, "future-v2");
+            wn_text(&w, "p");
+            wn_map(&w, 0);
+            wn_map(&w, 2);
+            wn_text(&w, "t");
+            wn_text(&w, "tls-v1");
+            wn_text(&w, "p");
+            wn_uint(&w, 43022);
+            wn_map(&w, 2);
+            wn_text(&w, "t");
+            wn_text(&w, "quic-v1");
+            wn_text(&w, "p");
+            wn_uint(&w, 43023);
+        } else
+            wn_raw(&w, d.text + v->start, v->end - v->start);
+    }
+    return wn_finish(&w);
+}
 static void future_fields(mbedtls_pk_context *key, const struct wendy_pki_mesh_peer *peer,
                           uint8_t uuid[16], struct wn_origin *origin)
 {
@@ -89,6 +122,18 @@ static void future_fields(mbedtls_pk_context *key, const struct wendy_pki_mesh_p
     size_t end = doc.tokens[at].end;
     wire[end - 1] = (char)0xf4;
     assert(wnd_accept(&d, wire, (size_t)size, INT64_C(1800000000000), 100) < 0);
+    char base[2048];
+    n = body_write(uuid, origin, 8, 5054, false, base);
+    n = optional_transports(base, n, body, sizeof body);
+    assert(n > 0);
+    size = envelope(key, body, (size_t)n, wire, sizeof wire);
+    assert(size > 0 && !wnd_accept(&d, wire, (size_t)size, INT64_C(1800000000000), 100));
+    assert(d.entries->revision == 8 && !d.entries->manifest.agent_mtls &&
+           !d.entries->manifest.agent_port && d.entries->manifest.tls_app_port == 43022 &&
+           d.entries->manifest.quic_app_port == 43023);
+    uint8_t address[16];
+    wn_address(uuid, address);
+    assert(wnd_authorizes(&d, address, origin->router_id, origin->seqno, 100));
     wnd_deinit(&d);
 }
 int main(int argc, char **argv)

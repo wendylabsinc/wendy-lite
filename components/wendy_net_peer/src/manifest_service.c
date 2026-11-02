@@ -3,17 +3,53 @@
 #include "wendy_net_alloc.h"
 #include <limits.h>
 #include <string.h>
+/* Preserve the DNS-SD name grammar while allowing a future transport suffix.
+ * Only today's TCP/UDP rows are projected into sockets and service browse. */
+static bool service_type_shape(const char *type)
+{
+    const char *dot = strchr(type, '.');
+    if (type[0] != '_' || !dot || dot - type < 2 || dot - type > 16 || dot[1] != '_')
+        return false;
+    size_t transport = strlen(dot + 2);
+    if (!transport || transport > 15)
+        return false;
+    for (const char *p = type + 1; *p; p++) {
+        if (p == dot) {
+            p++;
+            continue;
+        }
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '-'))
+            return false;
+    }
+    return true;
+}
 int wns_manifest_service_read(const struct wn_doc *d, struct wns_record *r)
 {
     uint64_t port;
+    if (!r)
+        return -1;
     memset(r, 0, sizeof *r);
     if (!d || wn_doc_string(d, wn_doc_member(d, 0, "a"), r->app, sizeof r->app) < 0 ||
         !wns_app_id_valid(r->app) ||
         wn_doc_string(d, wn_doc_member(d, 0, "m"), r->mesh, sizeof r->mesh) < 0 ||
         !wns_label_valid(r->mesh) ||
         wn_doc_string(d, wn_doc_member(d, 0, "s"), r->service, sizeof r->service) < 0 ||
-        !wns_label_valid(r->service) ||
-        wn_doc_string(d, wn_doc_member(d, 0, "n"), r->instance, sizeof r->instance) < 0 ||
+        !wns_label_valid(r->service))
+        return -1;
+    if (!strcmp(r->service, "internet-gateway") && strcmp(r->app, "wendy.mesh.system"))
+        return -1; /* A future transport cannot claim the reserved identity. */
+    r->gateway = !strcmp(r->app, "wendy.mesh.system") && !strcmp(r->service, "internet-gateway");
+    if (!strcmp(r->app, "wendy.mesh.system") && !r->gateway)
+        return WNS_UNSUPPORTED; /* Future optional non-socket capability. */
+    if (!r->gateway) {
+        char type[34];
+        if (wn_doc_string(d, wn_doc_member(d, 0, "t"), type, sizeof type) < 0 ||
+            !service_type_shape(type))
+            return -1;
+        if (!wns_type_valid(type))
+            return WNS_UNSUPPORTED;
+    }
+    if (wn_doc_string(d, wn_doc_member(d, 0, "n"), r->instance, sizeof r->instance) < 0 ||
         strpbrk(r->instance, "\r\n") ||
         wn_doc_string(d, wn_doc_member(d, 0, "t"), r->type, sizeof r->type) < 0 ||
         wn_doc_u64(d, wn_doc_member(d, 0, "p"), &port) || port > UINT16_MAX)
@@ -38,7 +74,6 @@ int wns_manifest_service_read(const struct wn_doc *d, struct wns_record *r)
                 (struct wns_text){(uint16_t)t->start, (uint16_t)(t->end - t->start)};
         }
     }
-    r->gateway = !strcmp(r->app, "wendy.mesh.system") && !strcmp(r->service, "internet-gateway");
     if (!strcmp(r->app, "wendy.mesh.system") || !strcmp(r->service, "internet-gateway")) {
         if (!r->gateway || r->port || *r->type || *r->instance || r->txt_count)
             return -1;
@@ -75,7 +110,12 @@ int wns_manifest_services_validate(const struct wn_doc *d, unsigned body)
         int n = wn_doc_array_next(d, array, &cursor, &w->child);
         if (!n)
             break;
-        if (n < 0 || count == 256 || wns_manifest_service_read(&w->child, &w->record)) {
+        if (n < 0 || count == 256) {
+            result = -1;
+            break;
+        }
+        int decoded = wns_manifest_service_read(&w->child, &w->record);
+        if (decoded < 0) {
             result = -1;
             break;
         }
