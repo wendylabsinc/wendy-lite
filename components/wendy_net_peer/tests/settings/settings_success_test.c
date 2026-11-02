@@ -7,6 +7,13 @@ static unsigned writes, changes;
 static bool have_record, fail_write;
 static struct record stored;
 static const struct wcom_net_delegate *delegate;
+#if CONFIG_WENDY_NET_BLE
+static unsigned selected_profile;
+void wble_mesh_set_profile(unsigned profile)
+{
+    selected_profile = profile;
+}
+#endif
 int64_t esp_timer_get_time(void)
 {
     return now;
@@ -91,6 +98,19 @@ int main(void)
     assert(delegate->get(&status) == WendyComResult_WENDY_COM_RESULT_OK && !status.desired.enabled);
     assert(status.ble_supported == !!CONFIG_WENDY_NET_BLE &&
            status.wifi_supported == !!CONFIG_WENDY_WIFI_ENABLED && !status.nan_supported);
+    assert(status.ble_profiles_supported ==
+           (CONFIG_WENDY_NET_BLE ? (CODED_PROFILES_SUPPORTED ? 7u : 1u) : 0u));
+    WendyComNetConfig invalid_profile = status.desired;
+    invalid_profile.ble_profile = (WendyComBleProfile)3;
+    assert(delegate->set(&invalid_profile, &status, &token) ==
+               WendyComResult_WENDY_COM_RESULT_NET_BLE_PROFILE_UNSUPPORTED &&
+           !token && !writes);
+#if !CODED_PROFILES_SUPPORTED
+    invalid_profile.ble_profile = WendyComBleProfile_WENDY_COM_BLE_CODED_S2;
+    assert(delegate->set(&invalid_profile, &status, &token) ==
+               WendyComResult_WENDY_COM_RESULT_NET_BLE_PROFILE_UNSUPPORTED &&
+           !token && !writes);
+#endif
     WendyComNetConfig config = status.desired;
     config.enabled = true;
     if (!config.ble && !config.infrastructure_wifi) {
@@ -171,6 +191,41 @@ int main(void)
     now += 45000000;
     wn_settings_poll(false);
     assert(changes == before + 1 && !wn_settings_pending());
+#endif
+#if CODED_PROFILES_SUPPORTED
+    /* Simulate reboot: retain only the persisted NVS record. A profile-only
+     * update must survive boot and preserve carrier/participation policy. */
+    loaded = boot_selected = false;
+    atomic_store(&restarting, false);
+    atomic_store(&restart_ready, false);
+    atomic_store(&awaiting_reply, false);
+    atomic_store(&receipt, 0);
+    memset(&apply, 0, sizeof apply);
+    assert(wn_settings_init() == ESP_OK);
+    config = wn_settings_get();
+    bool enabled_before = config.enabled, ble_before = config.ble;
+    bool wifi_before = config.infrastructure_wifi;
+    config.ble_profile = WendyComBleProfile_WENDY_COM_BLE_CODED_S8;
+    assert(delegate->set(&config, &status, &token) == WendyComResult_WENDY_COM_RESULT_OK &&
+           token && !status.restarting && (stored.flags >> 4) == 2);
+    applied(token, true);
+    loaded = false;
+    assert(wn_settings_init() == ESP_OK);
+    bool boot_has_ble, boot_has_wifi;
+    assert(wendy_net_peer_boot_radios(&boot_has_ble, &boot_has_wifi) == ESP_OK &&
+           selected_profile == 2 && boot_has_ble == ble_before &&
+           boot_has_wifi == !!CONFIG_WENDY_WIFI_ENABLED);
+    config = wn_settings_get();
+    assert(config.enabled == enabled_before && config.ble == ble_before &&
+           config.infrastructure_wifi == wifi_before && config.ble_profile == 2);
+    config.ble_profile = WendyComBleProfile_WENDY_COM_BLE_CODED_S2;
+    assert(delegate->set(&config, &status, &token) ==
+               WendyComResult_WENDY_COM_RESULT_APPLIED_RESTARTING &&
+           token && status.restarting && !wn_settings_restart_due());
+    /* Selecting saved intent cannot change the live host before its reply. */
+    assert(selected_profile == 2);
+    applied(token, true);
+    assert(wn_settings_restart_due() && selected_profile == 2);
 #endif
     puts(
         "native settings: bounded receipt, persistence, typed capabilities and runtime radio selection PASS");
