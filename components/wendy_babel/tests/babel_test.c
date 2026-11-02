@@ -248,6 +248,21 @@ static void test_wire(void)
     assert(wb_decode(packet, n + 4, source, visit, NULL) == 0);
     assert(visits == 1 && decoded.router == m.router && decoded.seqno == 65535 &&
            wb_prefix_equal(&decoded.prefix, &m.prefix));
+    /* A future optional TLV and sub-TLV do not hide a later known message. */
+    packet[n + 4] = 200;
+    packet[n + 5] = 3;
+    memset(packet + n + 6, 0x7f, 3);
+    struct wb_message hello = {.type = WB_HELLO, .seqno = 123, .interval = 400};
+    size_t h = wb_encode(&hello, packet + n + 9, sizeof packet - n - 9);
+    assert(h == 8);
+    packet[n + 10] += 3;
+    packet[n + 9 + h] = 42;
+    packet[n + 10 + h] = 1;
+    packet[n + 11 + h] = 7;
+    packet[3] = (uint8_t)(n + 5 + h + 3);
+    visits = 0;
+    assert(wb_decode(packet, n + 9 + h + 3, source, visit, NULL) == WB_OK);
+    assert(visits == 2 && decoded.type == WB_HELLO && decoded.seqno == 123);
     packet[n + 4] = WB_HELLO;
     packet[n + 5] = 99;
     packet[3] = (uint8_t)(n + 2);

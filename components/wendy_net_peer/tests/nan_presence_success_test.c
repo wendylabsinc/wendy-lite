@@ -40,6 +40,23 @@ int main(int argc, char **argv)
         memcpy(wrapped + 4, wire, sizeof wire);
         assert(wn_nan_presence_read(tenant, mesh, wrapped, sizeof wrapped, &hint));
         assert(!memcmp(device, hint.device, 16) && !hint.tls_only);
+        /* New advisory capabilities leave the known v1 interpretation intact. */
+        wire[5] |= 0x80;
+        assert(wn_nan_presence_read(tenant, mesh, wire, sizeof wire, &hint));
+        assert(!memcmp(device, hint.device, 16) && !hint.tls_only);
+        uint8_t extended[WN_NAN_PRESENCE_SIZE + 6] = {0x50, 0x6f, 0x9a, 0};
+        memcpy(extended + 4, wire, sizeof wire);
+        extended[sizeof extended - 2] = 0xa5;
+        extended[sizeof extended - 1] = 0x5a;
+        assert(wn_nan_presence_read(tenant, mesh, extended + 4, sizeof extended - 4, &hint));
+        assert(wn_nan_presence_read(tenant, mesh, extended, sizeof extended, &hint));
+        assert(!memcmp(device, hint.device, 16) && !hint.tls_only);
+        /* Future format versions cannot be interpreted as this known prefix. */
+        wire[4] = 3;
+        assert(!wn_nan_presence_read(tenant, mesh, wire, sizeof wire, &hint));
+        wire[4] = 1;
+        wire[5] &= ~1;
+        assert(!wn_nan_presence_read(tenant, mesh, wire, sizeof wire, &hint));
         puts("normal QUIC-capable and TLS-only NAN presence roundtrips pass");
     }
     return 0;
