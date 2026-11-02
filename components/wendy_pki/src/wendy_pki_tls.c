@@ -808,17 +808,21 @@ static int read_all(wendy_pki_connection *c, uint8_t *out, size_t n, int64_t dea
 {
     size_t size = n;
     while (n) {
-        if (wendy_pki_reset_in_progress()) return -1;
+        if (wendy_pki_reset_in_progress())
+            return -1;
         if (esp_timer_get_time() >= deadline)
             return n == size ? READ_ALL_IDLE_TIMEOUT : -1;
         int got = mbedtls_ssl_read(&c->ssl, out, n);
-        if (got > 0) { out += got; n -= got; }
-        else {
-            if (!got) return -1;
+        if (got > 0) {
+            out += got;
+            n -= got;
+        } else {
+            if (!got)
+                return -1;
             int waited = wait_socket(c, got, deadline);
             if (waited) {
-                if (waited == SOCKET_WAIT_TIMEOUT && got == MBEDTLS_ERR_SSL_WANT_READ &&
-                    n == size) return READ_ALL_IDLE_TIMEOUT;
+                if (waited == SOCKET_WAIT_TIMEOUT && got == MBEDTLS_ERR_SSL_WANT_READ && n == size)
+                    return READ_ALL_IDLE_TIMEOUT;
                 return -1;
             }
         }
@@ -858,7 +862,8 @@ int wendy_pki_relay_upgrade(wendy_pki_connection *c, struct wendy_lite_trust *tr
             }
             goto fail;
         }
-        if (memcmp(header, "WR\x03", 3)) goto fail;
+        if (memcmp(header, "WR\x03", 3))
+            goto fail;
         if (header[3] == 1) {
             if (write_all(c, "WR\x03\x02", 4, deadline)) goto fail;
             if (first) ESP_LOGI("wendy_pki", "broker control heartbeat received and answered");
