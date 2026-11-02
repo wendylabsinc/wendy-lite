@@ -41,7 +41,6 @@
 #define CONFIG_WENDY_NET_TCP_RELAY_BUFFER_SIZE 1024
 #endif
 #endif
-#define TIME_PORT 43025
 #ifndef CONFIG_WENDY_NET_APP_MAX_FLOWS
 #define CONFIG_WENDY_NET_APP_MAX_FLOWS 1
 #endif
@@ -59,7 +58,6 @@ static bool claim_flow(atomic_uint *counter)
     return true;
 }
 static atomic_int listener = -1;
-static atomic_int time_listener = -1;
 static const char *TAG = "wendy_net_app";
 
 /* Native WendyCom mTLS uses its signed agent endpoint directly. App TLS is
@@ -582,13 +580,9 @@ static int negotiate(struct app_flow *f)
                     return -1;
                 if (f->service_port == AGENT_PORT)
                     return -1;
-                if (f->service_port == TIME_PORT)
-                    f->backend = wnad_connect("127.0.0.1", f->service_port, &f->backend_connecting);
 #if CONFIG_WENDY_NET
-                else {
-                    f->backend = wendy_net_guest_service_begin(f->service_port);
-                    f->backend_connecting = f->backend >= 0;
-                }
+                f->backend = wendy_net_guest_service_begin(f->service_port);
+                f->backend_connecting = f->backend >= 0;
 #endif
                 if (f->backend < 0)
                     return -1;
@@ -842,9 +836,6 @@ bool wendy_net_app_stop(void)
     int fd = atomic_exchange(&listener, -1);
     if (fd >= 0)
         close(fd);
-    fd = atomic_exchange(&time_listener, -1);
-    if (fd >= 0)
-        close(fd);
 #if CONFIG_WENDY_NET
     wendy_net_set_mesh_connector(NULL);
     wendy_net_set_mesh_resolver(NULL);
@@ -955,16 +946,6 @@ esp_err_t wendy_net_app_start(void)
         goto failed;
     atomic_store(&listener, fd);
     atomic_store(&ready, true);
-    int clock_fd = socket(AF_INET, SOCK_STREAM, 0);
-    struct sockaddr_in clock_addr = {.sin_family = AF_INET,
-                                     .sin_port = htons(TIME_PORT),
-                                     .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
-    if (clock_fd >= 0 && clock_fd < FD_SETSIZE &&
-        !setsockopt(clock_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes) &&
-        !bind(clock_fd, (struct sockaddr *)&clock_addr, sizeof clock_addr) && !listen(clock_fd, 1))
-        atomic_store(&time_listener, clock_fd);
-    else if (clock_fd >= 0)
-        close(clock_fd);
 #if CONFIG_WENDY_NET
     wendy_net_set_mesh_connector(guest_mesh_begin);
     wendy_net_set_mesh_resolver(guest_mesh_resolve);
@@ -1001,11 +982,6 @@ bool wendy_net_app_management_ready(void)
     return true;
 #endif
 }
-int wendy_net_app_time_listener(void)
-{
-    return atomic_load(&time_listener);
-}
-
 bool wendy_net_app_ready(void)
 {
     return atomic_load(&ready);

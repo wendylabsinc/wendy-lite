@@ -452,6 +452,7 @@ int wnr_tick(struct wnr_core *c, int64_t unix_ms, int64_t now)
     int r = clock_at(c, unix_ms, now);
     if (r)
         return r;
+    wnd_expire(&c->directory, now);
     wne_reap(&c->endpoints, now);
     wno_expire(c->operators, now);
     if (pending_finish(c))

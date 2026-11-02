@@ -259,13 +259,13 @@ int main(int argc, char **argv)
     assert(exported && page.record.owner_principal.arg &&
            page.record.owner_principal.arg != entry->principal);
     assert(!memcmp(page.record.owner_principal.arg, proof.principal, proof.principal_size));
-    wno_expire(node->core.operators, entry->retain_until_us + 1);
-    assert(!node->core.operators->entries &&
+    wno_expire(node->core.operators, entry->lease_deadline_us + 1);
+    assert(!node->core.operators->entries && node->core.operators->receipt_count == 1 &&
            !memcmp(page.record.owner_principal.arg, proof.principal, proof.principal_size));
     wnt_page_release(&page);
     if (argc == 8) {
-        /* The existing page lifetime case reaped its receipt. Re-admit a valid live
-   * origin, then exercise ordinary refresh/stale/capacity/withdrawal traffic. */
+        /* The page lifetime case expired the active projection, retaining its
+         * 10x floor. A duplicate cannot restart it; a higher revision can. */
         deliver_normal(&session, wire, wire_size);
         size_t refresh_size, stale_size, withdraw_size, other_size;
         uint8_t *refresh = load_operator(argv[4], &refresh_size),

@@ -52,6 +52,18 @@ foreach(fixture certificate_fetch service_schema)
     add_test(NAME format_${fixture}_budget COMMAND format_${fixture}_budget)
 endforeach()
 
+
+# Monotonic lease/receipt lifetimes use the production charged allocator.
+add_executable(format_operator_ttl operator_ttl_success_test.c)
+target_link_libraries(format_operator_ttl PRIVATE peer_format_budget)
+target_compile_options(format_operator_ttl PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME format_operator_ttl COMMAND format_operator_ttl)
+add_executable(format_directory_ttl_budget directory_test.c)
+target_link_libraries(format_directory_ttl_budget PRIVATE peer_format_budget)
+target_compile_options(format_directory_ttl_budget PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME format_directory_ttl_budget COMMAND format_directory_ttl_budget
+    "${CMAKE_CURRENT_LIST_DIR}/../../wendy_pki/tests/fixtures/device-key.der")
+
 add_executable(format_manifest_interop manifest_interop_test.c)
 target_link_libraries(format_manifest_interop PRIVATE peer_format)
 target_compile_options(format_manifest_interop PRIVATE -Wall -Wextra -Werror -UNDEBUG)
@@ -83,6 +95,9 @@ set(session_key "${CMAKE_CURRENT_LIST_DIR}/../../wendy_pki/tests/fixtures/device
 session_test(router router_test.c "${session_key}")
 session_test(deferred router_deferred_success_test.c "${session_key}")
 session_test(shared router_node_success_test.c "${session_key}")
+session_test(ttl_lifecycle monotonic_ttl_lifecycle_success_test.c "${session_key}")
+session_test(ttl_compact monotonic_ttl_lifecycle_success_test.c "${session_key}")
+target_compile_definitions(session_ttl_compact PRIVATE TTL_TEST_COMPACT=1)
 session_test(control control_encode_success_test.c)
 session_test(hello_extensions hello_extensions_success_test.c)
 session_test(catalog manifest_catalog_success_test.c)
@@ -111,6 +126,8 @@ function(session_budget_test name source)
     add_test(NAME session_${name} COMMAND session_${name} ${ARGN})
 endfunction()
 session_budget_test(pressure router_node_success_test.c "${session_key}")
+session_budget_test(ttl_compact_budget monotonic_ttl_lifecycle_success_test.c "${session_key}")
+target_compile_definitions(session_ttl_compact_budget PRIVATE TTL_TEST_COMPACT=1)
 session_budget_test(certificate_relay transit_certificate_relay_success_test.c "${CMAKE_CURRENT_LIST_DIR}/../../wendy_pki/tests/fixtures")
 session_budget_test(certificate_endpoint transit_certificate_relay_success_test.c "${CMAKE_CURRENT_LIST_DIR}/../../wendy_pki/tests/fixtures")
 target_compile_definitions(session_certificate_endpoint PRIVATE CONFIG_WENDY_NET_CONSTRAINED_PROFILE=1 CONFIG_WENDY_NET_ENDPOINT_GATEWAY=1)
@@ -236,3 +253,7 @@ add_test(NAME driver_setup_lifecycle COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_LIST_DIR}/setup_lifecycle_success_test.py")
 set_tests_properties(driver_setup_lifecycle PROPERTIES TIMEOUT 30)
 session_test(endpoint_replay_regression endpoint_replay_regression_test.c "${session_key}")
+
+add_test(NAME driver_mesh_clock COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_LIST_DIR}/mesh_clock_driver_success_test.py")
+set_tests_properties(driver_mesh_clock PROPERTIES TIMEOUT 30)

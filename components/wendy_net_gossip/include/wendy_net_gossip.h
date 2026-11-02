@@ -108,14 +108,19 @@ int wg_offer(struct wg_pool *, uint8_t type, const void *, size_t, uint64_t expi
 /* Offers return 2 for an exact digest retired by capacity eviction. It is not
  * refilled or made available again while its bounded receipt remains live. */
 /* Immutable bytes retained by another actor-owned cache. Retain runs only
- * when a new object is admitted; release follows its last transfer/expiry
- * reference. Re-observation does not take another reference. */
+ * when a new object is admitted; expiry releases the payload even when a
+ * stalled upload still owns its compact metadata. Re-observation does not
+ * take another reference. */
 int wg_offer_shared(struct wg_pool *, uint8_t, const void *, size_t, uint64_t expires_ms,
                     uint64_t now_ms, struct wg_id *, void (*retain)(const void *),
                     void (*release)(const void *));
-/* Superseded signed versions need no idle payload RAM. Active transfers get
- * UNAVAILABLE at their next poll; referenced storage is freed after release. */
+/* Superseded signed versions need no idle payload RAM. Release the payload
+ * immediately; active transfers retain metadata for UNAVAILABLE at next poll. */
 void wg_forget(struct wg_pool *, const struct wg_id *);
+/* The verified owner's lease ended: remove its object even when capacity
+ * reclamation retained a sticky digest-only hint. Active uploads keep only
+ * metadata until UNAVAILABLE/close. Caller owns any longer replay watermark. */
+void wg_expire(struct wg_pool *, const struct wg_id *);
 /* Actor-owned pressure relief: retire oldest optional payloads until at least
  * wanted bytes are released, or only protected/upload-pinned bodies remain.
  * Includes ordinary GONE/sticky retirement; never refills or cancels downloads.
@@ -129,8 +134,10 @@ int wg_receive(struct wg_session *, const struct wg_message *, uint64_t now_ms, 
 /* Drive pending claims and serving once per routing tick. At most one DATA
  * chunk per call; it is advanced only after successful queue admission. */
 int wg_poll(struct wg_session *, uint64_t now_ms, wg_emit, void *);
-/* Pruning releases expired objects and abandoned fetch buffers. Sessions
- * must be closed before pool teardown. No maximum-sized arrays exist. */
+/* Pruning releases expired payloads and abandoned fetch buffers. Compact
+ * metadata for a stalled expired upload lasts only until its UNAVAILABLE is
+ * accepted or the session closes. An accepting callback's borrowed bytes
+ * remain valid until return. Sessions must be closed before pool teardown. */
 void wg_prune(struct wg_pool *, uint64_t now_ms);
 /* Charged pool bytes include shared payloads. Shared cache charges overlap
  * their owner's accounting; they are not additional physical heap usage. */

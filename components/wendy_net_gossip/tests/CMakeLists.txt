@@ -63,3 +63,8 @@ add_executable(gossip_malformed_completion_test malformed_completion_test.c)
 target_link_libraries(gossip_malformed_completion_test PRIVATE net_gossip OpenSSL::Crypto)
 target_compile_options(gossip_malformed_completion_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 add_test(NAME gossip_malformed_completion COMMAND gossip_malformed_completion_test)
+
+add_executable(gossip_expiry_success_test expiry_success_test.c)
+target_link_libraries(gossip_expiry_success_test PRIVATE net_gossip OpenSSL::Crypto)
+target_compile_options(gossip_expiry_success_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME gossip_expiry_success COMMAND gossip_expiry_success_test)

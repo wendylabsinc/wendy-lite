@@ -208,7 +208,7 @@ static void forget_superseded(void)
     receive(&session, &want, 1, &e);
     assert(p.serving == 1 && p.payload_bytes == 5000);
     wg_forget(&p, &first);
-    assert(p.payload_bytes == 5000);
+    assert(p.payload_bytes == 2500); /* Upload retains only compact metadata. */
     assert(!wg_poll(&session, 2, emit, &e) && e.message.op == WG_UNAVAILABLE);
     wg_prune(&p, 2);
     assert(p.payload_bytes == 2500 && p.object_count == 1);

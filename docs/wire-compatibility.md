@@ -54,7 +54,7 @@ fields and incompatible versions alongside those tests.
 | Gossip HAVE/WANT/DATA/UNAVAILABLE/GONE | Per-message `v=1`, object type and operation under router control; no independent version-range negotiation | Unknown operations and unassigned artifact types under v1 are ignored before variant payload decoding. WendyOS rejects unsupported versions of known formats; Lite discards them. Registered Service type 2 remains a known wrong-session error on WendyOS manifest-only links. Current senders use v1; known transfers retain digest, offset, total and bounds checks. |
 | Signed device/operator manifests and embedded services | Manifest body `version=4`, signature envelope and required-extension declaration | Optional map members/capabilities can be ignored. An unsupported optional endpoint transport or service kind is omitted from local projection; known sibling entries, route proof and the original artifact remain usable. Unsupported body versions and required extensions do not establish routes or services. Signature verification always uses original bytes. |
 | Manifest/identity requests, directory results and certificate chain/chunk transfer | Named router-control kind under the selected carrier/operator protocol | Unknown optional operations and fields do not complete a pending fetch. Known replies retain principal/hash/offset/length validation. Certificate payload is standard DER. |
-| Time bootstrap relay | Nested time-control `v=1` (absent/zero means legacy 1) under selected carrier/operator protocol; one-shot signed-time framing has `WNT1` magic | Unknown optional operations do not fail or complete a matching pending job. RFC 3161 timestamp bytes and HTTPS traffic retain their own formats. |
+| Legacy time relay codecs | Nested time-control `v=1` (absent/zero means legacy 1); obsolete one-shot framing uses `WNT1` magic | Production mesh drivers neither request nor serve peer timestamp relays and do not register the BLE time PSM or app time service. The retained codecs are compatibility helpers, not an available relay transport. Public RFC 3161 requests use ordinary direct HTTPS. |
 | Babel routing | Babel packet version 2 and length-delimited TLVs/sub-TLVs | Unknown optional TLVs are skipped; mandatory sub-TLV semantics and required route proof remain enforced. No arbitrary packet tail is interpreted as an old TLV. |
 | Mesh IP packet fragments | Fragment subtype `1`, carried inside a selected carrier's packet frame | Fixed fragment offsets are scoped to subtype 1 under the carrier protocol. Unknown subtypes are discarded without changing current assembly. Subtype 2 carries Babel; IPv6 retains its own standard version. |
 | Native TCP application admission | `wendy-app-mesh-tls/1` plus `WAS1` request magic | Fixed port request and acknowledgement are narrow admission metadata. A different admission layout needs new magic/protocol selection. After admission the TCP stream belongs to the application. |
@@ -66,8 +66,51 @@ fields and incompatible versions alongside those tests.
 | Cloud control, relay grants and acknowledgement | ASCII `WR` + version byte `0x03` + opcode, `WLG3` signed grant, `WLA2` acknowledgement | Version-3 Cloud opcodes have opcode-specific sizes without a general unknown-body length. Unknown opcodes close the control connection for normal reconnect; they cannot be safely skipped. New incompatible grammar needs a new selected record version. Signed-grant fields remain exact. |
 | Enrollment and identity renewal | Configured, validated `/v1/` enrollment API; HTTP content types and headers | JSON readers use named response members and ignore unrelated fields/headers. A changed required API contract needs a new endpoint version. X.509/DER certificates and PKCS requests retain their standard formats. |
 | Native TLS, issuer-cache hints, timestamping and HTTPS | Native PKI TLS 1.3; exact application ALPN; issuer-cache `WCI` v1 hints and named `wendy-net-cached` offers; RFC 3161 and HTTP | TLS/HTTP/DER framing is library-owned; the issuer-cache ALPN suffix is scoped by `WCI` version 1 or the separate `wendy-net-cached` marker name. Unknown or unusable hints fall back to the ordinary certificate exchange; no hint grants identity. Application protocol versioning remains separate. The development gRPC relay uses its own TLS configuration, which permits TLS 1.2 or later. |
-| DNS bootstrap and raw TLS timestamp tunnel | Standard DNS query/response fields and RR `RDLENGTH`; HTTPS/TLS stream under the selected carrier | Unknown DNS RR types are skipped by their lengths while known answer fields remain checked. The timestamp tunnel forwards opaque TLS bytes and adds no second HTTP grammar. |
+| DNS bootstrap and direct timestamp HTTPS | Standard DNS query/response fields and RR `RDLENGTH`; ordinary HTTPS/TLS to the configured timestamp authority | Unknown DNS RR types are skipped by their lengths while known answer fields remain checked. Direct timestamp traffic retains TLS, HTTP and RFC 3161 framing; no peer timestamp tunnel is started. |
 | Korvo benchmark serial JSON | Per-record `version=1`; absent version means legacy version 1 | Unknown record versions, test names and optional targets are ignored. Required known qualification results still must be present and successful. Extra object members are ignored. |
+
+## Manifest lifetime policy
+
+The signed device/operator body remains version 4, with the same signature
+preimage and exact-envelope artifact digest. A receiver validates the signer
+under its local certificate policy. Signed `Issued` must be at or after the
+signing leaf's `NotBefore`; signed `Expires` must not exceed the earliest
+`NotAfter` on the accepted path. Issuer validity is independently checked at
+the receiver's certificate-policy base time. The positive signed
+`Expires - Issued` duration, at most 15 minutes, sets a local monotonic lifetime
+from first acceptance. Announcement UTC dates are metadata, not proof of the
+receiver's current time.
+
+Same-revision/body duplicates, including certificate re-signing, never restart a
+lifetime. Lower revisions are ignored; a different body at the same revision
+is rejected. A higher revision starts a new lifetime. Expiry actively removes
+full payload, gossip/export and foreign service projection state and revokes
+route authorization during idle maintenance. Local desired app declarations
+remain for republishing, while the expired signed publication is no longer
+browseable. A compact highest-revision/hash receipt remains for ten times that
+revision's signed duration from first acceptance, without extension by repeated
+copies. Receipts grow on demand in RAM and expire separately from payloads;
+allocation failure must not erase an existing receipt to admit new state.
+
+The TTL does not extend certificate trust. A trusted public-time update or known
+certificate/issuer-window invalidity revokes active claims, gossip copies and
+derived service state early, preserving their original receipt deadlines.
+Missing cached keys and temporary repair failures do not by themselves prove
+that an identity is invalid.
+
+Receipts survive carrier changes within the mesh epoch. They are not persisted
+on Lite and are cleared on mesh OFF, enrollment/trust reset or reboot. After a
+receipt expires, a first-seen old record may live for one new local lifetime
+if its signer still passes current certificate checks. This deliberately permits
+stale discovery/routing metadata while
+retaining independent live-link, endpoint TLS and operation-permission checks.
+
+This policy introduces no new wire message or origin-confirmation exchange.
+Legacy readers retain UTC freshness checks and can reject clock-uncertain
+bootstrap records. Clock-independent bootstrap requires updated receivers; an
+unchanged body version does not imply legacy receivers adopt the new lifetime
+policy. Mesh certificate boot trust is distinct from fresh public timestamp
+confidence and does not relax Cloud or direct LAN management time checks.
 
 ## Opaque data and local APIs
 

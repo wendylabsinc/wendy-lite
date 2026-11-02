@@ -42,7 +42,6 @@
 #include "wendy_pki_operator.h"
 #include "wendy_pki_crypto.h"
 #include "wendy_pki_verify.h"
-#include "time_control.h"
 #include "wendy_pki_work.h"
 #include "lwip/sockets.h"
 #include <fcntl.h>
@@ -64,16 +63,13 @@
 #ifndef CONFIG_WENDY_NET_ROUTING_QUEUE_FRAMES
 #define CONFIG_WENDY_NET_ROUTING_QUEUE_FRAMES 4
 #endif
-#define FRESH_TIME_US INT64_C(300000000)
 #define REFRESH_INTERVAL_US INT64_C(240000000)
 #ifndef CONFIG_WENDY_NET_CONSTRAINED_PROFILE
 #define CONFIG_WENDY_NET_CONSTRAINED_PROFILE 0
 #endif
 struct time_bootstrap_job {
-    struct wble_mesh_pipe *pipe;
-    struct wendy_pki_stream stream;
     atomic_bool done;
-    bool server, submitted;
+    bool submitted;
     esp_err_t result;
     int64_t started;
 };
@@ -107,7 +103,6 @@ struct peer_state {
         int64_t started_us;
         esp_err_t result;
         struct wendy_pki_mesh_identity identity;
-        char relay_host[64];
     } clock;
     struct netif netif;
     struct wn_selection *selection;
@@ -147,7 +142,6 @@ struct peer_state {
 #endif
     struct wnsc_registry *service_registry;
     int64_t service_update_at;
-    struct wnt_job *time_request, *time_reply;
     atomic_uint transit_bytes, transit_packets;
     struct {
         uint64_t serial;
@@ -176,9 +170,8 @@ struct peer_state {
     struct wble_mesh_pipe *ble_pipe;
     uint8_t ble_advertisement[WN_BLE_ADVERTISEMENT_SIZE];
     bool ble_initialized, ble_published;
-    unsigned ble_bootstrap_cursor;
 #endif
-    bool clock_ready;
+    bool clock_ready; /* Setup availability hint; admitted TLS establishes trust. */
     int64_t clock_check_at, time_bootstrap_at;
     struct time_bootstrap_job *bootstrap_time;
     struct wnne_effect netif_effect;
@@ -280,45 +273,6 @@ static void delete_ble_reports(struct peer_state *s)
 #endif
 static bool identity_live(struct peer_state *, int64_t now);
 static bool node_live(struct peer_state *, int64_t now);
-static esp_err_t control_clock(struct peer_state *s, struct wendy_pki_mesh_identity *identity)
-{
-    uint8_t nonce[32], query[128];
-    uint64_t id;
-    esp_fill_random(nonce, sizeof nonce);
-    esp_fill_random(&id, sizeof id);
-    id |= 1;
-    size_t size = wendy_pki_time_request(query, nonce);
-    int64_t started = esp_timer_get_time();
-    struct wnt_job *job = wnt_new(id, query, size, started + INT64_C(30000000));
-    if (!job)
-        return ESP_ERR_NO_MEM;
-    pthread_mutex_lock(&state_lock);
-    if (s->time_request || !atomic_load(&s->active)) {
-        pthread_mutex_unlock(&state_lock);
-        wnt_release(job);
-        return ESP_ERR_INVALID_STATE;
-    }
-    wnt_retain(job);
-    s->time_request = job;
-    pthread_mutex_unlock(&state_lock);
-    while (!atomic_load(&job->done) && esp_timer_get_time() < job->deadline)
-        vTaskDelay(1); /* One actual tick; a 5ms delay rounds to zero at100Hz. */
-    pthread_mutex_lock(&state_lock);
-    if (s->time_request == job) {
-        s->time_request = NULL;
-        wnt_release(job);
-    }
-    pthread_mutex_unlock(&state_lock);
-    esp_err_t result =
-        atomic_load(&job->done) && !job->result
-            ? wendy_pki_net_time_reply(identity, nonce, job->reply, job->size, started)
-            : ESP_FAIL;
-    ESP_LOGI(TAG, "existing-carrier signed-time renewal: result=%s bytes=%u ms=%u",
-             esp_err_to_name(result), (unsigned)job->size,
-             (unsigned)((esp_timer_get_time() - started) / 1000));
-    wnt_release(job);
-    return result;
-}
 static struct peer_state *node_root(struct peer_state *s)
 {
     return s->owner ? s->owner : s;
@@ -413,20 +367,14 @@ void wendy_net_peer_maintain(void)
         return;
     }
     struct wendy_pki_mesh_identity fresh = s->clock.identity;
-    char relay[sizeof s->clock.relay_host];
-    memcpy(relay, s->clock.relay_host, sizeof relay);
     s->clock.phase = CLOCK_RUNNING;
     pthread_mutex_unlock(&state_lock);
     wendy_net_memory_scope_t previous = wendy_net_runtime_scope_enter();
-    esp_err_t result;
-    /* A constrained endpoint already has an encrypted path to a more capable
-     * neighbour. Keeping Wi-Fi up for management must not force a second HTTPS
-     * handshake beside its live VIP. The signed reply is verified locally as
-     * before; only the fetch transport changes. */
-    if (WENDY_NET_NON_TRANSIT || !wendy_wifi_is_connected())
-        result = control_clock(s, &fresh);
-    else
-        result = wendy_pki_net_refresh_time(&fresh, relay[0] ? relay : NULL);
+    /* Public time is fetched only over this device's ordinary WAN. Mesh
+     * certificate bootstrap and record lifetimes do not depend on its success. */
+    esp_err_t result = wendy_wifi_is_connected()
+                           ? wendy_pki_net_refresh_time(&fresh, NULL)
+                           : ESP_ERR_INVALID_STATE;
     ESP_LOGI(TAG, "signed time worker finished: result=%s stackfree=%u", esp_err_to_name(result),
              (unsigned)uxTaskGetStackHighWaterMark(NULL));
     pthread_mutex_lock(&state_lock);
@@ -474,17 +422,16 @@ static void finish_clock(struct peer_state *s, int64_t *refresh_at)
             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     } else {
         *refresh_at = finished + INT64_C(15000000);
-        ESP_LOGW(TAG, "signed time refresh failed; original deadline remains in force");
+        ESP_LOGW(TAG, "signed time refresh failed; local mesh trust remains independent");
     }
 }
-static void queue_clock(struct peer_state *s, const char *relay_host)
+static void queue_clock(struct peer_state *s)
 {
     pthread_mutex_lock(&state_lock);
     if (s->clock.phase == CLOCK_EMPTY) {
         s->clock.identity = s->identity;
         s->clock.attachment = s->attachment;
         s->clock.started_us = esp_timer_get_time();
-        snprintf(s->clock.relay_host, sizeof s->clock.relay_host, "%s", relay_host);
         s->clock.phase = CLOCK_QUEUED;
         ESP_LOGI(TAG, "signed time refresh queued; packet actor continues");
     }
@@ -543,56 +490,32 @@ static int ble_dial(const struct wn_candidate *candidate)
 #endif
 static void release_time_job(struct time_bootstrap_job *job)
 {
-#if CONFIG_WENDY_NET_BLE
-    wble_mesh_release(job->pipe);
-#endif
     wendy_net_free(job);
 }
 static void bootstrap_time_work(void *context)
 {
     struct time_bootstrap_job *job = context;
-    job->result = job->server ? wendy_pki_net_time_tunnel(&job->stream)
-                              : wendy_pki_net_bootstrap_time(job->pipe ? &job->stream : NULL);
+    job->result = wendy_pki_net_bootstrap_time(NULL);
     atomic_store(&job->done, true);
 }
-#if CONFIG_WENDY_NET_BLE
-/* Actor owns this short-lived pipe independently of native router slots. It
- * never waits for HTTPS, and releases it only after the shared worker returns. */
-static void ble_time_take(struct peer_state *s, struct wble_mesh_pipe *pipe, bool server)
-{
-    if (s->bootstrap_time) {
-        wble_mesh_release(pipe);
-        return;
-    }
-    struct time_bootstrap_job *job = wendy_net_calloc(1, sizeof *job);
-    if (!job) {
-        wble_mesh_release(pipe);
-        return;
-    }
-    job->pipe = pipe;
-    job->stream = wble_mesh_stream(pipe);
-    job->server = server;
-    job->started = esp_timer_get_time();
-    s->bootstrap_time = job;
-}
-#endif
-/* Direct HTTPS time bootstrapping belongs to the mesh actor, independently of
- * which carrier is enabled. BLE is an optional fallback when LAN is absent. */
+/* Local configuration permits attempting mesh TLS independently of public UTC.
+ * The TLS worker still verifies certificate trust before admitting any peer.
+ * Direct HTTPS signed time remains opportunistic when ordinary WAN is present;
+ * no mesh carrier or BLE pipe acts as a public-time relay. */
 static void bootstrap_time_tick(struct peer_state *s, bool allow_dial)
 {
     int64_t now = esp_timer_get_time();
     struct time_bootstrap_job *job = s->bootstrap_time;
     if (now >= s->clock_check_at) {
-        int ready = wendy_pki_net_time_status();
+        int ready = wendy_pki_net_mesh_status();
         if (ready >= 0)
             s->clock_ready = ready > 0;
         s->clock_check_at = now + INT64_C(1000000);
     }
     if (job) {
         if (atomic_load(&job->done)) {
-            ESP_LOGI(TAG, "%s time %s finished: result=%s ms=%u heap=%u",
-                     job->pipe ? "BLE encrypted" : "direct HTTPS",
-                     job->server ? "relay" : "bootstrap", esp_err_to_name(job->result),
+            ESP_LOGI(TAG, "direct HTTPS signed time finished: result=%s ms=%u heap=%u",
+                     esp_err_to_name(job->result),
                      (unsigned)((now - job->started) / 1000),
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT));
             release_time_job(job);
@@ -607,34 +530,16 @@ static void bootstrap_time_tick(struct peer_state *s, bool allow_dial)
         }
         return;
     }
-    if (s->clock_ready || !allow_dial || !wendy_conf_is_current() ||
-        wendy_pki_reset_in_progress() || now < s->time_bootstrap_at || !wendy_pki_work_available())
+    if (!allow_dial || !wendy_wifi_is_connected() || !wendy_conf_is_current() ||
+        wendy_pki_reset_in_progress() || now < s->time_bootstrap_at ||
+        !wendy_pki_work_available() || wendy_pki_net_time_status() != 0)
         return;
-    if (wendy_wifi_is_connected()) {
-        job = wendy_net_calloc(1, sizeof *job);
-        if (job) {
-            job->started = now;
-            s->bootstrap_time = job;
-            s->time_bootstrap_at = now + INT64_C(15000000);
-        }
-        return;
+    job = wendy_net_calloc(1, sizeof *job);
+    if (job) {
+        job->started = now;
+        s->bootstrap_time = job;
+        s->time_bootstrap_at = now + INT64_C(15000000);
     }
-#if CONFIG_WENDY_NET_BLE
-    if (!s->config.ble || !s->ble_initialized)
-        return;
-    int slot = wn_candidate_time(s->selection, now / 1000, s->ble_bootstrap_cursor);
-    if (slot >= 0) {
-        struct wn_candidate target = s->selection->candidates[slot];
-        target.port = WBLE_MESH_TIME_PSM;
-        s->ble_bootstrap_cursor = ((unsigned)slot + 1) % WN_CANDIDATES;
-        if (!ble_dial(&target)) {
-            ESP_LOGI(TAG, "dialing BLE encrypted time bootstrap: %s PSM=%u", target.address,
-                     target.port);
-            s->time_bootstrap_at = now + INT64_C(10000000);
-        } else
-            s->time_bootstrap_at = now + INT64_C(1000000);
-    }
-#endif
 }
 #if CONFIG_WENDY_NET_BLE
 static bool ble_admission_available(struct peer_state *root);
@@ -655,10 +560,7 @@ static void update_ble(struct peer_state *s, const char *tenant, const char *dev
         wn_ble_default_scope_init(&scope, tenant) ||
         wn_ble_adv_write_capabilities(
             &scope, device, CONFIG_WENDY_NET_BLE_PSM,
-            (!s->bootstrap_time && wendy_wifi_is_connected() && wble_mesh_incoming_available()
-                 ? WN_BLE_TIME_RELAY
-                 : 0) |
-                (ble_admission_available(s) ? WN_BLE_NATIVE_ACCEPTING : 0),
+            ble_admission_available(s) ? WN_BLE_NATIVE_ACCEPTING : 0,
             advertisement) < 0) {
         if (s->ble_published)
             (void)wendy_ble_mesh_advertisement(NULL, 0);
@@ -952,15 +854,12 @@ int wendy_net_peer_service_catalog(unsigned operation, const void *input, size_t
     return result;
 }
 
-/* Called with state_lock held when accessed from lwIP. The time snapshot and
- * certificate lifetime are independently bounded, including on idle links. */
+/* Called with state_lock held when accessed from lwIP. The scoped local
+ * certificate policy and current enrollment bound mesh lifetime; fresh public
+ * time is tracked separately and is never inferred from this result. */
 static bool snapshot_live(const struct wendy_pki_mesh_identity *identity, int64_t now)
 {
-    int64_t elapsed = now - identity->verified_monotonic_us;
-    return elapsed >= 0 && elapsed < FRESH_TIME_US &&
-        wendy_conf_snapshot_current(identity->config_generation) &&
-        !wendy_pki_reset_in_progress() &&
-           identity->verified_seconds + elapsed / 1000000 < identity->certificate_expires;
+    return wendy_pki_mesh_identity_current(identity, now);
 }
 static bool identity_live(struct peer_state *s, int64_t now)
 {
@@ -1083,85 +982,6 @@ static int router_send(void *context, const void *data, size_t size, bool is_con
 {
     struct peer_state *s = context;
     return s->framed ? wnc_enqueue_priority(&s->carrier, data, size, is_control) : -1;
-}
-static void time_backend(void *argument)
-{
-    struct wnt_job *job = argument;
-    job->reply_external = true; /* HTTP result keeps its PKI/libc ownership ABI. */
-    /* The HTTP response API returns raw storage. Reserve its enforced maximum
-     * before requesting it, retaining that charge through the final consumer. */
-    job->result =
-        wendy_net_memory_reserve(wendy_net_runtime_memory_ledger(), &job->reply_charge,
-                                 2 * (65536 + 4096), WENDY_NET_MEMORY_INTERNAL) &&
-                wendy_pki_time_query(job->query, job->query_size, &job->reply, &job->size) == ESP_OK
-            ? 0
-            : -1;
-    atomic_store(&job->done, true);
-    wnt_release(job);
-}
-static int time_receive(void *context, const struct wn_doc *doc, unsigned at)
-{
-    if (!wnt_version_supported(doc, at))
-        return 0;
-    struct peer_state *s = context;
-    int op = wn_doc_member(doc, at, "op");
-    pthread_mutex_lock(&state_lock);
-    if (wn_doc_equal(doc, op, "request")) {
-        if (!s->time_reply)
-            s->time_reply = wnt_request_read(doc, at, esp_timer_get_time() + INT64_C(30000000));
-    } else if (wn_doc_equal(doc, op, "next")) {
-        uint64_t id, offset;
-        struct wnt_job *job = s->time_reply;
-        if (job && !wn_doc_u64(doc, wn_doc_member(doc, at, "id"), &id) && id == job->id &&
-            !wn_doc_u64(doc, wn_doc_member(doc, at, "offset"), &offset) && offset == job->offset)
-            job->sent = false;
-    } else if (s->time_request) {
-        if (wnt_reply_read(s->time_request, doc, at)) {
-            s->time_request->result = -1;
-            atomic_store(&s->time_request->done, true);
-        }
-    }
-    pthread_mutex_unlock(&state_lock);
-    return 0;
-}
-static void time_tick(struct peer_state *s, int64_t now)
-{
-    char text[1600];
-    pthread_mutex_lock(&state_lock);
-    struct wnt_job *job = s->time_request;
-    if (job && !job->sent && !atomic_load(&job->done)) {
-        int n = wnt_request_write(job, text, sizeof text);
-        if (n > 0 && !router_send(s, text, (size_t)n, true))
-            job->sent = true;
-    }
-    job = s->time_reply;
-    if (job && now >= job->deadline) {
-        s->time_reply = NULL;
-        wnt_release(job);
-        job = NULL;
-    }
-    if (job && !job->started) {
-        wnt_retain(job);
-        if (wendy_pki_io_work_submit(time_backend, job))
-            job->started = true;
-        else
-            wnt_release(job);
-    }
-    if (job && atomic_load(&job->done) && !job->sent && s->carrier.queued <= 1024) {
-        int n = wnt_reply_write(job, text, sizeof text);
-        if (n > 0 && !router_send(s, text, (size_t)n, true)) {
-            size_t chunk = job->size - job->offset;
-            if (chunk > 1024)
-                chunk = 1024;
-            job->offset += chunk;
-            job->sent = true;
-            if (job->result || job->offset == job->size) {
-                s->time_reply = NULL;
-                wnt_release(job);
-    }
-        }
-    }
-    pthread_mutex_unlock(&state_lock);
 }
 static ssize_t carrier_read(void *ctx, void *data, size_t size)
 {
@@ -1368,14 +1188,6 @@ static void close_session(struct peer_state *s, int candidate)
     ++s->attachment;
     if (s->clock.phase == CLOCK_QUEUED)
         s->clock.phase = CLOCK_EMPTY;
-    if (s->time_request) {
-        s->time_request->result = -1;
-        atomic_store(&s->time_request->done, true);
-        wnt_release(s->time_request);
-        s->time_request = NULL;
-    }
-    wnt_release(s->time_reply);
-    s->time_reply = NULL;
     if (atomic_exchange(&s->active, false))
         atomic_fetch_sub(&node_root(s)->carrier_count, 1);
     s->lease_us = 0;
@@ -1892,7 +1704,6 @@ static int admit_link(struct peer_state *root, struct peer_state *link)
                         link->candidate.device, link->candidate.cost, router_send, link);
     if (opened)
         return -1;
-    wnrs_time_handler(link->router, time_receive);
     pthread_mutex_lock(&state_lock);
     memcpy(root->self, link->self, 16);
     link->lease_us = INT64_MAX;
@@ -2090,8 +1901,8 @@ static void router_run(struct peer_state *root)
         bool lan_paused = false;
         char tenant[37], device[65];
         wendy_conf_get_enrolled_ids(tenant, device);
-        /* Establish this boot's time before creating a native TLS setup. A
-         * cold setup cannot authenticate yet and must not starve its bootstrap. */
+        /* Read local mesh setup availability; TLS still establishes trust.
+         * Public time is opportunistic and never a mesh admission prerequisite. */
         bootstrap_time_tick(root, !setup_in_flight(root));
 #if CONFIG_WENDY_NET_BLE
         if (root->config.ble) {
@@ -2165,9 +1976,8 @@ static void router_run(struct peer_state *root)
              * The per-I/O guards also cover loans made by receive callbacks. */
             if (wncrypto_borrowed(link->connection))
                 continue;
-            time_tick(link, now);
-            if (now >= link->refresh_at)
-                queue_clock(link, link->candidate.address);
+            if (now >= link->refresh_at && wendy_wifi_is_connected())
+                queue_clock(link);
 
             int pumped = wnc_pump(&link->carrier, esp_timer_get_time(), receive_frame, link);
             if (pumped < 0) {
@@ -2227,7 +2037,9 @@ static void router_run(struct peer_state *root)
             accepted || !root->config.ble ? NULL : wble_mesh_take(&remote);
         if (pipe && remote.psm == WBLE_MESH_TIME_PSM) {
             accepted = true;
-            ble_time_take(root, pipe, remote.server);
+            /* Obsolete time-only pipes have no recovery role. Release them
+             * without forwarding their bytes or affecting native carriers. */
+            wble_mesh_release(pipe);
             pipe = NULL;
         } else if (pipe && !root->clock_ready) {
             accepted = true;
@@ -2326,7 +2138,7 @@ static void router_run(struct peer_state *root)
         /* Apply the same actor admission decision before NimBLE allocates an
          * incoming native pipe. Full nodes otherwise churn through CoC setup
          * only for this loop to release it again. This is resource backpressure,
-         * not a timer/window. Full profiles keep advertisements/time PSM live;
+         * not a timer/window. Full profiles keep carrier advertisements live;
          * constrained profiles remain scan/dial only. */
         if (root->config.ble)
             wble_mesh_router_admission(ble_admission_available(root));
@@ -2354,6 +2166,9 @@ static void router_run(struct peer_state *root)
                     maximum = root->listener;
             }
             int64_t deadline = esp_timer_get_time() + INT64_C(1000000);
+            int64_t announcement_deadline = wnrs_node_deadline(root->router_node);
+            if (announcement_deadline < deadline)
+                deadline = announcement_deadline;
             int64_t mdns_deadline = wnm_deadline(root->mdns);
 
             if (mdns_deadline < deadline)
@@ -2500,8 +2315,10 @@ static bool shutdown_step(struct peer_state *root)
 #endif
     /* Join all protocol/context loans before trimming empty shared PSA tables.
      * This mutex-taking SDK operation stays on the existing crypto worker. */
-    if (!waiting && !root->crypto_cleanup_submitted)
+    if (!waiting && !root->crypto_cleanup_submitted) {
+        wnrs_node_reset(&root->router_node);
         root->crypto_cleanup_submitted = wendy_pki_work_submit(shutdown_crypto_cleanup, root);
+    }
     waiting |= !root->crypto_cleanup_submitted || !atomic_load(&root->crypto_cleanup_done);
     return !waiting;
 }

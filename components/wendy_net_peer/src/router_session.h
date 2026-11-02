@@ -5,7 +5,7 @@
 struct wnrs;
 struct wnrs_node;
 typedef int (*wnrs_send)(void *, const void *, size_t, bool control);
-/* owner must outlive its carrier sessions; last close releases node state. */
+/* Owner outlives its sessions and the mesh epoch's compact RAM receipts. */
 int wnrs_open(struct wnrs **, struct wnrs_node **owner, wendy_pki_connection *,
               const struct wendy_pki_mesh_identity *, const char *peer, uint16_t cost, wnrs_send,
               void *);
@@ -14,8 +14,12 @@ int wnrs_open_operator(struct wnrs **, struct wnrs_node **, wendy_pki_connection
                        wnrs_send, void *);
 /* The outer owner must keep its TLS connection alive while
  * wncrypto_borrowed(connection) is true, including after protocol cancellation.
- * Close removes node/session state; independent verification loans self-drain. */
+ * Close removes session/transient state; accepted compact receipts survive
+ * carrier replacement. Independent verification loans self-drain. */
 void wnrs_close(struct wnrs *);
+/* Explicit mesh OFF/configuration reset after all carrier loans are joined.
+ * Ordinary carrier loss preserves compact RAM replay receipts. */
+void wnrs_node_reset(struct wnrs_node **);
 int wnrs_tick(struct wnrs *);
 void wnrs_refresh(struct wnrs *, const struct wendy_pki_mesh_identity *);
 void wnrs_time_handler(struct wnrs *, int (*)(void *, const struct wn_doc *, unsigned));
@@ -36,6 +40,7 @@ void wnrs_service_clear(struct wnsc_registry **);
 size_t wnrs_reclaim_payloads(struct wnrs_node *, size_t wanted);
 
 int64_t wnrs_next_deadline(const struct wnrs *);
+int64_t wnrs_node_deadline(const struct wnrs_node *);
 
 bool wnrs_receive_paused(const struct wnrs *);
 

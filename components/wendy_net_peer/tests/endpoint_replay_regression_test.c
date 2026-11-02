@@ -27,7 +27,8 @@ static int replay_send(void *ctx, const void *bytes, size_t size, bool control)
     (void)control;
     return 0;
 }
-static void replay_proof(struct wnrs *s, struct wnsc_node *source, uint64_t revision, bool present)
+static void replay_proof(struct wnrs *s, struct wnsc_node *source, uint64_t revision, bool present,
+                         int expected)
 {
     char array[512], body[1024], wire[1500], principal[106];
     int count = present ? wnsc_services_write(source, array, sizeof array) : 1;
@@ -47,7 +48,7 @@ static void replay_proof(struct wnrs *s, struct wnsc_node *source, uint64_t revi
                                sizeof wire);
     assert(n > 0);
     /* Authenticate the exact artifact through production PKI before projecting it. */
-    assert(!wnr_manifest(&s->node->core, wire, (size_t)n, wall, clock_us));
+    assert(wnr_manifest(&s->node->core, wire, (size_t)n, wall, clock_us) == expected);
     struct wg_id id = {.type = 1};
     assert(!wn_gossip_identify(NULL, 1, wire, (size_t)n, id.hash));
     assert(!admit_complete(s, &id, wire, (size_t)n));
@@ -98,9 +99,9 @@ int main(int argc, char **argv)
     strcpy(record.type, "_sensorlink._tcp");
     strcpy(record.instance, "room");
     assert(!wnsc_publish(source, &record, NULL, node_unix(&node), 0));
-    replay_proof(&session, source, 1, true);
+    replay_proof(&session, source, 1, true, 0);
     assert(node.catalog->records.count == 1);
-    replay_proof(&session, source, 2, false);
+    replay_proof(&session, source, 2, false, 0);
     assert(!node.catalog->records.count);
     /* Eight other identities evict this origin's key and directory receipt. */
     for (unsigned i = 0; i < 8; ++i) {
@@ -111,7 +112,7 @@ int main(int argc, char **argv)
     assert(node.core.endpoints.entries->revision == 2);
     strcpy(peer.device, ids[1]);
     assert(!wnr_identity(&node.core, &peer, node_unix(&node), clock_us));
-    replay_proof(&session, source, 1, true);
+    replay_proof(&session, source, 1, true, 1);
     assert(node.core.endpoints.entries->revision == 2);
     assert(!node.catalog->records.count); /* A signed old service must stay withdrawn. */
     wnsc_close(source);

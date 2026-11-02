@@ -12,13 +12,15 @@
 #else
 #define WND_ORIGINS_MAX 128
 #endif
-#define WND_RECEIPTS_MAX (6 + 56 * WND_ORIGINS_MAX)
+#define WND_RECEIPTS_MAX (8 + 65 * WND_ORIGINS_MAX)
 #define WND_UNSUPPORTED 5
 struct wnd_manifest {
     uint8_t device[16];
     struct wn_origin origin;
     uint64_t revision;
     int64_t issued, expires;
+    /* Local verifier metadata, never encoded in the signed announcement. */
+    time_t certificate_not_before, certificate_issuer_not_before, certificate_expires;
     uint16_t agent_port, tls_app_port, quic_app_port;
     bool withdraw, agent_mtls, platform_lite, sensors;
 };
@@ -29,7 +31,7 @@ struct wnd_entry {
     uint8_t device[16], address[16], body_hash[32];
     struct wnd_manifest manifest;
     uint64_t revision;
-    int64_t deadline_us;
+    int64_t deadline_us, lease_deadline_us;
     /* Adapter's latest artifact hint; not authorization or durable history. */
     uint8_t gossip_hash[32];
     bool gossip_cached;
@@ -44,11 +46,22 @@ struct wnd_entry {
 };
 struct wnd_directory {
     struct wnd_entry *entries;
+    struct wnd_receipt *receipts;
     char tenant[37];
     uint8_t self[16], self_address[16];
     unsigned count;
     unsigned key_count, key_limit;
     uint64_t key_serial;
+    size_t receipt_count;
+};
+/* Separate from bounded active/key projections. A floor lives for ten signed
+ * durations from first admission, never refreshed by an equal/lower revision. */
+struct wnd_receipt {
+    struct wnd_receipt *next;
+    uint8_t device[16], body_hash[32];
+    uint64_t revision;
+    int64_t receipt_deadline_us;
+    bool withdrawn;
 };
 /* Endpoint-only verified projections. Entries grow on demand; no blob, key,
  * chain, route candidate or maximum-capacity array is retained here. */
@@ -58,6 +71,7 @@ struct wne_entry {
     uint8_t device[16], body_hash[32], artifact_hash[32];
     uint64_t revision;
     int64_t deadline_us;
+    time_t certificate_not_before, certificate_issuer_not_before, certificate_expires;
     uint16_t app_port, agent_port;
     bool agent_mtls, withdraw;
 };
@@ -80,6 +94,11 @@ void wnd_forget_keyless(struct wnd_directory *);
 int wnd_manifest_read(const struct wn_doc *, unsigned body, struct wnd_manifest *);
 int wnd_init(struct wnd_directory *, const char *tenant, const char *self);
 void wnd_deinit(struct wnd_directory *);
+/* Idle owner hook: clear 1x-expired projections and sweep 10x-expired floors. */
+void wnd_expire(struct wnd_directory *, int64_t monotonic_us);
+int64_t wnd_next_deadline(const struct wnd_directory *, int64_t monotonic_us);
+const struct wnd_receipt *wnd_receipt_find(const struct wnd_directory *, const uint8_t device[16],
+                                          int64_t monotonic_us);
 /* Call only after independently anchoring this exact identity's full chain. */
 int wnd_identity(struct wnd_directory *, const struct wendy_pki_mesh_peer *);
 /* May also trim a live cache. Never evicts pinned next-hop keys; returns3 if
@@ -88,9 +107,16 @@ int wnd_identity(struct wnd_directory *, const struct wendy_pki_mesh_peer *);
  * Attached next hops can be pinned. Async crypto owns independent key copies. */
 int wnd_key_limit(struct wnd_directory *, unsigned limit);
 int wnd_key_pin(struct wnd_directory *, const uint8_t device[16], bool pinned);
-/* Expects SignedManifest itself, without a control envelope. Returns 0 for
+/* Expects SignedManifest itself, without a control envelope. Expires-Issued
+ * starts once at admission in this RAM epoch, with a 10x compact receipt.
+ * Certificate policy is independently verified. Static signed bounds use the
+ * signing leaf's NotBefore and accepted path's minimum NotAfter; local claim
+ * metadata preserves leaf/issuer dates for the owner's current-clock checks.
+ * unix_ms is ABI-only. Equal/lower revisions never restart either deadline.
+ * Returns 0 for
  * accepted/idempotent;1 stale/expired;2 identity needed;-1 invalid;3 full.
- * Device adapters retain receipts in bounded RAM; no flash operation occurs. */
+ * Device receipts grow on demand in RAM; allocation pressure returns3 without
+ * evicting another floor. No flash operation occurs. */
 int wnd_accept(struct wnd_directory *, const void *, size_t, int64_t unix_ms, int64_t monotonic_us);
 bool wnd_authorizes(const struct wnd_directory *, const uint8_t address[16], uint64_t router,
                     uint16_t seqno, int64_t monotonic_us);

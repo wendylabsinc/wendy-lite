@@ -53,17 +53,47 @@ bool wnsc_ready(const struct wnsc_node *node, const uint8_t device[16])
            (!memcmp(node->self, device, 16) ||
             node->config.next_hop(node->config.context, device, 0) != 0);
 }
-void wnsc_prune(struct wnsc_node *node, int64_t wall)
+static void remove_entry(struct wnsc_node *node, struct wns_entry **at)
 {
-    if (node)
-        wns_store_prune(&node->records, wall);
+    struct wns_entry *e = *at;
+    *at = e->next;
+    node->records.count--;
+    node->records.bytes -= sizeof *e + strlen(e->key) + strlen(wns_entry_service(e)) +
+                           strlen(wns_entry_type(e)) + 3 + e->wire_size;
+    wns_wire_release(e->wire);
+    wendy_net_free(e);
+}
+void wnsc_prune(struct wnsc_node *node, int64_t now_us)
+{
+    if (!node)
+        return;
+    for (struct wns_entry **at = &node->records.entries; *at;) {
+        struct wns_entry *e = *at;
+        /* Local app intent must survive its current signed publication so a
+         * later complete manifest can renew it. Foreign rows are disposable
+         * projections; replay receipts remain in the directory. */
+        if (!e->own && e->deadline_us <= now_us)
+            remove_entry(node, at);
+        else
+            at = &e->next;
+    }
+}
+void wnsc_revoke_owner(struct wnsc_node *node, const uint8_t device[16])
+{
+    if (!node || !device)
+        return;
+    for (struct wns_entry **at = &node->records.entries; *at;)
+        if (!(*at)->own && !memcmp((*at)->device, device, 16))
+            remove_entry(node, at);
+        else
+            at = &(*at)->next;
 }
 void wnsc_browse_demand(struct wnsc_node *node, uint64_t now)
 {
     (void)node;
     (void)now;
 }
-int wnsc_browse(struct wnsc_node *node, const char *type, int64_t wall, char *out, size_t cap)
+int wnsc_browse(struct wnsc_node *node, const char *type, int64_t now_us, char *out, size_t cap)
 {
     if (!node || !type || !*type)
         return -1;
@@ -75,10 +105,10 @@ int wnsc_browse(struct wnsc_node *node, const char *type, int64_t wall, char *ou
     if (out && cap)
         out[0] = '[';
     for (const struct wns_entry *e = node->records.entries; e; e = e->next) {
-        if (!e->wire || e->withdraw || e->unavailable || e->expires <= wall ||
+        if (!e->wire || e->withdraw || e->unavailable || e->deadline_us <= now_us ||
             !wnsc_ready(node, e->device))
             continue;
-        if (wnsc_entry_record(node, e, wall, record) || record->gateway ||
+        if (wnsc_entry_record(node, e, now_us, record) || record->gateway ||
             strcmp(record->type, type))
             continue;
         char device[37], prefix[180];
@@ -117,7 +147,7 @@ int wnsc_browse(struct wnsc_node *node, const char *type, int64_t wall, char *ou
     return required < INT32_MAX ? (int)(required + 1) : -1;
 }
 
-int wnsc_browse_endpoints(struct wnsc_node *node, const char *type, int64_t wall, char *out,
+int wnsc_browse_endpoints(struct wnsc_node *node, const char *type, int64_t now_us, char *out,
                           size_t cap)
 {
     if (!node || !type || !*type)
@@ -131,7 +161,7 @@ int wnsc_browse_endpoints(struct wnsc_node *node, const char *type, int64_t wall
     }
     for (const struct wns_entry *e = node->records.entries; e; e = e->next) {
         if (!e->summary_verified || e->withdraw || e->unavailable || e->gateway ||
-            e->expires <= wall || strcmp(wns_entry_type(e), type) || !wnsc_ready(node, e->device))
+            e->deadline_us <= now_us || strcmp(wns_entry_type(e), type) || !wnsc_ready(node, e->device))
             continue;
         char device[37];
         wn_uuid_format(e->device, device);

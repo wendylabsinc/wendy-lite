@@ -555,7 +555,7 @@ static int coc_event(struct ble_l2cap_event *event, void *context)
     if (event->type == BLE_L2CAP_EVENT_COC_ACCEPT) {
         if (WENDY_NET_NON_TRANSIT || atomic_load(&quiescing))
             return BLE_HS_EBUSY;
-        if ((uint16_t)(uintptr_t)context != WBLE_MESH_TIME_PSM && !atomic_load(&router_accepting)) {
+        if (!atomic_load(&router_accepting)) {
             unsigned count = atomic_fetch_add(&router_capacity_refusals, 1) + 1;
             (void)count;
             return BLE_HS_EBUSY;
@@ -1067,14 +1067,8 @@ static int initialize_host(void)
     if (ble_hs_id_infer_auto(0, &own_type))
         return ESP_FAIL;
     if (!WENDY_NET_NON_TRANSIT) {
-        int rc = ble_l2cap_create_server(WBLE_MESH_TIME_PSM, MTU, coc_event,
-                                      (void *)(uintptr_t)WBLE_MESH_TIME_PSM);
-        if (rc && rc != BLE_HS_EALREADY) {
-            ESP_LOGW(TAG, "timestamp HTTPS PSM%u registration failed: %d", WBLE_MESH_TIME_PSM, rc);
-            return ESP_FAIL;
-        }
-        rc = ble_l2cap_create_server(CONFIG_WENDY_NET_BLE_PSM, MTU, coc_event,
-                                  (void *)(uintptr_t)CONFIG_WENDY_NET_BLE_PSM);
+        int rc = ble_l2cap_create_server(CONFIG_WENDY_NET_BLE_PSM, MTU, coc_event,
+                                      (void *)(uintptr_t)CONFIG_WENDY_NET_BLE_PSM);
         if (rc && rc != BLE_HS_EALREADY)
             return ESP_FAIL;
     }
@@ -1085,9 +1079,9 @@ static int initialize_host(void)
     atomic_store(&ready, true);
     ESP_LOGI(
         TAG,
-        "mesh BLE mode=%s; peer PSM=%u time PSM=%u channel cap=%u MTU=%u; buffers allocated on demand",
+        "mesh BLE mode=%s; peer PSM=%u channel cap=%u MTU=%u; buffers allocated on demand",
         WENDY_NET_NON_TRANSIT ? "scan/dial only" : "scan/dial/listen", CONFIG_WENDY_NET_BLE_PSM,
-        WBLE_MESH_TIME_PSM, CHANNELS, MTU);
+        CHANNELS, MTU);
     unsigned selected_profile = wble_mesh_profile();
     ESP_LOGI(
         TAG,

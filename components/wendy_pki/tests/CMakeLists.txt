@@ -54,7 +54,7 @@ target_link_libraries(cert_bundle PUBLIC tfpsacrypto)
 add_library(net_common STATIC ../../wendy_net_common/src/memory.c ../../wendy_net_common/src/runtime_memory.c ../../wendy_net_common/src/binary.c)
 target_include_directories(net_common PUBLIC ../../wendy_net_common/include)
 target_link_libraries(net_common PUBLIC Threads::Threads)
-add_library(pki STATIC ../src/wendy_pki_operator_crypto.c ../src/wendy_pki_issuers.c ../src/wendy_pki_work.c ../src/wendy_pki_tls_input.c ../src/wendy_pki_public_read.c ../src/wendy_pki_public_index.c ${PKI_VERIFIER} ../src/wendy_lite_grant.c ../src/wendy_lite_authority.c ../src/wendy_pki_crypto.c ../src/wendy_operator_auth.c ../src/wendy_pki_mesh_crypto.c)
+add_library(pki STATIC ../src/wendy_pki_certificate_time.c ../src/wendy_pki_operator_crypto.c ../src/wendy_pki_issuers.c ../src/wendy_pki_work.c ../src/wendy_pki_tls_input.c ../src/wendy_pki_public_read.c ../src/wendy_pki_public_index.c ${PKI_VERIFIER} ../src/wendy_lite_grant.c ../src/wendy_lite_authority.c ../src/wendy_pki_crypto.c ../src/wendy_operator_auth.c ../src/wendy_pki_mesh_crypto.c)
 target_include_directories(pki PUBLIC ../include stubs ../../wendy_conf/include ../../nanopb)
 target_compile_definitions(pki PUBLIC WENDY_PKI_MEMORY_HOST_SCOPE_TEST=1)
 target_link_libraries(pki PUBLIC net_common cert_bundle mbedtls mbedx509 tfpsacrypto Threads::Threads)
@@ -65,7 +65,7 @@ target_link_libraries(verify_test PRIVATE pki)
 add_executable(renewal_test renewal_test.c)
 target_include_directories(renewal_test PRIVATE ../../wendy_net_common/include stubs ../include ../src
     ../../wendy_conf/include ../../nanopb)
-target_sources(renewal_test PRIVATE ../src/wendy_pki_crypto.c)
+target_sources(renewal_test PRIVATE ../src/wendy_pki_certificate_time.c ../src/wendy_pki_crypto.c)
 target_link_libraries(renewal_test PRIVATE mbedtls mbedx509 tfpsacrypto)
 add_executable(conf_test conf_test.c ../../wendy_conf/src/wendy_conf.pb.c
     ../../nanopb/pb_common.c ../../nanopb/pb_decode.c ../../nanopb/pb_encode.c)
@@ -73,7 +73,7 @@ target_compile_options(conf_test PRIVATE -UNDEBUG)
 target_include_directories(conf_test PRIVATE stubs ../../wendy_conf/include ../../nanopb)
 target_link_libraries(conf_test PRIVATE cert_bundle Threads::Threads)
 target_link_libraries(renewal_test PRIVATE Threads::Threads)
-add_executable(mesh_identity_test renewal_test.c ../src/wendy_pki_crypto.c)
+add_executable(mesh_identity_test renewal_test.c ../src/wendy_pki_certificate_time.c ../src/wendy_pki_crypto.c)
 target_include_directories(mesh_identity_test PRIVATE ../../wendy_net_common/include stubs ../include ../src
     ../../wendy_conf/include ../../nanopb)
 target_compile_definitions(mesh_identity_test PRIVATE WENDY_PKI_BOOT_PERSISTENCE_HOST_TEST=1)
@@ -334,22 +334,35 @@ target_compile_definitions(native_agent_com_backend PRIVATE CONFIG_WENDY_COM_TAS
     CONFIG_WENDY_COM_TASK_CORE_AFFINITY=0)
 target_compile_options(native_agent_com_backend PRIVATE -UNDEBUG -Wall -Wextra -Werror
     -Wno-unused-parameter -Wno-unused-function)
-add_executable(native_agent_composed_test native_agent_composed_test.c ${PKI_TLS}
+foreach(agent_target native_agent_composed_test mesh_boot_agent_composed_test)
+add_executable(${agent_target} native_agent_composed_test.c ${PKI_TLS}
     "${IDF_COMPONENTS}/http_parser/http_parser.c" $<TARGET_OBJECTS:native_agent_com_backend>
     ../../wendy_net_peer/src/agent_bridge.c ../../wendy_net_peer/src/agent_pipe.c
     ../../wendy_net_peer/src/actor.c ../../wendy_net_common/src/runtime_memory.c)
-target_include_directories(native_agent_composed_test PRIVATE ../src ../../wendy_net_peer/include
+target_include_directories(${agent_target} PRIVATE ../src ../../wendy_net_peer/include
     ../../wendy_net_peer/src ../../wendy_com/include "${IDF_COMPONENTS}/http_parser")
-target_compile_definitions(native_agent_composed_test PRIVATE WENDY_NET_MEMORY_HOST_BUDGET_TEST=1
+target_compile_definitions(${agent_target} PRIVATE WENDY_NET_MEMORY_HOST_BUDGET_TEST=1
     WENDY_PKI_INPUT_SHRINK_HOST_TEST=1 WENDY_MESH_TEST_LOG=1 CONFIG_WENDY_NET_TCP_RELAY_BUFFER_SIZE=256)
-target_compile_options(native_agent_composed_test PRIVATE -UNDEBUG -Wall -Wextra -Werror -Wno-unused-parameter -Wno-unused-function)
-target_link_libraries(native_agent_composed_test PRIVATE pki)
+target_compile_options(${agent_target} PRIVATE -UNDEBUG -Wall -Wextra -Werror -Wno-unused-parameter -Wno-unused-function)
+target_link_libraries(${agent_target} PRIVATE pki)
+endforeach()
+target_compile_definitions(mesh_boot_agent_composed_test PRIVATE WENDY_MESH_BOOT_CLOCK_TEST=1)
 foreach(profile p256 mldsa65)
     add_test(NAME pki_native_agent_composed_${profile} COMMAND "${GO_EXECUTABLE}" run
         "${CMAKE_CURRENT_LIST_DIR}/native_agent_composed_driver.go"
         "${CMAKE_CURRENT_LIST_DIR}/native_agent_composed_client.go"
         "$<TARGET_FILE:native_agent_composed_test>" ${profile})
     set_tests_properties(pki_native_agent_composed_${profile} PROPERTIES TIMEOUT 90
+        WORKING_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/../../../go/console/wendypb"
+        ENVIRONMENT "WENDY_TLS_OWNED_STREAM=1;WENDY_TLS_NORMAL_ONLY=1;WENDY_TLS_DER_RANGES=1;WENDY_TLS_BOUNDED_SOURCE_HASH=1;WENDY_TLS_AGENT_ACTOR=1;WENDY_TLS_OPERATOR_OPAQUE=1;WENDY_TLS_AGENT_COMPOSED=1")
+endforeach()
+
+foreach(profile p256 mldsa65)
+    add_test(NAME pki_mesh_boot_agent_${profile} COMMAND "${GO_EXECUTABLE}" run
+        "${CMAKE_CURRENT_LIST_DIR}/native_agent_composed_driver.go"
+        "${CMAKE_CURRENT_LIST_DIR}/native_agent_composed_client.go"
+        "$<TARGET_FILE:mesh_boot_agent_composed_test>" ${profile})
+    set_tests_properties(pki_mesh_boot_agent_${profile} PROPERTIES TIMEOUT 90
         WORKING_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/../../../go/console/wendypb"
         ENVIRONMENT "WENDY_TLS_OWNED_STREAM=1;WENDY_TLS_NORMAL_ONLY=1;WENDY_TLS_DER_RANGES=1;WENDY_TLS_BOUNDED_SOURCE_HASH=1;WENDY_TLS_AGENT_ACTOR=1;WENDY_TLS_OPERATOR_OPAQUE=1;WENDY_TLS_AGENT_COMPOSED=1")
 endforeach()
@@ -487,3 +500,11 @@ foreach(profile p256 mldsa65)
     set_tests_properties(pki_app_halfclose_composed_${profile} PROPERTIES TIMEOUT 90
         WORKING_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}")
 endforeach()
+
+add_executable(certificate_policy_test certificate_policy_test.c)
+target_include_directories(certificate_policy_test PRIVATE ../src)
+target_link_libraries(certificate_policy_test PRIVATE pki)
+target_compile_options(certificate_policy_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME pki_mesh_certificate_policy COMMAND "${GO_EXECUTABLE}" run
+    "${CMAKE_CURRENT_LIST_DIR}/certificate_policy_driver.go" "$<TARGET_FILE:certificate_policy_test>")
+set_tests_properties(pki_mesh_certificate_policy PROPERTIES TIMEOUT 120)

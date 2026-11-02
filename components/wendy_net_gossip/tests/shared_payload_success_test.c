@@ -85,7 +85,7 @@ int main(void)
     assert(!wg_receive(&s, &want, 1011, emit, complete, NULL));
     release(b->bytes);
     wg_forget(&p, &id);
-    assert(released == 1); /* Active transfer still owns the pool object. */
+    assert(released == 2 && !p.payload_bytes); /* Active transfer retains metadata only. */
     assert(!wg_poll(&s, 1012, emit, NULL));
     wg_prune(&p, 1013);
     assert(released == 2 && !p.object_count);

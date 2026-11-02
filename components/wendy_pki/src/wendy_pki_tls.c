@@ -609,6 +609,23 @@ void wendy_pki_close(wendy_pki_connection *c)
     wendy_net_memory_scope_leave(previous);
 }
 
+static time_t certificate_now(const wendy_pki_connection *c)
+{
+    return c && c->mesh_certificate_policy
+        ? wendy_pki_certificate_now(&c->certificate_time, esp_timer_get_time(), time(NULL))
+        : time(NULL);
+}
+static bool mesh_certificate_expired(const wendy_pki_connection *c)
+{
+    if (!c || !c->mesh_certificate_policy)
+        return false;
+    time_t now = certificate_now(c);
+    return now <= 0 || c->device_expires <= now ||
+        (c->operator_expires && c->operator_expires <= now) ||
+        c->device_not_before > now || c->operator_issuer_not_before > now ||
+        (!wendy_pki_certificate_is_uncertain(&c->certificate_time) &&
+         c->operator_signing_not_before > now);
+}
 /* Add Wendy's algorithm restrictions without overriding certificate-chain,
  * hostname, validity, or key-usage failures reported by mbedTLS. */
 static int certificate_policy(void *context, mbedtls_x509_crt *cert, int depth,
@@ -626,12 +643,31 @@ static int certificate_policy(void *context, mbedtls_x509_crt *cert, int depth,
     }
     if (wendy_pki_certificate_policy(cert, anchor))
         *flags |= MBEDTLS_X509_BADCERT_OTHER;
-    if (c->mesh_tenant[0]) {
-        time_t expiry;
-        if (pki_parsed_peer_expiry(cert, &expiry))
+    if (c->mesh_certificate_policy) {
+        time_t start, end, now = certificate_now(c);
+        *flags &= ~(MBEDTLS_X509_BADCERT_EXPIRED | MBEDTLS_X509_BADCERT_FUTURE);
+        if (pki_parsed_peer_not_before(cert, &start) || pki_parsed_peer_expiry(cert, &end))
             *flags |= MBEDTLS_X509_BADCERT_OTHER;
-        else if (!c->operator_expires || expiry < c->operator_expires)
-            c->operator_expires = expiry;
+        else if (!wendy_pki_certificate_dates(start, end, depth == 0, now,
+                                               wendy_pki_certificate_is_uncertain(&c->certificate_time)))
+            *flags |= start > now ? MBEDTLS_X509_BADCERT_FUTURE : MBEDTLS_X509_BADCERT_EXPIRED;
+    }
+    if (c->mesh_tenant[0]) {
+        time_t not_before = 0, expiry;
+        bool start_missing = pki_parsed_peer_not_before(cert, &not_before) != 0;
+        if ((start_missing && c->mesh_certificate_policy) ||
+            pki_parsed_peer_expiry(cert, &expiry))
+            *flags |= MBEDTLS_X509_BADCERT_OTHER;
+        else {
+            if (!start_missing && not_before > c->operator_not_before)
+                c->operator_not_before = not_before;
+            if (!start_missing && depth == 0)
+                c->operator_signing_not_before = not_before;
+            if (!start_missing && depth > 0 && not_before > c->operator_issuer_not_before)
+                c->operator_issuer_not_before = not_before;
+            if (!c->operator_expires || expiry < c->operator_expires)
+                c->operator_expires = expiry;
+        }
     }
     return 0;
 }
@@ -924,9 +960,9 @@ static int parse_owned_roots(wendy_pki_connection *c, struct wendy_conf_span *ro
  * every connection. No NVS descriptor is treated as verification evidence. */
 static pthread_mutex_t own_path_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct {
-    bool valid;
+    bool valid, mesh_policy;
     uint8_t hash[32];
-    time_t verified_at, expires;
+    time_t verified_at, not_before, expires;
     unsigned presented_count;
 } own_path_cache;
 
@@ -989,23 +1025,30 @@ done:
     psa_hash_abort(&operation);
     return result;
 }
-static bool own_path_reuse(const uint8_t hash[32], time_t now, time_t *expires, unsigned *count)
+static bool own_path_reuse(const uint8_t hash[32], time_t now, bool mesh_policy, bool uncertain,
+                            time_t *not_before, time_t *expires, unsigned *count)
 {
     pthread_mutex_lock(&own_path_lock);
-    bool hit = own_path_cache.valid && now >= own_path_cache.verified_at &&
-               now < own_path_cache.expires && !memcmp(hash, own_path_cache.hash, 32);
+    bool hit = own_path_cache.valid && mesh_policy == own_path_cache.mesh_policy &&
+               now >= own_path_cache.verified_at &&
+               now < own_path_cache.expires && (uncertain || now >= own_path_cache.not_before) &&
+               !memcmp(hash, own_path_cache.hash, 32);
     if (hit) {
+        *not_before = own_path_cache.not_before;
         *expires = own_path_cache.expires;
         *count = own_path_cache.presented_count;
     }
     pthread_mutex_unlock(&own_path_lock);
     return hit;
 }
-static void own_path_remember(const uint8_t hash[32], time_t now, time_t expires, unsigned count)
+static void own_path_remember(const uint8_t hash[32], time_t now, time_t not_before,
+                               time_t expires, unsigned count, bool mesh_policy)
 {
     pthread_mutex_lock(&own_path_lock);
     memcpy(own_path_cache.hash, hash, 32);
     own_path_cache.verified_at = now;
+    own_path_cache.mesh_policy = mesh_policy;
+    own_path_cache.not_before = not_before;
     own_path_cache.expires = expires;
     own_path_cache.presented_count = count;
     own_path_cache.valid = expires > now && count && count <= 8;
@@ -1048,6 +1091,10 @@ static int configure_direct(wendy_pki_connection *c, int server, const uint8_t *
                             const char *principal, time_t verify_at, bool consume_trust,
                             bool stream_identity)
 {
+    bool boot_uncertain = owned && owned->boot_uncertain;
+    time_t certificate_floor = owned ? owned->certificate_floor : 0;
+    uint64_t certificate_generation = owned ? owned->certificate_generation : 0;
+    c->mesh_certificate_policy = owned && owned->mesh_certificate_policy;
     int (*read_der)(void *, unsigned, uint8_t **, size_t *) = owned ? owned->read_der : NULL;
     int (*read_range)(void *, unsigned, size_t, uint8_t *, size_t, const uint8_t[32]) =
         owned ? owned->read_der_range : NULL;
@@ -1108,7 +1155,10 @@ static int configure_direct(wendy_pki_connection *c, int server, const uint8_t *
         if (c->presented_chain &&
             !own_path_hash(owned, roots, principal, c->presented_chain, local_path_hash)) {
             cacheable = true;
-            reused = own_path_reuse(local_path_hash, verify_at, &c->device_expires, &cached_count);
+            reused = own_path_reuse(local_path_hash, verify_at, c->mesh_certificate_policy,
+                                    c->mesh_certificate_policy && boot_uncertain &&
+                                    wendy_pki_certificate_generation_uncertain(certificate_generation),
+                                    &c->device_not_before, &c->device_expires, &cached_count);
         } else {
             pki_owned_free(c->presented_chain);
             c->presented_chain = NULL;
@@ -1148,6 +1198,21 @@ static int configure_direct(wendy_pki_connection *c, int server, const uint8_t *
             r = parse_owned_der(&c->certificate, owned, reused);
         }
         if (r) return configure_failed("identity certificate parsing", r);
+        (void)pki_parsed_peer_not_before(&c->certificate, &c->device_signing_not_before);
+        if (c->mesh_certificate_policy) {
+            time_t own_start;
+            if (pki_parsed_peer_not_before(&c->certificate, &own_start))
+                return configure_failed("local certificate floor", MBEDTLS_ERR_X509_INVALID_DATE);
+            if (own_start > certificate_floor)
+                certificate_floor = own_start;
+            if (verify_at < certificate_floor)
+                verify_at = certificate_floor;
+            c->certificate_time = (struct wendy_pki_certificate_time){
+                .seconds = verify_at, .floor = certificate_floor,
+                .monotonic_us = esp_timer_get_time(), .uncertain = boot_uncertain,
+                .follow_certainty = true, .generation = certificate_generation};
+        }
+
         if (cacheable) {
             unsigned index = 0;
             for (const mbedtls_x509_crt *part = &c->certificate; part; part = part->next) {
@@ -1275,8 +1340,10 @@ static int configure_direct(wendy_pki_connection *c, int server, const uint8_t *
      * Preserve its early input allocation and hand ownership to TLS directly. */
     if (verify_at && !reused &&
         (!principal ||
-        pki_verify_parsed_identity(&c->certificate, &c->key, roots.data, roots.size, &c->roots,
-                                  principal, verify_at, &c->device_expires)))
+        pki_verify_parsed_identity_policy(&c->certificate, &c->key, roots.data, roots.size, &c->roots,
+                                  principal, verify_at,
+                                  c->mesh_certificate_policy ? &c->certificate_time : NULL,
+                                  &c->device_not_before, &c->device_expires)))
         return configure_failed("local identity path", MBEDTLS_ERR_X509_CERT_VERIFY_FAILED);
     /* No issuer is discarded until the entire exact local path, principal,
      * private key and pinned roots have passed independent verification. */
@@ -1286,8 +1353,9 @@ static int configure_direct(wendy_pki_connection *c, int server, const uint8_t *
         return configure_failed("verified own presentation", MBEDTLS_ERR_SSL_INTERNAL_ERROR);
     if (cacheable) {
         if (!reused)
-            own_path_remember(local_path_hash, verify_at, c->device_expires,
-                              c->presented_chain ? c->presented_chain->count : 1);
+            own_path_remember(local_path_hash, verify_at, c->device_not_before, c->device_expires,
+                              c->presented_chain ? c->presented_chain->count : 1,
+                              c->mesh_certificate_policy);
         ESP_LOGI("wendy_pki", "local certificate path: %s",
                  reused ? "reused" : "verified and cached");
     }
@@ -1510,7 +1578,7 @@ static int finish_mesh(wendy_pki_connection *c, const char *tenant, const char *
         }
         if (!operator_app && !operator_router && count != 1)
             goto fail;
-        time_t now = time(NULL);
+        time_t now = certificate_now(c);
         if (!c->operator_expires || c->operator_expires <= now)
             goto fail;
         /* The native caller just verified these exact key/certificate/trust
@@ -1811,7 +1879,7 @@ int pki_tls_bound_connect(const char *host, unsigned port, const char *interface
 /* Readiness is only a hint. Stream callbacks may wake spuriously. */
 int wendy_pki_wait(wendy_pki_connection* c, bool writing, int64_t deadline)
 {
-    if (!c || wendy_pki_reset_in_progress()) return -1;
+    if (!c || wendy_pki_reset_in_progress() || mesh_certificate_expired(c)) return -1;
     int64_t now = esp_timer_get_time();
     if ((c->session_deadline_us && now >= c->session_deadline_us) ||
         (c->relay_expires_us && now >= c->relay_expires_us))
@@ -1837,7 +1905,7 @@ int wendy_pki_wait(wendy_pki_connection* c, bool writing, int64_t deadline)
 size_t wendy_pki_artifact_signature_capacity(wendy_pki_connection *c)
 {
     return c && c->mesh_deadline_us && esp_timer_get_time() < c->mesh_deadline_us &&
-                   !wendy_pki_reset_in_progress()
+                   !wendy_pki_reset_in_progress() && !mesh_certificate_expired(c)
                ? pki_artifact_signature_capacity(&c->key)
                : 0;
 }
@@ -1849,7 +1917,8 @@ int wendy_pki_artifact_sign(wendy_pki_connection *c, unsigned kind, const char *
         memcmp(principal, "spiffe://wendy.sh/tenant/", 25) ||
         memcmp(principal + 61, "/device/", 8) || memcmp(principal + 25, c->mesh_tenant, 36) ||
         strcmp(principal + 69, c->mesh_device) || !c->mesh_deadline_us ||
-        esp_timer_get_time() >= c->mesh_deadline_us || wendy_pki_reset_in_progress())
+        esp_timer_get_time() >= c->mesh_deadline_us || wendy_pki_reset_in_progress() ||
+        mesh_certificate_expired(c))
         return -1;
     return pki_artifact_sign(&c->key, kind, principal, body, size, signature, capacity, written);
 }
@@ -1860,7 +1929,7 @@ int wendy_pki_mesh_sign_digest(wendy_pki_connection *c, const char *principal,
     if (!c || !principal || strlen(principal) != 105 || memcmp(principal + 25, c->mesh_tenant, 36)
         || strcmp(principal + 69, c->mesh_device) || !signature || !signature_size
         || !c->mesh_deadline_us || esp_timer_get_time() >= c->mesh_deadline_us
-        || wendy_pki_reset_in_progress())
+        || wendy_pki_reset_in_progress() || mesh_certificate_expired(c))
         return -1;
     if (pki_artifact_signature_capacity(&c->key) != 80)
         return -1;
@@ -1884,7 +1953,7 @@ static int catalogue_sign(wendy_pki_connection *c, const char *principal, const 
         memcmp(principal + 61, "/device/", 8) || memcmp(principal + 25, c->mesh_tenant, 36) ||
         strcmp(principal + 69, c->mesh_device) || !signature || !signature_size ||
         !c->mesh_deadline_us || esp_timer_get_time() >= c->mesh_deadline_us ||
-        wendy_pki_reset_in_progress())
+        wendy_pki_reset_in_progress() || mesh_certificate_expired(c))
         return -1;
     uint8_t hash[32];
     return digest(body, size, hash) || mbedtls_pk_sign(&c->key, MBEDTLS_MD_SHA256, hash,
@@ -1916,7 +1985,8 @@ static struct wendy_conf_span mesh_trust(const wendy_pki_connection *c)
 }
 static bool mesh_has_trust(const wendy_pki_connection *c)
 {
-    return c && (c->lazy_trust || c->public_anchor || mesh_trust(c).size);
+    return c && !mesh_certificate_expired(c) &&
+        (c->lazy_trust || c->public_anchor || mesh_trust(c).size);
 }
 struct own_part {
     const uint8_t *data;
@@ -2081,7 +2151,10 @@ int wendy_pki_mesh_authenticated_peer(wendy_pki_connection *c, struct wendy_pki_
     int n = mbedtls_pk_write_pubkey_der((mbedtls_pk_context *)&peer->pk, spki, sizeof spki);
     if (n <= 0 || (size_t)n > sizeof spki)
         return -1;
-    *out = (struct wendy_pki_mesh_peer){.expires = c->operator_expires, .spki_size = (size_t)n};
+    *out = (struct wendy_pki_mesh_peer){.not_before = c->operator_not_before,
+                                          .signing_not_before = c->operator_signing_not_before,
+                                          .issuer_not_before = c->operator_issuer_not_before,
+                                          .expires = c->operator_expires, .spki_size = (size_t)n};
     memcpy(out->device, c->mesh_peer, 37);
     memcpy(out->spki, spki + sizeof spki - n, n);
     return 0;
@@ -2090,6 +2163,10 @@ int wendy_pki_mesh_verify_bundle(wendy_pki_connection *c, const uint8_t *const *
                                  const size_t *sizes, size_t count, time_t now,
                                  struct wendy_pki_mesh_peer *peer)
 {
+    const struct wendy_pki_certificate_time *policy =
+        c && c->mesh_certificate_policy ? &c->certificate_time : NULL;
+    if (policy)
+        now = certificate_now(c);
     if (!mesh_has_trust(c) || !c->mesh_deadline_us || esp_timer_get_time() >= c->mesh_deadline_us ||
         wendy_pki_reset_in_progress())
         return -1;
@@ -2106,14 +2183,14 @@ int wendy_pki_mesh_verify_bundle(wendy_pki_connection *c, const uint8_t *const *
             goto trust_done;
         if (pki_parse_certificate_bundle(&roots, trust_der, size, true))
             goto trust_done;
-        r = pki_mesh_chain_anchors(der, sizes, count, &roots, c->mesh_tenant, now, peer);
+        r = pki_mesh_chain_anchors_policy(der, sizes, count, &roots, c->mesh_tenant, now, policy, peer);
     trust_done:
         mbedtls_x509_crt_free(&roots);
         free(trust_der);
         return r;
     }
     if (!c->public_anchor)
-        return pki_mesh_chain_anchors(der, sizes, count, &c->roots, c->mesh_tenant, now, peer);
+        return pki_mesh_chain_anchors_policy(der, sizes, count, &c->roots, c->mesh_tenant, now, policy, peer);
     struct own_part part;
     if (own_part(c, (unsigned)c->public_anchor - 1, &part) != 1)
         return -1;
@@ -2121,7 +2198,7 @@ int wendy_pki_mesh_verify_bundle(wendy_pki_connection *c, const uint8_t *const *
     mbedtls_x509_crt_init(&anchor);
     int r = mbedtls_x509_crt_parse_der_nocopy(&anchor, part.data, part.size);
     if (!r)
-        r = pki_mesh_chain_anchors(der, sizes, count, &anchor, c->mesh_tenant, now, peer);
+        r = pki_mesh_chain_anchors_policy(der, sizes, count, &anchor, c->mesh_tenant, now, policy, peer);
     mbedtls_x509_crt_free(&anchor);
     pki_owned_free(part.owned);
     return r;
@@ -2149,7 +2226,7 @@ static void record_failure(const char *operation, int error)
 ssize_t wendy_pki_read(void* v, void* b, size_t n)
 {
     wendy_pki_connection* c = v;
-    if (wendy_pki_reset_in_progress() ||
+    if (wendy_pki_reset_in_progress() || mesh_certificate_expired(c) ||
         (c->session_deadline_us && esp_timer_get_time() >= c->session_deadline_us) ||
         (c->relay_expires_us && esp_timer_get_time() >= c->relay_expires_us))
         return -1;
@@ -2166,7 +2243,7 @@ ssize_t wendy_pki_read(void* v, void* b, size_t n)
 ssize_t wendy_pki_write(void *v, const void *b, size_t n)
 {
     wendy_pki_connection *c = v;
-    if (wendy_pki_reset_in_progress() ||
+    if (wendy_pki_reset_in_progress() || mesh_certificate_expired(c) ||
         (c->session_deadline_us && esp_timer_get_time() >= c->session_deadline_us) ||
         (c->relay_expires_us && esp_timer_get_time() >= c->relay_expires_us))
         return -1;
@@ -2399,7 +2476,7 @@ static int finish_accept_peer(wendy_pki_connection *c, const char *tenant, bool 
         c->operator_expires = expiry;
     c->peer_role = role;
     if (owned) {
-        if (pki_limit_session(c, time(NULL), esp_timer_get_time()))
+        if (pki_limit_session(c, certificate_now(c), esp_timer_get_time()))
             return -1;
         release_verified_paths(c);
     }
@@ -2834,7 +2911,8 @@ void pki_tls_net_operator_verified(wendy_pki_connection *c)
 }
 const struct wendy_pki_operator_peer *wendy_pki_mesh_authenticated_operator(wendy_pki_connection *c)
 {
-    return c && c->peer_role == WENDY_PEER_ROLE_OPERATOR && c->session_deadline_us &&
+    return c && !mesh_certificate_expired(c) &&
+                   c->peer_role == WENDY_PEER_ROLE_OPERATOR && c->session_deadline_us &&
                    esp_timer_get_time() < c->session_deadline_us && !wendy_pki_reset_in_progress()
                ? c->authenticated_operator
                : NULL;

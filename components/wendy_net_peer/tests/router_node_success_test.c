@@ -116,6 +116,20 @@ int wendy_pki_mesh_local_part_snapshot(const struct wendy_pki_mesh_identity *ide
     (void)epoch;
     return wendy_pki_mesh_local_part(identity, hash, offset, out, total);
 }
+/* Fixture local clock snapshots represent already admitted certificate trust;
+ * the real policy is independently covered by PKI interoperability tests. */
+time_t wendy_pki_mesh_identity_time(const struct wendy_pki_mesh_identity *identity, int64_t now)
+{
+    time_t base = identity->certificate_time.seconds ? identity->certificate_time.seconds
+                                                     : identity->verified_seconds;
+    int64_t at = identity->certificate_time.seconds ? identity->certificate_time.monotonic_us
+                                                    : identity->verified_monotonic_us;
+    return base + (now - at) / INT64_C(1000000);
+}
+bool wendy_pki_mesh_identity_current(const struct wendy_pki_mesh_identity *identity, int64_t now)
+{
+    return identity->certificate_expires > wendy_pki_mesh_identity_time(identity, now);
+}
 #ifndef WENDY_NET_REAL_CERT_RELAY_TEST
 int wncs_read(void *s, const uint8_t hash[32], size_t offset, uint8_t out[WNCF_CHUNK],
               size_t *total)
@@ -898,6 +912,8 @@ static void operator_attachment_fixture(void)
     wnrs_close(first);
     assert(owner && owner->sessions == second);
     wnrs_close(second);
+    assert(owner && !owner->sessions);
+    wnrs_node_reset(&owner);
     assert(!owner);
 #endif
 }
@@ -1109,6 +1125,8 @@ static void optional_projection_fixture(void)
     }
     assert(accepted_size && node->pool.payload_bytes >= accepted_size);
     wnrs_close(session);
+    assert(node && !node->sessions);
+    wnrs_node_reset(&node);
     assert(!node);
 }
 /* Continuation identity follows accepted monotonic leases and signed
@@ -1418,19 +1436,18 @@ int main(int argc, char **argv)
     drain();
     wnrs_close(peers[1].session);
     peers[1].session = NULL;
-    assert(!node && !opens && !closes && !commits);
+    assert(node && !node->sessions && !opens && !closes && !commits);
     drain();
     uint64_t previous_router = fixture_router, previous_revision = fixture_revision;
     assert(!wnrs_open(&peers[0].session, &node, &connections[0], &identity, ids[1], FIRST_LINK_COST,
                       send_frame, &peers[0]));
-    assert(node->certificates.baseline_index_enabled && !node->certificates.baseline_index.count);
-    assert(!node->certificates.baseline_current(node->certificates.baseline_context,
-                                                &node->certificates.baseline_index));
-    assert(node->core.babel.config.router != previous_router);
-    assert(fixture_revision > previous_revision && node->core.directory.count == 1);
+    assert(node->certificates.baseline_index_enabled && node->certificates.baseline_index.count);
+    assert(node->core.babel.config.router == previous_router);
+    assert(fixture_revision > previous_revision && node->core.directory.count == 2);
     assert(!node->core.checkpoint && !node->core.checkpoint_capacity);
     wnrs_close(peers[0].session);
     peers[0].session = NULL;
+    wnrs_node_reset(&node);
     assert(!node);
     drain();
     assert(!opens && !closes && !commits && !journal_size && !service_journal_size);

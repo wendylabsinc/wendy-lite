@@ -220,6 +220,9 @@ static struct wendy_pki_mesh_key key_view(const struct wendy_pki_mesh_peer *peer
     struct wendy_pki_mesh_key view = {0};
     if (peer) {
         memcpy(view.device, peer->device, sizeof view.device);
+        view.not_before = peer->not_before;
+        view.signing_not_before = peer->signing_not_before;
+        view.issuer_not_before = peer->issuer_not_before;
         view.expires = peer->expires;
         view.spki = peer->spki;
         view.spki_size = peer->spki_size;

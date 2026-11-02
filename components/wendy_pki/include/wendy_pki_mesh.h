@@ -1,6 +1,7 @@
 #pragma once
 #include "wendy_pki.h"
 #include <time.h>
+#include "wendy_pki_certificate_time.h"
 
 /* A remote origin's key is P-256 (91-byte SPKI) or, for Linux routers, pure
  * ML-DSA-65: a 1974-byte SPKI and 3309-byte signatures. Keep peers off task
@@ -10,7 +11,7 @@
 struct wendy_pki_mesh_peer
 {
     char device[37];
-    time_t expires;
+    time_t not_before, signing_not_before, issuer_not_before, expires;
     uint8_t spki[WENDY_PKI_MESH_SPKI_MAX];
     size_t spki_size;
 };
@@ -18,19 +19,24 @@ struct wendy_pki_mesh_peer
  * the duration of verification; retaining a view does not retain trust itself. */
 struct wendy_pki_mesh_key {
     char device[37];
-    time_t expires;
+    time_t not_before, signing_not_before, issuer_not_before, expires;
     const uint8_t *spki;
     size_t spki_size;
 };
 struct wendy_pki_mesh_identity
 {
     char tenant[37], device[37], peer[37];
-    time_t certificate_expires, verified_seconds;
+    time_t certificate_not_before, certificate_expires, verified_seconds;
+    struct wendy_pki_certificate_time certificate_time;
     int64_t verified_monotonic_us;
     uint64_t config_generation;
     uint8_t trust_hash[32];
     uint8_t journal_trust_hash[32];
 };
+/* RAM-only setup availability, not a certificate trust assertion. */
+int wendy_pki_net_mesh_status(void);
+bool wendy_pki_mesh_identity_current(const struct wendy_pki_mesh_identity *, int64_t now_us);
+time_t wendy_pki_mesh_identity_time(const struct wendy_pki_mesh_identity *, int64_t now_us);
 /* Public availability metadata, never a trust assertion. Keep one copy per
  * runtime store rather than growing every copied identity/crypto snapshot. */
 struct wendy_pki_mesh_public_index {
@@ -55,7 +61,7 @@ bool wendy_pki_mesh_public_index_current(const struct wendy_pki_mesh_public_inde
  * bootstrapped, reset/configuration unavailable, or the boot range exhausted.
  * Reconnect, mesh off/on and certificate renewal never reserve another range. */
 esp_err_t wendy_pki_mesh_revision_next(uint64_t *out);
-/* Signs only while the authenticated session and fresh-time window are valid.
+/* Signs only while the authenticated session and local certificate window are valid.
  * The key remains inside PKI. The v4 signature binds the full principal and body. */
 /* Scheme-sized artifact output. kind0 route,1 service,2 inventory. The query
  * reads immutable own key metadata only; caller must hold the context loan.
@@ -92,7 +98,7 @@ int wendy_pki_mesh_verify_bundle(wendy_pki_connection* connection, const uint8_t
     const size_t* sizes, size_t count, time_t now, struct wendy_pki_mesh_peer* peer);
 /* Public chain verification on the existing TLS worker, independent of a
  * carrier's lifetime. Pins the exact current enrollment generation/trust and
- * derives time from an already verified native-peer clock snapshot. */
+ * uses the separate local certificate-clock snapshot, never peer-supplied time. */
 int wendy_pki_mesh_verify_snapshot(const struct wendy_pki_mesh_identity *,
                                    const uint8_t *const *der, const size_t *sizes, size_t count,
     struct wendy_pki_mesh_peer *);
@@ -101,6 +107,9 @@ int wendy_pki_mesh_verify_snapshot(const struct wendy_pki_mesh_identity *,
 int wendy_pki_mesh_chain(const uint8_t* const* der, const size_t* sizes, size_t count,
     const uint8_t* roots, size_t roots_size, const char* tenant, time_t now,
     struct wendy_pki_mesh_peer* peer);
+int wendy_pki_mesh_chain_policy(const uint8_t *const *, const size_t *, size_t,
+    const uint8_t *, size_t, const char *, time_t, const struct wendy_pki_certificate_time *,
+    struct wendy_pki_mesh_peer *);
 /* The v4 preimage is domain || uint32_be(105) || principal || body. P-256
  * peers sign its SHA-256 (ECDSA); ML-DSA-65 peers sign it unhashed, as pure
  * ML-DSA with an empty context. The peer's certified key selects the scheme. */
@@ -146,8 +155,8 @@ esp_err_t wendy_pki_net_router_accept(int fd, wendy_pki_connection **connection,
                                       struct wendy_pki_mesh_identity *identity, char peer[37]);
 /* Standard full-router TLS over caller-owned byte stream, with no leaf/time
  * preface. expected_peer may be NULL for short-hint discovery. Returned peer
- * is always the fully authenticated same-tenant device UUID. Uses fresh
- * generation-bound signed time; expired cached time requires TSA access. */
+ * is always the fully authenticated same-tenant device UUID. Mesh certificate
+ * bootstrap uses local provisioning/signed-floor anchors independently of TSA access. */
 esp_err_t wendy_pki_net_router_stream(const struct wendy_pki_stream *, bool server,
                                       const char *expected_peer, wendy_pki_connection **,
                                       struct wendy_pki_mesh_identity *, char peer[37]);
@@ -203,8 +212,8 @@ esp_err_t wendy_pki_net_sync_time(const char *peer_address, unsigned port);
  * Main may pump their outer I/O only after step completion, never while lent.
  * Step: 1 ready for another CPU step, -2 needs input, -3 needs output, 0 fully
  * authenticated, -1 failure. Cancellation waits for worker acknowledgement.
- * Existing signed-time bootstrap is a separate prerequisite, never network
- * I/O hidden inside begin. Take transfers an authenticated connection only. */
+ * Local certificate bootstrap performs no hidden network I/O. Public-time
+ * confidence remains separate. Take transfers an authenticated connection only. */
 /* Immutable RAM-only CA loans from the mesh actor. The optional optimisation
  * consumes this snapshot on every path; release must remain safe after cache
  * close. No worker traverses the actor's mutable certificate directory. */

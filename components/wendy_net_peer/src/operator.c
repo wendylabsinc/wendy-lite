@@ -196,59 +196,126 @@ void wno_deinit(struct wno_directory *d)
         d->entries = e->next;
         wendy_net_free(e);
     }
+    while (d->receipts) {
+        struct wno_receipt *r = d->receipts;
+        d->receipts = r->next;
+        wendy_net_free(r);
+    }
     memset(d, 0, sizeof *d);
+}
+static struct wno_receipt *receipt(const struct wno_directory *d, const char *principal, size_t n,
+                                  const uint8_t instance[16])
+{
+    for (struct wno_receipt *r = d->receipts; r; r = r->next)
+        if (r->principal_size == n && !memcmp(r->principal, principal, n) &&
+            !memcmp(r->instance, instance, 16))
+            return r;
+    return NULL;
+}
+const struct wno_receipt *wno_receipt_find(const struct wno_directory *d, const char *principal,
+                                          size_t n, const uint8_t instance[16], int64_t now)
+{
+    struct wno_receipt *r = d && principal && instance && now >= 0
+                               ? receipt(d, principal, n, instance)
+                               : NULL;
+    return r && r->receipt_deadline_us > now ? r : NULL;
 }
 void wno_expire(struct wno_directory *d, int64_t now)
 {
     if (!d || now < 0)
         return;
-    struct wno_entry **at = &d->entries;
-    while (*at) {
-        struct wno_entry *e = *at;
-        if (e->retain_until_us <= now) {
+    for (struct wno_entry **at = &d->entries; *at;)
+        if ((*at)->lease_deadline_us <= now) {
+            struct wno_entry *e = *at;
             *at = e->next;
             wendy_net_free(e);
             d->count--;
         } else
-            at = &e->next;
-    }
+            at = &(*at)->next;
+    for (struct wno_receipt **at = &d->receipts; *at;)
+        if ((*at)->receipt_deadline_us <= now) {
+            struct wno_receipt *r = *at;
+            *at = r->next;
+            wendy_net_free(r);
+            d->receipt_count--;
+        } else
+            at = &(*at)->next;
+}
+int64_t wno_next_deadline(const struct wno_directory *d, int64_t now)
+{
+    int64_t next = INT64_MAX;
+    if (!d)
+        return next;
+    for (const struct wno_entry *e = d->entries; e; e = e->next)
+        if (e->lease_deadline_us <= now)
+            return now;
+        else if (e->lease_deadline_us < next)
+            next = e->lease_deadline_us;
+    for (const struct wno_receipt *r = d->receipts; r; r = r->next)
+        if (r->receipt_deadline_us <= now)
+            return now;
+        else if (r->receipt_deadline_us < next)
+            next = r->receipt_deadline_us;
+    return next;
 }
 int wno_accept_manifest_verified(struct wno_directory *d, const struct wno_manifest *p,
                                  const struct wendy_pki_operator_peer *identity, int64_t now,
                                  int64_t monotonic)
 {
-    if (!d || !d->limit || !p || !identity || now <= 0 || now > INT64_MAX - 905000 ||
-        monotonic < 0 || monotonic > INT64_MAX - INT64_C(905000000) ||
+    (void)now; /* Receiver UTC does not start or refresh announcement lifetime. */
+    if (!d || !d->limit || !p || !identity || monotonic < 0 ||
         wendy_pki_operator_principal(p->principal, p->principal_size, d->tenant) ||
         strnlen(identity->principal, sizeof identity->principal) != p->principal_size ||
         memcmp(identity->principal, p->principal, p->principal_size) || identity->expires <= 0 ||
-        identity->expires > INT64_MAX / 1000 || p->expires > (int64_t)identity->expires * 1000 ||
-        p->issued > now + 5000 || p->expires <= p->issued || p->expires - p->issued > 900000 ||
+        identity->expires > INT64_MAX / 1000 ||
+        (identity->not_before > 0 && identity->not_before > INT64_MAX / 1000) ||
+        (identity->signing_not_before > 0 && identity->signing_not_before > INT64_MAX / 1000) ||
+        (identity->issuer_not_before > 0 && identity->issuer_not_before > INT64_MAX / 1000) ||
+        p->issued < 0 || p->expires <= p->issued || p->expires - p->issued > 900000 ||
         !p->revision)
         return -1;
-    if (!p->hash_count || memcmp(p->hashes[0], identity->leaf_hash, 32))
+    int64_t lease_us = (p->expires - p->issued) * 1000;
+    if (lease_us > INT64_MAX / 10 || monotonic > INT64_MAX - lease_us * 10)
         return -1;
-    if (p->expires <= now)
-        return 1;
     uint8_t digest[32];
     if (wendy_pki_sha256(p->body, p->body_size, digest))
         return -1;
     wno_expire(d, monotonic);
+    const struct wno_receipt *seen = wno_receipt_find(d, p->principal, p->principal_size,
+                                                     p->instance, monotonic);
+    if (seen && p->revision < seen->revision)
+        return 1;
     struct wno_entry *e = d->entries;
     while (e && !(e->principal_size == p->principal_size &&
                   !memcmp(e->principal, p->principal, p->principal_size) &&
                   !memcmp(e->instance, p->instance, 16)))
         e = e->next;
-    if (e && p->revision < e->revision)
-        return 1;
-    if (e && p->revision == e->revision && memcmp(e->digest, digest, 32))
+    if (seen && p->revision == seen->revision) {
+        if (memcmp(seen->digest, digest, 32))
+            return -1;
+        return e && e->lease_deadline_us > monotonic ? 0 : 1;
+    }
+    if (!p->hash_count || memcmp(p->hashes[0], identity->leaf_hash, 32) ||
+        p->expires > (int64_t)identity->expires * 1000 ||
+        (identity->signing_not_before > 0 &&
+         p->issued < (int64_t)identity->signing_not_before * 1000))
         return -1;
+    if (!e && d->count >= d->limit)
+        return 3;
+    struct wno_receipt *floor = receipt(d, p->principal, p->principal_size, p->instance);
+    bool new_floor = !floor;
+    if (new_floor) {
+        floor = wendy_net_calloc(1, sizeof *floor + p->principal_size + 1);
+        if (!floor)
+            return 3;
+    }
     if (!e) {
-        if (d->count >= d->limit)
-            return 3;
         e = wendy_net_calloc(1, sizeof *e + p->principal_size + 1);
-        if (!e)
+        if (!e) {
+            if (new_floor)
+                wendy_net_free(floor);
             return 3;
+        }
         memcpy(e->principal, p->principal, p->principal_size);
         e->principal_size = p->principal_size;
         memcpy(e->instance, p->instance, 16);
@@ -256,13 +323,25 @@ int wno_accept_manifest_verified(struct wno_directory *d, const struct wno_manif
         d->entries = e;
         d->count++;
     }
-    int64_t deadline = p->withdraw ? 0 : monotonic + (p->expires - now) * 1000;
-    if (e->revision == p->revision && deadline > e->deadline_us)
-        deadline = e->deadline_us;
-    e->deadline_us = deadline;
-    e->retain_until_us = monotonic + INT64_C(905000000);
+    if (new_floor) {
+        memcpy(floor->principal, p->principal, p->principal_size);
+        floor->principal_size = p->principal_size;
+        memcpy(floor->instance, p->instance, 16);
+        floor->next = d->receipts;
+        d->receipts = floor;
+        d->receipt_count++;
+    }
+    floor->revision = p->revision;
+    memcpy(floor->digest, digest, 32);
+    floor->withdrawn = p->withdraw;
+    floor->receipt_deadline_us = monotonic + lease_us * 10;
+    e->lease_deadline_us = monotonic + lease_us;
+    e->deadline_us = p->withdraw ? 0 : e->lease_deadline_us;
     e->revision = p->revision;
     e->origin = p->origin;
+    e->claim_not_before = identity->signing_not_before;
+    e->claim_issuer_not_before = identity->issuer_not_before;
+    e->claim_expires = identity->expires;
     memcpy(e->address, p->address, 16);
     memcpy(e->digest, digest, 32);
     return 0;
@@ -294,8 +373,11 @@ bool wno_authorizes(const struct wno_directory *d, const uint8_t address[16], ui
 size_t wno_memory(const struct wno_directory *d)
 {
     size_t bytes = 0;
-    if (d)
-        for (const struct wno_entry *e = d->entries; e; e = e->next)
-            bytes += sizeof *e + e->principal_size + 1;
+    if (!d)
+        return 0;
+    for (const struct wno_entry *e = d->entries; e; e = e->next)
+        bytes += sizeof *e + e->principal_size + 1;
+    for (const struct wno_receipt *r = d->receipts; r; r = r->next)
+        bytes += sizeof *r + r->principal_size + 1;
     return bytes;
 }

@@ -334,6 +334,8 @@ int main(int argc, char **argv)
         assert(!node->certificates.count && !node->certificates.chains);
         assert(node->core.directory.key_count == 1);
         wnrs_close(sessions[0]);
+        assert(node && !node->sessions);
+        wnrs_node_reset(&node);
         assert(!node);
         goto cleanup;
     }
@@ -355,6 +357,8 @@ int main(int argc, char **argv)
     wnrs_close(sessions[1]);
     assert(node && !node->uploads);
     wnrs_close(sessions[0]);
+    assert(node && !node->sessions);
+    wnrs_node_reset(&node);
     assert(!node);
 cleanup:
     mbedtls_x509_crt_free(&certificates);

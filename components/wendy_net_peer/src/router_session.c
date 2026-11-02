@@ -75,7 +75,7 @@ struct wnrs_node {
     struct wnrs *sessions;
     struct wnrs_node **owner;
     bool own_cached;
-    int64_t tick_us;
+    int64_t tick_us, own_deadline_us;
     struct wg_id own_artifact;
     struct wncs_store certificates;
     struct certificate_upload *uploads;
@@ -95,7 +95,7 @@ struct wnrs_node {
         struct wncrypto_job *job;
         struct wncrypto_signature completed;
         struct wn_origin origin;
-        int64_t issued, expires;
+        int64_t issued, expires, deadline_us;
         size_t size;
         char *body;
         uint64_t revision;
@@ -178,10 +178,30 @@ size_t wnrs_reclaim_payloads(struct wnrs_node *node, size_t wanted)
 }
 static int describe_artifact(struct wnrs *, const struct wg_id *);
 static int certificate_tick(struct wnrs *);
+static int64_t node_unix_at(const struct wnrs_node *node, int64_t monotonic)
+{
+    time_t current = wendy_pki_mesh_identity_time(&node->clock, monotonic);
+    if (current <= 0 || (int64_t)current > INT64_MAX / 1000)
+        return 0;
+    const struct wendy_pki_certificate_time *clock = &node->clock.certificate_time;
+    time_t seconds = clock->seconds ? clock->seconds : node->clock.verified_seconds;
+    int64_t anchor = clock->seconds ? clock->monotonic_us : node->clock.verified_monotonic_us;
+    /* Preserve subsecond display precision without interpreting a local
+     * certificate-policy anchor as fresh public signed time. */
+    if (seconds > 0 && (int64_t)seconds <= INT64_MAX / 1000 && anchor >= 0 &&
+        monotonic >= anchor) {
+        int64_t elapsed = (monotonic - anchor) / 1000;
+        if ((int64_t)seconds * 1000 <= INT64_MAX - elapsed) {
+            int64_t anchored = (int64_t)seconds * 1000 + elapsed;
+            if (anchored / 1000 == current)
+                return anchored;
+        }
+    }
+    return (int64_t)current * 1000;
+}
 static int64_t node_unix(const struct wnrs_node *node)
 {
-    return (int64_t)node->clock.verified_seconds * 1000 +
-           (esp_timer_get_time() - node->clock.verified_monotonic_us) / 1000;
+    return node_unix_at(node, esp_timer_get_time());
 }
 static int64_t unix_now(const struct wnrs *s)
 {
@@ -292,6 +312,10 @@ static int publish(void *ctx, const struct wn_origin *origin, int64_t now, int64
     struct wnrs *s = node->sessions;
     if (!s)
         return -1;
+    /* Publication dates remain signed metadata inside the accepted own
+     * certificate window; they never become the receiver's lease clock. */
+    if (now < (int64_t)s->identity.certificate_not_before * 1000)
+        now = (int64_t)s->identity.certificate_not_before * 1000;
 #if ESP_PLATFORM
     if (node->signing)
         (void)wncrypto_take_signature(&node->signing->job, &node->signing->completed);
@@ -306,6 +330,7 @@ static int publish(void *ctx, const struct wn_origin *origin, int64_t now, int64
         node->signing->expires = now + 900000;
         if (node->signing->expires > (int64_t)s->identity.certificate_expires * 1000)
             node->signing->expires = (int64_t)s->identity.certificate_expires * 1000;
+        node->signing->deadline_us = monotonic + (node->signing->expires - now) * 1000;
         uint64_t revision;
         esp_err_t allocated = wendy_pki_mesh_revision_next(&revision);
         if (allocated != ESP_OK) {
@@ -353,7 +378,6 @@ static int publish(void *ctx, const struct wn_origin *origin, int64_t now, int64
     }
     char *body = node->signing->body, principal[106];
     int n = (int)node->signing->size;
-    int64_t expires = node->signing->expires;
     const uint8_t *signature = NULL;
     size_t sig_size = 0;
     if (wn_principal(s->identity.tenant, s->identity.device, principal) < 0)
@@ -364,7 +388,8 @@ static int publish(void *ctx, const struct wn_origin *origin, int64_t now, int64
     if (signed_result)
         return signed_result;
     if (node->signing->origin.router_id != origin->router_id ||
-        node->signing->origin.seqno != origin->seqno || expires <= now) {
+        node->signing->origin.seqno != origin->seqno ||
+        node->signing->deadline_us <= monotonic) {
         wncrypto_signature_clear(&node->signing->completed);
         wendy_net_free(node->signing->body);
         wendy_net_free(node->signing);
@@ -426,7 +451,13 @@ static int publish(void *ctx, const struct wn_origin *origin, int64_t now, int64
         wg_forget(&s->node->pool, &node->own_artifact);
     node->own_cached = false;
     node->own_artifact = id; /* Identify the critical proof before admission. */
-    int offered = wg_offer(&s->node->pool, 1, text, n, ms + (uint64_t)(expires - now), ms, &id);
+    int64_t deadline =
+#if ESP_PLATFORM
+        node->signing->deadline_us;
+#else
+        monotonic + (expires - now) * 1000;
+#endif
+    int offered = wg_offer(&s->node->pool, 1, text, n, (uint64_t)deadline / 1000, ms, &id);
 #if ESP_PLATFORM
     wendy_net_free(text);
 #endif
@@ -439,9 +470,10 @@ static int publish(void *ctx, const struct wn_origin *origin, int64_t now, int64
     }
     node->own_artifact = id;
     node->own_cached = true;
+    node->own_deadline_us = deadline;
 #if ESP_PLATFORM
     wnsc_manifest_committed(node->catalog, node->signing->revision, node->signing->issued,
-                            node->signing->expires);
+                            node->signing->expires, deadline);
     wncrypto_signature_clear(&node->signing->completed);
     wendy_net_free(node->signing->body);
     wendy_net_free(node->signing);
@@ -464,7 +496,8 @@ static bool own_route_artifact(void *context, const struct wg_id *id)
 }
 static bool protected_artifact(void *context, const struct wg_id *id)
 {
-    return own_route_artifact(context, id);
+    struct wnrs_node *node = context;
+    return node->own_cached && own_route_artifact(context, id);
 }
 static bool known_artifact(void *context, const struct wg_id *id)
 {
@@ -476,11 +509,14 @@ static bool known_artifact(void *context, const struct wg_id *id)
             if (e->deadline_us > esp_timer_get_time() && !memcmp(e->artifact_hash, id->hash, 32))
                 return true;
     for (const struct wnd_entry *e = node->core.directory.entries; e; e = e->next)
-        if (e->gossip_retired && !memcmp(e->gossip_hash, id->hash, 32))
+        if (e->gossip_retired && !memcmp(e->gossip_hash, id->hash, 32) &&
+            wnd_receipt_find(&node->core.directory, e->device, esp_timer_get_time()))
             return true;
     if (node->core.operators)
         for (const struct wno_entry *e = node->core.operators->entries; e; e = e->next)
-            if (e->gossip_retired && !memcmp(e->gossip_hash, id->hash, 32))
+            if (e->gossip_retired && !memcmp(e->gossip_hash, id->hash, 32) &&
+                wno_receipt_find(node->core.operators, e->principal, e->principal_size,
+                                 e->instance, esp_timer_get_time()))
                 return true;
     return false;
 }
@@ -502,6 +538,69 @@ static void evicted_artifact(void *context, const struct wg_id *id, const void *
                 e->gossip_cached = false;
                 e->gossip_retired = true;
             }
+}
+static bool claim_certificate_current(const struct wnrs_node *node, time_t leaf_not_before,
+                                       time_t issuer_not_before, time_t expires, int64_t now)
+{
+    time_t base = wendy_pki_mesh_identity_time(&node->clock, now);
+    if (base <= 0 || expires <= base || issuer_not_before > base)
+        return false;
+    return leaf_not_before <= base ||
+           (wendy_pki_certificate_is_uncertain(&node->clock.certificate_time) &&
+            (int64_t)leaf_not_before - base <= INT64_C(86400));
+}
+/* Expiry is an actor effect even when no new gossip or application request
+ * arrives. Retain only the directory's bounded revision/hash receipts; no
+ * expired envelope remains an advertised or serveable object. */
+static void expire_announcements(struct wnrs_node *node, int64_t now)
+{
+    if (node->own_cached && (node->own_deadline_us <= now ||
+                             !wendy_pki_mesh_identity_current(&node->clock, now))) {
+        wg_expire(&node->pool, &node->own_artifact);
+        node->own_cached = false;
+    }
+    for (struct wnd_entry *e = node->core.directory.entries; e; e = e->next) {
+        if (e->lease_deadline_us > now && e->manifest.certificate_expires &&
+            !claim_certificate_current(node, e->manifest.certificate_not_before,
+                                        e->manifest.certificate_issuer_not_before,
+                                        e->manifest.certificate_expires, now)) {
+            e->deadline_us = 0;
+            e->lease_deadline_us = now;
+            wnsc_revoke_owner(node->catalog, e->device);
+        }
+        if ((e->gossip_cached || e->gossip_retired) && e->lease_deadline_us <= now) {
+            struct wg_id id = {.type = 1};
+            memcpy(id.hash, e->gossip_hash, sizeof id.hash);
+            wg_expire(&node->pool, &id);
+            e->gossip_cached = false;
+            e->gossip_retired = true;
+        }
+    }
+    for (struct wne_entry *e = node->core.endpoints.entries; e; e = e->next)
+        if (e->deadline_us > now && e->certificate_expires &&
+            !claim_certificate_current(node, e->certificate_not_before,
+                                        e->certificate_issuer_not_before,
+                                        e->certificate_expires, now)) {
+            e->deadline_us = now;
+            wnsc_revoke_owner(node->catalog, e->device);
+        }
+    if (node->core.operators)
+        for (struct wno_entry *e = node->core.operators->entries; e; e = e->next) {
+            if (e->lease_deadline_us > now && e->claim_expires &&
+                !claim_certificate_current(node, e->claim_not_before,
+                                            e->claim_issuer_not_before, e->claim_expires, now)) {
+                e->deadline_us = 0;
+                e->lease_deadline_us = now;
+            }
+            if ((e->gossip_cached || e->gossip_retired) && e->lease_deadline_us <= now) {
+                struct wg_id id = {.type = 1};
+                memcpy(id.hash, e->gossip_hash, sizeof id.hash);
+                wg_expire(&node->pool, &id);
+                e->gossip_cached = false;
+                e->gossip_retired = true;
+            }
+        }
+    wg_prune(&node->pool, (uint64_t)now / 1000);
 }
 static bool want_artifact(void *context, const struct wg_id *id, uint64_t now)
 {
@@ -786,11 +885,61 @@ static int retain_manifest(struct wnrs *s, const struct wg_id *id, const void *b
     node->pending_bytes += retained;
     return 0;
 }
+/* A compact observed receipt can reject a delayed duplicate before fetching
+ * another key or retaining a full download. Live claims still pass through
+ * admission so a temporarily blocked projection/cache effect can be retried. */
+static int seen_manifest(struct wnrs_node *node, const struct wn_doc *doc,
+                          const uint8_t device[16], int64_t now)
+{
+    const struct wnd_receipt *seen = wnd_receipt_find(&node->core.directory, device, now);
+    int body = wn_doc_member(doc, 0, "body");
+    uint64_t revision;
+    if (!seen || body < 0 ||
+        wn_doc_u64(doc, wn_doc_member(doc, (unsigned)body, "revision"), &revision))
+        return 0;
+    if (revision < seen->revision)
+        return 1;
+    if (revision != seen->revision)
+        return 0;
+    const struct wn_token *span = wn_doc_token(doc, body);
+    uint8_t hash[32];
+    if (!span || wendy_pki_sha256((const uint8_t *)doc->text + span->start,
+                                  span->end - span->start, hash))
+        return 2;
+    if (memcmp(hash, seen->body_hash, sizeof hash))
+        return -1;
+    for (const struct wnd_entry *e = node->core.directory.entries; e; e = e->next)
+        if (!memcmp(e->device, device, 16) && e->manifest.revision &&
+            e->lease_deadline_us > now &&
+            (!e->manifest.certificate_expires ||
+             claim_certificate_current(node, e->manifest.certificate_not_before,
+                                         e->manifest.certificate_issuer_not_before,
+                                         e->manifest.certificate_expires, now)))
+            return 0;
+    return 1;
+}
 static int admit_complete(void *ctx, const struct wg_id *id, const void *bytes, size_t size)
 {
     struct wnrs *s = ctx;
     int64_t now = esp_timer_get_time();
-    int r =
+    expire_announcements(s->node, now);
+    struct wn_doc d;
+    char principal[106];
+    uint8_t uuid[16];
+    if (wn_doc_parse_array_view(&d, bytes, size, WG_OBJECT_MAX, "s") ||
+        wn_doc_string(&d, wn_doc_member(&d, 0, "principal"), principal, sizeof principal) < 0 ||
+        wn_principal_device(principal, s->identity.tenant, uuid))
+        return -1;
+    int seen = seen_manifest(s->node, &d, uuid, now);
+    if (seen)
+        return seen == 2 ? WG_DEFER : seen < 0 ? -1 : 0;
+    bool needs_identity = false;
+    for (const struct wnd_entry *e = s->node->core.directory.entries; e; e = e->next)
+        if (!memcmp(e->device, uuid, sizeof uuid) && e->peer.spki_size &&
+            !claim_certificate_current(s->node, e->peer.signing_not_before,
+                                        e->peer.issuer_not_before, e->peer.expires, now))
+            needs_identity = true;
+    int r = needs_identity ? 2 :
 #if WN_ROUTE_ASYNC
         wnr_manifest_verified(&s->node->core, bytes, size, unix_now(s), now);
 #else
@@ -806,20 +955,9 @@ static int admit_complete(void *ctx, const struct wg_id *id, const void *bytes, 
         route_diagnostic(s, id->hash, "manifest-admission", r);
         return -1;
     }
-    struct wn_doc d;
-    char principal[106];
-    uint8_t uuid[16];
-    if (wn_doc_parse_array_view(&d, bytes, size, WG_OBJECT_MAX, "s") ||
-        wn_doc_string(&d, wn_doc_member(&d, 0, "principal"), principal, sizeof principal) < 0 ||
-        wn_principal_device(principal, s->identity.tenant, uuid)) {
-        route_diagnostic(s, id->hash, "manifest-projection", -1);
-        return -1;
-    }
     for (struct wnd_entry *e = s->node->core.directory.entries; e; e = e->next)
         if (!memcmp(e->device, uuid, 16)) {
-            int64_t until = e->deadline_us;
-            if (e->manifest.withdraw)
-                until = now + (e->manifest.expires - unix_now(s)) * 1000;
+            int64_t until = e->lease_deadline_us;
             if (until <= now)
                 return 0;
             if (s->node->core.config.endpoint_gateway) {
@@ -845,7 +983,7 @@ static int admit_complete(void *ctx, const struct wg_id *id, const void *bytes, 
             int projected =
                 wnsc_manifest_services(s->node->catalog, &d, (unsigned)wn_doc_member(&d, 0, "body"),
                                        uuid, e->manifest.revision, e->manifest.issued,
-                                       e->manifest.expires, e->manifest.withdraw);
+                                       e->manifest.expires, until, e->manifest.withdraw);
             if (projected)
                 return projected > 0 ? WG_DEFER : -1;
             struct wg_id accepted;
@@ -915,9 +1053,15 @@ static int complete_operator(struct wnrs *s, const struct wg_id *id, const void 
                        !memcmp(job->clock.trust_hash, node->clock.trust_hash, 32);
         int verified = job->result;
         int result = verified;
-        if (!verified && current)
-            result = wnr_operator_manifest_verified(&node->core, &proof, job->peer, unix_now(s),
-                                                    esp_timer_get_time());
+        if (!verified && current) {
+            int64_t now = esp_timer_get_time();
+            result = claim_certificate_current(node, job->peer->signing_not_before,
+                                                job->peer->issuer_not_before, job->peer->expires,
+                                                now)
+                         ? wnr_operator_manifest_verified(&node->core, &proof, job->peer,
+                                                           unix_now(s), now)
+                         : 1;
+        }
         wnop_job_release(job);
         if (!current || verified > 0) {
             s->signature_retry = esp_timer_get_time() + INT64_C(250000);
@@ -946,11 +1090,9 @@ static int complete_operator(struct wnrs *s, const struct wg_id *id, const void 
             wg_forget(&node->pool, &old);
             entry->gossip_cached = false;
         }
-        int64_t now = esp_timer_get_time(), until = entry->deadline_us;
+        int64_t now = esp_timer_get_time(), until = entry->lease_deadline_us;
         /* Withdrawal revokes the route immediately, but its signed notice
          * remains useful to other peers for the rest of its verified lease. */
-        if (proof.withdraw)
-            until = now + (proof.expires - unix_now(s)) * 1000;
         if (until <= now)
             return 0;
         struct wg_id accepted;
@@ -1067,12 +1209,20 @@ static int complete(void *ctx, const struct wg_id *id, const void *bytes, size_t
         result = 0;
         goto done;
     }
+    int seen = seen_manifest(node, &w->doc, w->uuid, esp_timer_get_time());
+    if (seen) {
+        result = seen == 2 ? WG_DEFER : seen < 0 ? -1 : 0;
+        goto done;
+    }
     for (struct wnd_entry *e = node->core.directory.entries; e; e = e->next)
         if (!memcmp(e->device, w->uuid, 16)) {
             identity = e;
             break;
         }
-    if (!identity || !identity->peer.spki_size) {
+    if (!identity || !identity->peer.spki_size ||
+        !claim_certificate_current(node, identity->peer.signing_not_before,
+                                    identity->peer.issuer_not_before, identity->peer.expires,
+                                    esp_timer_get_time())) {
         result = retain_manifest(s, id, bytes, size, esp_timer_get_time());
         if (!result)
             result = WG_DEFER;
@@ -1157,7 +1307,10 @@ static bool chain_verified(struct wnrs_node *node, const struct wncf_chain *chai
     struct wnd_entry *e = chain_identity(node, chain);
     uint8_t hash[32];
     int64_t now = node_unix(node) / 1000;
-    return e && e->peer.spki_size && e->peer.expires > now && e->certificate_chain_until > now &&
+    return e && e->peer.spki_size &&
+           claim_certificate_current(node, e->peer.signing_not_before, e->peer.issuer_not_before,
+                                      e->peer.expires, esp_timer_get_time()) &&
+           e->certificate_chain_until > now &&
            !wendy_pki_sha256((const uint8_t *)chain->hashes, chain->count * 32, hash) &&
            !memcmp(hash, e->certificate_chain_hash, 32);
 }
@@ -1430,8 +1583,7 @@ static int catalog_open(struct wnrs_node *node)
 }
 static int catalog_tick(struct wnrs *s, int64_t now)
 {
-    (void)now;
-    wnsc_prune(s->node->catalog, unix_now(s));
+    wnsc_prune(s->node->catalog, now);
     return 0;
 }
 static void node_free(struct wnrs_node *node)
@@ -1488,8 +1640,17 @@ static void refresh_certificate_index(struct wnrs_node *node, wendy_pki_connecti
 static int node_open(struct wnrs_node **owner, wendy_pki_connection *connection,
                      const struct wendy_pki_mesh_identity *identity)
 {
-    if (*owner)
-        return 0;
+    if (*owner) {
+        const struct wendy_pki_mesh_identity *old = &(*owner)->clock;
+        if (!strcmp(old->tenant, identity->tenant) && !strcmp(old->device, identity->device) &&
+            old->config_generation == identity->config_generation &&
+            !memcmp(old->trust_hash, identity->trust_hash, sizeof old->trust_hash))
+            return 0;
+        if ((*owner)->sessions)
+            return -1;
+        node_free(*owner);
+        *owner = NULL;
+    }
     struct wnrs_node *node = wendy_net_calloc(1, sizeof *node);
     if (!node)
         return -1;
@@ -1599,7 +1760,7 @@ static int open_session(struct wnrs **out, struct wnrs_node **owner,
         return -1;
     struct wnrs *s = wendy_net_calloc(1, sizeof *s);
     if (!s) {
-        if (!node->sessions) {
+        if (!existing && !node->sessions) {
             *owner = NULL;
             node_free(node);
         }
@@ -1618,7 +1779,7 @@ static int open_session(struct wnrs **out, struct wnrs_node **owner,
         wn_address(uuid, s->peer_address);
     s->next = node->sessions;
     node->sessions = s;
-    if (identity->verified_monotonic_us > node->clock.verified_monotonic_us)
+    if (identity->certificate_time.monotonic_us > node->clock.certificate_time.monotonic_us)
         node->clock = *identity;
     if (existing)
         refresh_certificate_index(node, connection, identity);
@@ -1725,21 +1886,58 @@ void wnrs_close(struct wnrs *s)
     if (s->attached)
         (void)wnr_detach(&node->core, s->link, node_unix(node), esp_timer_get_time());
     wendy_net_free(s);
+    /* Foreign compact revision receipts belong to the mesh epoch, not a
+     * neighbour connection. A later carrier must not restart an expired
+     * announcement merely because its supplier changed. */
     if (!node->sessions) {
-        *node->owner = NULL;
-        node_free(node);
+        /* Pending identity repair belongs to the supplying carriers, not the
+         * mesh epoch. Only compact accepted revision receipts survive loss
+         * of the last supplier; borrowed workers keep their own references. */
+        wncv_release(node->verification);
+        node->verification = NULL;
+        node->verification_retry = 0;
+        node->fetch_owner = NULL;
+        while (node->pending) {
+            struct pending_manifest *pending = node->pending;
+            node->pending = pending->next;
+            wendy_net_free(pending);
+        }
+        node->pending_count = 0;
+        node->pending_bytes = 0;
+#if ESP_PLATFORM
+        if (node->signing) {
+            wncrypto_cancel(&node->signing->job);
+            wncrypto_signature_clear(&node->signing->completed);
+            wendy_net_free(node->signing->body);
+            wendy_net_free(node->signing);
+            node->signing = NULL;
+        }
+#endif
+        expire_announcements(node, esp_timer_get_time());
     }
+}
+void wnrs_node_reset(struct wnrs_node **owner)
+{
+    if (!owner || !*owner)
+        return;
+    struct wnrs_node *node = *owner;
+    /* The outer driver joins all context loans and closes carriers first. */
+    if (node->sessions)
+        return;
+    *owner = NULL;
+    node_free(node);
 }
 void wnrs_refresh(struct wnrs *s, const struct wendy_pki_mesh_identity *identity)
 {
     s->identity = *identity;
-    if (identity->verified_monotonic_us > s->node->clock.verified_monotonic_us)
+    if (identity->certificate_time.monotonic_us > s->node->clock.certificate_time.monotonic_us)
         s->node->clock = *identity;
 }
 int wnrs_tick(struct wnrs *s)
 {
     reap_node_crypto(s->node);
     int64_t now = esp_timer_get_time();
+    expire_announcements(s->node, now);
     int r = 0;
     if (now >= wnrs_next_deadline(s)) {
         r = wnr_tick(&s->node->core, unix_now(s), now);
@@ -2111,9 +2309,9 @@ int wnrs_service_action(struct wnrs *s, struct wnsc_registry **registry, unsigne
     if ((operation == 0 || operation == 3) && node)
         wnsc_browse_demand(node, now);
     if (operation == 0)
-        return node ? wnsc_browse(node, input, wall, out, cap) : -2;
+        return node ? wnsc_browse(node, input, (int64_t)now * 1000, out, cap) : -2;
     if (operation == 3)
-        return node ? wnsc_browse_endpoints(node, input, wall, out, cap) : -2;
+        return node ? wnsc_browse_endpoints(node, input, (int64_t)now * 1000, out, cap) : -2;
     if (operation == 2 && !node)
         return -2;
     int r = operation == 1   ? wnsc_guest_register(registry, input, size, owner, context)
@@ -2135,6 +2333,9 @@ int64_t wnrs_next_deadline(const struct wnrs *s)
     const struct wnr_core *c = &s->node->core;
     uint64_t next = wb_next_deadline(&c->babel);
     int64_t deadline = s->node->tick_us;
+    int64_t expiry = wnrs_node_deadline(s->node);
+    if (expiry < deadline)
+        deadline = expiry;
     for (const struct certificate_upload *u = s->node->uploads; u; u = u->next)
         if (u->deadline < deadline)
             deadline = u->deadline;
@@ -2167,6 +2368,20 @@ int64_t wnrs_next_deadline(const struct wnrs *s)
     }
     return deadline;
 }
+int64_t wnrs_node_deadline(const struct wnrs_node *node)
+{
+    if (!node)
+        return INT64_MAX;
+    int64_t now = esp_timer_get_time();
+    int64_t deadline = node->own_cached ? node->own_deadline_us : INT64_MAX;
+    int64_t next = wnd_next_deadline(&node->core.directory, now);
+    if (next < deadline)
+        deadline = next;
+    next = wno_next_deadline(node->core.operators, now);
+    if (next < deadline)
+        deadline = next;
+    return deadline;
+}
 
 bool wnrs_receive_paused(const struct wnrs *s)
 {
@@ -2190,6 +2405,12 @@ int wnrs_poll_effects(struct wnrs_node *node)
     if (!node)
         return 0;
     reap_node_crypto(node);
+    int64_t now = esp_timer_get_time();
+    expire_announcements(node, now);
+    wnd_expire(&node->core.directory, now);
+    wne_reap(&node->core.endpoints, now);
+    wno_expire(node->core.operators, now);
+    wnsc_prune(node->catalog, now);
     const struct wendy_pki_mesh_public_index *index = &node->certificates.baseline_index;
     const struct wncd_reader *read = &node->certificate_read;
     bool current = wendy_pki_mesh_public_index_current(index, &node->clock) &&
@@ -2214,9 +2435,9 @@ static uint64_t topology_hash(uint64_t h, const void *bytes, size_t size)
 }
 static int64_t topology_expiry(const struct wnrs_node *n, int64_t deadline, int64_t signed_expiry)
 {
-    int64_t bound = (int64_t)n->clock.verified_seconds * 1000 +
-                    (deadline - n->clock.verified_monotonic_us) / 1000;
-    return signed_expiry > 0 && signed_expiry < bound ? signed_expiry : bound;
+    (void)signed_expiry; /* Signed dates are metadata; the receiver owns this TTL. */
+    int64_t now = esp_timer_get_time();
+    return node_unix_at(n, now) + (deadline - now) / 1000;
 }
 /* Borrow only an already verified live receipt. No scan allocations, signer
  * work or additional registry is needed; constrained gateways return empty. */
@@ -2411,8 +2632,7 @@ int wnrs_topology(struct wnrs_node *n, uint32_t cursor, uint64_t generation,
     int64_t now = esp_timer_get_time();
     wn_uuid_parse(n->clock.tenant, page->tenant);
     wn_uuid_parse(n->clock.device, page->device);
-    page->captured_at_unix_ms =
-        (int64_t)n->clock.verified_seconds * 1000 + (now - n->clock.verified_monotonic_us) / 1000;
+    page->captured_at_unix_ms = node_unix(n);
     page->runtime_available = n->core.ready && !n->core.stopped;
     page->partial = n->core.config.endpoint_gateway;
     if (!page->runtime_available)
@@ -2472,8 +2692,7 @@ void wnrs_issuer_snapshot(struct wnrs_node *node, struct wendy_pki_net_issuers *
     memset(snapshot, 0, sizeof *snapshot);
     if (!node)
         return;
-    int64_t now = (int64_t)node->clock.verified_seconds +
-                  (esp_timer_get_time() - node->clock.verified_monotonic_us) / 1000000;
+    int64_t now = wendy_pki_mesh_identity_time(&node->clock, esp_timer_get_time());
     struct wncs_loan *loan = wncs_issuer_loan(&node->certificates, now);
     if (!loan)
         return;
