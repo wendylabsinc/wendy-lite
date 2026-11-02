@@ -8,8 +8,8 @@ Set `IDF_PATH` to ESP-IDF 6.0.3, and install Go 1.27 or newer before configuring
 
 ```sh
 cmake -S components/wendy_pki/tests -B build-pki
-cmake --build build-pki
-ctest --test-dir build-pki --output-on-failure
+cmake --build build-pki -j4
+GOTOOLCHAIN=go1.27.3 GOMAXPROCS=2 GOFLAGS=-p=1 ctest --test-dir build-pki --output-on-failure -j2
 ```
 
 `dependency_patches_in_checkout` reproduces a build directory inside a Git
@@ -83,6 +83,18 @@ close_notify and then transfers raw bytes on the preserved TCP socket.
 LAN cases also accept same-tenant device clients and assert the verified peer
 role. They reject wrong tenants, malformed or ambiguous identities, missing
 clientAuth, CA leaves, invalid dates, untrusted issuers, and signature tampering.
+`relay_control_test` runs the production broker control loop with deterministic
+TLS reads, writes and socket waits. Healthy heartbeats reach the four-minute
+refresh deadline and return the planned-renewal result. Early heartbeat timeout,
+EOF, invalid or partial headers, stalled writes, reset and socket errors retain
+the failure result even at that deadline. Successful handoff preserves the
+detached fd and its trust data for the caller.
+`relay_stream_wait_test` additionally checks the scoped DER/TLS read wrapper.
+Stream errors remain failures even when their callback reaches the deadline;
+successful retry hints preserve read versus write direction, partial frames and
+reset, including a readiness hint immediately before the loop crosses its deadline.
+A spurious hint cannot hide a subsequent EOF. The initiating TLS allocation
+scope is restored before the caller waits on its transport.
 The operator-only accept path rejects device clients, including relay clients.
 Callback stream cases exercise the PKI stream API used by BLE through fragmented reads and
 writes with forced retry responses. A valid operator exchanges application data;
@@ -108,10 +120,12 @@ check after a required client-certificate handshake. Valid same-organization ope
 and intermediate chains can exchange application data. Missing, untrusted,
 expired, future, and tampered certificates cannot. Other rejection cases cover
 wrong organizations, roles, authorities, missing or duplicate URI identities,
-invalid subject segments, URI query/fragment/percent/NUL suffixes, missing or
-incorrect EKUs, and CA leaves. Safe operator names and nested subjects remain
-valid, matching the pki-core issuer grammar. The same signed fixtures also
-exercise the PKI operator verifier.
+empty or malformed operator URI text, query/fragment/NUL suffixes, missing or
+incorrect EKUs, and CA leaves. Operator subjects remain opaque URI text:
+email-like names, nested paths and valid percent escapes are accepted without
+normalization, matching the shared operator grammar. Device subjects retain
+their separate restricted path policy. The same signed fixtures also exercise
+the PKI operator verifier.
 The LAN policy additionally accepts same-tenant device certificates and records
 their restricted role. Tests exercise both policies against the same fixtures,
 reject role changes during later verification, and check the TLS adapters' peer
@@ -160,8 +174,8 @@ to 32 KiB while TLS records remain bounded to 16 KiB. A valid chain exceeding th
 handshake limit is rejected.
 Firmware disables IDF dynamic buffers because their allocation can follow the
 current record's size while the bundled library bounds reassembly against the
-configured input size. The fixed-buffer host tests cover the chosen allocation
-model; they do not validate the disabled dynamic-buffer wrappers on hardware.
+configured input size. The host tests use variable-sized buffers from the patched fixed-record backend;
+they do not validate the disabled IDF dynamic-buffer wrappers on hardware.
 
 The outbound server uses Go's default session-ticket settings. Firmware performs
 a fresh certificate handshake. The outbound regression checks application data
@@ -173,19 +187,81 @@ authenticated time under incorrect device clocks, including certificate date,
 CA, key usage, path length, identity, and signature failures. See
 `mldsa-fixtures/README.md` for provenance and regeneration commands.
 
-`mesh_mldsa_router_test` feeds Linux router `bundle` and `manifest` control
-messages, produced by the WendyOS router's own manifest signer, through the
-leaf's JSON parser, chain verifier and directory. An ML-DSA-65 router leaf under
-ML-DSA-87/65 CAs and its pure ML-DSA-65 manifest are accepted, as is a P-256
-router through the same signer. Signatures over the SHA-256 digest, with a
-non-empty context, without the principal, or by another key are rejected, along
-with damaged signatures, bodies and agent metadata, cross-algorithm signatures,
-wrong tenants, expiry and an unrelated root. See
-`../../wendy_mesh/tests/mldsa-router-fixtures/README.md`.
-
 The enrollment capability tests compile the production WendyCom capability
 helper with Cloud, Wi-Fi, and PKI individually disabled. They ensure unsupported
 profiles report an explicit false enrollment capability while retaining local
 identity recovery wherever PKI is available. They also check that ML-DSA support
 is advertised only when both PKI and ML-DSA-65 verification are enabled and that false values
 survive protobuf encoding.
+
+
+The native actor uses the admitted serialized crypto worker for heavyweight
+operations. Ordinary physical management shares the same PKI implementation.
+The optional own ML-DSA private-key backend is off by default and is not qualified
+by this suite.
+
+`pki_owned_der_stream_p256` and `pki_owned_der_stream_mldsa65` import fixture PEM
+once, then drive production owned DER sources through independent full-path
+verification and streamed full-chain TLS with Go. The initiating allocation
+scope follows record reads/writes after setup returns; all charged bytes and
+reservations drain at close. The pinned root is omitted after independent trust
+verification. Issuer omission is optional; these baseline fixtures send the full issuer path because their trust bundle does not independently pin the presented intermediates.
+
+`pki_own_der_cache` verifies full/range public readers and repeated sessions with
+no flash writes. `tls_input_*_ownership` verifies zeroized reuse, management
+loans, shutdown, and overlapping service epochs. `psa_global_table_ownership`
+keeps a baseline key live while temporary scoped keys retire. Record tests cover
+preallocated input adoption, bounded reassembly, input recycling, and pending
+ciphertext surviving input compaction and repeated partial flushes.
+`native_artifact_domain` independently checks v4 native signing and its
+synchronous digest/signing helpers. No legacy leaf wire format is compiled.
+
+The SDK startup hook installs one allocation/free ABI before PSA initialization;
+app_main enables task ownership before networking. Host scope fixtures initialize
+PSA outside task scopes to match that startup order. These host checks do not
+establish hardware heap headroom, radio behavior, or native actor/worker timing.
+
+
+`pki_own_boot_persistence` covers the own identity/time boundary retained in this
+layer: reserve one durable publication range per boot and persist only the first
+verified timestamp-floor advance. Reconnect, service OFF/ON, configuration and
+certificate changes use the retained RAM counters; later timestamp proofs move
+the RAM high-water without additional flash writes. A simulated reboot skips
+all potentially issued revision values and resumes time verification from the
+first durable advance. This policy does not persist foreign peer/network state.
+
+
+`pki_issuer_helpers_normal` checks binary root-first fingerprints and ordinary
+TLS 1.3 ClientHello/Certificate message layouts. With `WENDYOS_GO_ROOT` set,
+`pki_issuer_wos_interop_normal` overlays temporary tests onto actual WendyOS
+helpers. Normal handshakes cover carrier, guest VIP and native WendyCom TLS,
+both applicable roles, shared ancestors, distinct issuing CAs, root-only trust,
+cached CA loans and full-chain fallback. Pre-handshake cancellation checks early
+cleanup. Cooldown fixtures cover full-chain carrier, VIP and native management
+exchanges in both applicable roles while the Go peer still offers hints. The
+issuer helper tests check the exact monotonic deadline, no extension, and date,
+revocation, usage and policy exclusions (including combined flags).
+All Lite fixture inputs are DER. Actual TLS allocation hooks and the
+owner ledger require zero retained bytes, allocations and reservations on close.
+
+`pki_owned_der_source_without_root_{p256,mldsa65}` supplies an ordinary local
+chain that already omits its self-signed root. Its trailing intermediate is
+pinned locally, while the independent Go peer trusts only the common root.
+The complete intermediate path must remain present; local trust does not imply
+that a remote peer already holds that intermediate. These fixtures do not
+activate issuer negotiation or require the optional WendyOS checkout.
+`pki_time_nonce_normal` covers seven ordinary 256-bit nonce shapes: low/high
+leading bit, all-ones, leading zeroes before low/high bits, one, and zero.
+It compares firmware request bytes with independently marshalled Go ASN.1 and
+verifies a correctly signed disposable P-384 timestamp for each value. The
+imprint always hashes all 32 original bytes; only the INTEGER representation
+strips zeroes or adds a sign octet. Run this positive interoperability check with
+`ctest --test-dir <build> -R '^pki_time_nonce_normal$' --output-on-failure`.
+
+The C6 sustained BLE trial on 2026-10-28 exposed the former fixed-width encoder:
+control-channel renewals used arbitrary random bytes, unlike bootstrap callers
+which masked the high bit. A high-bit nonce was encoded as negative and rejected
+by the timestamp response verifier. Renewal retries sometimes succeeded by
+chance. Canonical positive encoding fixes the source rather than constraining
+the random input, and matching canonical INTEGER values also handles leading
+zeroes in otherwise valid random nonces.

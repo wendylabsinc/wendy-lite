@@ -8,3 +8,7 @@ dependencies:
     version: "37953195672cbc7502b06fc845fc9219627f31fd"
   espressif/cjson:
     version: "^1.7.19"
+  wendy_net_common:
+    override_path: "../wendy_net_common"
+  wendy_conf:
+    override_path: "../wendy_conf"

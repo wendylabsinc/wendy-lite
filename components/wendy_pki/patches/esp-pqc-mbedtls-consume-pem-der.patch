@@ -1,0 +1,25 @@
+--- a/library/x509_crt.c
++++ b/library/x509_crt.c
+@@ -1480,8 +1480,20 @@
+                 break;
+             }
+ 
+-            ret = mbedtls_x509_crt_parse_der(chain, pem.buf, pem.buflen);
+-
++            /* The PEM decoder already owns one exact DER allocation. Parse
++             * it without copying, then transfer that allocation to the new
++             * certificate. Failure leaves ownership with pem, exactly once. */
++            ret = mbedtls_x509_crt_parse_der_nocopy(chain,pem.buf,pem.buflen);
++            if (ret == 0) {
++                for (mbedtls_x509_crt *added=chain;added;added=added->next) {
++                    if (added->raw.p==pem.buf) {
++                        added->own_buffer=1;
++                        pem.buf=NULL;
++                        pem.buflen=0;
++                        break;
++                    }
++                }
++            }
+             mbedtls_pem_free(&pem);
+ 
+             if (ret != 0) {

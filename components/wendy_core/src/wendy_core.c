@@ -46,7 +46,6 @@
 
 #if CONFIG_WENDY_WIFI_ENABLED
 #include "wendy_wifi.h"
-#include "wendy_mesh.h"
 #include "wendy_com.h"
 #endif
 
@@ -61,6 +60,26 @@ static const char *TAG = "wendy_core";
 #define EVT_APP_START_REQUEST BIT6
 
 static EventGroupHandle_t s_events;
+static bool s_boot_ble_enabled = true;
+esp_err_t wendy_core_set_boot_radios(bool ble, bool wifi)
+{
+    if (s_events)
+        return ESP_ERR_INVALID_STATE;
+#if CONFIG_WENDY_WIFI_ENABLED
+    esp_err_t result = wendy_wifi_set_boot_radio_enabled(wifi);
+    if (result != ESP_OK)
+        return result;
+#else
+    if (wifi)
+        return ESP_ERR_NOT_SUPPORTED;
+#endif
+#if !CONFIG_WENDY_BLE
+    if (ble)
+        return ESP_ERR_NOT_SUPPORTED;
+#endif
+    s_boot_ble_enabled = ble;
+    return ESP_OK;
+}
 
 /* ── Reboot boot-params ─────────────────────────────────────────────────
  *
@@ -389,13 +408,15 @@ static bool start_loaded_wasm_module(void)
 /* These lifecycle implementations are only called by wasm_control_thread_entry.
  * WAMR uses pthread TLS internally, so invoking them from the raw FreeRTOS wcom
  * task can assert while WAMR reports an otherwise recoverable loader error. */
-static esp_err_t wasm_app_stop_on_control_thread(void)
+static esp_err_t wasm_app_stop_on_control_thread(uint32_t *replacement)
 {
     if (!s_current_module) return ESP_OK;
     esp_err_t err = wendy_wasm_stop(s_current_module);
     if (err != ESP_OK) return err;
     if (!wait_for_wasm_inactive(5000)) return ESP_ERR_TIMEOUT;
     reset_guest_resources();
+    if (replacement)
+        *replacement = wendy_wasm_replacement_begin(s_current_module);
     wendy_wasm_unload(s_current_module);
     mark_current_module_unloaded();
     return ESP_OK;
@@ -418,7 +439,8 @@ static esp_err_t wasm_app_start_on_control_thread(uint8_t slot)
 {
     static bool initialized;
 
-    esp_err_t err = wasm_app_stop_on_control_thread();
+    uint32_t replacement = 0;
+    esp_err_t err = wasm_app_stop_on_control_thread(&replacement);
     if (err != ESP_OK) return err;
 
     ESP_LOGI(TAG, "loading WASM from flash slot %d...", slot);
@@ -427,7 +449,7 @@ static esp_err_t wasm_app_start_on_control_thread(uint8_t slot)
         err = wendy_wasm_reinit();
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "WASM runtime reinit failed");
-            return err;
+            goto finished;
         }
     } else {
         /* Initialize the WASM runtime — must be in pthread context */
@@ -438,7 +460,7 @@ static esp_err_t wasm_app_start_on_control_thread(uint8_t slot)
         err = wendy_wasm_init(&wasm_cfg);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "WASM runtime init failed");
-            return err;
+            goto finished;
         }
 
         initialized = true;
@@ -448,7 +470,7 @@ static esp_err_t wasm_app_start_on_control_thread(uint8_t slot)
     err = wendy_hal_export_init();
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "some HAL exports failed to register");
-        return err;
+        goto finished;
     }
 
     wendy_wasm_module_handle_t flash_module = NULL;
@@ -459,14 +481,18 @@ static esp_err_t wasm_app_start_on_control_thread(uint8_t slot)
         if (!start_loaded_wasm_module()) {
             wendy_wasm_unload(s_current_module);
             mark_current_module_unloaded();
-            return ESP_FAIL;
+            err = ESP_FAIL;
+            goto finished;
         }
     } else {
         ESP_LOGE(TAG, "failed to load WASM from flash: %s", esp_err_to_name(err));
-        return err;
+        goto finished;
     }
 
-    return ESP_OK;
+    err = ESP_OK;
+finished:
+    wendy_wasm_replacement_finish(replacement);
+    return err;
 }
 
 static void wasm_control_request_release(wasm_control_request_t *request)
@@ -493,7 +519,7 @@ static void *wasm_control_thread_entry(void *arg)
             request->result = wasm_app_start_on_control_thread(request->slot);
             break;
         case WASM_CONTROL_STOP:
-            request->result = wasm_app_stop_on_control_thread();
+            request->result = wasm_app_stop_on_control_thread(NULL);
             break;
         case WASM_CONTROL_STOP_FOR_FLASH:
             request->result = wasm_app_stop_for_flash_on_control_thread();
@@ -1003,7 +1029,9 @@ esp_err_t wendy_core_init(void)
      * disagree. */
 #if CONFIG_WENDY_BLE
     {
-        esp_err_t ble_err = wendy_ble_start();
+        esp_err_t ble_err = s_boot_ble_enabled ? wendy_ble_start() : ESP_OK;
+        if (!s_boot_ble_enabled)
+            ESP_LOGI(TAG, "BLE radio omitted by saved endpoint policy");
         if (ble_err != ESP_OK) {
             ESP_LOGW(TAG, "BLE transport not started: %s",
                      esp_err_to_name(ble_err));
@@ -1015,17 +1043,16 @@ esp_err_t wendy_core_init(void)
 #if CONFIG_WENDY_WIFI_ENABLED
     err = wendy_wifi_init();
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "WiFi connected");
+        ESP_LOGI(TAG, "%s",
+                 !wendy_wifi_radio_available() ? "WiFi radio disabled by boot policy"
+                 : wendy_wifi_is_connected()   ? "WiFi connected"
+                                               : "WiFi infrastructure ready; station disconnected");
     } else if (err == WENDY_WIFI_ERR_NO_CREDS) {
         ESP_LOGW(TAG, "no WiFi credentials configured, continuing without WiFi");
     } else {
         ESP_LOGW(TAG, "WiFi init failed (running without WiFi)");
     }
 #endif /* CONFIG_WENDY_WIFI_ENABLED */
-#if CONFIG_WENDY_MESH_LEAF
-    err = wendy_mesh_start();
-    if (err != ESP_OK) ESP_LOGW(TAG, "mesh not started: %s", esp_err_to_name(err));
-#endif
 
 
     /* ── App start gate: honor the reboot params ─────────────────────── */

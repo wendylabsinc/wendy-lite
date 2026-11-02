@@ -1,0 +1,126 @@
+diff --git a/tf-psa-crypto/include/mbedtls/pk.h b/tf-psa-crypto/include/mbedtls/pk.h
+--- a/tf-psa-crypto/include/mbedtls/pk.h
++++ b/tf-psa-crypto/include/mbedtls/pk.h
+@@ -104,17 +104,14 @@
+ #define MBEDTLS_PK_MAX_PUBKEY_RAW_LEN MBEDTLS_PK_MAX_RSA_PUBKEY_RAW_LEN
+ #endif
+ 
+-/* PQC pubkey headroom, only when ML-DSA-65 is enabled since pub_raw is inline in every mbedtls_pk_context and some live on the stack; 1952 is the FIPS 204 raw key length pkparse.c copies in, spelled out because mldsa65_oqs.h includes this header. */
++/* PQC public keys are allocated only on ML-DSA contexts. Classical contexts
++ * retain their smaller EC/RSA inline buffer, including stack-local contexts. */
+ #if defined(MBEDTLS_SSL_TLS1_3_SIG_MLDSA65) || defined(MBEDTLS_X509_MLDSA87)
+ #if defined(MBEDTLS_X509_MLDSA87)
+ #define MBEDTLS_PK_PQC_MAX_PUBKEY_RAW_LEN 2592
+ #else
+ #define MBEDTLS_PK_PQC_MAX_PUBKEY_RAW_LEN 1952
+ #endif
+-#if MBEDTLS_PK_PQC_MAX_PUBKEY_RAW_LEN > MBEDTLS_PK_MAX_PUBKEY_RAW_LEN
+-#undef MBEDTLS_PK_MAX_PUBKEY_RAW_LEN
+-#define MBEDTLS_PK_MAX_PUBKEY_RAW_LEN MBEDTLS_PK_PQC_MAX_PUBKEY_RAW_LEN
+-#endif
+ #endif /* MBEDTLS_SSL_TLS1_3_SIG_MLDSA65 */
+ 
+ typedef enum {
+@@ -144,6 +141,7 @@
+     /* Public EC or RSA key in raw format, where raw here means the format returned
+      * by psa_export_public_key(). */
+     uint8_t MBEDTLS_PRIVATE(pub_raw)[MBEDTLS_PK_MAX_PUBKEY_RAW_LEN];
++    uint8_t *MBEDTLS_PRIVATE(pqc_raw);
+ 
+     /* Lenght of the raw key above in bytes. */
+     size_t MBEDTLS_PRIVATE(pub_raw_len);
+diff --git a/tf-psa-crypto/extras/pk.c b/tf-psa-crypto/extras/pk.c
+--- a/tf-psa-crypto/extras/pk.c
++++ b/tf-psa-crypto/extras/pk.c
+@@ -25,9 +25,7 @@
+ #include <limits.h>
+ #include <stdint.h>
+ 
+-#if !defined(PK_EXPORT_KEYS_ON_THE_STACK)
+ #include "mbedtls/platform.h" // for calloc/free
+-#endif
+ 
+ 
+ /*
+@@ -43,6 +41,7 @@
+     ctx->priv_id = MBEDTLS_SVC_KEY_ID_INIT;
+     ctx->psa_type = PSA_KEY_TYPE_NONE;
+     memset(ctx->pub_raw, 0, sizeof(ctx->pub_raw));
++    ctx->pqc_raw = NULL;
+     ctx->pub_raw_len = 0;
+     ctx->bits = 0;
+ #if defined(PSA_WANT_KEY_TYPE_ECC_PUBLIC_KEY)
+@@ -65,6 +64,7 @@
+         psa_destroy_key(ctx->priv_id);
+     }
+ 
++    mbedtls_free(ctx->pqc_raw);
+     /* Leaves the context in the same state as mbedtls_pk_init(). */
+     mbedtls_platform_zeroize(ctx, sizeof(mbedtls_pk_context));
+ }
+diff --git a/tf-psa-crypto/extras/pkparse.c b/tf-psa-crypto/extras/pkparse.c
+--- a/tf-psa-crypto/extras/pkparse.c
++++ b/tf-psa-crypto/extras/pkparse.c
+@@ -585,10 +585,10 @@
+         size_t expected = pk_alg == MBEDTLS_PK_MLDSA65 ? 1952 : 2592;
+         if (len != expected) {
+             ret = MBEDTLS_ERR_PK_INVALID_PUBKEY;
+-        } else if (len > MBEDTLS_PK_MAX_PUBKEY_RAW_LEN) {
+-            ret = MBEDTLS_ERR_PK_BUFFER_TOO_SMALL;
++        } else if ((pk->pqc_raw = mbedtls_calloc(1, len)) == NULL) {
++            ret = MBEDTLS_ERR_PK_ALLOC_FAILED;
+         } else {
+-            memcpy(pk->pub_raw, *p, len);
++            memcpy(pk->pqc_raw, *p, len);
+             pk->pub_raw_len = len;
+             pk->bits = len * 8;
+             *p += len;
+diff --git a/tf-psa-crypto/extras/mldsa65_oqs.c b/tf-psa-crypto/extras/mldsa65_oqs.c
+--- a/tf-psa-crypto/extras/mldsa65_oqs.c
++++ b/tf-psa-crypto/extras/mldsa65_oqs.c
+@@ -47,7 +47,7 @@
+         return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+     }
+ 
+-    if (pk->pub_raw_len != MBEDTLS_MLDSA65_PUBLIC_KEY_LEN) {
++    if (!pk->pqc_raw || pk->pub_raw_len != MBEDTLS_MLDSA65_PUBLIC_KEY_LEN) {
+         return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+     }
+ 
+@@ -61,7 +61,7 @@
+         return MBEDTLS_ERR_PK_FEATURE_UNAVAILABLE;
+     }
+ 
+-    status = OQS_SIG_verify(mldsa, msg, msg_len, sig, sig_len, pk->pub_raw);
++    status = OQS_SIG_verify(mldsa, msg, msg_len, sig, sig_len, pk->pqc_raw);
+     OQS_SIG_free(mldsa);
+ 
+     if (status != OQS_SUCCESS) {
+@@ -99,10 +99,10 @@
+                                 const unsigned char *sig, size_t sig_len)
+ {
+     if (pk == NULL || (msg == NULL && msg_len != 0) || sig == NULL ||
+-        pk->pub_raw_len != 2592 || sig_len != 4627) {
++        !pk->pqc_raw || pk->pub_raw_len != 2592 || sig_len != 4627) {
+         return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+     }
+-    return OQS_SIG_ml_dsa_87_verify(msg, msg_len, sig, sig_len, pk->pub_raw)
++    return OQS_SIG_ml_dsa_87_verify(msg, msg_len, sig, sig_len, pk->pqc_raw)
+         == OQS_SUCCESS ? 0 : MBEDTLS_ERR_PK_INVALID_ALG;
+ }
+ #endif
+diff --git a/tf-psa-crypto/extras/pkwrite.c b/tf-psa-crypto/extras/pkwrite.c
+--- a/tf-psa-crypto/extras/pkwrite.c
++++ b/tf-psa-crypto/extras/pkwrite.c
+@@ -476,7 +476,10 @@
+         return MBEDTLS_ERR_PK_BUFFER_TOO_SMALL;
+     }
+ 
+-    memcpy(buf, ctx->pub_raw, ctx->pub_raw_len);
++    if (!ctx->pqc_raw && ctx->pub_raw_len > sizeof(ctx->pub_raw)) {
++        return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
++    }
++    memcpy(buf, ctx->pqc_raw ? ctx->pqc_raw : ctx->pub_raw, ctx->pub_raw_len);
+     *buf_len = ctx->pub_raw_len;
+ 
+     return 0;

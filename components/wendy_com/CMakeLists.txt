@@ -4,6 +4,7 @@ idf_component_register(
         "src/wendy_com_agent.c"
         "src/wendy_com_cmd.c"
         "src/wendy_com_sensor.c"
+        "src/wendy_com_service.c"
         "src/wendy_com_stdio.c"
         "src/wendy_com_stdio_pump.c"
         "src/wendy_com_link.c"

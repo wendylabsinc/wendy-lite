@@ -1,0 +1,5 @@
+# Physical 8 MiB flash geometry for the catalogued C5/C6 mesh + WASM variants.
+# Existing generic 4 MiB native variants retain their own partition layouts.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.net.8mb.csv"

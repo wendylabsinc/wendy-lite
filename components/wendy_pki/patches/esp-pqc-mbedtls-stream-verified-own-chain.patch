@@ -1,0 +1,92 @@
+--- a/include/mbedtls/ssl.h
++++ b/include/mbedtls/ssl.h
+@@ -1362,6 +1362,12 @@
+     /* Opt-in native endpoint mode: borrow wire issuer DER only during full
+      * path verification, then retain an independently owned peer leaf. */
+     uint8_t MBEDTLS_PRIVATE(wendy_compact_peer_chain);
++    /* Optional already-verified own chain. NULL destination queries one
++     * part's length (zero ends the chain); range reads return exact bytes.
++     * Callback storage must survive the handshake, not just ssl_setup. */
++    int (*MBEDTLS_PRIVATE(f_wendy_certificate_der))(void *, unsigned, size_t,
++                                                   unsigned char *, size_t);
++    void *MBEDTLS_PRIVATE(p_wendy_certificate_der);
+     /* needed even with renego disabled for LEGACY_BREAK_HANDSHAKE          */
+     uint8_t MBEDTLS_PRIVATE(allow_legacy_renegotiation); /*!< MBEDTLS_LEGACY_XXX   */
+ #if defined(MBEDTLS_SSL_MAX_FRAGMENT_LENGTH)
+--- a/library/ssl_tls13_generic.c
++++ b/library/ssl_tls13_generic.c
+@@ -1023,13 +1023,34 @@
+                                             context_len);
+         ssl_tls13_copy_certificate_fragment(&out, &remaining, &skip,
+                                             list_header, sizeof(list_header));
+-        for (crt = mbedtls_ssl_own_cert(ssl); crt != NULL; crt = crt->next) {
++        crt = mbedtls_ssl_own_cert(ssl);
++        for (unsigned index=0;;index++) {
++            int sourced=ssl->conf->f_wendy_certificate_der != NULL;
++            int length=sourced ? ssl->conf->f_wendy_certificate_der(
++                ssl->conf->p_wendy_certificate_der,index,0,NULL,0) :
++                crt ? (int)crt->raw.len : 0;
++            if (length<0 || (sourced && index>=8 && length))
++                return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
++            if (!length) break;
+             unsigned char cert_header[3];
+-            MBEDTLS_PUT_UINT24_BE(crt->raw.len, cert_header, 0);
++            MBEDTLS_PUT_UINT24_BE(length, cert_header, 0);
+             ssl_tls13_copy_certificate_fragment(&out, &remaining, &skip,
+                                                 cert_header, sizeof(cert_header));
+-            ssl_tls13_copy_certificate_fragment(&out, &remaining, &skip,
+-                                                crt->raw.p, crt->raw.len);
++            if (sourced) {
++                if (skip>=(size_t)length) skip-=(size_t)length;
++                else {
++                    size_t count=(size_t)length-skip;
++                    if (count>remaining) count=remaining;
++                    if (count && ssl->conf->f_wendy_certificate_der(
++                        ssl->conf->p_wendy_certificate_der,index,skip,out,count)!=(int)count)
++                        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
++                    out+=count;remaining-=count;skip=0;
++                }
++            } else {
++                ssl_tls13_copy_certificate_fragment(&out, &remaining, &skip,
++                                                    crt->raw.p, crt->raw.len);
++                crt=crt->next;
++            }
+             ssl_tls13_copy_certificate_fragment(&out, &remaining, &skip,
+                                                 empty_extensions, sizeof(empty_extensions));
+         }
+@@ -1065,12 +1086,21 @@
+     MBEDTLS_SSL_DEBUG_MSG(2, ("=> write certificate"));
+ 
+     /* The handshake and certificate-list lengths are each 24-bit values. */
+-    for (crt = mbedtls_ssl_own_cert(ssl); crt != NULL; crt = crt->next) {
+-        if (crt->raw.len > 0xffffff - 5 ||
+-            list_len > 0xffffff - 5 - crt->raw.len) {
++    crt = mbedtls_ssl_own_cert(ssl);
++    for (unsigned index=0;;index++) {
++        int sourced=ssl->conf->f_wendy_certificate_der != NULL;
++        int length=sourced ? ssl->conf->f_wendy_certificate_der(
++            ssl->conf->p_wendy_certificate_der,index,0,NULL,0) :
++            crt ? (int)crt->raw.len : 0;
++        if (length<0 || (sourced && index>=8 && length))
+             return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
+-        }
+-        list_len += crt->raw.len + 5;
++        if (!length) break;
++        if ((size_t)length > 0xffffff - 5 ||
++            list_len > 0xffffff - 5 - (size_t)length) {
++            return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
++        }
++        list_len += (size_t)length + 5;
++        if (!sourced) crt=crt->next;
+     }
+     body_len = 4 + ssl->handshake->certificate_request_context_len;
+     if (list_len > 0xffffff - body_len) {
+@@ -1081,7 +1111,7 @@
+     if (fragment_max <= 0) {
+         return fragment_max < 0 ? fragment_max : MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
+     }
+-    if (body_len + 4 > (size_t) fragment_max) {
++    if (ssl->conf->f_wendy_certificate_der || body_len + 4 > (size_t) fragment_max) {
+         return ssl_tls13_write_certificate_fragments(ssl, list_len, body_len,
+                                                      (size_t) fragment_max);
+     }

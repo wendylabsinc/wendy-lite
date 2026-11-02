@@ -39,3 +39,8 @@ complete a newer drain or extend its deadline, and newer requests or shutdown
 cancel both pending and in-progress recovery.
 
 CI runs this suite with AddressSanitizer and UndefinedBehaviorSanitizer.
+
+Both ordinary station and XIAO SensorLink camera configurations run the same
+handoff cases. Each credential attempt starts the driver only through the
+serialized stop/drain/configure sequence. The camera variant also checks that
+its no-modem-sleep policy is applied after a successful driver start.

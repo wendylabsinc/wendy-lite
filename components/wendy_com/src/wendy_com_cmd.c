@@ -13,7 +13,44 @@
 
 static const char *TAG = "wcom_cmd";
 static const struct wcom_app_delegate *_app_delegate;
+static const struct wcom_net_delegate *net_delegate;
+void wcom_cmd_set_net_delegate(const struct wcom_net_delegate *delegate)
+{
+    net_delegate = delegate;
+}
+WendyComResult wcom_cmd_net_get(WendyComNetStatus *status)
+{
+    return net_delegate && net_delegate->get ? net_delegate->get(status)
+                                             : WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+}
+WendyComResult wcom_cmd_net_topology(const WendyComNetTopologyParams *params,
+                                     WendyComNetTopologyPage *page)
+{
+    return net_delegate && net_delegate->topology ? net_delegate->topology(params, page)
+                                                  : WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+}
+void wcom_cmd_net_topology_release(WendyComNetTopologyPage *page)
+{
+    if (net_delegate && net_delegate->topology_release)
+        net_delegate->topology_release(page);
+}
+WendyComResult wcom_cmd_net_set(const WendyComNetConfig *config, WendyComNetStatus *status,
+                                uint32_t *token)
+{
+    *token = 0;
+    return net_delegate && net_delegate->set ? net_delegate->set(config, status, token)
+                                             : WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+}
+void wcom_cmd_net_reply_complete(uint32_t token)
+{
+    if (token && net_delegate && net_delegate->reply_complete)
+        net_delegate->reply_complete(token);
+}
 static const struct wcom_sensor_link_delegate *_sensor_link_delegate;
+bool wcom_cmd_sensor_link_available(void)
+{
+    return _sensor_link_delegate && _sensor_link_delegate->on_sensor_link_get_manifest;
+}
 
 // At most one push (app or conf) may be in progress at a time.
 enum _push_kind { PUSH_NONE, PUSH_APP, PUSH_CONF };
@@ -40,6 +77,11 @@ WendyComResult wcom_cmd_app_push_begin(int client_id, size_t size, WendyComAppTy
 {
     ESP_LOGI(TAG, "APP_PUSH_BEGIN client=%d size=%zu type=%s", client_id, size,
              app_type == WendyComAppType_WENDY_COM_APP_TYPE_NATIVE ? "native" : "wasm");
+    // A future app format must not fall through to the WASM delegate or
+    // acquire upload ownership on firmware that cannot interpret it.
+    if (app_type != WendyComAppType_WENDY_COM_APP_TYPE_WASM &&
+        app_type != WendyComAppType_WENDY_COM_APP_TYPE_NATIVE)
+        return WendyComResult_WENDY_COM_RESULT_BAD_APP_TYPE;
     if (_push_kind != PUSH_NONE) {
         ESP_LOGW(TAG, "APP_PUSH_BEGIN from client=%d while client=%d is pushing", client_id, _pushing_client_id);
         return WendyComResult_WENDY_COM_RESULT_BUSY;
@@ -81,6 +123,10 @@ WendyComResult wcom_cmd_conf_push_begin(int client_id, size_t size, WendyComConf
 {
     ESP_LOGI(TAG, "CONF_PUSH_BEGIN client=%d size=%zu mode=%s", client_id, size,
              mode == WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE ? "update" : "replace");
+    // Unknown update semantics cannot safely be interpreted as REPLACE.
+    if (mode != WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_REPLACE &&
+        mode != WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE)
+        return WendyComResult_WENDY_COM_RESULT_BAD_STATE;
     if (_push_kind != PUSH_NONE) {
         ESP_LOGW(TAG, "CONF_PUSH_BEGIN from client=%d while client=%d is pushing", client_id, _pushing_client_id);
         return WendyComResult_WENDY_COM_RESULT_BUSY;

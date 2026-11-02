@@ -13,3 +13,11 @@ WendyComSyncTimeParams.response type:FT_CALLBACK
 
 WendyComEnrollmentResetParams.expected_device_id max_size:13
 WendyComEnrollmentResetParams.nonce_hex max_size:65
+
+WendyComNetTopologyPage.tenant max_size:16 fixed_length:true
+WendyComNetTopologyPage.device max_size:16 fixed_length:true
+WendyComNetTopologyRecord.device max_size:16
+WendyComNetTopologyRecord.address max_size:16
+WendyComNetTopologyRecord.next_hop_device max_size:16
+WendyComNetTopologyRecord.owner_principal type:FT_CALLBACK
+WendyComNetTopologyRecord.owner_instance max_size:16

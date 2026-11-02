@@ -3,3 +3,5 @@ dependencies:
     override_path: "../wendy_com"
   wendy_conf:
     override_path: "../wendy_conf"
+  wendy_net_common:
+    override_path: "../wendy_net_common"
