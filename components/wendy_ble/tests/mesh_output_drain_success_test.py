@@ -24,7 +24,7 @@ def function(name):
     return block(match.start())
 
 
-structure = block(source.index('struct wble_mesh_pipe\n')) + ';'
+structure = block(re.search(r'(?m)^struct wble_mesh_pipe\s*\{', source).start()) + ';'
 marker = 'else if (p && event->type == BLE_L2CAP_EVENT_COC_TX_UNSTALLED)'
 unstalled = block(source.index(marker))
 unstalled = unstalled[unstalled.index('{') + 1:-1]

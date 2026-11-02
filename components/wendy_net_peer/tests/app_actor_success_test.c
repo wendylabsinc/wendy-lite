@@ -371,10 +371,46 @@ static void stop(void)
     }
     assert(!"OFF failed to drain");
 }
+/* A read EOF does not revoke the response direction of a guest stream. */
+static void half_close_reply(void)
+{
+    int remote = begin(false);
+    static const char request[] = "half-close request";
+    static const char reply[] = "final guest reply";
+    char bytes[sizeof request];
+    assert(send(remote, request, sizeof request, 0) == sizeof request);
+    assert(!shutdown(remote, SHUT_WR));
+    size_t received = 0;
+    for (unsigned i = 0; i < 1000 && received < sizeof request; i++) {
+        tick();
+        ssize_t n = recv(guest_fd, bytes + received, sizeof request - received, 0);
+        if (n > 0)
+            received += (size_t)n;
+    }
+    assert(received == sizeof request && !memcmp(bytes, request, sizeof request));
+    /* Ensure outer socket EOF is collected before the delayed guest response. */
+    for (unsigned i = 0; i < 20; i++)
+        tick();
+    assert(send(guest_fd, reply, sizeof reply, 0) == sizeof reply);
+    received = 0;
+    for (unsigned i = 0; i < 1000 && received < sizeof reply; i++) {
+        tick();
+        ssize_t n = recv(remote, bytes + received, sizeof reply - received, 0);
+        if (n > 0)
+            received += (size_t)n;
+    }
+    assert(received == sizeof reply && !memcmp(bytes, reply, sizeof reply));
+    stop();
+    close(remote);
+    close(guest_fd);
+    guest_fd = -1;
+    closes = completions = 0;
+}
 int main(void)
 {
     assert(wendy_net_runtime_memory_open());
     wendy_net_memory_scope_t previous = wendy_net_runtime_scope_enter();
+    half_close_reply();
     no_memory = true;
     int remote = begin(false);
     assert(clock_us >= 1050000); /* bounded prepare retry */
