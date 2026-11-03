@@ -1957,7 +1957,10 @@ static int admit_link(struct peer_state *root, struct peer_state *link)
     pthread_mutex_unlock(&state_lock);
     link->refresh_at = link->identity.verified_monotonic_us + REFRESH_INTERVAL_US;
 #if !WENDY_NET_NON_TRANSIT && CONFIG_WENDY_NET_BLE
-    if (!connected_peer) {
+    /* Device endpoint provenance can positively establish a new UUID. An
+     * operator without a surviving direct owner has no equivalent history;
+     * allow its admission, but conservatively retain the bounded receipt. */
+    if (!link->operator_peer && !connected_peer) {
         root->incoming_probe_waiting = false;
         root->incoming_probe_until_us = 0;
     }
@@ -2268,8 +2271,7 @@ static void maintain_incoming_demand(struct peer_state *root, int64_t now)
 {
     if (root->incoming_probe_waiting) {
         struct carrier_occupancy used;
-        if (carrier_occupancy(root, &used) && !used.releasing &&
-            candidate_room(root, WN_BLE)) {
+        if (carrier_occupancy(root, &used) && !used.releasing) {
             root->incoming_probe_waiting = false;
             root->incoming_probe_until_us =
                 now + INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS;
@@ -2308,7 +2310,7 @@ static bool reclaim_for_incoming_probe(struct peer_state *root)
     struct peer_state *victim = reclaim_victim(root, WN_BLE);
     if (!victim) {
         struct carrier_occupancy used;
-        if (held && carrier_occupancy(root, &used) && used.retiring) {
+        if (held && carrier_occupancy(root, &used) && used.releasing) {
             root->incoming_probe_waiting = true;
             root->incoming_probe_until_us = 0;
         } else if (held && !root->incoming_probe_waiting)

@@ -26,7 +26,9 @@ for its ordinary retry. After physical release, the existing 30-second failure
 interval temporarily gives new peers priority over restoring an old backup.
 Upgrades can use genuinely spare capacity while leaving that final opportunity
 available, and recovery remains possible when no direct working path remains.
-The opportunity expires if no new peer arrives; no additional timer runs.
+The opportunity can end early when a new peer is positively identified;
+otherwise it expires normally. Recovery or uncertain prior operator history
+does not erase a pending release anchor. No additional timer runs.
 
 For lab diagnostics, a full-router build can enable
 `CONFIG_WENDY_NET_CARRIER_OBSERVATION=y` (off by default). An ordinary topology

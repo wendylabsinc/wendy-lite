@@ -163,7 +163,9 @@ static int router_send(void *context, const void *data, size_t size, bool contro
 static struct wnrs opened_route;
 static struct connection *verified_connection;
 static struct fixture_identity verified_identity;
+static const struct operator_peer *verified_operator;
 static unsigned opens;
+static unsigned operator_opens;
 static int wnrs_open(struct wnrs **out, void *owner, struct connection *connection,
                      const void *identity, const void *peer, unsigned cost,
                      int (*send)(void *, const void *, size_t, bool), void *context) {
@@ -174,6 +176,7 @@ static int wnrs_open(struct wnrs **out, void *owner, struct connection *connecti
 static int wnrs_open_operator(struct wnrs **out, void *owner, struct connection *connection,
                               const void *identity, const void *peer, unsigned cost,
                               int (*send)(void *, const void *, size_t, bool), void *context) {
+    operator_opens++;
     return wnrs_open(out, owner, connection, identity, peer, cost, send, context);
 }
 static int reserve_candidate(struct peer_state *s, const struct wn_candidate *c) {
@@ -271,7 +274,7 @@ static struct connection *wendy_pki_net_take(void *setup, struct fixture_identit
     *identity = verified_identity; return verified_connection;
 }
 static const struct operator_peer *wendy_pki_mesh_authenticated_operator(struct connection *c) {
-    assert(c); return NULL;
+    assert(c); return verified_operator;
 }
 static void wnad_handshake_release(struct peer_state *link) { assert(link); }
 int wn_router_hello_write(const char *self, const char *peer, char *out, size_t capacity) {
@@ -320,9 +323,10 @@ static struct peer_state *reset(struct fixture *f) {
     clock_us = 1000000;
     free_heap = CONFIG_WENDY_NET_SETUP_FREE_BYTES;
     mesh_limit = 1;
-    snapshots = retired = opens = refusal_reads = 0;
+    snapshots = retired = opens = operator_opens = refusal_reads = 0;
     capacity_refused = false;
     verified_connection = NULL;
+    verified_operator = NULL;
     memset(&verified_identity, 0, sizeof verified_identity);
     refused_peer = (struct wble_mesh_peer){0};
     gate_releases = 0;
@@ -914,12 +918,28 @@ static void incoming_retry_fairness(void) {
         assert_no_allocations();
     }
 
-    /* A fresh unknown refusal while an unrelated native owner is pending
-     * re-awaits real room instead of spending the remaining hold while busy. */
+    /* A pending owner with no actual release in progress gets a finite
+     * refresh; it cannot make the original waiting anchor unbounded. */
     delayed_leaf_start(&f, &old_radio); root = &f.links[0];
     release_at(root, 20000000);
     clock_us = 25000000;
     physical = (struct wble_mesh_capacity){.external = 1, .physical_ready = true, .physical_free = 2};
+    refused_peer = (struct wble_mesh_peer){.address = {4}, .psm = 129};
+    capacity_refused = true;
+    assert(!reclaim_for_incoming_probe(root) && retired == 1);
+    assert(!root->incoming_probe_waiting && root->incoming_probe_until_us == 55000000);
+    clock_us = 54000000;
+    maintain_incoming_demand(root, clock_us);
+    assert(!root->incoming_probe_waiting && incoming_demand_active(root, clock_us));
+    clock_us = 55000000;
+    maintain_incoming_demand(root, clock_us);
+    assert(!incoming_demand_active(root, clock_us));
+    /* Actual physical release does re-anchor the next held opportunity. */
+    delayed_leaf_start(&f, &old_radio); root = &f.links[0];
+    release_at(root, 20000000);
+    clock_us = 25000000;
+    physical = (struct wble_mesh_capacity){.external = 1, .retiring = 1,
+                                         .physical_ready = true, .physical_free = 2};
     refused_peer = (struct wble_mesh_peer){.address = {4}, .psm = 129};
     capacity_refused = true;
     assert(!reclaim_for_incoming_probe(root) && retired == 1);
@@ -1339,6 +1359,131 @@ static void outgoing_probe_keeps_reclaimed_opportunity(void) {
     assert(candidate_class(root, &f.selection.candidates[standby]) == 2);
     assert_no_allocations();
 }
+
+static void start_operator_setup(struct fixture *f, unsigned slot,
+                                 const struct wn_candidate *candidate,
+                                 const struct operator_peer *operator_peer, uint8_t instance) {
+    struct peer_state *link = &f->links[slot];
+    link->setup_have_stream = true;
+    link->setup_server = true;
+    if (candidate->medium == WN_BLE) {
+        assert(physical.physical_free);
+        physical.physical_free--;
+    }
+    begin_setup(link, candidate, -1);
+    verified_operator = operator_peer;
+    verified_tls_result(f, slot, "");
+    /* The following ordinary operator hello supplies the authenticated
+     * installation token. Its principal comes from the verified TLS result. */
+    memset(link->operator_instance, instance, sizeof link->operator_instance);
+    assert(link->operator_peer == operator_peer && !link->candidate_held);
+}
+
+static void operator_reconnect_keeps_bounded_receipt(void) {
+    const struct operator_peer alice = {.principal = "tenant/operator/Alice"};
+    const struct operator_peer bob = {.principal = "tenant/operator/Bob"};
+    for (unsigned new_operator = 0; new_operator < 2; new_operator++) {
+        struct fixture f;
+        struct peer_state *root = reset(&f), *reconnect = &f.links[1];
+        root->config.max_links = 2;
+        own(&f, 0, peer_a, WN_LAN, 128, true);
+        root->operator_peer = &alice;
+        memset(root->operator_instance, 42, sizeof root->operator_instance);
+        root->incoming_probe_waiting = true;
+        physical.external = physical.retiring = 1;
+        physical.physical_free = 2;
+        struct wn_candidate c = {.medium = WN_BLE, .port = 129, .cost = 8192,
+                                  .address = "operator-reconnect"};
+        reconnect->setup_have_stream = true;
+        reconnect->setup_server = true;
+        physical.physical_free--;
+        begin_setup(reconnect, &c, -1);
+        assert(reconnect->setup_incoming_demand);
+        /* The old principal/instance owner disappears before TLS completes. */
+        retire_link(root);
+        root->operator_peer = NULL; /* close_session retires this old role. */
+        verified_operator = new_operator ? &bob : &alice;
+        verified_tls_result(&f, 1, "");
+        memset(reconnect->operator_instance, new_operator ? 99 : 42,
+               sizeof reconnect->operator_instance);
+        assert(!peer_has_working_carrier(root, reconnect, NULL));
+        assert(admit_link(root, reconnect) == 0 && opens == 1 && operator_opens == 1);
+        reconnect->setup_waiting = false;
+        assert(root->incoming_probe_waiting && !root->incoming_probe_until_us);
+        assert(!strcmp(reconnect->operator_peer->principal, new_operator ? bob.principal : alice.principal));
+        assert(reconnect->operator_instance[0] == (new_operator ? 99 : 42));
+        maintain_incoming_demand(root, clock_us);
+        assert(root->incoming_probe_waiting);
+        physical = (struct wble_mesh_capacity){.physical_ready = true, .physical_free = 2};
+        clock_us = 20000000;
+        maintain_incoming_demand(root, clock_us);
+        assert(!root->incoming_probe_waiting);
+        int64_t until = root->incoming_probe_until_us;
+        assert(until == clock_us + INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS);
+        opened_route.forwarding_until = clock_us + 100000000;
+        opened_route.selected_routes = true;
+        free_setup_channel(reconnect);
+        c = (struct wn_candidate){.medium = WN_LAN, .port = 43024, .cost = 128,
+                                  .address = "operator-upgrade"};
+        start_operator_setup(&f, 2, &c, reconnect->operator_peer, reconnect->operator_instance[0]);
+        assert(same_peer(reconnect, &f.links[2]));
+        assert(admit_link(root, &f.links[2]) == -1 && opens == 1);
+        discard_setup(&f.links[2]);
+        clock_us = until;
+        maintain_incoming_demand(root, clock_us);
+        assert(!incoming_demand_active(root, clock_us));
+        start_operator_setup(&f, 2, &c, reconnect->operator_peer, reconnect->operator_instance[0]);
+        assert(!f.links[2].setup_incoming_demand);
+        assert(admit_link(root, &f.links[2]) == 0 && opens == 2 && operator_opens == 2);
+        free_setup_channel(&f.links[2]);
+        assert_no_allocations();
+    }
+}
+
+static void last_slot_recovery_starts_finite_deadline(void) {
+    struct fixture f;
+    struct peer_state *root = reset(&f);
+    root->config.max_links = 2;
+    own(&f, 0, peer_a, WN_LAN, 128, false);
+    root->incoming_probe_waiting = true;
+    physical = (struct wble_mesh_capacity){.external = 1, .retiring = 1,
+                                         .physical_ready = true, .physical_free = 2};
+    int known = hint(&f, 0, peer_a, WN_BLE, 8192);
+    assert(!wn_candidate_authenticated(&f.selection, (unsigned)known, peer_a));
+    struct wn_candidate recovery = f.selection.candidates[known];
+    /* Losing the primary path frees the only actor unit not held by the
+     * original victim's physical close. Real recovery fills that final unit. */
+    retire_link(root);
+    root->setup_have_stream = true;
+    physical.physical_free--;
+    begin_setup(root, &recovery, -1);
+    assert(root->candidate.authenticated);
+    verified_tls_result(&f, 0, peer_a);
+    assert(admit_link(root, root) == 0);
+    root->setup_waiting = false;
+    assert(root->incoming_probe_waiting && !root->incoming_probe_until_us);
+    assert(!candidate_room(root, WN_BLE));
+    maintain_incoming_demand(root, clock_us);
+    assert(root->incoming_probe_waiting);
+    /* After actual original release, a newly accepted pending owner can keep
+     * total capacity full. It is not a release and cannot pin waiting forever. */
+    clock_us = 20000000;
+    physical = (struct wble_mesh_capacity){.external = 1, .retiring = 0,
+                                         .physical_ready = true, .physical_free = 1};
+    struct carrier_occupancy used;
+    assert(carrier_occupancy(root, &used) && used.total == root->config.max_links && !used.releasing);
+    assert(!candidate_room(root, WN_BLE));
+    maintain_incoming_demand(root, clock_us);
+    assert(!root->incoming_probe_waiting);
+    int64_t until = clock_us + INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS;
+    assert(root->incoming_probe_until_us == until);
+    clock_us = until;
+    maintain_incoming_demand(root, clock_us);
+    assert(!incoming_demand_active(root, clock_us));
+    assert(!candidate_room(root, WN_BLE));
+    free_setup_channel(root);
+    assert_no_allocations();
+}
 #endif
 int main(void) {
     assert(wendy_net_runtime_memory_open());
@@ -1389,6 +1534,8 @@ int main(void) {
         recovery_history_before_authentication();
         recovery_at_full_budget();
         outgoing_probe_keeps_reclaimed_opportunity();
+        operator_reconnect_keeps_bounded_receipt();
+        last_slot_recovery_starts_finite_deadline();
     }
 #endif
     assert_no_allocations();
