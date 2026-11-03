@@ -516,3 +516,9 @@ target_compile_options(clock_observation_test PRIVATE -Wall -Wextra -Werror -UND
 target_link_libraries(clock_observation_test PRIVATE pki)
 add_test(NAME pki_clock_observation COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_LIST_DIR}/clock_observation_test.py" "$<TARGET_FILE:clock_observation_test>")
+
+add_executable(clock_observation_unavailable_test clock_observation_unavailable_test.c)
+target_include_directories(clock_observation_unavailable_test PRIVATE ../src)
+target_compile_options(clock_observation_unavailable_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+target_link_libraries(clock_observation_unavailable_test PRIVATE pki)
+add_test(NAME pki_clock_observation_unavailable COMMAND clock_observation_unavailable_test)
