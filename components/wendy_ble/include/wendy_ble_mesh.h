@@ -42,7 +42,7 @@ void wble_mesh_router_admission(bool available);
 bool wble_mesh_incoming_available(void);
 #if !WENDY_NET_NON_TRANSIT
 struct wble_mesh_capacity {
-    unsigned external, retiring;
+    unsigned external, retiring, physical_free;
     bool physical_ready;
 };
 /* Native physical owners not represented by an actor carrier, including

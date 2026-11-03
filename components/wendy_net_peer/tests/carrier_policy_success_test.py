@@ -51,6 +51,20 @@ static bool pickup_defers_standby(struct peer_state *root, struct wble_mesh_peer
 '''
 
 
+def setup_authentication_stage():
+    """Execute the exact verified-TLS pickup/cache stage before hello I/O."""
+    start = source.index('    if (!link->hello_started) {', source.index('static int setup_hello('))
+    begin = source.index('{', start)
+    depth, end = 1, begin + 1
+    while depth:
+        depth += (source[end] == '{') - (source[end] == '}')
+        end += 1
+    stage = source[start:end]
+    assert stage.index('previously_authenticated_peer(') < stage.index('memcpy(link->authenticated_peer')
+    assert stage.index('memcpy(link->authenticated_peer') < stage.index('wn_candidate_authenticated(')
+    return 'static int setup_authenticated_stage(struct peer_state *link) {\n' + stage + '\nreturn 0;\n}\n'
+
+
 head = r'''
 #include "wendy_net_actor.h"
 #include "wendy_net_peer_protocol.h"
@@ -74,6 +88,7 @@ struct operator_peer { const char *principal; };
 struct connection { bool borrowed; };
 struct wnrs { int64_t forwarding_until; bool selected_routes; };
 struct wnrs_node { unsigned unused; };
+struct fixture_identity { char device[37], peer[37]; int64_t verified_monotonic_us; };
 struct peer_state {
     struct { unsigned max_links, ble_links, wifi_links; bool ble, infrastructure_wifi; } config;
     struct peer_state *next, *owner;
@@ -92,7 +107,7 @@ struct peer_state {
     char authenticated_peer[37];
     uint64_t attachment;
     int64_t identity_until;
-    struct { char device[37]; int64_t verified_monotonic_us; } identity;
+    struct fixture_identity identity;
     uint8_t self[16];
     int setup_result, candidate_index;
     bool setup_server, setup_have_stream;
@@ -112,9 +127,12 @@ struct peer_state {
     size_t hello_in, hello_out, hello_size;
     int setup_fd;
     int64_t setup_at;
+    void *tls_setup;
+    char control[64];
 };
 enum { CLOCK_EMPTY, CLOCK_RUNNING };
 #define REFRESH_INTERVAL_US 1000000
+#define PEER_CONTROL_BYTES 64
 static pthread_mutex_t state_lock = PTHREAD_MUTEX_INITIALIZER;
 static int64_t clock_us;
 static size_t free_heap;
@@ -143,6 +161,8 @@ static int router_send(void *context, const void *data, size_t size, bool contro
     (void)context; (void)data; (void)size; (void)control; return 0;
 }
 static struct wnrs opened_route;
+static struct connection *verified_connection;
+static struct fixture_identity verified_identity;
 static unsigned opens;
 static int wnrs_open(struct wnrs **out, void *owner, struct connection *connection,
                      const void *identity, const void *peer, unsigned cost,
@@ -241,9 +261,25 @@ static void retire_link(struct peer_state *s) {
         physical.external++;
         physical.retiring++;
         physical.physical_ready = false;
+    } else if (s->candidate.medium == WN_BLE) {
+        physical.physical_free++;
     }
 }
 static unsigned wble_mesh_profile(void) { return 0; }
+static struct connection *wendy_pki_net_take(void *setup, struct fixture_identity *identity) {
+    (void)setup; assert(verified_connection);
+    *identity = verified_identity; return verified_connection;
+}
+static const struct operator_peer *wendy_pki_mesh_authenticated_operator(struct connection *c) {
+    assert(c); return NULL;
+}
+static void wnad_handshake_release(struct peer_state *link) { assert(link); }
+int wn_router_hello_write(const char *self, const char *peer, char *out, size_t capacity) {
+    assert(self && peer && capacity); *out = 1; return 1;
+}
+void wn_put32(uint8_t *out, uint32_t value) {
+    for (unsigned i = 0; i < 4; i++) out[i] = (uint8_t)(value >> (24 - 8 * i));
+}
 static int wnad_connect(const char *address, unsigned port, bool *connecting) {
     assert(address && port); *connecting = true; return 7;
 }
@@ -286,6 +322,8 @@ static struct peer_state *reset(struct fixture *f) {
     mesh_limit = 1;
     snapshots = retired = opens = refusal_reads = 0;
     capacity_refused = false;
+    verified_connection = NULL;
+    memset(&verified_identity, 0, sizeof verified_identity);
     refused_peer = (struct wble_mesh_peer){0};
     gate_releases = 0;
     advertisement_publishes = 0;
@@ -293,7 +331,7 @@ static struct peer_state *reset(struct fixture *f) {
     last_retired = NULL;
     snapshot_ok = true;
     delay_release = false;
-    physical = (struct wble_mesh_capacity){.physical_ready = true};
+    physical = (struct wble_mesh_capacity){.physical_ready = true, .physical_free = 3};
     return &f->links[0];
 }
 static void own(struct fixture *f, unsigned i, const char *peer, enum wn_medium medium,
@@ -310,6 +348,7 @@ static void own(struct fixture *f, unsigned i, const char *peer, enum wn_medium 
     s->router = &f->routes[i];
     s->identity_until = clock_us + 100000000;
     f->routes[i].forwarding_until = forwarding ? s->identity_until : 0;
+    if (medium == WN_BLE) { assert(physical.physical_free); physical.physical_free--; }
     atomic_fetch_add(&f->links[0].carrier_count, 1);
 }
 static int hint(struct fixture *f, unsigned serial, const char *peer, enum wn_medium medium,
@@ -589,7 +628,7 @@ static void planner_release_and_gates(void) {
     assert(plan_additional_candidate(root, clock_us / 1000, true) == -1);
     assert(retired == 1 && last_retired == &f.links[1]);
     assert(f.links[1].attachment == attachment + 1 && atomic_load(&root->active));
-    assert(f.selection.candidates[probe].retry_ms >= clock_us / 1000 + 5000);
+    assert(f.selection.candidates[probe].retry_ms == 0); /* No dial was attempted. */
     struct carrier_occupancy used;
     assert(carrier_occupancy(root, &used) && used.total == 8 && used.retiring);
     for (unsigned i = 0; i < 3; i++) {
@@ -598,7 +637,7 @@ static void planner_release_and_gates(void) {
         assert(plan_additional_candidate(root, clock_us / 1000, true) == -1);
         assert(retired == 1);
     }
-    physical = (struct wble_mesh_capacity){.physical_ready = true};
+    physical = (struct wble_mesh_capacity){.physical_ready = true, .physical_free = 3};
     f.selection.candidates[probe].seen_ms = clock_us / 1000;
     assert(plan_additional_candidate(root, clock_us / 1000, true) == probe);
     assert(retired == 1);
@@ -611,7 +650,7 @@ static void planner_release_and_gates(void) {
     f.links[7].active = false;
     f.links[7].candidate_held = false;
     f.links[7].connection = NULL;
-    physical = (struct wble_mesh_capacity){.external = 1, .retiring = 0,
+    physical = (struct wble_mesh_capacity){.external = 1, .retiring = 0, .physical_free = 1,
                                          .physical_ready = true};
     probe = hint(&f, 0, NULL, WN_BLE, 8192);
     f.selection.candidates[probe].passive = true;
@@ -670,7 +709,7 @@ static void incoming_probe(void) {
         capacity_refused = true;
         assert(!reclaim_for_incoming_probe(root) && retired == 1);
     }
-    physical = (struct wble_mesh_capacity){.physical_ready = true};
+    physical = (struct wble_mesh_capacity){.physical_ready = true, .physical_free = 2};
     assert(ble_admission_available(root)); /* Ordinary remote retry now fits. */
     assert(ble_probe_available(root));
     update_ble(root, peer_a, peer_a);
@@ -682,7 +721,7 @@ static void incoming_probe(void) {
     f.links[7].active = false;
     f.links[7].candidate_held = false;
     f.links[7].connection = NULL;
-    physical = (struct wble_mesh_capacity){.external = 1, .retiring = 0,
+    physical = (struct wble_mesh_capacity){.external = 1, .retiring = 0, .physical_free = 1,
                                          .physical_ready = true};
     capacity_refused = true;
     assert(!reclaim_for_incoming_probe(root) && !retired);
@@ -753,7 +792,7 @@ static int delayed_leaf_start(struct fixture *f, struct wble_mesh_peer *old_radi
 
 static void release_at(struct peer_state *root, int64_t at) {
     clock_us = at;
-    physical = (struct wble_mesh_capacity){.physical_ready = true};
+    physical = (struct wble_mesh_capacity){.physical_ready = true, .physical_free = 3};
     maintain_incoming_demand(root, clock_us);
     assert(!root->incoming_probe_waiting);
     assert(root->incoming_probe_until_us == at + INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS);
@@ -765,6 +804,10 @@ static void start_authenticated_setup(struct fixture *f, unsigned slot,
     struct peer_state *link = &f->links[slot];
     link->setup_server = incoming;
     link->setup_have_stream = true;
+    if (candidate->medium == WN_BLE) {
+        assert(physical.physical_free);
+        physical.physical_free--;
+    }
     begin_setup(link, candidate, -1);
     assert(link->tls_channel && link->setup_waiting);
     link->connection = &f->connections[slot];
@@ -796,7 +839,7 @@ static void incoming_retry_fairness(void) {
     /* Physical release alone is insufficient while the old actor's clock
      * completion still owns its slot. Start only after both owners release. */
     clock_us = 20000000;
-    physical = (struct wble_mesh_capacity){.physical_ready = true};
+    physical = (struct wble_mesh_capacity){.physical_ready = true, .physical_free = 3};
     f.links[1].clock.phase = CLOCK_RUNNING;
     maintain_incoming_demand(root, clock_us);
     assert(root->incoming_probe_waiting && !root->incoming_probe_until_us);
@@ -876,7 +919,7 @@ static void incoming_retry_fairness(void) {
     delayed_leaf_start(&f, &old_radio); root = &f.links[0];
     release_at(root, 20000000);
     clock_us = 25000000;
-    physical = (struct wble_mesh_capacity){.external = 1, .physical_ready = true};
+    physical = (struct wble_mesh_capacity){.external = 1, .physical_ready = true, .physical_free = 2};
     refused_peer = (struct wble_mesh_peer){.address = {4}, .psm = 129};
     capacity_refused = true;
     assert(!reclaim_for_incoming_probe(root) && retired == 1);
@@ -959,6 +1002,343 @@ static void tls_learned_endpoint_hint(void) {
     assert(f.selection.candidates[old_index].authenticated);
     assert_no_allocations();
 }
+
+static void discard_setup(struct peer_state *link) {
+    free_setup_channel(link);
+    if (link->candidate_held && link->candidate_index >= 0)
+        wn_candidate_release(link->selection, (unsigned)link->candidate_index);
+    link->candidate_held = false;
+    link->setup_waiting = false;
+    link->connection = NULL;
+    link->router = NULL;
+}
+
+static void reserve_last_opportunity(void) {
+    struct fixture f;
+    for (unsigned cost_index = 0; cost_index < 2; cost_index++) {
+        struct peer_state *root = reset(&f);
+        root->config.max_links = 2;
+        own(&f, 0, peer_a, WN_BLE, 8192, true);
+        root->incoming_probe_until_us = clock_us + INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS;
+        unsigned cost = cost_index ? 8192 : 128;
+        int old_lan = hint(&f, 0, peer_a, WN_LAN, cost);
+        assert(candidate_class(root, &f.selection.candidates[old_lan]) == (cost_index ? 2 : 1));
+        assert(peer_has_working_carrier(root, NULL, peer_a));
+        assert(incoming_opportunity_reserved(root, WN_LAN, false, false));
+        assert(additional_candidate(root, clock_us / 1000, true) == -1);
+        struct wn_candidate existing = f.selection.candidates[old_lan];
+        start_authenticated_setup(&f, 1, &existing, peer_a, true);
+        assert(admit_link(root, &f.links[1]) == -1 && !opens);
+        assert(atomic_load(&root->active));
+        discard_setup(&f.links[1]);
+        /* After ordinary expiry, a cheap or equal upgrade can use the slot. */
+        clock_us = root->incoming_probe_until_us;
+        maintain_incoming_demand(root, clock_us);
+        f.selection.candidates[old_lan].seen_ms = clock_us / 1000;
+        assert(plan_additional_candidate(root, clock_us / 1000, true) == old_lan);
+        start_authenticated_setup(&f, 1, &existing, peer_a, true);
+        assert(!f.links[1].setup_incoming_demand);
+        assert(admit_link(root, &f.links[1]) == 0 && opens == 1);
+        free_setup_channel(&f.links[1]);
+        assert_no_allocations();
+    }
+
+    /* A hold reserves one opportunity, not every spare unit. These known
+     * cross-medium upgrades leave another total, medium and physical slot. */
+    struct peer_state *root = reset(&f);
+    own(&f, 0, peer_a, WN_BLE, 8192, true);
+    root->incoming_probe_until_us = clock_us + INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS;
+    int64_t until = root->incoming_probe_until_us;
+    int upgrade = hint(&f, 0, peer_a, WN_LAN, 128);
+    assert(!incoming_opportunity_reserved(root, WN_LAN, false, false));
+    assert(plan_additional_candidate(root, clock_us / 1000, true) == upgrade);
+    struct wn_candidate c = f.selection.candidates[upgrade];
+    start_authenticated_setup(&f, 1, &c, peer_a, false);
+    assert(admit_link(root, &f.links[1]) == 0);
+    assert(root->incoming_probe_until_us == until);
+    free_setup_channel(&f.links[1]);
+    assert_no_allocations();
+
+    root = reset(&f);
+    own(&f, 0, peer_a, WN_LAN, 128, true);
+    root->incoming_probe_until_us = clock_us + INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS;
+    until = root->incoming_probe_until_us;
+    upgrade = hint(&f, 0, peer_a, WN_BLE, 8192);
+    root->config.ble_links = 1;
+    assert(incoming_opportunity_reserved(root, WN_BLE, false, false));
+    assert(additional_candidate(root, clock_us / 1000, true) == -1);
+    root->config.ble_links = 2;
+    physical.physical_free = 2; /* One time-only pipe occupies the third unit. */
+    assert(!incoming_opportunity_reserved(root, WN_BLE, false, false));
+    assert(plan_additional_candidate(root, clock_us / 1000, true) == upgrade);
+    c = f.selection.candidates[upgrade];
+    start_authenticated_setup(&f, 1, &c, peer_a, true);
+    assert(physical.physical_free == 1);
+    assert(admit_link(root, &f.links[1]) == 0);
+    assert(root->incoming_probe_until_us == until);
+    free_setup_channel(&f.links[1]);
+    assert_no_allocations();
+
+    /* Signed-time pipes can make physical capacity the final opportunity even
+     * when the actor's total and native BLE logical budgets have spare units. */
+    root = reset(&f);
+    own(&f, 0, peer_a, WN_LAN, 128, true);
+    root->incoming_probe_until_us = clock_us + INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS;
+    struct wble_mesh_peer old_radio = {.address = {1}, .psm = 129};
+    c = (struct wn_candidate){.medium = WN_BLE, .port = 129, .cost = 8192,
+                              .ble_capabilities = WN_BLE_NATIVE_ACCEPTING};
+    strcpy(c.device, peer_a);
+    ble_address(c.address, old_radio.address, old_radio.address_type);
+    upgrade = wn_candidate_seen(&f.selection, &c, clock_us / 1000);
+    assert(upgrade >= 0 && !wn_candidate_authenticated(&f.selection, (unsigned)upgrade, peer_a));
+    physical.physical_free = 1;
+    assert(incoming_opportunity_reserved(root, WN_BLE, false, false));
+    assert(additional_candidate(root, clock_us / 1000, true) == -1);
+    physical.physical_free = 0; /* Host take owns the final pipe before actor setup. */
+    assert(pickup_defers_standby(root, old_radio) && !f.links[1].tls_channel);
+    physical.physical_free = 1;
+    start_authenticated_setup(&f, 1, &c, peer_a, true);
+    assert(physical.physical_free == 0);
+    assert(admit_link(root, &f.links[1]) == -1 && !opens);
+    free_setup_channel(&f.links[1]);
+    assert_no_allocations();
+
+    root = reset(&f);
+    own(&f, 0, peer_a, WN_LAN, 128, true);
+    root->incoming_probe_until_us = clock_us + INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS;
+    until = root->incoming_probe_until_us;
+    mesh_limit = 0;
+    root->config.max_links = 1;
+    clock_us += 5000000;
+    refused_peer = (struct wble_mesh_peer){.address = {6}, .psm = 129};
+    capacity_refused = true;
+    assert(!reclaim_for_incoming_probe(root) && !retired);
+    assert(!root->incoming_probe_waiting && root->incoming_probe_until_us > until);
+    assert(root->incoming_probe_until_us == clock_us +
+           INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS);
+    assert_no_allocations();
+}
+
+static void recover_during_release(void) {
+    struct fixture f;
+    struct wble_mesh_peer old_radio;
+    int recovery = delayed_leaf_start(&f, &old_radio);
+    struct peer_state *root = &f.links[0];
+    /* An unrelated spare actor unit exists. The original slower BLE owner
+     * remains physically closing, while its surviving LAN loses routing. */
+    f.links[7].active = false;
+    f.links[7].candidate_held = false;
+    f.links[7].connection = NULL;
+    atomic_fetch_sub(&root->carrier_count, 1);
+    f.routes[0].forwarding_until = clock_us;
+    physical.physical_ready = true;
+    physical.physical_free = 2;
+    clock_us += 5000000;
+    f.selection.candidates[recovery].seen_ms = clock_us / 1000;
+    assert(root->incoming_probe_waiting && !root->incoming_probe_until_us);
+    assert(!peer_has_working_carrier(root, NULL, peer_a));
+    assert(!incoming_standby_hint(root, &f.selection.candidates[recovery]));
+    assert(!pickup_defers_standby(root, old_radio));
+    assert(plan_additional_candidate(root, clock_us / 1000, true) == recovery);
+    struct wn_candidate c = f.selection.candidates[recovery];
+    start_authenticated_setup(&f, 7, &c, peer_a, false);
+    assert(f.links[7].setup_incoming_demand);
+    assert(admit_link(root, &f.links[7]) == 0 && opens == 1);
+    f.links[7].setup_waiting = false;
+    assert(root->incoming_probe_waiting && !root->incoming_probe_until_us);
+    opened_route.forwarding_until = clock_us + 100000000;
+    opened_route.selected_routes = true;
+    assert(peer_has_working_carrier(root, NULL, peer_a));
+    maintain_incoming_demand(root, clock_us);
+    assert(root->incoming_probe_waiting && !root->incoming_probe_until_us);
+    /* Same-UUID recovery does not clear or spend the original release anchor. */
+    clock_us = 20000000;
+    physical = (struct wble_mesh_capacity){.physical_ready = true, .physical_free = 2};
+    maintain_incoming_demand(root, clock_us);
+    assert(!root->incoming_probe_waiting);
+    assert(root->incoming_probe_until_us == clock_us +
+           INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS);
+    /* Once recovery is selected and no join/release remains in flight, fresh
+     * unknown demand may reclaim the now-unused old LAN for its next attempt. */
+    root->config.max_links = 7;
+    clock_us += 1000000;
+    refused_peer = (struct wble_mesh_peer){.address = {5}, .psm = 129};
+    capacity_refused = true;
+    assert(reclaim_for_incoming_probe(root));
+    assert(retired == 2 && last_retired == root);
+    assert(atomic_load(&f.links[7].active) && wnrs_peer_forwarding_ready(f.links[7].router, clock_us));
+    assert(root->incoming_probe_waiting && !root->incoming_probe_until_us);
+    maintain_incoming_demand(root, clock_us);
+    assert(!root->incoming_probe_waiting && incoming_demand_active(root, clock_us));
+    free_setup_channel(&f.links[7]);
+    assert_no_allocations();
+}
+
+static void verified_tls_result(struct fixture *f, unsigned slot, const char *peer) {
+    struct peer_state *link = &f->links[slot];
+    verified_connection = &f->connections[slot];
+    strcpy(verified_identity.device, "00000000-0000-4000-8000-000000000000");
+    strcpy(verified_identity.peer, peer);
+    verified_identity.verified_monotonic_us = clock_us;
+    link->identity_until = clock_us + 100000000;
+    assert(setup_authenticated_stage(link) == 0);
+    assert(link->connection == verified_connection && link->hello_started);
+    assert(!strcmp(link->authenticated_peer, peer));
+}
+
+static void recovery_history_before_authentication(void) {
+    struct fixture f;
+    struct peer_state *root = reset(&f), *recovering = &f.links[1];
+    own(&f, 0, peer_a, WN_LAN, 128, true);
+    root->incoming_probe_waiting = true;
+    physical.external = physical.retiring = 1;
+    physical.physical_free = 2;
+    struct wn_candidate c = {.medium = WN_BLE, .port = 129, .cost = 8192,
+                              .address = "cached-recovery", .ble_capabilities = WN_BLE_NATIVE_ACCEPTING};
+    strcpy(c.device, peer_a);
+    int cached = wn_candidate_seen(&f.selection, &c, clock_us / 1000);
+    assert(cached >= 0 && !wn_candidate_authenticated(&f.selection, (unsigned)cached, peer_a));
+    int other_history = hint(&f, 1, peer_a, WN_BLE, 8192);
+    assert(!wn_candidate_authenticated(&f.selection, (unsigned)other_history, peer_a));
+    recovering->setup_have_stream = true;
+    begin_setup(recovering, &c, -1);
+    assert(recovering->candidate.authenticated && !strcmp(recovering->authenticated_peer, peer_a));
+    assert(recovering->setup_incoming_demand);
+    /* The live incumbent can retire and other unheld cache history can churn
+     * before TLS finishes. The setup's verified prior endpoint stays pinned. */
+    retire_link(root);
+    for (unsigned i = 10; i < 10 + 2 * WN_CANDIDATES; i++) {
+        clock_us += 1000;
+        hint(&f, i, NULL, WN_LAN, 128);
+    }
+    assert(!atomic_load(&root->active));
+    assert(f.selection.candidates[cached].holds == 1);
+    assert(!f.selection.candidates[other_history].authenticated ||
+           strcmp(f.selection.candidates[other_history].device, peer_a));
+    unsigned remaining_history = 0;
+    for (unsigned i = 0; i < WN_CANDIDATES; i++)
+        remaining_history += f.selection.candidates[i].authenticated &&
+                             !strcmp(f.selection.candidates[i].device, peer_a);
+    assert(remaining_history == 1);
+    assert(recovering->candidate.authenticated);
+    verified_tls_result(&f, 1, peer_a);
+    assert(recovering->candidate.authenticated);
+    assert(admit_link(root, recovering) == 0);
+    assert(root->incoming_probe_waiting && !root->incoming_probe_until_us);
+    free_setup_channel(recovering);
+    assert_no_allocations();
+
+    /* A new endpoint for an already TLS-known UUID pins that prior UUID at
+     * begin_setup, even though the new endpoint's own row is not verified yet. */
+    root = reset(&f); recovering = &f.links[1];
+    own(&f, 0, peer_a, WN_LAN, 128, true);
+    root->incoming_probe_waiting = true;
+    physical.external = physical.retiring = 1;
+    physical.physical_free = 2;
+    int history = hint(&f, 1, peer_a, WN_BLE, 8192);
+    assert(!wn_candidate_authenticated(&f.selection, (unsigned)history, peer_a));
+    c = (struct wn_candidate){.medium = WN_BLE, .port = 129, .cost = 8192,
+                              .address = "new-address-for-old-UUID", .ble_capabilities = WN_BLE_NATIVE_ACCEPTING};
+    strcpy(c.device, peer_a);
+    recovering->setup_have_stream = true;
+    begin_setup(recovering, &c, -1);
+    assert(recovering->candidate.authenticated && !strcmp(recovering->authenticated_peer, peer_a));
+    assert(!f.selection.candidates[recovering->candidate_index].authenticated);
+    retire_link(root);
+    for (unsigned i = 30; i < 30 + 2 * WN_CANDIDATES; i++) {
+        clock_us += 1000;
+        hint(&f, i, NULL, WN_LAN, 128);
+    }
+    assert(!previously_authenticated_peer(root, peer_a));
+    verified_tls_result(&f, 1, peer_a);
+    assert(recovering->candidate.authenticated);
+    assert(admit_link(root, recovering) == 0);
+    assert(root->incoming_probe_waiting && !root->incoming_probe_until_us);
+    free_setup_channel(recovering);
+    assert_no_allocations();
+
+    /* Its own newly verified cache row cannot turn a genuinely new UUID into
+     * prior recovery context. Only admitting that new peer clears the hold. */
+    root = reset(&f); recovering = &f.links[1];
+    own(&f, 0, peer_a, WN_LAN, 128, true);
+    root->incoming_probe_waiting = true;
+    physical.external = physical.retiring = 1;
+    physical.physical_free = 2;
+    c = (struct wn_candidate){.medium = WN_BLE, .port = 129, .cost = 8192,
+                              .address = "new-endpoint", .ble_capabilities = WN_BLE_NATIVE_ACCEPTING};
+    recovering->setup_have_stream = true;
+    begin_setup(recovering, &c, -1);
+    assert(!recovering->candidate.authenticated && !recovering->authenticated_peer[0]);
+    assert(!previously_authenticated_peer(root, peer_b));
+    verified_tls_result(&f, 1, peer_b);
+    assert(!recovering->candidate.authenticated);
+    assert(f.selection.candidates[recovering->candidate_index].authenticated);
+    assert(previously_authenticated_peer(root, peer_b));
+    assert(root->incoming_probe_waiting);
+    assert(admit_link(root, recovering) == 0);
+    assert(!root->incoming_probe_waiting && !root->incoming_probe_until_us);
+    free_setup_channel(recovering);
+    assert_no_allocations();
+}
+
+static void recovery_at_full_budget(void) {
+    struct fixture f;
+    full_redundant(&f);
+    struct peer_state *root = &f.links[0];
+    strcpy(f.links[2].candidate.device, peer_b);
+    strcpy(f.links[2].authenticated_peer, peer_b);
+    f.routes[2].forwarding_until = 0;
+    int recovery = hint(&f, 0, peer_b, WN_BLE, 8192);
+    assert(candidate_class(root, &f.selection.candidates[recovery]) == 0);
+    assert(!peer_has_working_carrier(root, NULL, peer_b));
+    assert(additional_candidate(root, clock_us / 1000, true) == recovery);
+    assert(plan_additional_candidate(root, clock_us / 1000, true) == recovery);
+    assert(retired == 1 && last_retired == &f.links[1]);
+    assert(atomic_load(&root->active) && wnrs_peer_forwarding_ready(root->router, clock_us));
+    assert(atomic_load(&f.links[2].active));
+    assert_no_allocations();
+}
+
+static void outgoing_probe_keeps_reclaimed_opportunity(void) {
+    struct fixture f;
+    full_redundant(&f);
+    struct peer_state *root = &f.links[0];
+    strcpy(f.links[2].candidate.device, peer_b);
+    strcpy(f.links[2].authenticated_peer, peer_b);
+    int probe = hint(&f, 0, NULL, WN_BLE, 8192);
+    int standby = hint(&f, 1, peer_b, WN_BLE, 8192);
+    assert(probe == 0 && standby == 1);
+    struct wn_candidate victim_hint = f.links[1].candidate;
+    int victim_row = wn_candidate_seen(&f.selection, &victim_hint, clock_us / 1000);
+    assert(victim_row >= 0 && !wn_candidate_hold(&f.selection, (unsigned)victim_row));
+    f.links[1].candidate_index = victim_row;
+    assert(candidate_class(root, &f.selection.candidates[probe]) == 0);
+    assert(candidate_class(root, &f.selection.candidates[standby]) == 2);
+    assert(additional_candidate(root, clock_us / 1000, true) == probe);
+    delay_release = true;
+    int64_t reclaimed_at = clock_us;
+    assert(plan_additional_candidate(root, clock_us / 1000, true) == -1);
+    assert(retired == 1 && last_retired == &f.links[1]);
+    assert(f.selection.candidates[probe].retry_ms == 0);
+    assert(f.selection.candidates[standby].retry_ms == 0);
+    assert(f.selection.candidates[victim_row].retry_ms == reclaimed_at / 1000 + 5000);
+    /* At actual release one second later, both the unknown probe and another
+     * peer's warm standby are eligible. No unattempted-dial cooldown can let
+     * the standby steal the opportunity that caused this reclamation. */
+    clock_us += 1000000;
+    physical = (struct wble_mesh_capacity){.physical_ready = true, .physical_free = 3};
+    assert(clock_us < reclaimed_at + 5000000);
+    unsigned order[WN_CANDIDATES];
+    assert(wn_candidate_order(&f.selection, clock_us / 1000, 42, order) == 2);
+    assert((order[0] == (unsigned)probe && order[1] == (unsigned)standby) ||
+           (order[1] == (unsigned)probe && order[0] == (unsigned)standby));
+    assert(!candidate_used(root, &f.selection.candidates[standby]));
+    assert(additional_candidate(root, clock_us / 1000, true) == probe);
+    assert(plan_additional_candidate(root, clock_us / 1000, true) == probe);
+    assert(retired == 1 && f.selection.candidates[probe].retry_ms == 0);
+    assert(candidate_class(root, &f.selection.candidates[standby]) == 2);
+    assert_no_allocations();
+}
 #endif
 int main(void) {
     assert(wendy_net_runtime_memory_open());
@@ -986,6 +1366,9 @@ int main(void) {
     (void)close;
     (void)wble_mesh_release;
     (void)node_root;
+    (void)wendy_pki_net_take;
+    (void)wendy_pki_mesh_authenticated_operator;
+    (void)wnad_handshake_release;
     (void)peer_b;
     (void)peer_c;
     (void)full_redundant;
@@ -1001,6 +1384,11 @@ int main(void) {
         incoming_retry_fairness();
         any_selected_survivor();
         tls_learned_endpoint_hint();
+        reserve_last_opportunity();
+        recover_during_release();
+        recovery_history_before_authentication();
+        recovery_at_full_budget();
+        outgoing_probe_keeps_reclaimed_opportunity();
     }
 #endif
     assert_no_allocations();
@@ -1026,9 +1414,11 @@ with tempfile.TemporaryDirectory() as tmp:
             names.extend(('setup_room', 'setup_capacity_available', 'ble_admission_available', 'update_ble'))
         else:
             # Definitions retain their real call graph instead of a copied policy.
-            names = ['node_root', 'ble_address', 'clock_idle', 'slot_free', 'incoming_demand_active',
+            names = ['node_root', 'release_candidate', 'previously_authenticated_peer',
+                     'ble_address', 'clock_idle', 'slot_free', 'incoming_demand_active',
                      'carrier_occupancy', 'capacity_available',
-                     'medium_available', 'same_peer', 'commit_carrier', 'admit_link',
+                     'medium_available', 'same_peer', 'peer_has_working_carrier',
+                     'incoming_opportunity_reserved', 'commit_carrier', 'admit_link',
                      'candidate_used', 'candidate_class',
                      'reclaimable_carrier', 'reclaim_victim', 'candidate_room', 'ble_discovery_available',
                      'additional_candidate', 'setup_room', 'setup_capacity_available',
@@ -1036,7 +1426,7 @@ with tempfile.TemporaryDirectory() as tmp:
                      'reclaim_for_incoming_probe', 'ble_admission_available', 'ble_probe_available',
                      'begin_setup', 'update_ble']
         prefix += structure(source, 'ble_seen')
-        gate = '' if constrained_profile else incoming_pickup_gate()
+        gate = '' if constrained_profile else incoming_pickup_gate() + setup_authentication_stage()
         (p / 'test.c').write_text(prefix + ''.join(definition(name) for name in names) + gate + main)
         subprocess.run([os.environ.get('CC', 'cc'), '-std=c11', '-Wall', '-Wextra', '-Werror',
                         '-fsanitize=address,undefined', '-pthread',

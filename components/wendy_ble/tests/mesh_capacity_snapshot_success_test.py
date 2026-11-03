@@ -97,55 +97,55 @@ static struct wble_mesh_pipe *make(unsigned slot,unsigned psm,bool owned)
  p->peer.psm=psm;p->owned=owned;p->stack=p->connected=true;p->wake=p;p->handle=(uint16_t)(slot+1);
  pipes[slot]=p;return p;
 }
-static void expect(unsigned external,unsigned retiring,bool physical)
+static void expect(unsigned external,unsigned retiring,bool physical,unsigned physical_free)
 {
- struct wble_mesh_capacity c={99,99,true};
+ struct wble_mesh_capacity c={.external=99,.retiring=99,.physical_free=99,.physical_ready=true};
  assert(wble_mesh_capacity_snapshot(&c));
- assert(c.external==external&&c.retiring==retiring&&c.physical_ready==physical);
+ assert(c.external==external&&c.retiring==retiring&&c.physical_ready==physical&&c.physical_free==physical_free);
  assert(wble_report_drained(&report_lifetime)&&!held&&locks==unlocks);
 }
 int main(void)
 {
- struct wble_mesh_capacity c={99,99,true};
+ struct wble_mesh_capacity c={.external=99,.retiring=99,.physical_free=99,.physical_ready=true};
  assert(!wble_mesh_capacity_snapshot(NULL));
- assert(wble_mesh_capacity_snapshot(&c)&&!c.external&&!c.retiring&&!c.physical_ready);
+ assert(wble_mesh_capacity_snapshot(&c)&&!c.external&&!c.retiring&&!c.physical_ready&&!c.physical_free);
  /* Before ready, LAN has no native external owner and BLE cannot be dialed. */
- for(unsigned i=0;i<3;i++)expect(0,0,false);
+ for(unsigned i=0;i<3;i++)expect(0,0,false,0);
  quiescing=true;assert(!wble_mesh_capacity_snapshot(&c));quiescing=false;
  publish_on_second_read=true;
  assert(!wble_mesh_capacity_snapshot(&c)); /* no stale empty snapshot across ready publication */
  assert(wble_report_drained(&report_lifetime));publish_on_second_read=false;
  wble_report_open(&report_lifetime);mutex=&mutex;ready=true;atomic_store(&actor_wakeup,wake);
- expect(0,0,true);
+ expect(0,0,true,3);
  lock_available=false;assert(!wble_mesh_capacity_snapshot(&c));
  assert(wble_report_drained(&report_lifetime));lock_available=true;
  quiescing=true;assert(!wble_mesh_capacity_snapshot(&c));quiescing=false;
  struct wble_mesh_pipe *actor=make(0,129,true);
- expect(0,0,true); /* actor carrier is already counted by its actor slot */
+ expect(0,0,true,2); /* actor carrier is already counted by its actor slot */
  struct wble_mesh_pipe *time=make(1,WBLE_MESH_TIME_PSM,false);
- expect(0,0,true); /* signed-time occupies physical, not native actor budget */
+ expect(0,0,true,1); /* signed-time occupies physical, not native actor budget */
  struct wble_mesh_pipe *incoming=make(2,129,false);pending=incoming;
- expect(1,0,false); /* accepted pipe precedes actor ownership */
- incoming->owned=true;pending=NULL;expect(0,0,false);
+ expect(1,0,false,0); /* accepted pipe precedes actor ownership */
+ incoming->owned=true;pending=NULL;expect(0,0,false,0);
  wble_mesh_release(actor);
- expect(1,1,false); /* actor pointer gone, before host sees release_requested */
- for(unsigned i=0;i<8;i++)expect(1,1,false); /* query never consumes teardown */
+ expect(1,1,false,0); /* actor pointer gone, before host sees release_requested */
+ for(unsigned i=0;i<8;i++)expect(1,1,false,0); /* query never consumes teardown */
  retry(NULL);assert(!actor->owned&&actor->closing&&!atomic_load(&actor->release_requested));
- expect(1,1,false);
+ expect(1,1,false,0);
  actor->stack=actor->connected=actor->posted=false;actor->gap_owned=true;
- actor->gap_terminating=true;retire(actor);expect(1,1,false);
+ actor->gap_terminating=true;retire(actor);expect(1,1,false,0);
  /* Own GAP still pins this physical owner until the actual disconnect event. */
- actor->gap_owned=false;retire(actor);expect(0,0,true);assert(deletes==3&&wakes==1);
- dialing=true;dial_psm=129;expect(1,0,false);
- dial_psm=WBLE_MESH_TIME_PSM;expect(0,0,false);dialing=false;
+ actor->gap_owned=false;retire(actor);expect(0,0,true,1);assert(deletes==3&&wakes==1);
+ dialing=true;dial_psm=129;expect(1,0,false,0);
+ dial_psm=WBLE_MESH_TIME_PSM;expect(0,0,false,0);dialing=false;
  stopping_acls[0]=(struct wble_gap_retirement){.used=true,.handle=25};
- expect(1,1,true); /* pipe gone, independently tracked mesh-owned ACL stays charged */
- stopping_acls[0].handle=incoming->handle;expect(0,1,true); /* one handle, no duplicate external claim */
+ expect(1,1,true,1); /* pipe gone, independently tracked mesh-owned ACL stays charged */
+ stopping_acls[0].handle=incoming->handle;expect(0,1,true,1); /* one handle, no duplicate external claim */
  stopping_acls[0].used=false;
  /* No management ACL is in pipes/stopping_acls; the query has no termination effect. */
- time->stack=time->connected=false;retire(time);
+ time->stack=time->connected=false;retire(time);expect(0,0,true,2);
  incoming->stack=incoming->connected=incoming->owned=false;retire(incoming);
- expect(0,0,true);assert(deletes==9&&wakes==3);
+ expect(0,0,true,3);assert(deletes==9&&wakes==3);
  wble_report_close(&report_lifetime);assert(!wble_mesh_capacity_snapshot(&c));
  puts("Native physical ownership: pending, release request, closing GAP, actual release and unknown snapshots PASS");
 }

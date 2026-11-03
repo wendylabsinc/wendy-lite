@@ -1097,7 +1097,9 @@ bool wble_mesh_capacity_snapshot(struct wble_mesh_capacity *out)
                 snapshot.external++;
             snapshot.retiring++;
         }
-        snapshot.physical_ready = !pending && count() + (dialing ? 1 : 0) < CHANNELS;
+        unsigned occupied = count() + (dialing ? 1 : 0);
+        snapshot.physical_free = occupied < CHANNELS ? CHANNELS - occupied : 0;
+        snapshot.physical_ready = !pending && snapshot.physical_free > 0;
         *out = snapshot;
         unlock();
     }

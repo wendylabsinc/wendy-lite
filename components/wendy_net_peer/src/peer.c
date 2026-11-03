@@ -357,6 +357,17 @@ static int reserve_candidate(struct peer_state *s, const struct wn_candidate *hi
     s->candidate_held = true;
     return index;
 }
+#if !WENDY_NET_NON_TRANSIT && CONFIG_WENDY_NET_BLE
+static bool previously_authenticated_peer(struct peer_state *root, const char *peer)
+{
+    for (unsigned i = 0; i < WN_CANDIDATES; i++) {
+        const struct wn_candidate *known = &root->selection->candidates[i];
+        if (known->authenticated && !strcmp(known->device, peer))
+            return true;
+    }
+    return false;
+}
+#endif
 static void release_candidate(struct peer_state *s)
 {
     if (s->candidate_held)
@@ -1307,6 +1318,7 @@ static bool slot_free(struct peer_state *link)
  * the actor relinquishing a pipe and its host-side release completing. */
 struct carrier_occupancy {
     unsigned total, ble, lan;
+    unsigned physical_free;
     bool retiring, releasing, physical_ready;
 };
 static bool incoming_demand_active(const struct peer_state *root, int64_t now)
@@ -1321,7 +1333,7 @@ static bool incoming_demand_active(const struct peer_state *root, int64_t now)
 }
 static bool carrier_occupancy(struct peer_state *root, struct carrier_occupancy *out)
 {
-    *out = (struct carrier_occupancy){.physical_ready = true};
+    *out = (struct carrier_occupancy){.physical_ready = true, .physical_free = UINT_MAX};
     for (struct peer_state *link = root; link; link = link->next)
         if (!slot_free(link)) {
             out->total++;
@@ -1345,6 +1357,7 @@ static bool carrier_occupancy(struct peer_state *root, struct carrier_occupancy 
         out->retiring |= physical.retiring != 0 || physical.external != 0;
         out->releasing |= physical.retiring != 0;
         out->physical_ready = physical.physical_ready;
+        out->physical_free = physical.physical_free;
     }
 #endif
     return true;
@@ -1549,6 +1562,16 @@ static int setup_hello(struct peer_state *link)
          * Do not pin/poison a device-discovery row with its client socket. */
         if (link->operator_peer)
             release_candidate(link);
+#if !WENDY_NET_NON_TRANSIT && CONFIG_WENDY_NET_BLE
+        /* Capture direct-peer history before this TLS result updates its own
+         * cache row. Recovery remains recovery if its old owner retires while
+         * this handshake is in flight; it cannot consume another leaf's hold. */
+        bool prior_endpoint = link->candidate.authenticated &&
+                              !strcmp(link->authenticated_peer, link->identity.peer);
+        link->candidate.authenticated =
+            !link->operator_peer &&
+            (prior_endpoint || previously_authenticated_peer(node_root(link), link->identity.peer));
+#endif
         memcpy(link->authenticated_peer, link->identity.peer, 37);
         /* Remember the verified address binding before exchanging hello: a
          * peer can retire this redundant carrier during hello. Held discovery
@@ -1706,6 +1729,23 @@ static void begin_setup(struct peer_state *link, const struct wn_candidate *cand
     link->operator_peer = NULL;
     memset(link->operator_instance, 0, 16);
     int index = reserve_candidate(link, candidate);
+#if !WENDY_NET_NON_TRANSIT && CONFIG_WENDY_NET_BLE
+    /* Until TLS replaces authenticated_peer, this inactive setup keeps only
+     * the endpoint's previously verified name, not a new identity assertion.
+     * Pin it across ordinary candidate-cache eviction during slow TLS. */
+    link->candidate.authenticated = false;
+    if (index >= 0) {
+        const struct wn_candidate *known = &node_root(link)->selection->candidates[index];
+        if (known->authenticated) {
+            memcpy(link->authenticated_peer, known->device, sizeof link->authenticated_peer);
+            link->candidate.authenticated = true;
+        } else if (candidate->device[0] &&
+                   previously_authenticated_peer(node_root(link), candidate->device)) {
+            memcpy(link->authenticated_peer, candidate->device, sizeof link->authenticated_peer);
+            link->candidate.authenticated = true;
+        }
+    }
+#endif
     link->tls_channel = index >= 0 ? wendy_net_calloc(1, sizeof *link->tls_channel) : NULL;
     uint64_t budget = UINT64_C(60000000);
 #if CONFIG_WENDY_NET_BLE
@@ -1774,6 +1814,36 @@ static bool same_peer(const struct peer_state *a, const struct peer_state *b)
                !memcmp(a->operator_instance, b->operator_instance, 16);
     return !strcmp(a->authenticated_peer, b->authenticated_peer);
 }
+#if !WENDY_NET_NON_TRANSIT
+static bool peer_has_working_carrier(struct peer_state *root, const struct peer_state *candidate,
+                                      const char *device)
+{
+    if (!candidate && (!device || !device[0]))
+        return false;
+    int64_t now = esp_timer_get_time();
+    for (struct peer_state *other = root; other; other = other->next)
+        if (other != candidate && atomic_load(&other->active) && other->router &&
+            other->connection && !other->failed && !other->tls_state.cancel &&
+            (candidate ? same_peer(other, candidate)
+                       : (!other->operator_peer && !strcmp(other->authenticated_peer, device))) &&
+            identity_live(other, now) && wnrs_peer_forwarding_ready(other->router, now))
+            return true;
+    return false;
+}
+static bool incoming_opportunity_reserved(struct peer_state *root, enum wn_medium medium,
+                                           bool actor_owned, bool physical_owned)
+{
+    struct carrier_occupancy used;
+    if (!carrier_occupancy(root, &used))
+        return true;
+    unsigned additional = actor_owned ? 0 : 1;
+    if (used.total + additional >= root->config.max_links)
+        return true;
+    return medium == WN_BLE &&
+           (used.ble + additional >= root->config.ble_links ||
+            used.physical_free <= (physical_owned ? 0U : 1U));
+}
+#endif
 static int commit_carrier(struct peer_state *root, struct peer_state *link, unsigned index)
 {
     return link->operator_peer
@@ -1842,13 +1912,16 @@ static int admit_link(struct peer_state *root, struct peer_state *link)
 #endif
 #if !WENDY_NET_NON_TRANSIT && CONFIG_WENDY_NET_BLE
     bool connected_peer = false, same_medium_owner = false;
+    connected_peer = !link->operator_peer && link->candidate.authenticated;
     for (struct peer_state *other = root; other; other = other->next)
         if (other != link && atomic_load(&other->active) && same_peer(other, link)) {
             connected_peer = true;
             same_medium_owner |= other->candidate.medium == link->candidate.medium;
         }
-    if (connected_peer && !same_medium_owner &&
-        (link->setup_incoming_demand || incoming_demand_active(root, esp_timer_get_time())))
+    bool working_peer = peer_has_working_carrier(root, link, NULL);
+    if (working_peer && !same_medium_owner &&
+        (link->setup_incoming_demand || incoming_demand_active(root, esp_timer_get_time())) &&
+        incoming_opportunity_reserved(root, link->candidate.medium, true, true))
         return -1;
 #endif
     for (struct peer_state *other = root; other; other = other->next) {
@@ -1940,6 +2013,7 @@ static bool candidate_used(struct peer_state *root, const struct wn_candidate *c
 static unsigned candidate_class(struct peer_state *root, const struct wn_candidate *candidate)
 {
     uint16_t cheapest = UINT16_MAX;
+    bool pending = false;
     if (!candidate->device[0])
         return 0;
     for (struct peer_state *link = root; link; link = link->next)
@@ -1948,7 +2022,10 @@ static unsigned candidate_class(struct peer_state *root, const struct wn_candida
                                                                 : link->candidate.device)) {
             if (link->candidate.cost < cheapest)
                 cheapest = link->candidate.cost;
+            pending |= link->setup_waiting || atomic_load(&link->setup_pending);
         }
+    if (!pending && !peer_has_working_carrier(root, NULL, candidate->device))
+        return 0;
     return cheapest == UINT16_MAX ? 0 : candidate->cost < cheapest ? 1 : 2;
 }
 static bool reclaimable_carrier(struct peer_state *link, int64_t now)
@@ -2026,10 +2103,13 @@ static int additional_candidate(struct peer_state *root, int64_t now, bool lan)
             continue;
 #if !WENDY_NET_NON_TRANSIT
         unsigned rank = candidate_class(root, candidate);
-        if (rank && incoming_demand_active(root, esp_timer_get_time()))
+        bool working_peer = peer_has_working_carrier(root, NULL, candidate->device);
+        if (incoming_demand_active(root, esp_timer_get_time()) &&
+            working_peer &&
+            incoming_opportunity_reserved(root, candidate->medium, false, false))
             continue;
         if (!candidate_room(root, candidate->medium) &&
-            (rank || !reclaim_victim(root, candidate->medium)))
+            (working_peer || !reclaim_victim(root, candidate->medium)))
             continue;
         unsigned best_rank = best < 0 ? UINT_MAX
                                      : candidate_class(root, &root->selection->candidates[best]);
@@ -2153,7 +2233,7 @@ static int plan_additional_candidate(struct peer_state *root, int64_t now, bool 
         return -1;
     struct wn_candidate *candidate = &root->selection->candidates[index];
     if (!candidate_room(root, candidate->medium)) {
-        if (candidate_class(root, candidate))
+        if (peer_has_working_carrier(root, NULL, candidate->device))
             return -1;
         struct peer_state *victim = reclaim_victim(root, candidate->medium);
         if (!victim)
@@ -2161,7 +2241,9 @@ static int plan_additional_candidate(struct peer_state *root, int64_t now, bool 
         /* retire_link must not turn a transient context loan into a sticky
          * cancellation. Reclaimable victims have no outstanding loans. */
         retire_link(victim);
-        candidate->retry_ms = now + 5000;
+        /* This probe has not attempted a connection. Keep it eligible while
+         * the exact retiring owner blocks admission, then prefer it over a
+         * different peer's standby as soon as physical release makes room. */
     }
     if (!capacity_available(root) || !candidate_room(root, candidate->medium))
         return -1;
@@ -2176,7 +2258,8 @@ static bool incoming_standby_hint(struct peer_state *root, const struct wn_candi
         const struct wn_candidate *known = &root->selection->candidates[i];
         if (known->authenticated && known->medium == hint->medium &&
             known->port == hint->port && known->device[0] &&
-            !strcmp(known->address, hint->address) && candidate_class(root, known))
+            !strcmp(known->address, hint->address) &&
+            peer_has_working_carrier(root, NULL, known->device))
             return true;
     }
     return false;
@@ -2209,20 +2292,30 @@ static bool reclaim_for_incoming_probe(struct peer_state *root)
         if (incoming_standby_hint(root, &hint))
             return false;
     }
-    if (incoming_demand_active(root, esp_timer_get_time())) {
-        if (!candidate_room(root, WN_BLE)) {
-            root->incoming_probe_waiting = true;
-            root->incoming_probe_until_us = 0;
-        } else if (!root->incoming_probe_waiting)
+    bool held = incoming_demand_active(root, esp_timer_get_time());
+    if (held && candidate_room(root, WN_BLE)) {
+        if (!root->incoming_probe_waiting)
             root->incoming_probe_until_us = esp_timer_get_time() +
                                             INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS;
         return false;
     }
-    if (!setup_capacity_available(root) || !setup_room(root))
+    if (!setup_capacity_available(root) || !setup_room(root)) {
+        if (held && !root->incoming_probe_waiting)
+            root->incoming_probe_until_us = esp_timer_get_time() +
+                                            INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS;
         return false;
+    }
     struct peer_state *victim = reclaim_victim(root, WN_BLE);
-    if (!victim)
+    if (!victim) {
+        struct carrier_occupancy used;
+        if (held && carrier_occupancy(root, &used) && used.retiring) {
+            root->incoming_probe_waiting = true;
+            root->incoming_probe_until_us = 0;
+        } else if (held && !root->incoming_probe_waiting)
+            root->incoming_probe_until_us = esp_timer_get_time() +
+                                            INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS;
         return false;
+    }
     retire_link(victim);
     root->incoming_probe_waiting = true;
     root->incoming_probe_until_us = 0;
@@ -2422,7 +2515,8 @@ static void router_run(struct peer_state *root)
                 .medium = WN_BLE, .port = remote.psm, .cost = WNR_BLE_COST};
             ble_address(hint.address, remote.address, remote.address_type);
             if (incoming_demand_active(root, esp_timer_get_time()) &&
-                incoming_standby_hint(root, &hint)) {
+                incoming_standby_hint(root, &hint) &&
+                incoming_opportunity_reserved(root, WN_BLE, false, true)) {
                 accepted = true;
                 wble_mesh_release(pipe);
                 pipe = NULL;

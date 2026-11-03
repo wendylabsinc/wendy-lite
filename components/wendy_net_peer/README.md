@@ -24,6 +24,8 @@ its single-carrier policy and resource limits.
 A full native BLE node can reject an initial attempt while safely making room
 for its ordinary retry. After physical release, the existing 30-second failure
 interval temporarily gives new peers priority over restoring an old backup.
+Upgrades can use genuinely spare capacity while leaving that final opportunity
+available, and recovery remains possible when no direct working path remains.
 The opportunity expires if no new peer arrives; no additional timer runs.
 
 For lab diagnostics, a full-router build can enable
