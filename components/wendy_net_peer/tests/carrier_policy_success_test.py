@@ -88,7 +88,12 @@ struct operator_peer { const char *principal; };
 struct connection { bool borrowed; };
 struct wnrs { int64_t forwarding_until; bool selected_routes; };
 struct wnrs_node { unsigned unused; };
-struct fixture_identity { char device[37], peer[37]; int64_t verified_monotonic_us; };
+struct fixture_identity {
+    char tenant[37], device[37], peer[37];
+    int64_t verified_monotonic_us;
+    uint64_t config_generation;
+    uint8_t trust_hash[32], journal_trust_hash[32];
+};
 struct peer_state {
     struct { unsigned max_links, ble_links, wifi_links; bool ble, infrastructure_wifi; } config;
     struct peer_state *next, *owner;
@@ -166,11 +171,13 @@ static struct fixture_identity verified_identity;
 static const struct operator_peer *verified_operator;
 static unsigned opens;
 static unsigned operator_opens;
+static bool open_succeeds;
 static int wnrs_open(struct wnrs **out, void *owner, struct connection *connection,
                      const void *identity, const void *peer, unsigned cost,
                      int (*send)(void *, const void *, size_t, bool), void *context) {
     (void)owner; (void)identity; (void)peer; (void)cost;
     assert(connection && send == router_send && context);
+    if (!open_succeeds) return -1;
     *out = &opened_route; opens++; return 0;
 }
 static int wnrs_open_operator(struct wnrs **out, void *owner, struct connection *connection,
@@ -324,6 +331,7 @@ static struct peer_state *reset(struct fixture *f) {
     free_heap = CONFIG_WENDY_NET_SETUP_FREE_BYTES;
     mesh_limit = 1;
     snapshots = retired = opens = operator_opens = refusal_reads = 0;
+    open_succeeds = true;
     capacity_refused = false;
     verified_connection = NULL;
     verified_operator = NULL;
@@ -1198,7 +1206,11 @@ static void verified_tls_result(struct fixture *f, unsigned slot, const char *pe
     struct peer_state *link = &f->links[slot];
     verified_connection = &f->connections[slot];
     strcpy(verified_identity.device, "00000000-0000-4000-8000-000000000000");
+    strcpy(verified_identity.tenant, "90000000-0000-4000-8000-000000000009");
     strcpy(verified_identity.peer, peer);
+    verified_identity.config_generation = 7;
+    memset(verified_identity.trust_hash, 0x11, sizeof verified_identity.trust_hash);
+    memset(verified_identity.journal_trust_hash, 0x22, sizeof verified_identity.journal_trust_hash);
     verified_identity.verified_monotonic_us = clock_us;
     link->identity_until = clock_us + 100000000;
     assert(setup_authenticated_stage(link) == 0);
@@ -1484,6 +1496,134 @@ static void last_slot_recovery_starts_finite_deadline(void) {
     free_setup_channel(root);
     assert_no_allocations();
 }
+
+static void prepare_pending_device_alias(struct fixture *f, unsigned slot,
+                                          enum wn_medium medium, const char *address) {
+    assert(setup_capacity_available(&f->links[0]));
+    struct peer_state *link = &f->links[slot];
+    struct wn_candidate c = {.medium = medium, .port = medium == WN_BLE ? 129 : 43024,
+                              .cost = medium == WN_BLE ? 8192 : 128,
+                              .ble_capabilities = WN_BLE_NATIVE_ACCEPTING};
+    strcpy(c.address, address);
+    link->setup_have_stream = true;
+    link->setup_server = true;
+    if (medium == WN_BLE) { assert(physical.physical_free); physical.physical_free--; }
+    begin_setup(link, &c, -1);
+    verified_tls_result(f, slot, peer_b);
+    assert(link->setup_waiting);
+}
+
+static void bound_alias_preserves_refreshed_incoming_demand(void) {
+    struct fixture f;
+    struct peer_state *root = reset(&f), *first = &f.links[1], *later = &f.links[2];
+    root->config.max_links = 3;
+    mesh_limit = 2;
+    own(&f, 0, peer_a, WN_LAN, 128, true);
+    root->incoming_probe_until_us = clock_us + INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS;
+    int64_t old_until = root->incoming_probe_until_us;
+    prepare_pending_device_alias(&f, 1, WN_LAN, "first-alias-delayed");
+    assert(!first->candidate.authenticated);
+    prepare_pending_device_alias(&f, 2, WN_BLE, "later-alias-binds");
+    assert(later->candidate.authenticated && !setup_capacity_available(root));
+    assert(admit_link(root, later) == 0);
+    later->setup_waiting = false;
+    assert(root->incoming_probe_until_us == old_until);
+    assert(first->candidate.authenticated); /* Successful binding promotes this verified alias. */
+    delay_release = true;
+    retire_link(later);
+    clock_us += 1000000;
+    capacity_refused = true;
+    refused_peer = (struct wble_mesh_peer){0};
+    assert(!reclaim_for_incoming_probe(root));
+    assert(root->incoming_probe_waiting && !root->incoming_probe_until_us);
+    assert(first->setup_waiting && !atomic_load(&later->active));
+    /* The live-peer rescan now finds nobody, but the successful bind's
+     * promotion prevents the delayed alias from clearing the newer refresh. */
+    assert(!peer_has_working_carrier(root, first, NULL));
+    assert(admit_link(root, first) == 0);
+    first->setup_waiting = false;
+    assert(root->incoming_probe_waiting && !root->incoming_probe_until_us);
+    free_setup_channel(first);
+    free_setup_channel(later);
+    assert_no_allocations();
+}
+
+static void bound_alias_promotion_boundaries(void) {
+    const struct operator_peer op = {.principal = "tenant/operator/Alice"};
+    for (unsigned boundary = 0; boundary < 13; boundary++) {
+        struct fixture f;
+        struct peer_state *root = reset(&f), *pending = &f.links[1], *bound = &f.links[2];
+        mesh_limit = 2;
+        own(&f, 0, peer_a, WN_LAN, 128, true);
+        root->incoming_probe_until_us = clock_us + INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS;
+        prepare_pending_device_alias(&f, 1, WN_LAN, "pending-verified-alias");
+        prepare_pending_device_alias(&f, 2, WN_BLE, "binding-verified-alias");
+        assert(!pending->candidate.authenticated && bound->candidate.authenticated);
+        switch (boundary) {
+        case 0: strcpy(pending->authenticated_peer, peer_c); break;
+        case 1: strcpy(pending->identity.peer, peer_c); break;
+        case 2: strcpy(pending->identity.tenant, "80000000-0000-4000-8000-000000000008"); break;
+        case 3: strcpy(pending->identity.device, peer_c); break;
+        case 4: pending->identity.config_generation++; break;
+        case 5: pending->identity.trust_hash[0] ^= 1; break;
+        case 6: pending->identity.journal_trust_hash[0] ^= 1; break;
+        case 7: pending->hello_started = false; break;
+        case 8: pending->connection = NULL; break;
+        case 9: pending->operator_peer = &op; break;
+        case 10: pending->setup_waiting = false; break;
+        case 11: bound->operator_peer = &op; break;
+        case 12: open_succeeds = false; break;
+        }
+        if (boundary == 11) {
+            promote_bound_device_aliases(root, bound);
+        } else if (boundary == 12) {
+            assert(admit_link(root, bound) == -1 && !atomic_load(&bound->active));
+            assert(!opens);
+        } else {
+            assert(admit_link(root, bound) == 0);
+        }
+        assert(!pending->candidate.authenticated);
+        assert(root->incoming_probe_until_us != 0);
+        free_setup_channel(pending);
+        free_setup_channel(bound);
+        assert_no_allocations();
+    }
+
+    /* The fix does not classify an actual first new device as prior context:
+     * its successful admission still satisfies and clears its current hold. */
+    struct fixture f;
+    struct peer_state *root = reset(&f);
+    own(&f, 0, peer_a, WN_LAN, 128, true);
+    mesh_limit = 2;
+    root->incoming_probe_until_us = clock_us + INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS;
+    prepare_pending_device_alias(&f, 1, WN_LAN, "genuinely-first-new-device");
+    assert(!f.links[1].candidate.authenticated);
+    assert(admit_link(root, &f.links[1]) == 0);
+    assert(!root->incoming_probe_waiting && !root->incoming_probe_until_us);
+    free_setup_channel(&f.links[1]);
+    assert_no_allocations();
+
+    /* An unverified same-UUID discovery expectation is not an authenticated
+     * pending alias. A real first TLS bind neither promotes nor trusts it. */
+    root = reset(&f);
+    own(&f, 0, peer_a, WN_LAN, 128, true);
+    mesh_limit = 2;
+    root->incoming_probe_until_us = clock_us + INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS;
+    struct wn_candidate hint_only = {.medium = WN_LAN, .port = 43024, .cost = 128,
+                                     .address = "hint-only-same-UUID"};
+    strcpy(hint_only.device, peer_b);
+    f.links[1].setup_have_stream = true;
+    begin_setup(&f.links[1], &hint_only, -1);
+    assert(!f.links[1].hello_started && !f.links[1].connection && !f.links[1].authenticated_peer[0]);
+    prepare_pending_device_alias(&f, 2, WN_BLE, "first-real-TLS-device");
+    assert(!f.links[2].candidate.authenticated);
+    assert(admit_link(root, &f.links[2]) == 0);
+    assert(!f.links[1].candidate.authenticated);
+    assert(!root->incoming_probe_waiting && !root->incoming_probe_until_us);
+    free_setup_channel(&f.links[1]);
+    free_setup_channel(&f.links[2]);
+    assert_no_allocations();
+}
 #endif
 int main(void) {
     assert(wendy_net_runtime_memory_open());
@@ -1536,6 +1676,8 @@ int main(void) {
         outgoing_probe_keeps_reclaimed_opportunity();
         operator_reconnect_keeps_bounded_receipt();
         last_slot_recovery_starts_finite_deadline();
+        bound_alias_preserves_refreshed_incoming_demand();
+        bound_alias_promotion_boundaries();
     }
 #endif
     assert_no_allocations();
@@ -1565,7 +1707,8 @@ with tempfile.TemporaryDirectory() as tmp:
                      'ble_address', 'clock_idle', 'slot_free', 'incoming_demand_active',
                      'carrier_occupancy', 'capacity_available',
                      'medium_available', 'same_peer', 'peer_has_working_carrier',
-                     'incoming_opportunity_reserved', 'commit_carrier', 'admit_link',
+                     'incoming_opportunity_reserved', 'promote_bound_device_aliases',
+                     'commit_carrier', 'admit_link',
                      'candidate_used', 'candidate_class',
                      'reclaimable_carrier', 'reclaim_victim', 'candidate_room', 'ble_discovery_available',
                      'additional_candidate', 'setup_room', 'setup_capacity_available',

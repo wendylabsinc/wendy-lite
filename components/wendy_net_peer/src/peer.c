@@ -1843,6 +1843,27 @@ static bool incoming_opportunity_reserved(struct peer_state *root, enum wn_mediu
            (used.ble + additional >= root->config.ble_links ||
             used.physical_free <= (physical_owned ? 0U : 1U));
 }
+#if CONFIG_WENDY_NET_BLE
+static void promote_bound_device_aliases(struct peer_state *root, struct peer_state *bound)
+{
+    if (bound->operator_peer)
+        return;
+    /* A successful bind makes already verified pending aliases known peers.
+     * Otherwise a delayed first pickup could still look new after this owner
+     * retires and erase a later incoming-demand refresh. Hints never qualify. */
+    for (struct peer_state *other = root; other; other = other->next)
+        if (other != bound && other->setup_waiting && other->hello_started &&
+            other->connection && !other->operator_peer &&
+            !strcmp(other->authenticated_peer, bound->authenticated_peer) &&
+            !strcmp(other->identity.peer, bound->identity.peer) &&
+            !strcmp(other->identity.tenant, bound->identity.tenant) &&
+            !strcmp(other->identity.device, bound->identity.device) &&
+            other->identity.config_generation == bound->identity.config_generation &&
+            !memcmp(other->identity.trust_hash, bound->identity.trust_hash, 32) &&
+            !memcmp(other->identity.journal_trust_hash, bound->identity.journal_trust_hash, 32))
+            other->candidate.authenticated = true;
+}
+#endif
 #endif
 static int commit_carrier(struct peer_state *root, struct peer_state *link, unsigned index)
 {
@@ -1957,6 +1978,7 @@ static int admit_link(struct peer_state *root, struct peer_state *link)
     pthread_mutex_unlock(&state_lock);
     link->refresh_at = link->identity.verified_monotonic_us + REFRESH_INTERVAL_US;
 #if !WENDY_NET_NON_TRANSIT && CONFIG_WENDY_NET_BLE
+    promote_bound_device_aliases(root, link);
     /* Device endpoint provenance can positively establish a new UUID. An
      * operator without a surviving direct owner has no equivalent history;
      * allow its admission, but conservatively retain the bounded receipt. */
