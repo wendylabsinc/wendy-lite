@@ -172,6 +172,10 @@ struct peer_state {
     bool ble_initialized, ble_published;
 #endif
     bool clock_ready; /* Setup availability hint; admitted TLS establishes trust. */
+#if !WENDY_NET_NON_TRANSIT && CONFIG_WENDY_NET_BLE
+    bool incoming_probe_waiting, setup_incoming_demand;
+    int64_t incoming_probe_until_us;
+#endif
     int64_t clock_check_at, time_bootstrap_at;
     struct time_bootstrap_job *bootstrap_time;
     struct wnne_effect netif_effect;
@@ -193,6 +197,29 @@ static void topology_release(struct topology_query *query)
 {
     wnqt_release(query, wendy_net_free);
 }
+#if WN_CARRIER_OBSERVATION_ENABLED
+/* The caller owns these immutable scalars. Console backpressure can never
+ * retain an actor turn, routing lock, session or cryptographic context. */
+static void render_carrier_observations(const struct wn_carrier_observations *snapshot)
+{
+    if (!snapshot)
+        return;
+    for (unsigned i = 0; i < snapshot->count && i < WN_CARRIER_OBSERVATION_ROWS; i++) {
+        const struct wn_carrier_observation *r = &snapshot->rows[i];
+        printf("wn_carrier_observation link=%llu attachment=%llu medium=%u sampled_us=%lld "
+               "selected_link=%llu origin=%llu sequence=%u advertised=%u metric=%u "
+               "current_identity=%u candidate=%u authorized=%u feasible=%u twoway=%u "
+               "retiring=%u usable=%u candidate_expires_us=%lld proof_expires_us=%lld\n",
+               (unsigned long long)r->link, (unsigned long long)r->attachment, (unsigned)r->medium,
+               (long long)r->sampled_us, (unsigned long long)r->selected_link,
+               (unsigned long long)r->origin, (unsigned)r->sequence, (unsigned)r->advertised,
+               (unsigned)r->metric, (unsigned)r->current_identity, (unsigned)r->candidate,
+               (unsigned)r->authorized, (unsigned)r->feasible, (unsigned)r->twoway,
+               (unsigned)r->retiring, (unsigned)r->usable, (long long)r->candidate_expires_us,
+               (long long)r->proof_expires_us);
+    }
+}
+#endif
 static void service_topology_query(struct peer_state *root)
 {
     pthread_mutex_lock(&state_lock);
@@ -208,6 +235,25 @@ static void service_topology_query(struct peer_state *root)
                 query->page.record.transport = (unsigned)link->candidate.medium;
                 break;
             }
+#if WN_CARRIER_OBSERVATION_ENABLED
+    if (!result && query->carriers)
+        for (struct peer_state *link = root;
+             link && query->carriers->count < WN_CARRIER_OBSERVATION_ROWS; link = link->next) {
+            if (!link->router)
+                continue;
+            struct wn_carrier_observation *row =
+                &query->carriers->rows[query->carriers->count];
+            if (!wnrs_carrier_observation(link->router, esp_timer_get_time(), row))
+                continue;
+            row->attachment = link->attachment;
+            row->medium = link->candidate.medium;
+            row->retiring = !atomic_load(&link->active) || link->failed || link->tls_state.cancel ||
+                            link->tls_state.lent || link->setup_waiting ||
+                            atomic_load(&link->setup_pending) || wncrypto_borrowed(link->connection);
+            row->usable = row->usable && !row->retiring;
+            query->carriers->count++;
+        }
+#endif
     pthread_mutex_lock(&state_lock);
     wnqt_finish(&topology_query, query, result, wendy_net_free);
     pthread_mutex_unlock(&state_lock);
@@ -238,6 +284,10 @@ WendyComResult wn_peer_topology(const WendyComNetTopologyParams *params,
         return WendyComResult_WENDY_COM_RESULT_BUSY;
     }
     atomic_init(&query->references, 2);
+#if WN_CARRIER_OBSERVATION_ENABLED
+    if (!params->cursor)
+        query->carriers = wendy_net_calloc(1, sizeof *query->carriers);
+#endif
     query->params = *params;
     query->page = *page;
     topology_query = query;
@@ -249,15 +299,26 @@ WendyComResult wn_peer_topology(const WendyComNetTopologyParams *params,
         pthread_mutex_lock(&state_lock);
     }
     WendyComResult result = WendyComResult_WENDY_COM_RESULT_BUSY;
+#if WN_CARRIER_OBSERVATION_ENABLED
+    struct wn_carrier_observations *carriers = NULL;
+#endif
     if (query->complete && !query->result) {
         *page = query->page;
         /* Transfer the selected immutable row to the synchronous encoder. */
         query->page.record.owner_principal = (pb_callback_t){0};
         result = WendyComResult_WENDY_COM_RESULT_OK;
+#if WN_CARRIER_OBSERVATION_ENABLED
+        carriers = query->carriers;
+        query->carriers = NULL;
+#endif
     }
     wnqt_cancel(&topology_query, query, wendy_net_free);
     pthread_mutex_unlock(&state_lock);
     topology_release(query);
+#if WN_CARRIER_OBSERVATION_ENABLED
+    render_carrier_observations(carriers);
+    wendy_net_free(carriers);
+#endif
     return result;
 }
 static const char *TAG = "wendy_net_peer";
@@ -543,6 +604,9 @@ static void bootstrap_time_tick(struct peer_state *s, bool allow_dial)
 }
 #if CONFIG_WENDY_NET_BLE
 static bool ble_admission_available(struct peer_state *root);
+#if !WENDY_NET_NON_TRANSIT
+static bool ble_probe_available(struct peer_state *root);
+#endif
 static void update_ble(struct peer_state *s, const char *tenant, const char *device)
 {
     unsigned operation;
@@ -560,7 +624,11 @@ static void update_ble(struct peer_state *s, const char *tenant, const char *dev
         wn_ble_default_scope_init(&scope, tenant) ||
         wn_ble_adv_write_capabilities(
             &scope, device, CONFIG_WENDY_NET_BLE_PSM,
+#if WENDY_NET_NON_TRANSIT
             ble_admission_available(s) ? WN_BLE_NATIVE_ACCEPTING : 0,
+#else
+            ble_probe_available(s) ? WN_BLE_NATIVE_ACCEPTING : 0,
+#endif
             advertisement) < 0) {
         if (s->ble_published)
             (void)wendy_ble_mesh_advertisement(NULL, 0);
@@ -1239,8 +1307,18 @@ static bool slot_free(struct peer_state *link)
  * the actor relinquishing a pipe and its host-side release completing. */
 struct carrier_occupancy {
     unsigned total, ble, lan;
-    bool retiring, physical_ready;
+    bool retiring, releasing, physical_ready;
 };
+static bool incoming_demand_active(const struct peer_state *root, int64_t now)
+{
+#if CONFIG_WENDY_NET_BLE
+    return root->incoming_probe_waiting || now < root->incoming_probe_until_us;
+#else
+    (void)root;
+    (void)now;
+    return false;
+#endif
+}
 static bool carrier_occupancy(struct peer_state *root, struct carrier_occupancy *out)
 {
     *out = (struct carrier_occupancy){.physical_ready = true};
@@ -1250,8 +1328,10 @@ static bool carrier_occupancy(struct peer_state *root, struct carrier_occupancy 
             out->ble += link->candidate.medium == WN_BLE;
             out->lan += link->candidate.medium == WN_LAN;
             /* Clock/context cleanup still owns this actor slot. */
-            out->retiring |= !atomic_load(&link->active) && !link->setup_waiting &&
+            bool releasing = !atomic_load(&link->active) && !link->setup_waiting &&
                              !atomic_load(&link->setup_pending);
+            out->retiring |= releasing;
+            out->releasing |= releasing;
         }
 #if CONFIG_WENDY_NET_BLE
     if (root->config.ble) {
@@ -1263,6 +1343,7 @@ static bool carrier_occupancy(struct peer_state *root, struct carrier_occupancy 
         /* An outgoing GAP dial or accepted pipe precedes actor setup. It is
          * already the one in-flight join, as is an asynchronous release. */
         out->retiring |= physical.retiring != 0 || physical.external != 0;
+        out->releasing |= physical.retiring != 0;
         out->physical_ready = physical.physical_ready;
     }
 #endif
@@ -1614,6 +1695,12 @@ static int advance_setup(struct peer_state *link, int64_t now)
 }
 static void begin_setup(struct peer_state *link, const struct wn_candidate *candidate, int fd)
 {
+#if !WENDY_NET_NON_TRANSIT && CONFIG_WENDY_NET_BLE
+    /* Preserve the demand decision through a slow TLS setup even if its
+     * ordinary monotonic hold expires before authentication completes. */
+    link->setup_incoming_demand =
+        incoming_demand_active(node_root(link), esp_timer_get_time());
+#endif
     link->candidate = *candidate;
     link->authenticated_peer[0] = 0;
     link->operator_peer = NULL;
@@ -1753,6 +1840,17 @@ static int admit_link(struct peer_state *root, struct peer_state *link)
         return -1;
     }
 #endif
+#if !WENDY_NET_NON_TRANSIT && CONFIG_WENDY_NET_BLE
+    bool connected_peer = false, same_medium_owner = false;
+    for (struct peer_state *other = root; other; other = other->next)
+        if (other != link && atomic_load(&other->active) && same_peer(other, link)) {
+            connected_peer = true;
+            same_medium_owner |= other->candidate.medium == link->candidate.medium;
+        }
+    if (connected_peer && !same_medium_owner &&
+        (link->setup_incoming_demand || incoming_demand_active(root, esp_timer_get_time())))
+        return -1;
+#endif
     for (struct peer_state *other = root; other; other = other->next) {
         if (other == link || !atomic_load(&other->active) ||
             other->candidate.medium != link->candidate.medium || !same_peer(other, link))
@@ -1785,6 +1883,12 @@ static int admit_link(struct peer_state *root, struct peer_state *link)
         atomic_fetch_add(&root->carrier_count, 1);
     pthread_mutex_unlock(&state_lock);
     link->refresh_at = link->identity.verified_monotonic_us + REFRESH_INTERVAL_US;
+#if !WENDY_NET_NON_TRANSIT && CONFIG_WENDY_NET_BLE
+    if (!connected_peer) {
+        root->incoming_probe_waiting = false;
+        root->incoming_probe_until_us = 0;
+    }
+#endif
     /* Same-medium ownership replacement follows its existing tie-break.
      * Full routers retain different media until new-peer demand needs room. */
     for (struct peer_state *other = root; other; other = other->next) {
@@ -1877,8 +1981,7 @@ static struct peer_state *reclaim_victim(struct peer_state *root, enum wn_medium
             !reclaimable_carrier(link, now) || !wnrs_reclaim_idle(link->router, now))
             continue;
         for (struct peer_state *other = root; other; other = other->next)
-            if (other != link && other->candidate.cost < link->candidate.cost &&
-                same_peer(link, other) && reclaimable_carrier(other, now) &&
+            if (other != link && same_peer(link, other) && reclaimable_carrier(other, now) &&
                 wnrs_peer_forwarding_ready(other->router, now)) {
                 if (!victim || link->candidate.cost > victim->candidate.cost)
                     victim = link;
@@ -1923,6 +2026,8 @@ static int additional_candidate(struct peer_state *root, int64_t now, bool lan)
             continue;
 #if !WENDY_NET_NON_TRANSIT
         unsigned rank = candidate_class(root, candidate);
+        if (rank && incoming_demand_active(root, esp_timer_get_time()))
+            continue;
         if (!candidate_room(root, candidate->medium) &&
             (rank || !reclaim_victim(root, candidate->medium)))
             continue;
@@ -2062,6 +2167,68 @@ static int plan_additional_candidate(struct peer_state *root, int64_t now, bool 
         return -1;
     return index;
 }
+#if CONFIG_WENDY_NET_BLE
+static bool incoming_standby_hint(struct peer_state *root, const struct wn_candidate *hint)
+{
+    /* An old radio's learned name is a scheduling hint only. It cannot prove
+     * identity or readiness, but need not occupy the new peer's TLS turn. */
+    for (unsigned i = 0; i < WN_CANDIDATES; i++) {
+        const struct wn_candidate *known = &root->selection->candidates[i];
+        if (known->authenticated && known->medium == hint->medium &&
+            known->port == hint->port && known->device[0] &&
+            !strcmp(known->address, hint->address) && candidate_class(root, known))
+            return true;
+    }
+    return false;
+}
+static void maintain_incoming_demand(struct peer_state *root, int64_t now)
+{
+    if (root->incoming_probe_waiting) {
+        struct carrier_occupancy used;
+        if (carrier_occupancy(root, &used) && !used.releasing &&
+            candidate_room(root, WN_BLE)) {
+            root->incoming_probe_waiting = false;
+            root->incoming_probe_until_us =
+                now + INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS;
+        }
+    }
+    if (!root->incoming_probe_waiting && now >= root->incoming_probe_until_us)
+        root->incoming_probe_until_us = 0;
+}
+/* A scan-only peer can first become visible at the native CoC gate. The host
+ * rejects that attempt under its existing cap; this wake only schedules the
+ * same safe reclamation, so a later ordinary remote retry can be admitted. */
+static bool reclaim_for_incoming_probe(struct peer_state *root)
+{
+    struct wble_mesh_peer refused;
+    if (!wble_mesh_take_capacity_refusal(&refused) || !root->config.ble || !root->clock_ready)
+        return false;
+    if (refused.psm) {
+        struct wn_candidate hint = {.medium = WN_BLE, .port = refused.psm};
+        ble_address(hint.address, refused.address, refused.address_type);
+        if (incoming_standby_hint(root, &hint))
+            return false;
+    }
+    if (incoming_demand_active(root, esp_timer_get_time())) {
+        if (!candidate_room(root, WN_BLE)) {
+            root->incoming_probe_waiting = true;
+            root->incoming_probe_until_us = 0;
+        } else if (!root->incoming_probe_waiting)
+            root->incoming_probe_until_us = esp_timer_get_time() +
+                                            INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS;
+        return false;
+    }
+    if (!setup_capacity_available(root) || !setup_room(root))
+        return false;
+    struct peer_state *victim = reclaim_victim(root, WN_BLE);
+    if (!victim)
+        return false;
+    retire_link(victim);
+    root->incoming_probe_waiting = true;
+    root->incoming_probe_until_us = 0;
+    return true;
+}
+#endif
 #endif
 #if CONFIG_WENDY_NET_BLE
 static bool ble_admission_available(struct peer_state *root)
@@ -2069,6 +2236,17 @@ static bool ble_admission_available(struct peer_state *root)
     return !WENDY_NET_NON_TRANSIT && root->clock_ready && setup_capacity_available(root) &&
            medium_available(root, WN_BLE) && setup_room(root) && wble_mesh_incoming_available();
 }
+#if !WENDY_NET_NON_TRANSIT
+static bool ble_probe_available(struct peer_state *root)
+{
+    /* Advertise willingness to make room for an unknown scan-only leaf. The
+     * host still refuses the first CoC at its real cap and notifies the actor;
+     * only an ordinary retry after release may acquire a pipe or handshake. */
+    return ble_admission_available(root) ||
+           (root->clock_ready && setup_capacity_available(root) && setup_room(root) &&
+            reclaim_victim(root, WN_BLE) != NULL);
+}
+#endif
 #endif
 static void router_run(struct peer_state *root)
 {
@@ -2079,6 +2257,9 @@ static void router_run(struct peer_state *root)
 
         int64_t now = esp_timer_get_time();
         bool progress = false;
+#if !WENDY_NET_NON_TRANSIT && CONFIG_WENDY_NET_BLE
+        maintain_incoming_demand(root, now);
+#endif
 #if CONFIG_WENDY_NET_RECLAIM_PAYLOADS_FOR_TLS
         service_reclaim(root);
 #endif
@@ -2185,6 +2366,8 @@ static void router_run(struct peer_state *root)
 
 #if WENDY_NET_NON_TRANSIT
         prune_redundant_ble(root);
+#elif CONFIG_WENDY_NET_BLE
+        progress |= reclaim_for_incoming_probe(root);
 #endif
         update_node_status(root);
         service_topology_query(root);
@@ -2233,6 +2416,19 @@ static void router_run(struct peer_state *root)
             wble_mesh_release(pipe);
             pipe = NULL;
         }
+#if !WENDY_NET_NON_TRANSIT
+        if (pipe) {
+            hint = (struct wn_candidate){
+                .medium = WN_BLE, .port = remote.psm, .cost = WNR_BLE_COST};
+            ble_address(hint.address, remote.address, remote.address_type);
+            if (incoming_demand_active(root, esp_timer_get_time()) &&
+                incoming_standby_hint(root, &hint)) {
+                accepted = true;
+                wble_mesh_release(pipe);
+                pipe = NULL;
+            }
+        }
+#endif
         if (pipe) {
             accepted = true;
             struct peer_state *link =
@@ -2242,9 +2438,11 @@ static void router_run(struct peer_state *root)
             if (!link)
                 wble_mesh_release(pipe);
             else {
+#if WENDY_NET_NON_TRANSIT
                 hint = (struct wn_candidate){
                     .medium = WN_BLE, .port = remote.psm, .cost = WNR_BLE_COST};
                 ble_address(hint.address, remote.address, remote.address_type);
+#endif
                 link->ble_pipe = pipe;
                 link->setup_stream = wble_mesh_stream(pipe);
                 link->setup_have_stream = true;

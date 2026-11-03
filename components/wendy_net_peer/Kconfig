@@ -171,6 +171,18 @@ menu "Wendy Net native peer"
             budget can leave more RAM for TLS on targets without PSRAM, at the
             cost of retaining fewer service details/endpoints. Records outside
             the bound are deferred; this does not reserve the maximum at idle.
+    config WENDY_NET_CARRIER_OBSERVATION
+        bool "Print local carrier readiness with first-page topology queries"
+        depends on WENDY_NET_ROUTER && !WENDY_NET_CONSTRAINED_PROFILE
+        default n
+        help
+            Optional local diagnostics for full-router lab builds. An explicit
+            first-page topology request captures at most eight scalar carrier
+            readiness rows. The requesting task prints them to the existing
+            console after the routing actor releases the request. This adds no
+            WendyCom fields, mesh messages, periodic timer or persisted state.
+            Allocation failure skips diagnostics without failing topology.
+
     config WENDY_NET_KEEP_REDUNDANT_BLE
         bool "Keep a live BLE backup alongside a cheaper IP carrier"
         depends on WENDY_NET_ROUTER && WENDY_NET_BLE
@@ -178,7 +190,7 @@ menu "Wendy Net native peer"
         help
             Compatibility preference for constrained endpoint builds. Full
             routers retain different-media backups while capacity is spare,
-            and may reclaim a slower redundant carrier for another peer only
+            and may reclaim an unused redundant carrier for another peer only
             when its authenticated installed route remains usable elsewhere.
             This option does not increase total or per-medium carrier limits.
     config WENDY_NET_APP_MAX_FLOWS

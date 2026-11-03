@@ -141,6 +141,11 @@ function(session_budget_test name source)
     add_test(NAME session_${name} COMMAND session_${name} ${ARGN})
 endfunction()
 session_budget_test(pressure router_node_success_test.c "${session_key}")
+# The observation API is default-OFF. Compile its optional exact-link Babel
+# query directly for this fixture without changing the normal session library.
+session_budget_test(carrier_observation router_node_success_test.c "${session_key}")
+target_sources(session_carrier_observation PRIVATE ../../wendy_babel/src/engine.c)
+target_compile_definitions(session_carrier_observation PRIVATE CONFIG_WENDY_NET_CARRIER_OBSERVATION=1)
 session_budget_test(ttl_compact_budget monotonic_ttl_lifecycle_success_test.c "${session_key}")
 target_compile_definitions(session_ttl_compact_budget PRIVATE TTL_TEST_COMPACT=1)
 session_budget_test(certificate_relay transit_certificate_relay_success_test.c "${CMAKE_CURRENT_LIST_DIR}/../../wendy_pki/tests/fixtures")
@@ -250,6 +255,9 @@ target_compile_options(topology_driver_success_test PRIVATE -Wall -Wextra -Werro
 target_link_libraries(topology_driver_success_test PRIVATE Threads::Threads)
 add_test(NAME topology_driver_success COMMAND topology_driver_success_test)
 set_tests_properties(topology_driver_success PROPERTIES TIMEOUT 20)
+add_test(NAME driver_carrier_observation COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_LIST_DIR}/carrier_observation_driver_success_test.py")
+set_tests_properties(driver_carrier_observation PROPERTIES TIMEOUT 90)
 add_executable(session_operator_actor operator_actor_success_test.c ../src/operator_worker.c)
 target_link_libraries(session_operator_actor PRIVATE peer_session_budget)
 target_compile_options(session_operator_actor PRIVATE -Wall -Wextra -Werror -UNDEBUG -Wno-misleading-indentation)

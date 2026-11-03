@@ -3,6 +3,7 @@
 #include "wendy_net_profile.h"
 #include "wendy_net_router.h"
 #include "catalog_node.h"
+#include "carrier_observation.h"
 struct wnrs;
 struct wnrs_node;
 typedef int (*wnrs_send)(void *, const void *, size_t, bool control);
@@ -38,6 +39,10 @@ bool wnrs_peer_forwarding_ready(const struct wnrs *, int64_t monotonic_us);
 /* Actor-only: no currently usable selected route may depend on this exact
  * attached carrier. Peer reachability alone does not cover transit traffic. */
 bool wnrs_reclaim_idle(const struct wnrs *, int64_t monotonic_us);
+#endif
+#if WN_CARRIER_OBSERVATION_ENABLED
+/* Caller-owned scalar diagnostic only; no output, allocation or route edits. */
+bool wnrs_carrier_observation(const struct wnrs *, int64_t, struct wn_carrier_observation *);
 #endif
 uint64_t wnrs_link_id(const struct wnrs *);
 int wnrs_packet_route(struct wnrs *, void *, size_t, bool incoming, uint64_t *outgoing);

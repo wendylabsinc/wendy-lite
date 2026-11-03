@@ -2,6 +2,7 @@
 #include <stdatomic.h>
 #include "wendy_com_msg.pb.h"
 #include "topology_record.h"
+#include "carrier_observation.h"
 /* state_lock serializes the mailbox and fields; references alone protect the
  * allocation after a caller times out. There is never a caller-owned buffer. */
 struct topology_query {
@@ -10,11 +11,17 @@ struct topology_query {
     int result;
     WendyComNetTopologyParams params;
     WendyComNetTopologyPage page;
+#if WN_CARRIER_OBSERVATION_ENABLED
+    struct wn_carrier_observations *carriers;
+#endif
 };
 static inline void wnqt_release(struct topology_query *q, void (*release)(void *))
 {
     if (atomic_fetch_sub(&q->references, 1) == 1) {
         wnt_page_release(&q->page);
+#if WN_CARRIER_OBSERVATION_ENABLED
+        release(q->carriers);
+#endif
         release(q);
     }
 }

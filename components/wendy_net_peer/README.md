@@ -13,12 +13,29 @@ ownership, see [signed routing sessions](SIGNED_SESSIONS.md).
 Full routers prefer unconnected peer candidates and discovery probes before
 adding another carrier to an existing peer. Faster carriers are attempted while
 their medium has room, and different-media backups remain connected while
-capacity is spare. When a new peer needs room, the actor can release a slower
+capacity is spare. When a new peer needs room, the actor can release an unused
 redundant carrier only while another authenticated carrier to that same peer
 has a current installed route. Pending and closing physical owners remain
-charged until release. Discovery hints schedule probes; TLS still establishes
+charged until release. Selected transit routes must also move off a carrier
+before it can be reclaimed. Discovery hints schedule probes; TLS still establishes
 identity and rejects same-medium aliases. The constrained C6 profile retains
 its single-carrier policy and resource limits.
+
+A full native BLE node can reject an initial attempt while safely making room
+for its ordinary retry. After physical release, the existing 30-second failure
+interval temporarily gives new peers priority over restoring an old backup.
+The opportunity expires if no new peer arrives; no additional timer runs.
+
+For lab diagnostics, a full-router build can enable
+`CONFIG_WENDY_NET_CARRIER_OBSERVATION=y` (off by default). An ordinary topology
+first-page request (`cursor=0`) then prints up to eight
+`wn_carrier_observation` rows on the existing local console. Each row records
+the exact carrier/attachment, selected link, signed origin tuple, candidate and
+proof expiry, two-way adjacency, feasibility, and retirement state. A warm
+standby requires `usable=1` on that carrier while another link is selected;
+an authenticated socket alone is insufficient. Rendering runs in the topology
+caller after the actor releases its snapshot. The option adds no packet or
+topology response fields and is compiled out on constrained C6.
 
 A complete device manifest carries services with one inherited lease. The
 service helpers validate and project those fields; they do not create separate

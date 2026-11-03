@@ -2480,6 +2480,86 @@ bool wnrs_reclaim_idle(const struct wnrs *s, int64_t now)
     return true;
 }
 #endif
+#if WN_CARRIER_OBSERVATION_ENABLED
+static int64_t carrier_observation_deadline(const struct wnr_core *core, uint64_t ms)
+{
+    if (ms > INT64_MAX / 1000)
+        return INT64_MAX;
+    int64_t span = (int64_t)ms * 1000;
+    return core->epoch_us > INT64_MAX - span ? INT64_MAX : core->epoch_us + span;
+}
+bool wnrs_carrier_observation(const struct wnrs *s, int64_t now,
+                              struct wn_carrier_observation *out)
+{
+    if (!s || !s->node || !out)
+        return false;
+    *out = (struct wn_carrier_observation){.sampled_us = now,
+                                          .link = s->link,
+                                          .metric = WB_INFINITY,
+                                          .advertised = WB_INFINITY};
+    struct wnr_core *core = &s->node->core;
+    bool owned = false;
+    for (const struct wnrs *owner = s->node->sessions; owner; owner = owner->next)
+        if (owner == s) {
+            owned = true;
+            break;
+        }
+    out->current_identity = owned && s->attached &&
+                            wendy_pki_mesh_identity_current(&s->identity, now);
+    if (!out->current_identity || core->config.endpoint_gateway || !core->ready ||
+        core->stopped || wnr_busy(core) || now < core->now_us || now < core->epoch_us)
+        return true;
+    struct wb_route selected;
+    if (wnr_lookup(core, s->peer_address, now, &selected))
+        out->selected_link = selected.link;
+    uint64_t ms = (uint64_t)(now - core->epoch_us) / 1000;
+    uint16_t link_cost = WB_INFINITY;
+    for (size_t i = 0; i < core->babel.links_capacity; i++) {
+        const struct wb_link_state *link = &core->babel.links[i];
+        if (link->config.id == s->link && link->tx != WB_INFINITY && link->ihu_expires > ms &&
+            (link->hello_expires[0] > ms || link->hello_expires[1] > ms)) {
+            out->twoway = true;
+            link_cost = link->config.cost > link->tx ? link->config.cost : link->tx ? link->tx : 1;
+            break;
+        }
+    }
+    for (size_t i = 0; i < core->babel.candidates_capacity; i++) {
+        const struct wb_candidate *candidate = &core->babel.candidates[i];
+        const struct wb_route *route = &candidate->route;
+        if (!candidate->used || route->link != s->link || route->prefix.family != 6 ||
+            route->prefix.bits != 128 || memcmp(route->prefix.bytes, s->peer_address, 16))
+            continue;
+        struct wn_carrier_observation row = *out;
+        row.candidate = true;
+        row.origin = route->router;
+        row.sequence = route->seqno;
+        row.advertised = candidate->advertised;
+        row.candidate_expires_us = carrier_observation_deadline(core, candidate->expires);
+        row.proof_expires_us = wnd_route_deadline(&core->directory, route->prefix.bytes,
+                                                  route->router, route->seqno, now);
+        int64_t operator_deadline = wno_route_deadline(core->operators, route->prefix.bytes,
+                                                       route->router, route->seqno, now);
+        if (operator_deadline > row.proof_expires_us)
+            row.proof_expires_us = operator_deadline;
+        row.authorized = row.proof_expires_us > now;
+        for (const struct wnd_entry *entry = core->directory.entries; entry; entry = entry->next)
+            if (entry->pending_receipt && !memcmp(entry->address, route->prefix.bytes, 16) &&
+                entry->manifest.origin.router_id == route->router &&
+                entry->manifest.origin.seqno == route->seqno)
+                row.authorized = false;
+        unsigned metric = (unsigned)candidate->advertised + link_cost;
+        row.metric = metric < WB_INFINITY ? (uint16_t)metric : WB_INFINITY;
+        row.feasible = wb_link_has_usable_origin(&core->babel, ms, s->link, &route->prefix,
+                                                   route->router, route->seqno);
+        row.usable = row.authorized && row.twoway && row.feasible &&
+                     row.candidate_expires_us > now && row.metric != WB_INFINITY;
+        if (!out->candidate || (row.usable && !out->usable) ||
+            (row.usable == out->usable && row.metric < out->metric))
+            *out = row;
+    }
+    return true;
+}
+#endif
 uint64_t wnrs_link_id(const struct wnrs *s)
 {
     return s->link;

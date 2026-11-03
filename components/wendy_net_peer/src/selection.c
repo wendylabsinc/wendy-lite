@@ -3,7 +3,7 @@
 #include <string.h>
 
 #define CANDIDATE_LIFETIME_MS 30000
-#define FAILURE_PENALTY_MS 30000
+#define FAILURE_PENALTY_MS WN_CANDIDATE_FAILURE_PENALTY_MS
 #define FAILURE_RETRY_MS 5000
 
 bool wn_link_replaces(const char *self, const char *peer, bool incumbent_incoming,
@@ -58,8 +58,16 @@ int wn_candidate_seen(struct wn_selection *s, const struct wn_candidate *hint, i
                  * Preserve the expected TLS peer learned at this radio address
                  * so ordinary repeated reports do not trigger redundant dials.
                  * This cached name never bypasses certificate verification. */
+#if !WENDY_NET_NON_TRANSIT && CONFIG_WENDY_NET_BLE
+                if (hint->device[0]) {
+                    if (strcmp(c->device, hint->device))
+                        c->authenticated = false;
+                    memcpy(c->device, hint->device, sizeof c->device);
+                }
+#else
                 if (hint->device[0])
                     memcpy(c->device, hint->device, sizeof c->device);
+#endif
                 c->cost = hint->cost;
                 c->passive = hint->passive;
             }
@@ -85,6 +93,9 @@ int wn_candidate_seen(struct wn_selection *s, const struct wn_candidate *hint, i
     s->candidates[slot].failed_ms = 0;
     s->candidates[slot].failures = 0;
     s->candidates[slot].holds = 0;
+#if !WENDY_NET_NON_TRANSIT && CONFIG_WENDY_NET_BLE
+    s->candidates[slot].authenticated = false;
+#endif
     return slot;
 }
 
@@ -186,6 +197,9 @@ int wn_candidate_authenticated(struct wn_selection *s, unsigned slot, const char
     if (c->device[0] && strcmp(c->device, peer))
         return -1;
     memcpy(c->device, peer, sizeof c->device);
+#if !WENDY_NET_NON_TRANSIT && CONFIG_WENDY_NET_BLE
+    c->authenticated = true;
+#endif
     return 0;
 }
 int wn_candidate_commit(struct wn_selection *s, unsigned slot, const char *peer)

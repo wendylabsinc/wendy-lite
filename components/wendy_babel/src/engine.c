@@ -813,6 +813,29 @@ bool wb_has_usable_origin(struct wb_engine *e, uint64_t now, const struct wb_pre
     }
     return false;
 }
+#if CONFIG_WENDY_NET_CARRIER_OBSERVATION && !CONFIG_WENDY_NET_CONSTRAINED_PROFILE
+bool wb_link_has_usable_origin(struct wb_engine *e, uint64_t now, uint64_t link,
+                                const struct wb_prefix *prefix, uint64_t router, uint16_t seqno)
+{
+    if (!e || !prefix || !link || e->stopped || e->pending || !e->ready || now < e->now ||
+        !routable(prefix) || !router || router == UINT64_MAX || local_for(e, prefix))
+        return false;
+    struct wb_source *source = source_for(e, prefix, router);
+    for (size_t i = 0; i < e->candidates_capacity; i++) {
+        const struct wb_candidate *candidate = &e->candidates[i];
+        if (!candidate->used || candidate->route.link != link || candidate->expires <= now ||
+            candidate->advertised == WB_INFINITY || candidate->route.router != router ||
+            candidate->route.seqno != seqno || !wb_prefix_equal(&candidate->route.prefix, prefix) ||
+            !allowed(e, candidate) ||
+            add_cost(candidate->advertised, cost_at(link_for(e, link), now)) == WB_INFINITY)
+            continue;
+        if (!source || source->expires <= now || newer(seqno, source->seqno) ||
+            (seqno == source->seqno && candidate->advertised < source->metric))
+            return true;
+    }
+    return false;
+}
+#endif
 int wb_request_prefix(struct wb_engine *e, const struct wb_prefix *prefix)
 {
     if (!e || !prefix || !routable(prefix))

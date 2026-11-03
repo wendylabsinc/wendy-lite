@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "wendy_net_binary.h"
+#include "wendy_net_profile.h"
 #ifdef ESP_PLATFORM
 #include "sdkconfig.h"
 #endif
@@ -24,6 +25,7 @@
 #define WN_CANDIDATES 8
 #endif
 #endif
+#define WN_CANDIDATE_FAILURE_PENALTY_MS 30000
 
 /* Portable codec: no TLS, clock, allocation, routing or SDK runtime. */
 struct wn_token {
@@ -107,6 +109,9 @@ struct wn_candidate {
     bool passive;             /* Dial planning only; never identity or route authority. */
     uint8_t ble_capabilities; /* Live endpoint hint only; no authority. */
     uint16_t holds;           /* Physical setup/live owners; their slot cannot be reused. */
+#if !WENDY_NET_NON_TRANSIT && CONFIG_WENDY_NET_BLE
+    bool authenticated;      /* Learned endpoint name; scheduling only, never TLS authority. */
+#endif
 };
 struct wn_selection {
     struct wn_candidate candidates[WN_CANDIDATES];

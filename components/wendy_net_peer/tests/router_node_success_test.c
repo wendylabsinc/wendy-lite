@@ -1329,6 +1329,115 @@ static void forwarding_ready_fixture(struct wnrs *s)
     assert(wnrs_peer_forwarding_ready(s, clock_us));
 }
 #if !WENDY_NET_NON_TRANSIT
+#if WN_CARRIER_OBSERVATION_ENABLED
+static void carrier_observation_fixture(struct wnrs *slow, struct wnrs *fast)
+{
+    struct wnr_core *core = &slow->node->core;
+    struct wb_prefix prefix = {.family = 6, .bits = 128};
+    memcpy(prefix.bytes, slow->peer_address, 16);
+    struct wb_candidate *candidate = NULL;
+    struct wb_source *source = NULL;
+    struct wb_link_state *neighbor = NULL;
+    struct wnd_entry *proof = NULL;
+    struct wb_route *selected = NULL;
+    for (size_t i = 0; i < core->babel.candidates_capacity; i++) {
+        struct wb_candidate *row = &core->babel.candidates[i];
+        if (row->used && row->route.link == slow->link &&
+            wb_prefix_equal(&row->route.prefix, &prefix))
+            candidate = row;
+    }
+    assert(candidate);
+    for (size_t i = 0; i < core->babel.sources_capacity; i++) {
+        struct wb_source *row = &core->babel.sources[i];
+        if (row->used && row->router == candidate->route.router &&
+            wb_prefix_equal(&row->prefix, &prefix))
+            source = row;
+    }
+    for (size_t i = 0; i < core->babel.links_capacity; i++)
+        if (core->babel.links[i].config.id == slow->link)
+            neighbor = &core->babel.links[i];
+    for (struct wnd_entry *row = core->directory.entries; row; row = row->next)
+        if (!memcmp(row->address, slow->peer_address, 16))
+            proof = row;
+    for (size_t i = 0; i < core->babel.route_count; i++)
+        if (wb_prefix_equal(&core->babel.routes[i].prefix, &prefix))
+            selected = &core->babel.routes[i];
+    assert(source && neighbor && proof && selected && selected->link == fast->link);
+    uint64_t ms = (uint64_t)(clock_us - core->epoch_us) / 1000;
+    struct wn_carrier_observation row;
+    struct wb_engine before = core->babel;
+    size_t memory = wnr_memory(core) + wg_memory(&slow->node->pool);
+    assert(wnrs_carrier_observation(slow, clock_us, &row));
+    assert(row.current_identity && row.candidate && row.authorized && row.feasible &&
+           row.twoway && row.usable && row.link == slow->link &&
+           row.selected_link == fast->link && row.origin == candidate->route.router &&
+           row.sequence == candidate->route.seqno && row.metric == WNR_BLE_COST &&
+           row.advertised == 0 && row.candidate_expires_us > clock_us &&
+           row.proof_expires_us > clock_us && row.sampled_us == clock_us);
+    assert(!memcmp(&before, &core->babel, sizeof before));
+
+    /* Another carrier's usable candidate cannot establish this exact link's
+     * readiness, even though the existing any-link handoff query succeeds. */
+    assert(wb_has_usable_origin(&core->babel, ms, &prefix,
+                                candidate->route.router, candidate->route.seqno));
+    uint64_t wrong_link = core->babel.last_link + 1;
+    assert(!wb_link_has_usable_origin(&core->babel, ms, wrong_link, &prefix,
+                                      candidate->route.router, candidate->route.seqno));
+    uint64_t link = slow->link;
+    slow->link = wrong_link;
+    assert(wnrs_carrier_observation(slow, clock_us, &row) && !row.candidate && !row.usable);
+    slow->link = link;
+
+    uint64_t expires = candidate->expires;
+    candidate->expires = ms;
+    assert(wb_has_usable_origin(&core->babel, ms, &prefix,
+                                candidate->route.router, candidate->route.seqno));
+    assert(wnrs_carrier_observation(slow, clock_us, &row) && row.candidate &&
+           !row.feasible && !row.usable && row.candidate_expires_us == clock_us);
+    candidate->expires = expires;
+
+    uint16_t advertised = candidate->advertised, feasible_metric = source->metric;
+    candidate->advertised = source->metric = 128;
+    assert(wb_has_usable_origin(&core->babel, ms, &prefix,
+                                candidate->route.router, candidate->route.seqno));
+    assert(wnrs_carrier_observation(slow, clock_us, &row) && row.authorized &&
+           row.twoway && !row.feasible && !row.usable);
+    candidate->advertised = advertised;
+    source->metric = feasible_metric;
+
+    uint64_t ihu_expires = neighbor->ihu_expires;
+    neighbor->ihu_expires = ms;
+    assert(wnrs_carrier_observation(slow, clock_us, &row) && !row.twoway && !row.usable);
+    neighbor->ihu_expires = ihu_expires;
+    int64_t deadline = proof->deadline_us;
+    proof->deadline_us = clock_us;
+    assert(wnrs_carrier_observation(slow, clock_us, &row) && !row.authorized &&
+           !row.usable && row.proof_expires_us <= clock_us);
+    proof->deadline_us = deadline;
+    bool pending = proof->pending_receipt;
+    proof->pending_receipt = true;
+    assert(wnrs_carrier_observation(slow, clock_us, &row) && !row.authorized && !row.usable);
+    proof->pending_receipt = pending;
+    time_t identity_expires = slow->identity.certificate_expires;
+    slow->identity.certificate_expires = 1;
+    assert(wnrs_carrier_observation(slow, clock_us, &row) && !row.current_identity && !row.usable);
+    slow->identity.certificate_expires = identity_expires;
+
+    /* Read the current installed projection every time, not a remembered
+     * selected-link diagnostic from an earlier actor turn. */
+    selected->link = slow->link;
+    assert(wnrs_carrier_observation(slow, clock_us, &row) && row.usable &&
+           row.selected_link == slow->link);
+    selected->link = fast->link;
+    assert(wnrs_carrier_observation(fast, clock_us, &row) && row.usable &&
+           row.selected_link == fast->link && row.link == fast->link && row.metric == WNR_LAN_COST);
+    assert(wnrs_carrier_observation(slow, clock_us, &row) && row.usable &&
+           row.selected_link == fast->link);
+    assert(!memcmp(&before, &core->babel, sizeof before));
+    assert(wnr_memory(core) + wg_memory(&slow->node->pool) == memory);
+    puts("carrier observation distinguishes exact warm candidate from selected route");
+}
+#endif
 static void reclaim_transit_update(struct endpoint *carrier, const uint8_t address[16],
                                     uint16_t metric)
 {
@@ -1405,6 +1514,9 @@ static void reclaim_transit_fixture(const struct wendy_pki_mesh_identity *identi
     assert(installed.link == fast.session->link);
     assert(wnrs_peer_forwarding_ready(fast.session, clock_us));
     assert(wnrs_reclaim_idle(slow.session, clock_us));
+#if WN_CARRIER_OBSERVATION_ENABLED
+    carrier_observation_fixture(slow.session, fast.session);
+#endif
 
     size_t memory = wnr_memory(&node->core) + wg_memory(&node->pool);
     struct wb_engine before = node->core.babel;

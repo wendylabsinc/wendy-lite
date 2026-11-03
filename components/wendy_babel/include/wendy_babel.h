@@ -217,6 +217,12 @@ int wb_tick(struct wb_engine *, uint64_t now_ms);
  * It need not be the selected FIB route. No allocation, output or timer edits. */
 bool wb_has_usable_origin(struct wb_engine *, uint64_t now_ms, const struct wb_prefix *,
                            uint64_t router, uint16_t seqno);
+#if CONFIG_WENDY_NET_CARRIER_OBSERVATION && !CONFIG_WENDY_NET_CONSTRAINED_PROFILE
+/* Optional local diagnostic: the usable candidate must belong to this exact
+ * link. The any-link origin query above cannot prove a warm standby. */
+bool wb_link_has_usable_origin(struct wb_engine *, uint64_t now_ms, uint64_t link,
+                                const struct wb_prefix *, uint64_t router, uint16_t seqno);
+#endif
 /* Queue standard prefix requests without changing timers or route state.
  * A bounded allocation failure queues none; drain wb_next_packet as usual. */
 int wb_request_prefix(struct wb_engine *, const struct wb_prefix *);
