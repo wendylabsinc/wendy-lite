@@ -1,10 +1,12 @@
 /* Exercise the production legacy LAN/BLE identity policy independently of TLS. */
 #include "wendy_operator_auth.h"
 #include "wendy_pki_verify.h"
+#include "wendy_pki_operator.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static unsigned char *load(const char *path, size_t *size)
 {
@@ -21,12 +23,26 @@ static unsigned char *load(const char *path, size_t *size)
 
 int main(int argc, char **argv)
 {
-    assert(argc == 5);
+    assert(argc == 5 || argc == 6);
     size_t device_size;
     unsigned char *device = load(argv[2], &device_size);
     struct wendy_operator_auth auth;
     memset(&auth, 0, sizeof auth);
     int initialized = wendy_operator_auth_init(&auth, device, device_size);
+    if (!strcmp(argv[1], "chain")) {
+        assert(argc == 6 && initialized == 0);
+        size_t peer_size, roots_size;
+        unsigned char *peer = load(argv[3], &peer_size), *roots = load(argv[5], &roots_size);
+        const uint8_t *chain[] = {peer};
+        struct wendy_pki_operator_peer verified;
+        int result = wendy_pki_operator_chain(chain, &peer_size, 1, roots, roots_size,
+                                              auth.tenant, time(NULL), &verified);
+        assert((result == 0) == !strcmp(argv[4], "valid"));
+        free(peer);
+        free(roots);
+        free(device);
+        return 0;
+    }
     if (!strcmp(argv[1], "init")) {
         assert((initialized == 0) == !strcmp(argv[3], "valid"));
         if (!initialized)

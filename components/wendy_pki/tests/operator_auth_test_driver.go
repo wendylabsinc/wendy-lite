@@ -232,7 +232,7 @@ func main() {
 		"operator-name", "upper-operator", "operator-path", "operator-query", "operator-fragment", "wrong-authority",
 		"operator-at", "operator-pipe", "operator-empty", "operator-empty-segment", "operator-dot-segment",
 		"operator-parent-segment", "operator-long-segment", "operator-percent", "operator-nul",
-		"wrong-eku", "missing-eku", "ca-leaf", "expired", "future", "untrusted", "tampered", "no-client",
+		"wrong-eku", "missing-eku", "ca-leaf", "lite-operator", "lite-operator-extra-eku", "expired", "future", "untrusted", "tampered", "no-client",
 	} {
 		peer := certificate("operator", operatorURI)
 		key := newKey()
@@ -297,6 +297,12 @@ func main() {
 		case "missing-eku":
 			peer.ExtKeyUsage = nil
 			identityValid = false
+		case "lite-operator", "lite-operator-extra-eku":
+			peer.UnknownExtKeyUsage = []asn1.ObjectIdentifier{{1, 3, 6, 1, 4, 1, 65441, 1, 9}}
+			if name == "lite-operator-extra-eku" {
+				peer.ExtKeyUsage = append(peer.ExtKeyUsage, x509.ExtKeyUsageServerAuth)
+			}
+			identityValid = false
 		case "ca-leaf":
 			peer.IsCA = true
 			peer.KeyUsage |= x509.KeyUsageCertSign
@@ -323,6 +329,9 @@ func main() {
 			expected = "valid"
 		}
 		runUnit(os.Args[1], "verify", devicePath, path, expected)
+		if name == "valid" || strings.HasPrefix(name, "lite-operator") {
+			runUnit(os.Args[1], "chain", devicePath, path, expected, filepath.Join(directory, "root.pem"))
+		}
 		peerRole := "none"
 		if identityValid {
 			peerRole = "operator"

@@ -993,6 +993,7 @@ int wendy_pki_operator_chain(const uint8_t *const *data, const size_t *sizes, si
     }
     mbedtls_x509_crt *leaf = certs[0];
     if (leaf->MBEDTLS_PRIVATE(ca_istrue) || wendy_pki_certificate_policy(leaf, false) ||
+        wendy_operator_auth_check(leaf, tenant) ||
         !(leaf->MBEDTLS_PRIVATE(key_usage) & MBEDTLS_X509_KU_DIGITAL_SIGNATURE) ||
         !has_eku(leaf, MBEDTLS_OID_CLIENT_AUTH, MBEDTLS_OID_SIZE(MBEDTLS_OID_CLIENT_AUTH)) ||
         verify_chain(leaf, certs, (int)count, roots, roots_size, now, &peer->expires) ||

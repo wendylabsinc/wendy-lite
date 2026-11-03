@@ -105,7 +105,7 @@ int wendy_pki_verify_lite_operator(const uint8_t *der, size_t size, const char *
     mbedtls_x509_crt_init(&cert);
     int result = -1;
     if (mbedtls_x509_crt_parse_der(&cert, der, size) || cert.raw.len != size || cert.next ||
-        !p256(&cert) || wendy_operator_auth_check(&cert, tenant) ||
+        !p256(&cert) || wendy_operator_auth_check_lite(&cert, tenant) ||
         cert.MBEDTLS_PRIVATE(key_usage) != MBEDTLS_X509_KU_DIGITAL_SIGNATURE ||
         critical_key_usage(&cert)) goto done;
     int client = 0, lite = 0;

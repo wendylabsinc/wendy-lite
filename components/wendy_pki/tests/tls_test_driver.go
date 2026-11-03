@@ -79,7 +79,7 @@ func main() {
 		u, err := url.Parse(uri)
 		must(err)
 		template := &x509.Certificate{SignatureAlgorithm: signature, SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: name}, NotBefore: time.Now().Add(-time.Hour), NotAfter: expiry, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: usages, DNSNames: []string{"localhost"}, URIs: []*url.URL{u}}
-		if strings.HasPrefix(name, "lite-") && name != "lite-unmarked" {
+		if (strings.HasPrefix(name, "lite-") && name != "lite-unmarked") || strings.Contains(name, "lite-marked") {
 			template.UnknownExtKeyUsage = []asn1.ObjectIdentifier{{1, 3, 6, 1, 4, 1, 65441, 1, 9}}
 		}
 		switch name {
@@ -109,11 +109,11 @@ func main() {
 	must(os.WriteFile(filepath.Join(directory, "key.der"), keyDER, 0600))
 	must(os.WriteFile(filepath.Join(directory, "server.pem"), serverPEM, 0600))
 	cases := []string{"valid", "wrong-tenant", "wrong-role", "wrong-eku", "expired", "untrusted", "no-client", "tls12", "truncate", "extra", "intermediate", "intermediate-key-usage", "intermediate-not-ca", "intermediate-path-length", "intermediate-expired", "intermediate-sha1", "relay-valid", "relay-operator-expiry", "relay-device-expiry", "relay-wrong-key", "relay-old", "relay-wlg2", "relay-truncated", "relay-expired", "relay-long-presentation", "relay-device-client",
-		"lan-operator", "lan-device", "lan-device-wrong-tenant", "lan-device-wrong-eku", "lan-device-missing-eku",
+		"lan-operator", "lan-lite-marked-operator", "lan-lite-marked-operator-extra-eku", "lan-device", "lan-device-wrong-tenant", "lan-device-wrong-eku", "lan-device-missing-eku",
 		"lan-device-ca", "lan-device-duplicate-uri", "lan-device-extra-uri", "lan-device-missing-uri",
 		"lan-device-expired", "lan-device-future", "lan-device-untrusted", "lan-device-tampered", "lan-no-client",
 		"lite-valid", "lite-wrong-role", "lite-wrong-tenant", "lite-unmarked", "lite-extra-eku", "lite-untrusted", "lite-primary-operator", "lite-lan-device",
-		"stream-valid", "stream-wrong-tenant", "stream-device", "stream-no-client", "stream-expired", "stream-untrusted", "stream-tls12", "stream-timeout"}
+		"stream-valid", "stream-lite-marked-operator", "stream-lite-marked-operator-extra-eku", "stream-wrong-tenant", "stream-device", "stream-no-client", "stream-expired", "stream-untrusted", "stream-tls12", "stream-timeout"}
 	if os.Getenv("WENDY_TLS_OWNED_ONLY") != "" { cases = nil }
 	for _, name := range cases {
 		expiry := time.Now().Add(time.Hour)
@@ -166,7 +166,7 @@ func main() {
 			usages = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
 		case "lan-device-missing-eku":
 			usages = nil
-		case "lite-extra-eku":
+		case "lite-extra-eku", "lan-lite-marked-operator-extra-eku", "stream-lite-marked-operator-extra-eku":
 			usages = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}
 		case "untrusted", "lan-device-untrusted", "lite-untrusted", "stream-untrusted":
 			issuer, err = newIssuer()
