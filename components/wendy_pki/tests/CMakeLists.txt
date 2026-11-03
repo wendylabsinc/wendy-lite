@@ -286,6 +286,11 @@ if(WENDYOS_GO_ROOT)
         "${CMAKE_CURRENT_LIST_DIR}/issuer_wos_interop.py" --go "${GO_EXECUTABLE}"
         --wendyos-root "${WENDYOS_GO_ROOT}" --driver "$<TARGET_FILE:issuer_interop_success_test>")
     set_tests_properties(pki_issuer_wos_interop_normal PROPERTIES TIMEOUT 120)
+    add_test(NAME pki_issuer_wos_interop_mldsa_peer COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_LIST_DIR}/issuer_wos_interop.py" --go "${GO_EXECUTABLE}"
+        --wendyos-root "${WENDYOS_GO_ROOT}" --driver "$<TARGET_FILE:issuer_interop_success_test>"
+        --peer-key mldsa65)
+    set_tests_properties(pki_issuer_wos_interop_mldsa_peer PROPERTIES TIMEOUT 120)
     add_test(NAME pki_issuer_wos_interop_constrained COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_LIST_DIR}/issuer_wos_interop.py" --go "${GO_EXECUTABLE}"
         --wendyos-root "${WENDYOS_GO_ROOT}" --driver "$<TARGET_FILE:issuer_constrained_interop_test>"

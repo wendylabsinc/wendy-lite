@@ -20,6 +20,7 @@ def run():
     parser.add_argument('--driver', type=Path, required=True)
     parser.add_argument('--constrained-native', action='store_true')
     parser.add_argument('--native-resident-bytes', type=int, default=0)
+    parser.add_argument('--peer-key', choices=['ecdsa', 'mldsa65'], default='ecdsa')
     args = parser.parse_args()
     module = args.wendyos_root.resolve()
     if (module / 'go/internal/agent/bleprovider').is_dir():
@@ -34,6 +35,12 @@ def run():
     # limit. Certificate padding changes size only, not anchors or TLS policy.
     assert '[]int{7050, 6350, 5050}' in fixture
     fixture = fixture.replace('[]int{7050, 6350, 5050}', '[]int{1200, 1100, 1000}')
+    if args.peer_key == 'mldsa65':
+        # Keep the Lite identity ECDSA while the remote router uses ML-DSA.
+        # Public peer-key support must not require local private-key signing.
+        marker = 'if leafKey == mldsaDeviceKey {'
+        assert fixture.count(marker) == 1
+        fixture = fixture.replace(marker, 'if leafKey == mldsaDeviceKey || name == "low" {')
     fixture = fixture.replace('return credentials', 'liteIssuerRoots[credentials]=chain\nreturn credentials')
     for before, after in [('ecdsaDeviceKey', 'liteIssuerECDSA'),
                           ('mldsaDeviceKey', 'liteIssuerMLDSA'),

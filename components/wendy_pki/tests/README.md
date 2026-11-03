@@ -241,6 +241,10 @@ cleanup. Cooldown fixtures cover full-chain carrier, VIP and native management
 exchanges in both applicable roles while the Go peer still offers hints. The
 issuer helper tests check the exact monotonic deadline, no extension, and date,
 revocation, usage and policy exclusions (including combined flags).
+`pki_issuer_wos_interop_mldsa_peer` repeats these cases with an ML-DSA-65
+remote identity and an ECDSA Lite identity. Carrier cases also extract the
+authenticated peer's public key and compare it with the certified SPKI. This
+covers mesh admission with the optional local ML-DSA signing backend disabled.
 All Lite fixture inputs are DER. Actual TLS allocation hooks and the
 owner ledger require zero retained bytes, allocations and reservations on close.
 

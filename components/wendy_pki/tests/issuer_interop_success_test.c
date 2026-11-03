@@ -212,6 +212,17 @@ int main(int argc, char **argv)
         }
     }
     assert(!result && steps < 10000);
+    if (!agent && !application) {
+        /* Mesh admission retains the authenticated peer key after TLS. This
+         * must work for ML-DSA peers when our own identity is still ECDSA and
+         * the optional local ML-DSA signing backend is disabled. */
+        struct wendy_pki_mesh_peer authenticated;
+        assert(!wendy_pki_mesh_authenticated_peer(c, &authenticated));
+        const mbedtls_x509_crt *peer = mbedtls_ssl_get_peer_cert(&c->ssl);
+        assert(peer && authenticated.spki_size == peer->pk_raw.len);
+        assert(!memcmp(authenticated.spki, peer->pk_raw.p, peer->pk_raw.len));
+        assert(!strcmp(authenticated.device, argv[9]));
+    }
     fprintf(stderr, "native completed role=%s omit=%u wire_count=%u hint=%s\n", argv[4],
             c->issuers && c->issuers->omit,
             c->issuers ? c->issuers->peer_presented_certificates : 0,
