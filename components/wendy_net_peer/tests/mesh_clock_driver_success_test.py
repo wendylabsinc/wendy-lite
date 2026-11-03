@@ -178,6 +178,15 @@ static uint8_t own_type;
 uint8_t pool_memory[1];
 static int report_lifetime;
 static atomic_bool quiescing, router_accepting, ready;
+#if !WENDY_NET_NON_TRANSIT
+struct wble_mesh_peer {
+ uint8_t address[6], address_type;
+ uint16_t psm;
+ bool server;
+};
+static struct wble_mesh_peer router_refusal_peer;
+static atomic_uint router_capacity_refusals;
+#endif
 static unsigned registrations;
 static int register_error;
 static int ble_hs_id_infer_auto(int preference, uint8_t *out) {
