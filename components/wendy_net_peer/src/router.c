@@ -182,6 +182,9 @@ static int persist(struct wnr_core *c)
 }
 static int finish(struct wnr_core *c, int result)
 {
+    /* A single actor turn may settle multiple effects. Every checkpoint,
+     * publication and send callback belongs to the non-readable phase. */
+    c->ready = false;
     if (result < 0)
         return stop(c, "babel-event", result);
     int checkpoint = persist(c);
