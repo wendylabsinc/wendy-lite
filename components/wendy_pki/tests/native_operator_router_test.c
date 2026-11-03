@@ -123,6 +123,38 @@ int main(int argc, char **argv)
         assert(!result && wendy_pki_get_peer_role(tls) == WENDY_PEER_ROLE_DEVICE);
         assert(!strcmp(tls->mesh_peer, "00000000-0000-4000-8000-000000000005"));
         assert(!wendy_pki_mesh_authenticated_operator(tls));
+        struct wendy_pki_mesh_peer projected;
+        assert(wendy_pki_mesh_authenticated_peer(NULL, &projected) == -1);
+        assert(wendy_pki_mesh_authenticated_peer(tls, NULL) == -1);
+        const mbedtls_x509_crt *peer = mbedtls_ssl_get_peer_cert(&tls->ssl);
+        assert(peer && peer->pk_raw.p && peer->pk_raw.len);
+        assert(!wendy_pki_mesh_authenticated_peer(tls, &projected));
+        assert(!strcmp(projected.device, tls->mesh_peer));
+        assert(projected.spki_size == peer->pk_raw.len &&
+               !memcmp(projected.spki, peer->pk_raw.p, peer->pk_raw.len));
+        assert(projected.expires == tls->operator_expires);
+        resetting = true;
+        assert(wendy_pki_mesh_authenticated_peer(tls, &projected) == -1);
+        resetting = false;
+        int64_t deadline = tls->session_deadline_us;
+        tls->session_deadline_us = esp_timer_get_time() - 1;
+        assert(wendy_pki_mesh_authenticated_peer(tls, &projected) == -1);
+        tls->session_deadline_us = deadline;
+        tls->peer_role = WENDY_PEER_ROLE_OPERATOR;
+        assert(wendy_pki_mesh_authenticated_peer(tls, &projected) == -1);
+        tls->peer_role = WENDY_PEER_ROLE_DEVICE;
+        /* Exercise malformed/absent SPKI bounds without changing trust. */
+        mbedtls_x509_crt *mutable_peer = (mbedtls_x509_crt *)peer;
+        mbedtls_x509_buf saved_spki = mutable_peer->pk_raw;
+        mutable_peer->pk_raw.p = NULL;
+        assert(wendy_pki_mesh_authenticated_peer(tls, &projected) == -1);
+        mutable_peer->pk_raw = saved_spki;
+        mutable_peer->pk_raw.len = 0;
+        assert(wendy_pki_mesh_authenticated_peer(tls, &projected) == -1);
+        mutable_peer->pk_raw.len = WENDY_PKI_MESH_SPKI_MAX + 1;
+        assert(wendy_pki_mesh_authenticated_peer(tls, &projected) == -1);
+        mutable_peer->pk_raw = saved_spki;
+        assert(!wendy_pki_mesh_authenticated_peer(tls, &projected));
         uint8_t ack = 'A';
         transfer(tls, &ack, 1, true);
     } else if (!strcmp(argv[4], "accept")) {

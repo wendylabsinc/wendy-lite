@@ -78,7 +78,7 @@ func main() {
 	leaf := func(role, id string) (tls.Certificate, []byte) {
 		var key crypto.Signer
 		var err error
-		if profile == "mldsa65" && role == "operator" {
+		if profile == "mldsa65" && (role == "operator" || id == "00000000-0000-4000-8000-000000000005") {
 			key, err = mldsa.GenerateKey(mldsa.MLDSA65())
 		} else {
 			key, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

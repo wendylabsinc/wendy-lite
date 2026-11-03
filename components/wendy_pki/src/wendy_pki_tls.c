@@ -2145,18 +2145,18 @@ int wendy_pki_mesh_authenticated_peer(wendy_pki_connection *c, struct wendy_pki_
         return 0;
     }
     const mbedtls_x509_crt *peer = mbedtls_ssl_get_peer_cert(&c->ssl);
-    if (!peer)
+    if (!peer || !peer->pk_raw.p || !peer->pk_raw.len ||
+        peer->pk_raw.len > WENDY_PKI_MESH_SPKI_MAX)
         return -1;
-    uint8_t spki[WENDY_PKI_MESH_SPKI_MAX];
-    int n = mbedtls_pk_write_pubkey_der((mbedtls_pk_context *)&peer->pk, spki, sizeof spki);
-    if (n <= 0 || (size_t)n > sizeof spki)
-        return -1;
+    /* Retain the exact SPKI authenticated in the peer certificate. Public
+     * ML-DSA verification does not require own-key export support. */
     *out = (struct wendy_pki_mesh_peer){.not_before = c->operator_not_before,
                                           .signing_not_before = c->operator_signing_not_before,
                                           .issuer_not_before = c->operator_issuer_not_before,
-                                          .expires = c->operator_expires, .spki_size = (size_t)n};
+                                          .expires = c->operator_expires,
+                                          .spki_size = peer->pk_raw.len};
     memcpy(out->device, c->mesh_peer, 37);
-    memcpy(out->spki, spki + sizeof spki - n, n);
+    memcpy(out->spki, peer->pk_raw.p, peer->pk_raw.len);
     return 0;
 }
 int wendy_pki_mesh_verify_bundle(wendy_pki_connection *c, const uint8_t *const *der,
