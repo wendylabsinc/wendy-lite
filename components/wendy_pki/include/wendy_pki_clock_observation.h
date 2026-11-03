@@ -3,7 +3,9 @@
 #include "wendy_pki_mesh.h"
 
 /* Diagnostics only: these functions never initialize trust, set time or
- * authorize an operation. Boot must be called before normal PKI effects. */
+ * authorize an operation. Boot must be called before normal PKI effects.
+ * On targets without always-lock-free 32-bit/bool atomics these entry points
+ * are inert and read_raw returns an invalid observation. */
 /* Capture now; delivery waits until the existing console ring is ready. */
 void wendy_pki_clock_observe_boot(void);
 void wendy_pki_clock_observe_console_ready(void);
