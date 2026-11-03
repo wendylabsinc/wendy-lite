@@ -1,4 +1,8 @@
-"""Exercise actual actor carrier preference across forwarding and identity loss."""
+"""Preserve constrained actor preference across forwarding and identity loss.
+
+The full profile's spare-capacity policy has its own actor fixture. This
+fixture keeps the existing constrained path and both legacy Kconfig settings.
+"""
 from pathlib import Path
 import os
 import subprocess
@@ -158,6 +162,7 @@ with tempfile.TemporaryDirectory() as tmp:
     for keep in (0, 1):
         subprocess.run([os.environ.get('CC', 'cc'), '-std=c11', '-Wall', '-Wextra', '-Werror',
                         '-fsanitize=address,undefined',
+                        '-DWENDY_NET_NON_TRANSIT=1',
                         '-DCONFIG_WENDY_NET_KEEP_REDUNDANT_BLE=' + str(keep),
                         str(p / 'test.c'), '-o', str(p / 'test')], check=True)
         subprocess.run([str(p / 'test')], check=True)

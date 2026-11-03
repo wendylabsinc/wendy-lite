@@ -10,6 +10,16 @@ For configuration, firmware profiles and device limits, see
 [Wendy Net on Wendy Lite](../../docs/wendy-net.md). For protocol state and cache
 ownership, see [signed routing sessions](SIGNED_SESSIONS.md).
 
+Full routers prefer unconnected peer candidates and discovery probes before
+adding another carrier to an existing peer. Faster carriers are attempted while
+their medium has room, and different-media backups remain connected while
+capacity is spare. When a new peer needs room, the actor can release a slower
+redundant carrier only while another authenticated carrier to that same peer
+has a current installed route. Pending and closing physical owners remain
+charged until release. Discovery hints schedule probes; TLS still establishes
+identity and rejects same-medium aliases. The constrained C6 profile retains
+its single-carrier policy and resource limits.
+
 A complete device manifest carries services with one inherited lease. The
 service helpers validate and project those fields; they do not create separate
 signed service records, service gossip or an independent service cache. Keys on

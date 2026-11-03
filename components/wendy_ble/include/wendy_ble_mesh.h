@@ -2,6 +2,7 @@
 #pragma once
 #include "esp_err.h"
 #include "wendy_pki.h"
+#include "wendy_net_profile.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -39,6 +40,19 @@ void wble_mesh_router_admission(bool available);
 /* Actor-only, nonblocking snapshot: registered mesh listeners and an actually
  * free private pipe (including pending/closing ownership). No reservation. */
 bool wble_mesh_incoming_available(void);
+#if !WENDY_NET_NON_TRANSIT
+struct wble_mesh_capacity {
+    unsigned external, retiring;
+    bool physical_ready;
+};
+/* Native physical owners not represented by an actor carrier, including
+ * pending dials and released pipes until the host finishes their teardown.
+ * A contended or stopping provider returns false; the caller must defer.
+ * Before initialization, the known-empty provider has physical_ready=false.
+ * Signed-time pipes consume physical capacity but have a separate actor owner.
+ * Snapshot storage is caller-owned; this query never allocates or reserves. */
+bool wble_mesh_capacity_snapshot(struct wble_mesh_capacity *);
+#endif
 /* Actor capacity hint for owned discovery only. Retains reports/candidates,
  * never cancels a queued dial, and leaves baseline/shared scanning untouched.
  * Changes coalesce on the existing host mailbox, without an HCI wait here. */

@@ -176,12 +176,11 @@ menu "Wendy Net native peer"
         depends on WENDY_NET_ROUTER && WENDY_NET_BLE
         default n
         help
-            Normally keep BLE discovery running but release a BLE carrier once
-            a cheaper authenticated IP carrier to the same device is usable,
-            matching WendyOS peer selection. This avoids retaining duplicate
-            TLS/router state and leaves slots available for distinct neighbours.
-            BLE can be dialed again after that IP carrier fails. Enable only
-            when measured handover latency justifies the live backup RAM cost.
+            Compatibility preference for constrained endpoint builds. Full
+            routers retain different-media backups while capacity is spare,
+            and may reclaim a slower redundant carrier for another peer only
+            when its authenticated installed route remains usable elsewhere.
+            This option does not increase total or per-medium carrier limits.
     config WENDY_NET_APP_MAX_FLOWS
         int "Maximum live native app TLS flows per direction"
         depends on WENDY_NET_ROUTER

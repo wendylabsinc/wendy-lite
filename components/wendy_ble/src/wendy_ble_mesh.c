@@ -976,6 +976,69 @@ bool wble_mesh_incoming_available(void)
     xSemaphoreGive(mutex);
     return available;
 }
+#if !WENDY_NET_NON_TRANSIT
+bool wble_mesh_capacity_snapshot(struct wble_mesh_capacity *out)
+{
+    if (!out)
+        return false;
+    *out = (struct wble_mesh_capacity){0};
+    if (!atomic_load(&ready)) {
+        /* Native accept/dial paths reject before the first ready publication.
+         * Failed initialization must not suppress unrelated LAN carriers.
+         * OFF publishes quiescing before closing the report lifetime, so an
+         * existing physical owner can never be mistaken for this empty case.
+         * Re-sample under a publication loan when one has become available;
+         * a concurrent ready transition makes this turn defer. */
+        bool lent = wble_report_acquire(&report_lifetime);
+        bool empty = !atomic_load(&quiescing) && !atomic_load(&ready);
+        if (lent)
+            wble_report_release(&report_lifetime);
+        return empty;
+    }
+    /* The publication loan pins mutex/pipes through OFF's final deletion. */
+    if (!wble_report_acquire(&report_lifetime))
+        return false;
+    bool available = atomic_load(&ready) && !atomic_load(&quiescing) && mutex && trylock();
+    if (available) {
+        struct wble_mesh_capacity snapshot = {0};
+        for (unsigned i = 0; i < CHANNELS; i++) {
+            const struct wble_mesh_pipe *p = pipes[i];
+            if (!p)
+                continue;
+            bool released = atomic_load_explicit(&p->release_requested, memory_order_acquire);
+            /* release_requested bridges the actor's relinquished pointer and
+             * the host changing owned/closing on its next existing turn. */
+            if (p->peer.psm != WBLE_MESH_TIME_PSM && (!p->owned || released))
+                snapshot.external++;
+            if (released || p->closing || p->disconnecting || p->gap_terminating ||
+                (p->gap_owned && !p->stack))
+                snapshot.retiring++;
+        }
+        if (dialing && dial_psm != WBLE_MESH_TIME_PSM)
+            snapshot.external++;
+        for (unsigned i = 0; i < MYNEWT_VAL(BLE_MAX_CONNECTIONS); i++) {
+            if (!stopping_acls[i].used)
+                continue;
+            bool represented = false;
+            for (unsigned n = 0; n < CHANNELS; n++)
+                if (pipes[n] && pipes[n]->handle == stopping_acls[i].handle) {
+                    represented = true;
+                    break;
+                }
+            /* Only mesh-created, unclaimed ACLs enter this table. Shared
+             * management ACLs never do. Retain the claim after pipe removal. */
+            if (!represented)
+                snapshot.external++;
+            snapshot.retiring++;
+        }
+        snapshot.physical_ready = !pending && count() + (dialing ? 1 : 0) < CHANNELS;
+        *out = snapshot;
+        unlock();
+    }
+    wble_report_release(&report_lifetime);
+    return available;
+}
+#endif
 
 esp_err_t wble_mesh_init(void)
 {
