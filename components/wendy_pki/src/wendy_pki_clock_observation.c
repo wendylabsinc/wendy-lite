@@ -8,6 +8,11 @@
 #include <string.h>
 #include <sys/time.h>
 
+/* Diagnostics must not add blocking atomics to the PKI or clock workers.
+ * Targets which cannot promise lock-free access keep this optional API inert;
+ * the certificate-time policy is independent of these observations. */
+#if ATOMIC_INT_LOCK_FREE == 2 && ATOMIC_BOOL_LOCK_FREE == 2
+
 /* Every payload access is atomic, including unsuccessful sequence reads.
  * Existing identity-lock serialization gives one writer; readers never wait
  * for that lock, spin for a writer, allocate, or initialize a clock anchor. */
@@ -247,3 +252,40 @@ void pki_clock_observation_direct_apply(struct pki_clock_observation_raw before,
     struct observation_record record = capture(NULL, before, after, generation);
     emit_record("direct_https_time_apply", &record, true, already_sufficient);
 }
+
+#else
+
+void wendy_pki_clock_observe_boot(void) {}
+void wendy_pki_clock_observe_console_ready(void) {}
+void wendy_pki_clock_observe_first_remote(const struct wendy_pki_mesh_identity *identity)
+{
+    (void)identity;
+}
+struct pki_clock_observation_raw pki_clock_observation_read_raw(void)
+{
+    return (struct pki_clock_observation_raw){0};
+}
+void pki_clock_observation_publish_clock(uint64_t generation,
+                                       const struct wendy_pki_certificate_time *clock)
+{
+    (void)generation;
+    (void)clock;
+}
+void pki_clock_observation_publish_proof(uint64_t generation, time_t seconds, int64_t monotonic_us)
+{
+    (void)generation;
+    (void)seconds;
+    (void)monotonic_us;
+}
+void pki_clock_observation_reset(void) {}
+void pki_clock_observation_direct_apply(struct pki_clock_observation_raw before,
+                                      struct pki_clock_observation_raw after,
+                                      uint64_t generation, bool already_sufficient)
+{
+    (void)before;
+    (void)after;
+    (void)generation;
+    (void)already_sufficient;
+}
+
+#endif

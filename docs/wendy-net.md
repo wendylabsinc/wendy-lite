@@ -141,6 +141,9 @@ bootstrap.
 
 ### Clock observations
 
+Targets without always-lock-free atomic support omit these optional diagnostic
+records. Certificate-time validation and synchronization continue normally.
+
 Firmware logs `WN_CLOCK_OBS` followed by compact JSON with events `boot`,
 `first_remote_mesh_admission` (the first admitted live foreign manifest) and
 `direct_https_time_apply`. Every marker has `monotonic_us` for capture time and
