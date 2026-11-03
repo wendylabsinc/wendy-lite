@@ -567,7 +567,8 @@ static void expire_announcements(struct wnrs_node *node, int64_t now)
     for (struct wnd_entry *e = node->core.directory.entries; e; e = e->next) {
         bool certificate_bad =
 #if WN_ROUTE_HANDOFF_ENABLED
-            !wnd_route_signature_current(e) || (e->manifest.withdraw &&
+            (!node->core.config.endpoint_gateway && !wnd_route_signature_current(e)) ||
+            ((node->core.config.endpoint_gateway || e->manifest.withdraw) &&
 #endif
             (e->manifest.certificate_expires &&
              !claim_certificate_current(node, e->manifest.certificate_not_before,
@@ -579,19 +580,23 @@ static void expire_announcements(struct wnrs_node *node, int64_t now)
             ;
         if (e->lease_deadline_us > now && certificate_bad) {
             e->deadline_us = 0;
-#if !WN_ROUTE_HANDOFF_ENABLED
+#if WN_ROUTE_HANDOFF_ENABLED
+            if (node->core.config.endpoint_gateway)
+                e->lease_deadline_us = now;
+#else
             e->lease_deadline_us = now;
 #endif
             wnsc_revoke_owner(node->catalog, e->device);
         }
 #if WN_ROUTE_HANDOFF_ENABLED
-        if (!wnd_route_signature_current(e)) {
+        if (!node->core.config.endpoint_gateway && !wnd_route_signature_current(e)) {
             e->deadline_us = 0;
             wnsc_revoke_owner(node->catalog, e->device);
         }
 #endif
         if ((e->gossip_cached || e->gossip_retired) &&
-            (e->lease_deadline_us <= now || certificate_bad || !wnd_route_signature_current(e))) {
+            (e->lease_deadline_us <= now || certificate_bad ||
+             (!node->core.config.endpoint_gateway && !wnd_route_signature_current(e)))) {
             struct wg_id id = {.type = 1};
             memcpy(id.hash, e->gossip_hash, sizeof id.hash);
             wg_expire(&node->pool, &id);
@@ -611,7 +616,8 @@ static void expire_announcements(struct wnrs_node *node, int64_t now)
         for (struct wno_entry *e = node->core.operators->entries; e; e = e->next) {
             bool certificate_bad =
 #if WN_ROUTE_HANDOFF_ENABLED
-                !wno_route_signature_current(e) || (e->deadline_us == 0 &&
+                (!node->core.config.endpoint_gateway && !wno_route_signature_current(e)) ||
+                ((node->core.config.endpoint_gateway || e->deadline_us == 0) &&
 #endif
                 (e->claim_expires &&
                  !claim_certificate_current(node, e->claim_not_before,
@@ -622,16 +628,20 @@ static void expire_announcements(struct wnrs_node *node, int64_t now)
                 ;
             if (e->lease_deadline_us > now && certificate_bad) {
                 e->deadline_us = 0;
-#if !WN_ROUTE_HANDOFF_ENABLED
+#if WN_ROUTE_HANDOFF_ENABLED
+                if (node->core.config.endpoint_gateway)
+                    e->lease_deadline_us = now;
+#else
                 e->lease_deadline_us = now;
 #endif
             }
 #if WN_ROUTE_HANDOFF_ENABLED
-            if (!wno_route_signature_current(e))
+            if (!node->core.config.endpoint_gateway && !wno_route_signature_current(e))
                 e->deadline_us = 0;
 #endif
             if ((e->gossip_cached || e->gossip_retired) &&
-                (e->lease_deadline_us <= now || certificate_bad || !wno_route_signature_current(e))) {
+                (e->lease_deadline_us <= now || certificate_bad ||
+                 (!node->core.config.endpoint_gateway && !wno_route_signature_current(e)))) {
                 struct wg_id id = {.type = 1};
                 memcpy(id.hash, e->gossip_hash, sizeof id.hash);
                 wg_expire(&node->pool, &id);

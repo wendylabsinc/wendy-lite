@@ -4,6 +4,7 @@
 #define main shared_router_fixture_main
 #include "router_node_success_test.c"
 #undef main
+#include <arpa/inet.h>
 
 #ifndef TTL_TEST_COMPACT
 #define TTL_TEST_COMPACT 0
@@ -485,6 +486,80 @@ static void ttl_dynamic_history(void)
     wnrs_node_reset(&owner);
     assert(!owner);
 }
+/* Build and decode a complete ordinary operator v4 announcement. The shared
+ * P-256 fixture supplies the already admitted signing key; verify its actual
+ * signature before using the worker-verified directory entry point. */
+static void ttl_operator_proof(struct ttl_artifact *artifact, struct wno_manifest *proof,
+                                const struct wendy_pki_operator_peer *identity,
+                                const uint8_t instance[16], uint64_t revision)
+{
+    char uuid[37], prefix[64];
+    uint8_t address[16];
+    assert(!wno_address(identity->principal, strlen(identity->principal), instance, address));
+    assert(inet_ntop(AF_INET6, address, prefix, sizeof prefix));
+    strcat(prefix, "/128");
+    wn_uuid_format(instance, uuid);
+    struct wn_writer body = {.data = (uint8_t *)artifact->body,
+                             .capacity = sizeof artifact->body,
+                             .maximum = sizeof artifact->body};
+    wn_map(&body, 13);
+    wn_key(&body, "version"); wn_uint(&body, 4);
+    wn_key(&body, "device"); wn_text(&body, "00000000-0000-0000-0000-000000000000");
+    wn_key(&body, "owner"); wn_map(&body, 3);
+    wn_key(&body, "principal"); wn_text(&body, identity->principal);
+    wn_key(&body, "instance"); wn_text(&body, uuid);
+    wn_key(&body, "hashes"); wn_array(&body, 1); wn_bytes(&body, identity->leaf_hash, 32);
+    wn_key(&body, "agentPort"); wn_uint(&body, 0);
+    wn_key(&body, "revision"); wn_uint(&body, revision);
+    wn_key(&body, "Issued"); wn_uint(&body, (uint64_t)ttl_issued);
+    wn_key(&body, "Expires"); wn_uint(&body, (uint64_t)ttl_issued + 100);
+    wn_key(&body, "route"); wn_map(&body, 3);
+    wn_key(&body, "prefix"); wn_text(&body, prefix);
+    wn_key(&body, "routerId"); wn_uint(&body, 777);
+    wn_key(&body, "seqno"); wn_uint(&body, 1);
+    wn_key(&body, "caps"); wn_array(&body, 0);
+    wn_key(&body, "appEndpoints"); wn_array(&body, 0);
+    wn_key(&body, "services"); wn_array(&body, 0);
+    wn_key(&body, "agentTransport"); wn_text(&body, "");
+    wn_key(&body, "platform"); wn_text(&body, "");
+    int size = wn_finish(&body);
+    assert(size > 0);
+    artifact->body_size = (size_t)size;
+
+    /* Operator principals have variable length, unlike device-principal
+     * signing helpers. Use the production operator verifier's exact v4
+     * domain, length, principal and raw body preimage with the fixture key. */
+    static const uint8_t domain[] = "wendy-local-mesh/manifest/4";
+    uint8_t preimage[sizeof domain + 4 + WENDY_PKI_OPERATOR_PRINCIPAL_MAX +
+                     sizeof artifact->body], digest[32], signature[80];
+    size_t principal_size = strlen(identity->principal), offset = sizeof domain;
+    memcpy(preimage, domain, sizeof domain);
+    wn_put32(preimage + offset, (uint32_t)principal_size); offset += 4;
+    memcpy(preimage + offset, identity->principal, principal_size); offset += principal_size;
+    memcpy(preimage + offset, artifact->body, artifact->body_size); offset += artifact->body_size;
+    size_t written, signature_size;
+    assert(psa_hash_compute(PSA_ALG_SHA_256, preimage, offset, digest, sizeof digest,
+                             &written) == PSA_SUCCESS && written == sizeof digest);
+    assert(!mbedtls_pk_sign(&key, MBEDTLS_MD_SHA256, digest, sizeof digest, signature,
+                             sizeof signature, &signature_size));
+    struct wn_writer envelope = {.data = (uint8_t *)artifact->wire,
+                                  .capacity = sizeof artifact->wire,
+                                  .maximum = sizeof artifact->wire};
+    wn_map(&envelope, 3);
+    wn_key(&envelope, "principal"); wn_text(&envelope, identity->principal);
+    wn_key(&envelope, "body"); wn_raw(&envelope, artifact->body, artifact->body_size);
+    wn_key(&envelope, "signature"); wn_bytes(&envelope, signature, signature_size);
+    size = wn_finish(&envelope);
+    assert(size > 0);
+    artifact->size = (size_t)size;
+    assert(!wno_manifest_read(artifact->wire, artifact->size, tenant, proof));
+    assert(proof->revision == revision && proof->issued == ttl_issued &&
+           proof->expires == ttl_issued + 100 && proof->origin.router_id == 777 &&
+           proof->origin.seqno == 1 && !memcmp(proof->instance, instance, 16) &&
+           !memcmp(proof->address, address, 16));
+    assert(!wendy_pki_operator_manifest_verify(identity, proof->body, proof->body_size,
+                                                proof->signature, proof->signature_size));
+}
 static void ttl_operator_lifecycle(void)
 {
     if (TTL_TEST_COMPACT)
@@ -492,24 +567,21 @@ static void ttl_operator_lifecycle(void)
     struct wnrs_node *owner = NULL, *node = ttl_node(&owner);
     struct wnrs *supplier = ttl_attach(node, 1);
     struct wendy_pki_operator_peer identity = {.not_before = 1800000000,
+                                               .signing_not_before = 1800000000,
+                                               .issuer_not_before = 1800000000,
                                                .expires = 1800010000};
     assert(snprintf(identity.principal, sizeof identity.principal,
                      "spiffe://wendy.sh/tenant/%s/operator/alice", tenant) > 0);
     memset(identity.leaf_hash, 9, sizeof identity.leaf_hash);
     uint8_t instance[16] = {1};
-    uint8_t body[] = {0xa2, 0x61, 'v', 0x04, 0x61, 'r', 0x01};
-    struct wno_manifest proof = {.principal = identity.principal,
-                                 .principal_size = strlen(identity.principal),
-                                 .body = body,
-                                 .body_size = sizeof body,
-                                 .revision = 1,
-                                 .issued = ttl_issued,
-                                 .expires = ttl_issued + 100,
-                                 .hash_count = 1,
-                                 .origin = {.router_id = 777, .seqno = 1}};
-    memcpy(proof.instance, instance, sizeof instance);
-    proof.hashes[0] = identity.leaf_hash;
-    assert(!wno_address(proof.principal, proof.principal_size, instance, proof.address));
+    uint8_t spki[128];
+    int spki_size = mbedtls_pk_write_pubkey_der(&key, spki, sizeof spki);
+    assert(spki_size > 0);
+    identity.spki_size = (size_t)spki_size;
+    memcpy(identity.spki, spki + sizeof spki - spki_size, identity.spki_size);
+    struct ttl_artifact artifact = {0};
+    struct wno_manifest proof;
+    ttl_operator_proof(&artifact, &proof, &identity, instance, 1);
     /* This entry point receives worker-verified signature/path metadata. The
      * independent PKI fixture covers that worker's actual certificate crypto. */
     int64_t start = clock_us;
@@ -518,7 +590,7 @@ static void ttl_operator_lifecycle(void)
     assert(node->core.operators && node->core.operators->count == 1);
     assert(wno_authorizes(node->core.operators, proof.address, 777, 1, clock_us));
     struct wg_id id = {.type = 1};
-    assert(!wg_offer(&node->pool, 1, body, sizeof body, (uint64_t)clock_us / 1000 + 100,
+    assert(!wg_offer(&node->pool, 1, artifact.wire, artifact.size, (uint64_t)clock_us / 1000 + 100,
                      (uint64_t)clock_us / 1000, &id));
     struct wno_entry *entry = node->core.operators->entries;
     memcpy(entry->gossip_hash, id.hash, sizeof id.hash);
@@ -538,8 +610,7 @@ static void ttl_operator_lifecycle(void)
     assert(wnr_operator_manifest_verified(&node->core, &proof, &identity, node_unix(node),
                                           clock_us) == 1);
     assert(!node->core.operators->count);
-    proof.revision = 2;
-    body[sizeof body - 1] = 2;
+    ttl_operator_proof(&artifact, &proof, &identity, instance, 2);
     assert(!wnr_operator_manifest_verified(&node->core, &proof, &identity, node_unix(node),
                                            clock_us));
     int64_t replacement = clock_us;
