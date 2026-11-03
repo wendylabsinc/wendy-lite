@@ -47,7 +47,7 @@ static const char *TAG = "actor_fixture";
 static void fixture_log(const char *format, ...) { (void)format; }
 struct operator_peer { const char *principal; };
 struct connection { bool borrowed; };
-struct wnrs { int64_t forwarding_until; };
+struct wnrs { int64_t forwarding_until; bool selected_routes; };
 struct wnrs_node { unsigned unused; };
 struct peer_state {
     struct { unsigned max_links, ble_links, wifi_links; bool ble, infrastructure_wifi; } config;
@@ -90,6 +90,9 @@ static bool identity_live(struct peer_state *s, int64_t now) { return now < s->i
 static bool wncrypto_borrowed(const struct connection *c) { return c && c->borrowed; }
 static bool wnrs_peer_forwarding_ready(const struct wnrs *s, int64_t now) {
     return s && now < s->forwarding_until;
+}
+static bool wnrs_reclaim_idle(const struct wnrs *s, int64_t now) {
+    (void)now; return s && !s->selected_routes;
 }
 static bool wnrs_node_busy(const struct wnrs_node *n) { (void)n; return false; }
 static uint64_t wnrs_link_id(const struct wnrs *s) { assert(s); return 1; }
@@ -333,6 +336,14 @@ static void reclaim_boundaries(void) {
     assert(candidate_class(root, &f.selection.candidates[probe]) == 0);
     assert(reclaim_victim(root, WN_BLE) == victim);
     assert(ble_discovery_available(root));
+    /* A ready peer /128 on the survivor does not prove that the slower victim
+     * is idle: a selected installed transit route still requires that owner. */
+    assert(wnrs_peer_forwarding_ready(root->router, clock_us));
+    f.routes[1].selected_routes = true;
+    assert(!reclaim_victim(root, WN_BLE));
+    assert(plan_additional_candidate(root, clock_us / 1000, true) == -1 && !retired);
+    f.routes[1].selected_routes = false;
+    assert(reclaim_victim(root, WN_BLE) == victim);
     /* Every condition is checked on the current owner on each actor turn. */
     victim->tls_state.lent = true;
     assert(!reclaim_victim(root, WN_BLE));
@@ -521,6 +532,7 @@ int main(void) {
     (void)wendy_pki_handshake_mesh_limit;
     (void)wncrypto_borrowed;
     (void)wnrs_peer_forwarding_ready;
+    (void)wnrs_reclaim_idle;
     (void)identity_live;
     (void)wble_mesh_capacity_snapshot;
     (void)retire_link;

@@ -1874,7 +1874,7 @@ static struct peer_state *reclaim_victim(struct peer_state *root, enum wn_medium
     struct peer_state *victim = NULL;
     for (struct peer_state *link = root; link; link = link->next) {
         if ((medium_full && link->candidate.medium != medium) ||
-            !reclaimable_carrier(link, now))
+            !reclaimable_carrier(link, now) || !wnrs_reclaim_idle(link->router, now))
             continue;
         for (struct peer_state *other = root; other; other = other->next)
             if (other != link && other->candidate.cost < link->candidate.cost &&

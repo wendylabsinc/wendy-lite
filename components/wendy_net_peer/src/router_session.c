@@ -2444,6 +2444,42 @@ bool wnrs_peer_forwarding_ready(const struct wnrs *s, int64_t now)
            !memcmp(route.prefix.bytes, s->peer_address, sizeof s->peer_address) &&
            route.link == s->link;
 }
+#if !WENDY_NET_NON_TRANSIT
+bool wnrs_reclaim_idle(const struct wnrs *s, int64_t now)
+{
+    if (!s || !s->node || !s->attached || !s->link ||
+        !wendy_pki_mesh_identity_current(&s->identity, now))
+        return false;
+    const struct wnr_core *core = &s->node->core;
+    if (!core->ready || core->stopped || core->config.endpoint_gateway ||
+        now < core->now_us || wnr_busy(core))
+        return false;
+    bool owned = false;
+    for (const struct wnrs *owner = s->node->sessions; owner; owner = owner->next)
+        if (owner == s) {
+            owned = true;
+            break;
+        }
+    if (!owned)
+        return false;
+    /* The faster neighbor route may arrive before that neighbor's complete
+     * update. Keep the standby while any installed transit destination still
+     * depends on it; normal Babel updates will make it reclaimable later. */
+    for (size_t i = 0; i < core->babel.route_count; i++) {
+        const struct wb_route *selected = &core->babel.routes[i];
+        if (selected->local || selected->link != s->link || selected->unreachable ||
+            selected->metric == WB_INFINITY)
+            continue;
+        if (selected->prefix.family != 6 || selected->prefix.bits != 128)
+            return false;
+        struct wb_route installed;
+        if (wnr_lookup(core, selected->prefix.bytes, now, &installed) &&
+            !installed.local && installed.link == s->link)
+            return false;
+    }
+    return true;
+}
+#endif
 uint64_t wnrs_link_id(const struct wnrs *s)
 {
     return s->link;

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #pragma once
+#include "wendy_net_profile.h"
 #include "wendy_net_router.h"
 #include "catalog_node.h"
 struct wnrs;
@@ -33,6 +34,11 @@ bool wnrs_agent_endpoint(struct wnrs *, const uint8_t device[16], uint16_t *port
  * carries the installed authorized exact peer route, with live Babel neighbor
  * state. A TLS session or a synthetic constrained gateway route is insufficient. */
 bool wnrs_peer_forwarding_ready(const struct wnrs *, int64_t monotonic_us);
+#if !WENDY_NET_NON_TRANSIT
+/* Actor-only: no currently usable selected route may depend on this exact
+ * attached carrier. Peer reachability alone does not cover transit traffic. */
+bool wnrs_reclaim_idle(const struct wnrs *, int64_t monotonic_us);
+#endif
 uint64_t wnrs_link_id(const struct wnrs *);
 int wnrs_packet_route(struct wnrs *, void *, size_t, bool incoming, uint64_t *outgoing);
 int wnrs_service_action(struct wnrs *, struct wnsc_registry **, unsigned, const void *, size_t,
