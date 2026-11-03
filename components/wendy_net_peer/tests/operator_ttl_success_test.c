@@ -13,6 +13,7 @@
 static const char tenant[] = "11111111-1111-4111-8111-111111111111";
 static const char principal[] =
     "spiffe://wendy.sh/tenant/11111111-1111-4111-8111-111111111111/operator/ttl-test";
+static uint16_t fixture_sequence = 5;
 static const int64_t issued = INT64_C(1800000000000);
 struct fixture {
     uint8_t wire[2048];
@@ -60,7 +61,7 @@ static void fixture(struct fixture *f, const struct wendy_pki_operator_peer *pee
     wn_key(&w, "routerId");
     wn_uint(&w, 1000 + instance);
     wn_key(&w, "seqno");
-    wn_uint(&w, 5);
+    wn_uint(&w, fixture_sequence);
     wn_key(&w, "prefix");
     wn_text(&w, prefix);
     int n = wn_finish(&w);
@@ -112,7 +113,13 @@ static void lifecycle(const struct wendy_pki_operator_peer *peer)
     renewed.issuer_not_before += 100;
     renewed.signing_not_before = (time_t)(issued / 1000) + 10;
     renewed.expires += 100;
+    /* A re-signed duplicate must still fit the ACTUAL signing certificate.
+     * Out-of-window metadata cannot borrow the earlier accepted signature. */
+#if WN_ROUTE_HANDOFF_ENABLED
+    assert(wno_accept_manifest_verified(&d, &resign.proof, &renewed, INT64_MAX, now + 1) < 0);
+#else
     assert(!wno_accept_manifest_verified(&d, &resign.proof, &renewed, INT64_MAX, now + 1));
+#endif
     assert(d.entries->claim_not_before == peer->signing_not_before &&
            d.entries->claim_issuer_not_before == peer->issuer_not_before &&
            d.entries->claim_expires == peer->expires);
@@ -316,6 +323,100 @@ static void allocation_failure(const struct wendy_pki_operator_peer *peer)
     wno_deinit(&d);
     ledger_empty();
 }
+static void compact_operator_handoff(const struct wendy_pki_operator_peer *identity)
+{
+#if WN_ROUTE_HANDOFF_ENABLED
+    struct wno_directory d;
+    struct wendy_pki_operator_peer peer = *identity;
+    peer.issuer_not_before = peer.signing_not_before = issued / 1000 - 100;
+    peer.spki_size = 1;
+    peer.spki[0] = 42;
+    assert(!wno_init(&d, tenant, 64));
+    wno_refresh_route_policy(&d, issued / 1000, 1000, false);
+    struct fixture f;
+    fixture_sequence = 5;
+    fixture(&f, &peer, 1, 1, issued, 60000, false, 1);
+    assert(!wno_accept_manifest_verified(&d, &f.proof, &peer, 0, 1000));
+    uint8_t address[16];
+    memcpy(address, f.proof.address, 16);
+    int64_t original = d.entries->lease_deadline_us;
+    fixture_sequence = 6;
+    fixture(&f, &peer, 1, 2, issued, 60000, false, 1);
+    assert(!wno_accept_manifest_verified(&d, &f.proof, &peer, 0, 2000));
+    assert(wno_authorizes(&d, address, 1001, 5, 2000) && wno_authorizes(&d, address, 1001, 6, 2000));
+    assert(d.entries->handoff->prior.deadline_us == original);
+    struct wn_origin pending;
+    uint8_t projected[16];
+    assert(wno_pending_handoff(&d, 0, 2000, projected, &pending) && pending.seqno == 6);
+    assert(wno_handoff_request_needed(&d, address, &pending, 2000));
+    wno_handoff_requested(&d, address, &pending, 2000);
+    assert(!wno_handoff_request_needed(&d, address, &pending, 2000));
+    fixture(&f, &peer, 1, 3, issued + 1, 60000, false, 1);
+    assert(!wno_accept_manifest_verified(&d, &f.proof, &peer, 0, 2001));
+    assert(!wno_handoff_request_needed(&d, address, &pending, 2001));
+    assert(wno_authorizes(&d, address, 1001, 5, 2001) &&
+           d.entries->handoff->prior.origin.seqno == 5 &&
+           d.entries->handoff->prior.deadline_us == original);
+    int64_t receipt = d.receipts->receipt_deadline_us, lease = d.entries->lease_deadline_us;
+    struct wendy_pki_operator_peer wrong = peer;
+    wrong.leaf_hash[0] ^= 1;
+    assert(wno_accept_manifest_verified(&d, &f.proof, &wrong, 0, 2001) < 0);
+    assert(d.entries->lease_deadline_us == lease && d.receipts->receipt_deadline_us == receipt &&
+           wno_authorizes(&d, address, 1001, 5, 2001));
+    /* Repeated replacements reuse one bounded tracking allocation, and keep
+     * the earliest prior proof instead of chaining renewed old lifetimes. */
+    struct wn_route_handoff *state = d.entries->handoff;
+    size_t before_cycles = wno_memory(&d);
+    for (unsigned i = 0; i < 200; i++) {
+        fixture_sequence++;
+        fixture(&f, &peer, 1, 4 + i, issued, 60000, false, 1);
+        assert(!wno_accept_manifest_verified(&d, &f.proof, &peer, 0, 2100 + i));
+        assert(d.entries->handoff == state && wno_memory(&d) == before_cycles &&
+               state->prior.origin.seqno == 5 && state->prior.deadline_us == original);
+    }
+    wno_refresh_route_policy(&d, peer.expires - 1, 3000, false);
+    int64_t cap = d.entries->handoff->prior.path_deadline_us;
+    assert(cap == 1003000);
+    wno_refresh_route_policy(&d, issued / 1000, 4000, false);
+    assert(d.entries->handoff->prior.path_deadline_us == cap);
+    assert(wno_authorizes(&d, address, 1001, 5, cap - 1));
+    assert(!wno_authorizes(&d, address, 1001, 5, cap));
+    lease = d.entries->lease_deadline_us;
+    receipt = d.receipts->receipt_deadline_us;
+    assert(wno_accept_manifest_verified(&d, &f.proof, &peer, 0, cap) == 1);
+    assert(d.entries->lease_deadline_us == lease && d.receipts->receipt_deadline_us == receipt);
+    wno_refresh_route_policy(&d, peer.expires, cap, false);
+    assert(!wno_route_signature_current(d.entries) && !wno_authorizes(&d, address, 1001, fixture_sequence, cap));
+    wno_deinit(&d);
+    ledger_empty();
+
+    /* A newly observed shorter current selected path makes both signed
+     * intervals unusable immediately, not merely at its future NotAfter. */
+    assert(!wno_init(&d, tenant, 64));
+    wno_refresh_route_policy(&d, issued / 1000, 1000, false);
+    fixture_sequence = 5;
+    fixture(&f, &peer, 1, 1, issued, 60000, false, 1);
+    assert(!wno_accept_manifest_verified(&d, &f.proof, &peer, 0, 1000));
+    fixture_sequence++;
+    fixture(&f, &peer, 1, 2, issued, 60000, false, 1);
+    assert(!wno_accept_manifest_verified(&d, &f.proof, &peer, 0, 2000));
+    lease = d.entries->lease_deadline_us;
+    receipt = d.receipts->receipt_deadline_us;
+    d.entries->claim_expires = issued / 1000 + 30;
+    wno_refresh_route_policy(&d, issued / 1000, 3000, false);
+    assert(!wno_authorizes(&d, address, 1001, 5, 3000) &&
+           !wno_authorizes(&d, address, 1001, 6, 3000) &&
+           d.entries->handoff->current_verified && !d.entries->handoff->has_prior);
+    assert(d.entries->lease_deadline_us == lease && d.receipts->receipt_deadline_us == receipt);
+    d.entries->claim_expires = peer.expires;
+    wno_refresh_route_policy(&d, issued / 1000, 4000, false);
+    assert(wno_authorizes(&d, address, 1001, 6, 4000) &&
+           !wno_authorizes(&d, address, 1001, 5, 4000));
+    wno_deinit(&d);
+    ledger_empty();
+    fixture_sequence = 5;
+#endif
+}
 int main(void)
 {
     assert(!wendy_pki_crypto_init() && wendy_net_runtime_memory_open());
@@ -325,6 +426,7 @@ int main(void)
                                            .expires = 1800003600};
     strcpy(peer.principal, principal);
     memset(peer.leaf_hash, 0x52, sizeof peer.leaf_hash);
+    compact_operator_handoff(&peer);
     lifecycle(&peer);
     dynamic_floors(&peer);
     active_capacity(&peer);

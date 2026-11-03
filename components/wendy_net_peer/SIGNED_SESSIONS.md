@@ -32,6 +32,31 @@ replace it, and a different body at the same revision is rejected. A higher
 revision replaces the claim and starts its own lifetime. Withdrawal revokes the
 live claim immediately.
 
+A full router can retain at most one compact, independently verified previous
+route tuple per origin during a pure Babel sequence update. Principal, prefix,
+router ID, signing key and all non-route capabilities, services and endpoints
+must remain unchanged.
+The previous tuple keeps its original receiver lifetime and selected-certificate
+path limit; current trust can only shorten that limit. It retains no old body,
+signature, certificate bytes, gossip copy or persistent state. Withdrawal or
+changes to the router, key or scope revoke it.
+
+The router completes a pure sequence handoff atomically only after Babel has an
+actually usable, finite, feasible candidate for the current signed tuple. The
+candidate need not be selected: a higher-metric candidate can establish readiness.
+When public time becomes certain, the current claim uses the currently verified
+same-key leaf's `NotBefore`; the retained tuple keeps its original signer's bound
+and may be revoked. Re-signing the same body cannot restart its local lifetime
+or 10x receipt deadline. Pending handoffs can request a standard Babel prefix
+refresh; existing timers and wire encodings are unchanged. C6 endpoint gateways
+retain no such handoff state.
+
+This no-gap behavior requires an unchanged valid certificate/trust path. A
+separately observed certificate, trust or path restriction takes effect
+immediately, even before a replacement body completes verification. An invalid
+body never delays that restriction. A later verified body can recover after a
+usable matching candidate becomes available.
+
 An idle maintenance pass expunges expired full envelopes, gossip/export state,
 route claims and foreign derived catalog/endpoint records. Local desired app
 declarations remain for republishing, but their expired signed publication is

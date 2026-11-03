@@ -11,10 +11,11 @@
 #ifdef WENDY_NET_MEMORY_HOST_BUDGET_TEST
 /* Compile the actual directory with one allocation-failure boundary, rather
  * than failing its earlier temporary service parser allocation by accident. */
-static bool fail_receipt_allocation;
+static bool fail_receipt_allocation, fail_handoff_allocation;
 static void *directory_test_calloc(size_t count, size_t bytes)
 {
-    if (fail_receipt_allocation && count == 1 && bytes == sizeof(struct wnd_receipt))
+    if ((fail_receipt_allocation && count == 1 && bytes == sizeof(struct wnd_receipt)) ||
+        (fail_handoff_allocation && count == 1 && bytes == sizeof(struct wn_route_handoff)))
         return NULL;
     return wendy_net_calloc(count, bytes);
 }
@@ -193,18 +194,32 @@ static void monotonic_lifetime(mbedtls_pk_context *key, const struct wendy_pki_m
            d.entries->manifest.certificate_expires == identity->expires);
     struct wendy_pki_mesh_peer renewed = *identity;
     renewed.not_before = (time_t)(issued / 1000) + 100;
-    renewed.issuer_not_before = renewed.not_before;
+    renewed.issuer_not_before = identity->issuer_not_before;
     renewed.signing_not_before = (time_t)(issued / 1000) + 10;
     renewed.expires += 100;
     assert(!wnd_identity(&d, &renewed));
+#if WN_ROUTE_HANDOFF_ENABLED
+    assert(!d.entries->deadline_us && d.entries->handoff->current_verified);
+#else
     assert(d.entries->deadline_us == start + span);
+#endif
     int again = envelope(key, body, (size_t)n, resigned, sizeof resigned);
-    assert(again > 0 && !wnd_accept(&d, resigned, (size_t)again, INT64_MAX, start + 1));
-    assert(d.entries->deadline_us == start + span &&
+    assert(again > 0);
+#if WN_ROUTE_HANDOFF_ENABLED
+    assert(wnd_accept(&d, resigned, (size_t)again, INT64_MAX, start + 1) < 0);
+#else
+    assert(!wnd_accept(&d, resigned, (size_t)again, INT64_MAX, start + 1));
+#endif
+    assert(d.entries->lease_deadline_us == start + span &&
            floor->receipt_deadline_us == start + 10 * span);
-    assert(d.entries->manifest.certificate_not_before == identity->signing_not_before &&
-           d.entries->manifest.certificate_issuer_not_before == identity->issuer_not_before &&
-           d.entries->manifest.certificate_expires == identity->expires);
+#if WN_ROUTE_HANDOFF_ENABLED
+    assert(!d.entries->deadline_us &&
+           d.entries->manifest.certificate_not_before == renewed.signing_not_before &&
+           d.entries->handoff->current.signing_not_before == identity->signing_not_before);
+#else
+    assert(d.entries->deadline_us == start + span &&
+           d.entries->manifest.certificate_not_before == identity->signing_not_before);
+#endif
     /* Renew the key view again for a later new revision's signed interval. */
     renewed.signing_not_before = (time_t)(issued / 1000) - 1;
     assert(!wnd_identity(&d, &renewed));
@@ -388,6 +403,355 @@ static void allocation_failure(mbedtls_pk_context *key,
     wnd_deinit(&d);
 }
 #endif
+static int64_t handoff_date_offset, handoff_duration_ms = 60000;
+static int handoff_admit(struct wnd_directory *d, mbedtls_pk_context *key, uint8_t uuid[16],
+                         struct wn_origin origin, uint64_t revision, uint16_t port,
+                         bool withdraw, unsigned future, int64_t now)
+{
+    char body[2048], wire[4096];
+    int n = wn_manifest_app_write(uuid, &origin, revision,
+        INT64_C(1800000000000) + handoff_date_offset,
+        INT64_C(1800000000000) + handoff_duration_ms + handoff_date_offset, port, 43022, body, sizeof body);
+    assert(n > 0);
+    if (withdraw) {
+        body[0]++;
+        struct wn_writer writer = {.data = (uint8_t *)body, .capacity = sizeof body,
+            .maximum = sizeof body, .size = (size_t)n};
+        wn_key(&writer, "withdraw");
+        wn_bool(&writer, true);
+        n = wn_finish(&writer);
+    }
+    if (future) {
+        n = extra_field(body, n, sizeof body);
+        if (future == 2)
+            body[n - 1] = (char)0xf4;
+    }
+    int bytes = envelope(key, body, (size_t)n, wire, sizeof wire);
+    assert(bytes > 0);
+    int result = wnd_accept(d, wire, (size_t)bytes, INT64_MAX, now);
+    /* This format fixture models a successful portable checkpoint. Deferred
+     * checkpoint behavior is separately exercised by the routing controller. */
+    if (!result)
+        d->entries->pending_receipt = false;
+    return result;
+}
+static void compact_handoff(mbedtls_pk_context *key, const struct wendy_pki_mesh_peer *identity,
+                             uint8_t uuid[16])
+{
+#if WN_ROUTE_HANDOFF_ENABLED
+    struct wnd_directory d;
+    assert(!wnd_init(&d, tenant, self) && !wnd_identity(&d, identity));
+    wnd_refresh_route_policy(&d, 1800000000, 1000, false);
+    struct wn_origin route = {77, 10}, pending;
+    uint8_t address[16], projected[16];
+    wn_address(uuid, address);
+#ifdef WENDY_NET_MEMORY_HOST_BUDGET_TEST
+    size_t before_failure = wnd_memory(&d);
+    fail_handoff_allocation = true;
+    assert(handoff_admit(&d, key, uuid, route, 1, 5054, false, 0, 1000) == 3);
+    assert(!d.receipts && !d.entries->handoff && wnd_memory(&d) == before_failure);
+    fail_handoff_allocation = false;
+#endif
+    assert(!handoff_admit(&d, key, uuid, route, 1, 5054, false, 0, 1000));
+    d.entries->pending_receipt = true;
+    struct wn_origin uncommitted_next = route;
+    uncommitted_next.seqno++;
+    assert(!handoff_admit(&d, key, uuid, uncommitted_next, 2, 5054, false, 0, 1100));
+    assert(!wnd_pending_handoff(&d, 0, 1100, projected, &pending));
+    wnd_deinit(&d);
+    assert(!wnd_init(&d, tenant, self) && !wnd_identity(&d, identity));
+    wnd_refresh_route_policy(&d, 1800000000, 1000, false);
+    assert(!handoff_admit(&d, key, uuid, route, 1, 5054, false, 0, 1000));
+    int64_t first_deadline = d.entries->lease_deadline_us;
+    route.seqno++;
+    assert(!handoff_admit(&d, key, uuid, route, 2, 5054, false, 0, 2000));
+    assert(wnd_authorizes(&d, address, 77, 10, 2000) && wnd_authorizes(&d, address, 77, 11, 2000));
+    assert(wnd_pending_handoff(&d, 0, 2000, projected, &pending) && pending.seqno == 11);
+    assert(!memcmp(address, projected, 16) && !wnd_pending_handoff(&d, 1, 2000, projected, &pending));
+    /* A new publication may refresh only dates/revision while the same Babel
+     * sequence is pending. It must not discard or chain the original proof. */
+    wnd_handoff_requested(&d, address, &route, 2000);
+    d.entries->pending_receipt = true;
+    handoff_date_offset = 1;
+    assert(!handoff_admit(&d, key, uuid, route, 3, 5054, false, 0, 2500));
+    handoff_date_offset = 0;
+    assert(!wnd_handoff_request_needed(&d, address, &route, 2500));
+    assert(wnd_authorizes(&d, address, 77, 10, 2500) &&
+           d.entries->handoff->prior.deadline_us == first_deadline);
+    route.seqno++;
+    d.entries->pending_receipt = true; /* Preserve the earlier committed prior. */
+    assert(!handoff_admit(&d, key, uuid, route, 4, 5054, false, 0, 3000));
+    assert(wnd_authorizes(&d, address, 77, 10, 3000) && !wnd_authorizes(&d, address, 77, 11, 3000));
+    assert(d.entries->handoff->prior.deadline_us == first_deadline);
+    assert(wnd_handoff_request_needed(&d, address, &route, 3000));
+    wnd_handoff_requested(&d, address, &route, 3000);
+    assert(!wnd_handoff_request_needed(&d, address, &route, 3000));
+    assert(!handoff_admit(&d, key, uuid, route, 4, 5054, false, 0, 4000));
+    assert(!wnd_handoff_request_needed(&d, address, &route, 4000));
+    struct wn_origin stale = {77, 11};
+    assert(!wnd_complete_handoff(&d, address, &stale, 4000));
+    assert(wnd_complete_handoff(&d, address, &route, 4000));
+    assert(!wnd_authorizes(&d, address, 77, 10, 4000));
+    route.seqno++;
+    assert(!handoff_admit(&d, key, uuid, route, 5, 5054, false, 1, 5000));
+    assert(!wnd_pending_handoff(&d, 0, 5000, projected, &pending));
+    route.seqno++;
+    assert(!handoff_admit(&d, key, uuid, route, 6, 5054, false, 1, 6000));
+    assert(wnd_authorizes(&d, address, 77, 13, 6000));
+    route.seqno++;
+    assert(!handoff_admit(&d, key, uuid, route, 7, 5054, false, 2, 7000));
+    assert(!wnd_pending_handoff(&d, 0, 7000, projected, &pending));
+    route.seqno++;
+    assert(!handoff_admit(&d, key, uuid, route, 8, 5055, false, 2, 8000));
+    assert(!wnd_pending_handoff(&d, 0, 8000, projected, &pending));
+    route.router_id++;
+    route.seqno++;
+    assert(!handoff_admit(&d, key, uuid, route, 9, 5055, false, 2, 9000));
+    assert(!wnd_pending_handoff(&d, 0, 9000, projected, &pending));
+    route.seqno++;
+    size_t before_withdraw = wnd_memory(&d);
+#ifdef WENDY_NET_MEMORY_HOST_BUDGET_TEST
+    fail_handoff_allocation = true;
+#endif
+    assert(!handoff_admit(&d, key, uuid, route, 10, 5055, true, 2, 10000));
+#ifdef WENDY_NET_MEMORY_HOST_BUDGET_TEST
+    fail_handoff_allocation = false;
+#endif
+    assert(!d.entries->handoff && wnd_memory(&d) == before_withdraw - sizeof(struct wn_route_handoff));
+#ifdef WENDY_NET_MEMORY_HOST_BUDGET_TEST
+    fail_handoff_allocation = true;
+#endif
+    assert(!handoff_admit(&d, key, uuid, route, 11, 5055, true, 2, 10001));
+#ifdef WENDY_NET_MEMORY_HOST_BUDGET_TEST
+    fail_handoff_allocation = false;
+#endif
+    assert(!d.entries->handoff && d.receipts->revision == 11);
+    assert(!wnd_pending_handoff(&d, 0, 10000, projected, &pending));
+    assert(!wnd_authorizes(&d, address, route.router_id, route.seqno, 10000));
+    wnd_deinit(&d);
+
+    /* An independently valid retained proof survives a pending intermediate
+     * whose longer signed window no longer fits a newly shortened path. */
+    assert(!wnd_init(&d, tenant, self) && !wnd_identity(&d, identity));
+    wnd_refresh_route_policy(&d, 1800000000, 1000, false);
+    route = (struct wn_origin){79, 30};
+    assert(!handoff_admit(&d, key, uuid, route, 1, 5054, false, 0, 1000));
+    first_deadline = d.entries->lease_deadline_us;
+    route.seqno++;
+    handoff_duration_ms = 300000;
+    assert(!handoff_admit(&d, key, uuid, route, 2, 5054, false, 0, 2000));
+    assert(wnd_authorizes(&d, address, 79, 30, 2000));
+    struct wendy_pki_mesh_peer shorter = *identity;
+    shorter.expires = 1800000120;
+    assert(!wnd_identity(&d, &shorter));
+    wnd_cache_route_policy(&d, 1800000000, 2500, false);
+    handoff_duration_ms = 100000;
+    assert(!handoff_admit(&d, key, uuid, route, 3, 5054, false, 0, 3000));
+    assert(wnd_authorizes(&d, address, 79, 30, 3000) &&
+           d.entries->handoff->prior.deadline_us == first_deadline);
+    handoff_duration_ms = 60000;
+    wnd_deinit(&d);
+
+    /* With NO replacement body, a shorter current selected path immediately
+     * makes the signed interval invalid, even before that path expires. A
+     * later valid same-key path can re-evaluate CURRENT without a new body. */
+    assert(!wnd_init(&d, tenant, self) && !wnd_identity(&d, identity));
+    wnd_refresh_route_policy(&d, 1800000000, 1000, false);
+    route = (struct wn_origin){80, 40};
+    assert(!handoff_admit(&d, key, uuid, route, 1, 5054, false, 0, 1000));
+    route.seqno++;
+    assert(!handoff_admit(&d, key, uuid, route, 2, 5054, false, 0, 2000));
+    int64_t unchanged_lease = d.entries->lease_deadline_us;
+    int64_t unchanged_floor = d.receipts->receipt_deadline_us;
+    shorter.expires = 1800000030;
+    assert(!wnd_identity(&d, &shorter));
+    wnd_refresh_route_policy(&d, 1800000000, 3000, false);
+    assert(!wnd_authorizes(&d, address, 80, 40, 3000) &&
+           !wnd_authorizes(&d, address, 80, 41, 3000) &&
+           d.entries->handoff->current_verified && !d.entries->handoff->has_prior);
+    assert(d.entries->lease_deadline_us == unchanged_lease &&
+           d.receipts->receipt_deadline_us == unchanged_floor);
+    assert(!wnd_identity(&d, identity));
+    wnd_refresh_route_policy(&d, 1800000000, 4000, false);
+    assert(wnd_authorizes(&d, address, 80, 41, 4000) &&
+           !wnd_authorizes(&d, address, 80, 40, 4000));
+    struct wendy_pki_mesh_peer later_leaf = *identity;
+    later_leaf.signing_not_before = 1800000010;
+    assert(!wnd_identity(&d, &later_leaf));
+    wnd_refresh_route_policy(&d, 1800000050, 5000, false);
+    assert(!wnd_authorizes(&d, address, 80, 41, 5000) &&
+           d.entries->handoff->current_verified);
+    assert(!wnd_identity(&d, identity));
+    wnd_refresh_route_policy(&d, 1800000050, 6000, false);
+    assert(wnd_authorizes(&d, address, 80, 41, 6000));
+    wnd_deinit(&d);
+
+    /* A longer newly selected same-key path cannot replace an ORIGINAL
+     * selected-path NotAfter. A trusted forward clock jump revokes it now,
+     * and a later backward anchor cannot restore the pinned monotonic cap. */
+    struct wendy_pki_mesh_peer original_short = *identity;
+    original_short.expires = 1800000030;
+    handoff_duration_ms = 10000;
+    assert(!wnd_init(&d, tenant, self) && !wnd_identity(&d, &original_short));
+    wnd_refresh_route_policy(&d, 1800000000, 1000, false);
+    route = (struct wn_origin){81, 50};
+    assert(!handoff_admit(&d, key, uuid, route, 1, 5054, false, 0, 1000));
+    route.seqno++;
+    assert(!handoff_admit(&d, key, uuid, route, 2, 5054, false, 0, 2000));
+    first_deadline = d.entries->lease_deadline_us;
+    int64_t original_floor = d.receipts->receipt_deadline_us;
+    assert(!wnd_identity(&d, identity));
+    assert(d.entries->handoff->current.not_after == original_short.expires &&
+           d.entries->handoff->prior.not_after == original_short.expires);
+    wnd_refresh_route_policy(&d, 1800000031, 3000, false);
+    assert(!wnd_authorizes(&d, address, 81, 50, 3000) &&
+           !wnd_authorizes(&d, address, 81, 51, 3000) &&
+           d.entries->handoff->current.path_deadline_us <= 3000);
+    wnd_refresh_route_policy(&d, 1800000000, 4000, false);
+    assert(!wnd_authorizes(&d, address, 81, 51, 4000) &&
+           d.entries->lease_deadline_us == first_deadline &&
+           d.receipts->receipt_deadline_us == original_floor);
+    wnd_deinit(&d);
+
+    /* A new body has its own newly verified path. Its CURRENT can remain
+     * eligible while the older HELD proof loses its shorter original path. */
+    assert(!wnd_init(&d, tenant, self) && !wnd_identity(&d, &original_short));
+    wnd_refresh_route_policy(&d, 1800000000, 1000, false);
+    route = (struct wn_origin){82, 60};
+    assert(!handoff_admit(&d, key, uuid, route, 1, 5054, false, 0, 1000));
+    assert(!wnd_identity(&d, identity));
+    route.seqno++;
+    assert(!handoff_admit(&d, key, uuid, route, 2, 5054, false, 0, 2000));
+    wnd_refresh_route_policy(&d, 1800000031, 3000, false);
+    assert(wnd_authorizes(&d, address, 82, 61, 3000) &&
+           !wnd_authorizes(&d, address, 82, 60, 3000));
+    handoff_duration_ms = 60000;
+    wnd_deinit(&d);
+
+    /* A same-body repair under a NEW independently verified key records its
+     * actual signer NotBefore, keeping the original lease/path/watermark cap. */
+    struct wendy_pki_mesh_peer old = *identity;
+    old.signing_not_before = 1800000000;
+    old.issuer_not_before = 1790000000;
+    assert(!wnd_init(&d, tenant, self) && !wnd_identity(&d, &old));
+    wnd_refresh_route_policy(&d, 1799999990, 1000, true);
+    route = (struct wn_origin){88, 10};
+    assert(!handoff_admit(&d, key, uuid, route, 1, 5054, false, 0, 1000));
+    route.seqno++;
+    assert(!handoff_admit(&d, key, uuid, route, 2, 5054, false, 0, 1100));
+    assert(wnd_authorizes(&d, address, 88, 10, 1100));
+    first_deadline = d.entries->lease_deadline_us;
+    int64_t receipt_until = d.receipts->receipt_deadline_us;
+    struct wendy_pki_mesh_peer same_key = old;
+    same_key.signing_not_before = 1799999980;
+    assert(!wnd_identity(&d, &same_key));
+    wnd_refresh_route_policy(&d, 1799999990, 1500, false);
+    /* CURRENT re-verifies under the selected valid same-key leaf, but HELD
+     * keeps its original future signer NotBefore and loses boot grace. */
+    assert(wnd_authorizes(&d, address, 88, 11, 1500) &&
+           !wnd_authorizes(&d, address, 88, 10, 1500));
+    assert(d.entries->manifest.certificate_not_before == same_key.signing_not_before &&
+           d.entries->handoff->current.signing_not_before == old.signing_not_before);
+    assert(!handoff_admit(&d, key, uuid, route, 2, 5054, false, 0, 1600));
+    assert(wnd_route_signature_current(d.entries) &&
+           d.entries->lease_deadline_us == first_deadline &&
+           d.receipts->receipt_deadline_us == receipt_until);
+    assert(!wnd_identity(&d, &old));
+    wnd_refresh_route_policy(&d, 1799999990, 1700, false);
+    assert(!wnd_authorizes(&d, address, 88, 11, 1700) && d.entries->handoff->current_verified);
+    struct wn_origin rejected = route;
+    rejected.seqno++;
+    assert(handoff_admit(&d, key, uuid, rejected, 3, 5054, false, 0, 1700) == 1);
+    assert(d.entries->revision == 2 && d.receipts->revision == 2 &&
+           d.entries->lease_deadline_us == first_deadline &&
+           d.receipts->receipt_deadline_us == receipt_until);
+    assert(!wnd_identity(&d, &same_key));
+    wnd_refresh_route_policy(&d, 1799999990, 1800, false);
+    assert(wnd_authorizes(&d, address, 88, 11, 1800));
+    uint8_t generated[256], spki[128];
+    int size = wendy_pki_generate_key_der(generated, sizeof generated);
+    mbedtls_pk_context replacement;
+    mbedtls_pk_init(&replacement);
+    assert(size > 0 && !mbedtls_pk_parse_key(&replacement, generated + sizeof generated - size,
+                                             (size_t)size, NULL, 0));
+    int pub = mbedtls_pk_write_pubkey_der(&replacement, spki, sizeof spki);
+    assert(pub > 0);
+    struct wendy_pki_mesh_peer renewed = old;
+    memcpy(renewed.spki, spki + sizeof spki - pub, (size_t)pub);
+    renewed.spki_size = (size_t)pub;
+    renewed.signing_not_before = 1799999980;
+    assert(!wnd_identity(&d, &renewed));
+    assert(!wnd_route_signature_current(d.entries) && !wnd_authorizes(&d, address, 88, 11, 2000));
+    assert(d.entries->lease_deadline_us == first_deadline);
+    assert(!handoff_admit(&d, &replacement, uuid, route, 2, 5054, false, 0, 2000));
+    assert(d.entries->manifest.certificate_not_before == renewed.signing_not_before);
+    assert(d.entries->lease_deadline_us == first_deadline && d.receipts->receipt_deadline_us == receipt_until);
+    wnd_refresh_route_policy(&d, 1799999990, 2000, false);
+    assert(wnd_authorizes(&d, address, 88, 11, 2000));
+    route.seqno++;
+    assert(!handoff_admit(&d, &replacement, uuid, route, 3, 5054, false, 0, 3000));
+    assert(wnd_authorizes(&d, address, 88, 11, 3000));
+    assert(d.entries->handoff->prior.signing_not_before == renewed.signing_not_before);
+    int64_t old_cap = d.entries->handoff->prior.path_deadline_us;
+    wnd_refresh_route_policy(&d, 1799999900, 4000, true);
+    assert(d.entries->handoff->prior.path_deadline_us == old_cap);
+    wnd_expire(&d, first_deadline);
+    assert(!wnd_authorizes(&d, address, 88, 11, first_deadline));
+    wnd_deinit(&d);
+
+    /* Inactive withdrawals retain no tracker. New signer dates are committed
+     * only by the adapter's explicit successfully-replaced-wire callback. */
+    assert(!wnd_init(&d, tenant, self) && !wnd_identity(&d, &old));
+    wnd_refresh_route_policy(&d, 1799999990, 1000, true);
+    route = (struct wn_origin){89, 10};
+    assert(!handoff_admit(&d, key, uuid, route, 1, 5054, true, 0, 1000));
+    assert(!d.entries->handoff && !d.entries->deadline_us);
+    first_deadline = d.entries->lease_deadline_us;
+    receipt_until = d.receipts->receipt_deadline_us;
+    assert(!wnd_identity(&d, &renewed));
+    wnd_refresh_route_policy(&d, 1799999990, 2000, false);
+    assert(!handoff_admit(&d, &replacement, uuid, route, 1, 5054, true, 0, 2000));
+    assert(d.entries->manifest.certificate_not_before == old.signing_not_before);
+    uint8_t digest[32];
+    memcpy(digest, d.entries->body_hash, sizeof digest);
+    struct wendy_pki_mesh_key invalid = d.entries->peer;
+    invalid.signing_not_before = 1800000001;
+    assert(!wnd_withdraw_wire_committed(&d, uuid, 1, digest, &invalid, 2000));
+    assert(d.entries->manifest.certificate_not_before == old.signing_not_before &&
+           d.entries->lease_deadline_us == first_deadline &&
+           d.receipts->receipt_deadline_us == receipt_until);
+    assert(wnd_withdraw_wire_committed(&d, uuid, 1, digest, &d.entries->peer, 2000));
+    assert(d.entries->manifest.certificate_not_before == renewed.signing_not_before &&
+           !d.entries->handoff && !d.entries->deadline_us &&
+           d.entries->lease_deadline_us == first_deadline &&
+           d.receipts->receipt_deadline_us == receipt_until);
+    wnd_deinit(&d);
+
+    /* Original selected-path monotonic expiry is pinned at first withdrawal
+     * receipt. A backward certificate-clock anchor and valid new wire cannot
+     * extend it by projecting the same absolute NotAfter a second time. */
+    struct wendy_pki_mesh_peer close_path = *identity;
+    close_path.signing_not_before = 1799999900;
+    close_path.expires = 1800000060;
+    assert(!wnd_init(&d, tenant, self) && !wnd_identity(&d, &close_path));
+    wnd_refresh_route_policy(&d, 1800000059, 1000, false);
+    route = (struct wn_origin){90, 10};
+    assert(!handoff_admit(&d, key, uuid, route, 1, 5054, true, 0, 1000));
+    first_deadline = d.entries->lease_deadline_us;
+    assert(first_deadline == 1001000 && d.receipts->receipt_deadline_us == 600001000);
+    receipt_until = d.receipts->receipt_deadline_us;
+    wnd_refresh_route_policy(&d, 1800000000, 2000, false);
+    assert(!handoff_admit(&d, key, uuid, route, 1, 5054, true, 0, 2000));
+    memcpy(digest, d.entries->body_hash, sizeof digest);
+    assert(wnd_withdraw_wire_committed(&d, uuid, 1, digest, &d.entries->peer, 2000));
+    assert(d.entries->lease_deadline_us == first_deadline &&
+           d.receipts->receipt_deadline_us == receipt_until);
+    wnd_expire(&d, first_deadline);
+    assert(!d.entries->manifest.revision && d.receipt_count == 1);
+    wnd_deinit(&d);
+    mbedtls_pk_free(&replacement);
+#endif
+}
 int main(int argc, char **argv)
 {
     assert(argc == 2 && !wendy_pki_crypto_init());
@@ -418,6 +782,7 @@ int main(int argc, char **argv)
     assert(!wn_uuid_parse(peer_id, uuid));
     wn_address(uuid, address);
     struct wn_origin origin = {.router_id = UINT64_MAX - 1, .seqno = 65535};
+    compact_handoff(&key, &peer, uuid);
     future_fields(&key, &peer, uuid, &origin);
     monotonic_lifetime(&key, &peer, uuid, &origin);
     dynamic_receipts(&key, &peer);

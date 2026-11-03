@@ -557,26 +557,46 @@ static bool claim_certificate_current(const struct wnrs_node *node, time_t leaf_
  * expired envelope remains an advertised or serveable object. */
 static void expire_announcements(struct wnrs_node *node, int64_t now)
 {
+    wnr_route_policy(&node->core, (time_t)(node_unix(node) / 1000), now,
+                     wendy_pki_certificate_is_uncertain(&node->clock.certificate_time));
     if (node->own_cached && (node->own_deadline_us <= now ||
                              !wendy_pki_mesh_identity_current(&node->clock, now))) {
         wg_expire(&node->pool, &node->own_artifact);
         node->own_cached = false;
     }
     for (struct wnd_entry *e = node->core.directory.entries; e; e = e->next) {
-        if (e->lease_deadline_us > now && e->manifest.certificate_expires &&
-            !claim_certificate_current(node, e->manifest.certificate_not_before,
-                                        e->manifest.certificate_issuer_not_before,
-                                        e->manifest.certificate_expires, now)) {
+        bool certificate_bad =
+#if WN_ROUTE_HANDOFF_ENABLED
+            !wnd_route_signature_current(e) || (e->manifest.withdraw &&
+#endif
+            (e->manifest.certificate_expires &&
+             !claim_certificate_current(node, e->manifest.certificate_not_before,
+                                         e->manifest.certificate_issuer_not_before,
+                                         e->manifest.certificate_expires, now))
+#if WN_ROUTE_HANDOFF_ENABLED
+            )
+#endif
+            ;
+        if (e->lease_deadline_us > now && certificate_bad) {
             e->deadline_us = 0;
+#if !WN_ROUTE_HANDOFF_ENABLED
             e->lease_deadline_us = now;
+#endif
             wnsc_revoke_owner(node->catalog, e->device);
         }
-        if ((e->gossip_cached || e->gossip_retired) && e->lease_deadline_us <= now) {
+#if WN_ROUTE_HANDOFF_ENABLED
+        if (!wnd_route_signature_current(e)) {
+            e->deadline_us = 0;
+            wnsc_revoke_owner(node->catalog, e->device);
+        }
+#endif
+        if ((e->gossip_cached || e->gossip_retired) &&
+            (e->lease_deadline_us <= now || certificate_bad || !wnd_route_signature_current(e))) {
             struct wg_id id = {.type = 1};
             memcpy(id.hash, e->gossip_hash, sizeof id.hash);
             wg_expire(&node->pool, &id);
             e->gossip_cached = false;
-            e->gossip_retired = true;
+            e->gossip_retired = e->lease_deadline_us <= now;
         }
     }
     for (struct wne_entry *e = node->core.endpoints.entries; e; e = e->next)
@@ -589,21 +609,75 @@ static void expire_announcements(struct wnrs_node *node, int64_t now)
         }
     if (node->core.operators)
         for (struct wno_entry *e = node->core.operators->entries; e; e = e->next) {
-            if (e->lease_deadline_us > now && e->claim_expires &&
-                !claim_certificate_current(node, e->claim_not_before,
-                                            e->claim_issuer_not_before, e->claim_expires, now)) {
+            bool certificate_bad =
+#if WN_ROUTE_HANDOFF_ENABLED
+                !wno_route_signature_current(e) || (e->deadline_us == 0 &&
+#endif
+                (e->claim_expires &&
+                 !claim_certificate_current(node, e->claim_not_before,
+                                             e->claim_issuer_not_before, e->claim_expires, now))
+#if WN_ROUTE_HANDOFF_ENABLED
+                )
+#endif
+                ;
+            if (e->lease_deadline_us > now && certificate_bad) {
                 e->deadline_us = 0;
+#if !WN_ROUTE_HANDOFF_ENABLED
                 e->lease_deadline_us = now;
+#endif
             }
-            if ((e->gossip_cached || e->gossip_retired) && e->lease_deadline_us <= now) {
+#if WN_ROUTE_HANDOFF_ENABLED
+            if (!wno_route_signature_current(e))
+                e->deadline_us = 0;
+#endif
+            if ((e->gossip_cached || e->gossip_retired) &&
+                (e->lease_deadline_us <= now || certificate_bad || !wno_route_signature_current(e))) {
                 struct wg_id id = {.type = 1};
                 memcpy(id.hash, e->gossip_hash, sizeof id.hash);
                 wg_expire(&node->pool, &id);
                 e->gossip_cached = false;
-                e->gossip_retired = true;
+                e->gossip_retired = e->lease_deadline_us <= now;
             }
         }
     wg_prune(&node->pool, (uint64_t)now / 1000);
+}
+/* Identity replacement can occur after this turn's normal expiry scan. Revoke
+ * old export/projection before inventory or gossip output in the same turn. */
+static int install_peer_identity(struct wnrs_node *node,
+                                  const struct wendy_pki_mesh_peer *peer, int64_t now)
+{
+#if WN_ROUTE_HANDOFF_ENABLED
+    bool changed = false;
+    uint8_t device[16];
+    if (!wn_uuid_parse(peer->device, device))
+        for (const struct wnd_entry *e = node->core.directory.entries; e; e = e->next)
+            if (!memcmp(e->device, device, sizeof device)) {
+                changed = e->peer.spki_size
+                    ? (e->peer.spki_size != peer->spki_size ||
+                       memcmp(e->peer.spki, peer->spki, e->peer.spki_size))
+                    : (e->manifest.withdraw && (e->gossip_cached || e->gossip_retired));
+                break;
+            }
+#endif
+    int result = wnr_identity(&node->core, peer, node_unix(node), now);
+#if WN_ROUTE_HANDOFF_ENABLED
+    if (!result) {
+        if (changed)
+            for (struct wnd_entry *e = node->core.directory.entries; e; e = e->next)
+                if (!memcmp(e->device, device, sizeof device)) {
+                    struct wg_id old = {.type = 1};
+                    memcpy(old.hash, e->gossip_hash, sizeof old.hash);
+                    if (e->gossip_cached || e->gossip_retired)
+                        wg_expire(&node->pool, &old);
+                    e->gossip_cached = false;
+                    e->gossip_retired = false; /* Original one-TTL signature repair may refetch. */
+                    wnsc_revoke_owner(node->catalog, device);
+                    break;
+                }
+        expire_announcements(node, now);
+    }
+#endif
+    return result;
 }
 static bool want_artifact(void *context, const struct wg_id *id, uint64_t now)
 {
@@ -912,20 +986,31 @@ static int seen_manifest(struct wnrs_node *node, const struct wn_doc *doc,
     if (memcmp(hash, seen->body_hash, sizeof hash))
         return -1;
     for (const struct wnd_entry *e = node->core.directory.entries; e; e = e->next)
-        if (!memcmp(e->device, device, 16) && e->manifest.revision &&
-            e->lease_deadline_us > now &&
-            (!e->manifest.certificate_expires ||
-             claim_certificate_current(node, e->manifest.certificate_not_before,
-                                         e->manifest.certificate_issuer_not_before,
-                                         e->manifest.certificate_expires, now)))
+        if (!memcmp(e->device, device, 16) && e->manifest.revision && e->lease_deadline_us > now) {
+#if WN_ROUTE_HANDOFF_ENABLED
+            /* The actual current-key verifier and catalogue decide CURRENT
+             * eligibility; original signer dates belong to retained proofs. */
             return 0;
+#else
+            if (!e->manifest.certificate_expires ||
+                claim_certificate_current(node, e->manifest.certificate_not_before,
+                                            e->manifest.certificate_issuer_not_before,
+                                            e->manifest.certificate_expires, now))
+                return 0;
+#endif
+        }
     return 1;
 }
-static int admit_complete(void *ctx, const struct wg_id *id, const void *bytes, size_t size)
+static int admit_record(void *ctx, const struct wg_id *id, const void *bytes, size_t size)
 {
     struct wnrs *s = ctx;
     int64_t now = esp_timer_get_time();
+#if WN_ROUTE_HANDOFF_ENABLED
+    wnr_cache_route_policy(&s->node->core, (time_t)(node_unix(s->node) / 1000), now,
+                           wendy_pki_certificate_is_uncertain(&s->node->clock.certificate_time));
+#else
     expire_announcements(s->node, now);
+#endif
     struct wn_doc d;
     char principal[106];
     uint8_t uuid[16];
@@ -994,6 +1079,9 @@ static int admit_complete(void *ctx, const struct wg_id *id, const void *bytes, 
                 wendy_pki_clock_observe_first_remote(&s->node->clock);
 #endif
             struct wg_id accepted;
+#if WN_ROUTE_HANDOFF_ENABLED
+            bool same_cached = e->gossip_cached && !memcmp(e->gossip_hash, id->hash, 32);
+#endif
             if (e->gossip_cached && memcmp(e->gossip_hash, id->hash, 32)) {
                 struct wg_id old = {.type = 1};
                 memcpy(old.hash, e->gossip_hash, 32);
@@ -1021,6 +1109,22 @@ static int admit_complete(void *ctx, const struct wg_id *id, const void *bytes, 
             if (!offered) {
                 memcpy(e->gossip_hash, id->hash, 32);
                 e->gossip_cached = true;
+#if WN_ROUTE_HANDOFF_ENABLED
+                if (e->manifest.withdraw && !same_cached &&
+                    wnd_withdraw_wire_committed(&s->node->core.directory, e->device, e->revision,
+                                                  e->body_hash, &e->peer, now)) {
+                    /* Same-id re-offer is allocation-free and clamps the pool
+                     * deadline to the metadata's original shrink-only cap. */
+                    int clamped = wg_offer(&s->node->pool, id->type, bytes, size,
+                        (uint64_t)e->lease_deadline_us / 1000, (uint64_t)now / 1000, &accepted);
+                    if (clamped) {
+                        wg_expire(&s->node->pool, id);
+                        e->gossip_cached = false;
+                        e->gossip_retired = true;
+                        return 0;
+                    }
+                }
+#endif
             }
             if (!offered) {
                 struct wg_message have = {.id = *id, .op = WG_HAVE};
@@ -1032,10 +1136,19 @@ static int admit_complete(void *ctx, const struct wg_id *id, const void *bytes, 
         }
     return -1;
 }
+static int admit_complete(void *ctx, const struct wg_id *id, const void *bytes, size_t size)
+{
+    int result = admit_record(ctx, id, bytes, size);
+#if WN_ROUTE_HANDOFF_ENABLED
+    struct wnrs *s = ctx;
+    expire_announcements(s->node, esp_timer_get_time());
+#endif
+    return result;
+}
 #if WN_ROUTE_ASYNC
 /* A typed operator owns an ordinary signed manifest and fetches its exact DER
  * hashes. It does not need a second descriptor format or a special gossip type. */
-static int complete_operator(struct wnrs *s, const struct wg_id *id, const void *bytes, size_t size)
+static int complete_operator_record(struct wnrs *s, const struct wg_id *id, const void *bytes, size_t size)
 {
     struct wnrs_node *node = s->node;
     if (node->core.config.endpoint_gateway)
@@ -1141,6 +1254,18 @@ static int complete_operator(struct wnrs *s, const struct wg_id *id, const void 
         s->verification_blocked = true;
     }
     return WG_DEFER;
+}
+static int complete_operator(struct wnrs *s, const struct wg_id *id, const void *bytes, size_t size)
+{
+#if WN_ROUTE_HANDOFF_ENABLED
+    wnr_cache_route_policy(&s->node->core, (time_t)(node_unix(s->node) / 1000), esp_timer_get_time(),
+                           wendy_pki_certificate_is_uncertain(&s->node->clock.certificate_time));
+#endif
+    int result = complete_operator_record(s, id, bytes, size);
+#if WN_ROUTE_HANDOFF_ENABLED
+    expire_announcements(s->node, esp_timer_get_time());
+#endif
+    return result;
 }
 #endif
 #if WN_ROUTE_ASYNC
@@ -1346,7 +1471,7 @@ static void finish_verification(struct wnrs *s, int64_t now)
     node->verification = NULL;
     if (!job->result && job->clock.config_generation == node->clock.config_generation &&
         !memcmp(job->clock.trust_hash, node->clock.trust_hash, 32) &&
-        !wnr_identity(&node->core, &job->peer, unix_now(s), now)) {
+        !install_peer_identity(node, &job->peer, now)) {
         struct wnd_entry *identity = chain_identity(node, &job->chain);
         if (identity)
             memcpy(identity->certificate_leaf_hash, job->chain.hashes[0], 32);
@@ -1679,6 +1804,10 @@ static int node_open(struct wnrs_node **owner, wendy_pki_connection *connection,
         .device = identity->device,
         .router = router,
         .context = node,
+#if WN_ROUTE_HANDOFF_ENABLED
+        .certificate_uncertain =
+            wendy_pki_certificate_is_uncertain(&identity->certificate_time),
+#endif
         .publish = publish,
         .send = babel_send,
 #if WENDY_NET_NON_TRANSIT
@@ -1803,7 +1932,7 @@ static int open_session(struct wnrs **out, struct wnrs_node **owner,
         struct wendy_pki_mesh_peer *authenticated = wendy_net_calloc(1, sizeof *authenticated);
         bool ok = authenticated && !wendy_pki_mesh_authenticated_peer(connection, authenticated) &&
                   !strcmp(authenticated->device, peer) &&
-                  !wnr_identity(&node->core, authenticated, wall, now);
+                  !install_peer_identity(node, authenticated, now);
         wendy_net_free(authenticated);
         if (!ok)
             goto fail;
@@ -1943,6 +2072,8 @@ void wnrs_refresh(struct wnrs *s, const struct wendy_pki_mesh_identity *identity
     s->identity = *identity;
     if (identity->certificate_time.monotonic_us > s->node->clock.certificate_time.monotonic_us)
         s->node->clock = *identity;
+    wnr_route_policy(&s->node->core, (time_t)(node_unix(s->node) / 1000), esp_timer_get_time(),
+                     wendy_pki_certificate_is_uncertain(&s->node->clock.certificate_time));
 }
 int wnrs_tick(struct wnrs *s)
 {
@@ -2241,6 +2372,9 @@ int wnrs_control(struct wnrs *s, const void *data, size_t size)
 
 int wnrs_routing(struct wnrs *s, const void *data, size_t size)
 {
+#if WN_ROUTE_HANDOFF_ENABLED
+    expire_announcements(s->node, esp_timer_get_time());
+#endif
     int r = wnr_receive(&s->node->core, s->link, data, size, unix_now(s), esp_timer_get_time());
     if (r < 0)
         ESP_LOGW(TAG, "Babel receive failed: result=%d bytes=%u", r, (unsigned)size);
@@ -2252,6 +2386,9 @@ void wnrs_time_handler(struct wnrs *s, int (*receive)(void *, const struct wn_do
 }
 bool wnrs_app_endpoint(struct wnrs *s, const uint8_t device[16], uint16_t *port)
 {
+#if WN_ROUTE_HANDOFF_ENABLED
+    expire_announcements(s->node, esp_timer_get_time());
+#endif
     int64_t now = esp_timer_get_time();
     wne_reap(&s->node->core.endpoints, now);
     bool found = wnr_app_endpoint(&s->node->core, device, now, port);
@@ -2279,6 +2416,9 @@ bool wnrs_app_endpoint(struct wnrs *s, const uint8_t device[16], uint16_t *port)
 }
 bool wnrs_agent_endpoint(struct wnrs *s, const uint8_t device[16], uint16_t *port)
 {
+#if WN_ROUTE_HANDOFF_ENABLED
+    expire_announcements(s->node, esp_timer_get_time());
+#endif
     return wnr_agent_endpoint(&s->node->core, device, esp_timer_get_time(), port);
 }
 bool wnrs_peer_forwarding_ready(const struct wnrs *s, int64_t now)
@@ -2301,6 +2441,9 @@ uint64_t wnrs_link_id(const struct wnrs *s)
 int wnrs_packet_route(struct wnrs *s, void *data, size_t size, bool incoming, uint64_t *outgoing)
 {
     int64_t now = esp_timer_get_time();
+#if WN_ROUTE_HANDOFF_ENABLED
+    expire_announcements(s->node, now);
+#endif
     int result = wnr_packet(&s->node->core, incoming ? s->link : 0, data, size, now, outgoing);
     return result;
 }
@@ -2315,8 +2458,12 @@ int wnrs_service_action(struct wnrs *s, struct wnsc_registry **registry, unsigne
                         const void *input, size_t size, char *out, size_t cap,
                         wnsc_listener_owner owner, void *context)
 {
-    if (s)
+    if (s) {
         reap_node_crypto(s->node);
+#if WN_ROUTE_HANDOFF_ENABLED
+        expire_announcements(s->node, esp_timer_get_time());
+#endif
+    }
     struct wnsc_node *node = s ? s->node->catalog : NULL;
     int64_t wall = s ? unix_now(s) : 0;
     uint64_t now = (uint64_t)esp_timer_get_time() / 1000;
@@ -2498,11 +2645,13 @@ int wnrs_topology_operator_row(struct wnrs_node *node, unsigned category, unsign
     memcpy(out->owner_instance.bytes, selected->instance, 16);
     view->principal = selected->principal;
     view->principal_size = selected->principal_size;
-    out->expires_at_unix_ms = topology_expiry(node, selected->deadline_us, 0);
-    view->lease_deadline_us = selected->deadline_us;
+    int64_t deadline = wno_route_deadline(node->core.operators, selected->address,
+        category == 2 ? out->router_id : selected->origin.router_id,
+        category == 2 ? (uint16_t)out->sequence : selected->origin.seqno, now);
+    out->expires_at_unix_ms = deadline > now ? topology_expiry(node, deadline, 0) : 0;
+    view->lease_deadline_us = deadline;
     if (category == 2) {
-        out->authorized = wno_authorizes(node->core.operators, selected->address, out->router_id,
-                                         (uint16_t)out->sequence, now);
+        out->authorized = deadline > now;
     } else {
         out->kind = 3;
         out->address.size = 16;
@@ -2578,14 +2727,18 @@ static int topology_record(struct wnrs_node *n, unsigned wanted, int64_t now,
             }
         for (const struct wnd_entry *e = n->core.directory.entries; e; e = e->next)
             if (!memcmp(e->address, r->prefix.bytes, 16) && e->deadline_us > now &&
-                !e->pending_receipt && !e->manifest.withdraw) {
+                !e->manifest.withdraw) {
                 out->owner_role = WNT_TOPOLOGY_DEVICE;
                 out->device.size = 16;
                 memcpy(out->device.bytes, e->device, 16);
-                out->authorized =
-                    wnd_authorizes(&n->core.directory, r->prefix.bytes, r->router, r->seqno, now);
-                out->expires_at_unix_ms = topology_expiry(n, e->deadline_us, e->manifest.expires);
-                view->lease_deadline_us = e->deadline_us;
+                int64_t deadline = wnd_route_deadline(&n->core.directory, r->prefix.bytes,
+                                                       r->router, r->seqno, now);
+                out->authorized = deadline > now && (!n->core.babel.config.allow ||
+                    n->core.babel.config.allow(n->core.babel.config.context, r->router,
+                                                &r->prefix, r->seqno));
+                out->expires_at_unix_ms = deadline > now
+                    ? topology_expiry(n, deadline, e->manifest.expires) : 0;
+                view->lease_deadline_us = deadline;
                 view->signed_expiry_unix_ms = e->manifest.expires;
                 break;
             }
@@ -2608,10 +2761,16 @@ static int topology_record(struct wnrs_node *n, unsigned wanted, int64_t now,
         out->sequence = e->manifest.origin.seqno;
         out->revision = e->revision;
         out->issued_at_unix_ms = e->manifest.issued;
-        out->expires_at_unix_ms = topology_expiry(n, e->deadline_us, e->manifest.expires);
-        view->lease_deadline_us = e->deadline_us;
+        int64_t deadline = e->deadline_us;
+#if WN_ROUTE_HANDOFF_ENABLED
+        deadline = wnd_route_deadline(&n->core.directory, e->address,
+            e->manifest.origin.router_id, e->manifest.origin.seqno, now);
+#endif
+        out->expires_at_unix_ms = deadline > now
+            ? topology_expiry(n, deadline, e->manifest.expires) : 0;
+        view->lease_deadline_us = deadline;
         view->signed_expiry_unix_ms = e->manifest.expires;
-        out->authorized = true;
+        out->authorized = deadline > now;
         return true;
     }
     /* Constrained endpoint projections have verified identity/revision/deadline,

@@ -282,3 +282,6 @@ set_tests_properties(driver_mesh_clock PROPERTIES TIMEOUT 30)
 add_test(NAME driver_carrier_preference COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_LIST_DIR}/carrier_preference_success_test.py")
 set_tests_properties(driver_carrier_preference PROPERTIES TIMEOUT 30)
+
+session_test(atomic_route_handoff atomic_route_handoff_success_test.c "${session_key}")
+session_budget_test(atomic_route_handoff_pressure atomic_route_handoff_success_test.c "${session_key}")

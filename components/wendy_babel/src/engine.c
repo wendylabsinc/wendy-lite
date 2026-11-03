@@ -133,12 +133,16 @@ static uint32_t hello_ms(const struct wb_engine *e, const struct wb_link_state *
 {
     return l->config.hello_ms ? l->config.hello_ms : e->config.hello_ms;
 }
-static uint16_t cost(const struct wb_engine *e, const struct wb_link_state *l)
+static uint16_t cost_at(const struct wb_link_state *l, uint64_t now)
 {
-    if (!l || l->ihu_expires <= e->now || l->tx == WB_INFINITY ||
-        (l->hello_expires[0] <= e->now && l->hello_expires[1] <= e->now))
+    if (!l || l->ihu_expires <= now || l->tx == WB_INFINITY ||
+        (l->hello_expires[0] <= now && l->hello_expires[1] <= now))
         return WB_INFINITY;
     return l->config.cost > l->tx ? l->config.cost : (l->tx ? l->tx : 1);
+}
+static uint16_t cost(const struct wb_engine *e, const struct wb_link_state *l)
+{
+    return cost_at(l, e->now);
 }
 static bool allowed(struct wb_engine *e, const struct wb_candidate *r)
 {
@@ -786,6 +790,57 @@ int wb_tick(struct wb_engine *e, uint64_t now)
 {
     int r = begin(e, now);
     return r ? r : finish(e);
+}
+bool wb_has_usable_origin(struct wb_engine *e, uint64_t now, const struct wb_prefix *prefix,
+                           uint64_t router, uint16_t seqno)
+{
+    if (!e || !prefix || e->stopped || e->pending || !e->ready || now < e->now ||
+        !routable(prefix) || !router || router == UINT64_MAX || local_for(e, prefix))
+        return false;
+    struct wb_source *source = source_for(e, prefix, router);
+    for (size_t i = 0; i < e->candidates_capacity; i++) {
+        const struct wb_candidate *candidate = e->candidates + i;
+        if (!candidate->used || candidate->expires <= now ||
+            candidate->advertised == WB_INFINITY || candidate->route.router != router ||
+            candidate->route.seqno != seqno || !wb_prefix_equal(&candidate->route.prefix, prefix) ||
+            !allowed(e, candidate) ||
+            add_cost(candidate->advertised,
+                     cost_at(link_for(e, candidate->route.link), now)) == WB_INFINITY)
+            continue;
+        if (!source || source->expires <= now || newer(seqno, source->seqno) ||
+            (seqno == source->seqno && candidate->advertised < source->metric))
+            return true;
+    }
+    return false;
+}
+int wb_request_prefix(struct wb_engine *e, const struct wb_prefix *prefix)
+{
+    if (!e || !prefix || !routable(prefix))
+        return WB_INVALID;
+    if (e->stopped)
+        return WB_STOPPED;
+    if (e->pending || !e->ready ||
+        (e->message_cursor && e->message_cursor < e->message_count))
+        return WB_BUSY;
+    /* Output only: no clock, route selection or retry changes. Reserve the
+     * whole bounded batch before queuing any attached destination. */
+    if (e->message_cursor == e->message_count) {
+        wb_free_messages(e);
+        e->message_count = e->message_cursor = 0;
+    }
+    size_t count = 0;
+    for (size_t i = 0; i < e->links_capacity; i++)
+        count += e->links[i].config.id != 0;
+    if (!count)
+        return WB_BUSY; /* No destination: retain the caller's unrequested flag. */
+    if (count > WB_MESSAGES - e->message_count ||
+        (count && !wb_reserve_messages(e, e->message_count + count)))
+        return WB_LIMIT;
+    struct wb_message request = {.type = WB_REQUEST, .prefix = *prefix};
+    for (size_t i = 0; i < e->links_capacity; i++)
+        if (e->links[i].config.id)
+            queue(e, e->links[i].config.id, &request);
+    return WB_OK;
 }
 int wb_add_link(struct wb_engine *e, uint64_t now, const struct wb_link *config)
 {

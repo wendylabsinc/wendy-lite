@@ -213,6 +213,13 @@ struct wb_memory {
  * platform allocator headers and caller task/I/O/storage buffers. */
 struct wb_memory wb_memory(const struct wb_engine *);
 int wb_tick(struct wb_engine *, uint64_t now_ms);
+/* Read-only actor query for a finite, feasible, authorized matching candidate.
+ * It need not be the selected FIB route. No allocation, output or timer edits. */
+bool wb_has_usable_origin(struct wb_engine *, uint64_t now_ms, const struct wb_prefix *,
+                           uint64_t router, uint16_t seqno);
+/* Queue standard prefix requests without changing timers or route state.
+ * A bounded allocation failure queues none; drain wb_next_packet as usual. */
+int wb_request_prefix(struct wb_engine *, const struct wb_prefix *);
 int wb_add_link(struct wb_engine *, uint64_t now_ms, const struct wb_link *);
 int wb_remove_link(struct wb_engine *, uint64_t now_ms, uint64_t link);
 int wb_set_cost(struct wb_engine *, uint64_t now_ms, uint64_t link, uint16_t cost);

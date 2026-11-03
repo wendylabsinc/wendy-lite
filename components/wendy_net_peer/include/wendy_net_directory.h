@@ -3,6 +3,7 @@
  */
 #pragma once
 #include "wendy_net_peer_protocol.h"
+#include "wendy_net_route_handoff.h"
 #include "wendy_pki_mesh.h"
 #ifdef ESP_PLATFORM
 #include "sdkconfig.h"
@@ -26,6 +27,9 @@ struct wnd_manifest {
 };
 struct wnd_entry {
     struct wnd_entry *next;
+#if WN_ROUTE_HANDOFF_ENABLED
+    struct wn_route_handoff *handoff;
+#endif
     /* Owns exactly peer.spki_size public DER bytes, allocated on identity admission. */
     struct wendy_pki_mesh_key peer;
     uint8_t device[16], address[16], body_hash[32];
@@ -45,6 +49,11 @@ struct wnd_entry {
     bool key_pinned;
 };
 struct wnd_directory {
+#if WN_ROUTE_HANDOFF_ENABLED
+    time_t route_policy_base;
+    int64_t route_policy_monotonic;
+    bool route_policy_set, route_policy_uncertain;
+#endif
     struct wnd_entry *entries;
     struct wnd_receipt *receipts;
     char tenant[37];
@@ -132,3 +141,23 @@ size_t wnd_memory(const struct wnd_directory *);
 /* Runtime continuation only: exact immutable bytes have completed their
  * signature future. Still checks identity/lease/revision and derives expiry. */
 int wnd_accept_verified(struct wnd_directory *, const void *, size_t, int64_t, int64_t);
+
+/* Detached routing authority; current tuple is pending until actual Babel promotion. */
+bool wnd_pending_handoff(const struct wnd_directory *, unsigned, int64_t, uint8_t[16], struct wn_origin *);
+bool wnd_complete_handoff(struct wnd_directory *, const uint8_t[16], const struct wn_origin *, int64_t);
+void wnd_refresh_route_policy(struct wnd_directory *, time_t, int64_t, bool);
+bool wnd_route_signature_current(const struct wnd_entry *);
+bool wnd_handoff_request_needed(const struct wnd_directory *, const uint8_t[16], const struct wn_origin *, int64_t);
+void wnd_handoff_requested(struct wnd_directory *, const uint8_t[16], const struct wn_origin *, int64_t);
+int64_t wnd_route_deadline(const struct wnd_directory *, const uint8_t[16], uint64_t, uint16_t, int64_t);
+
+/* Full-router adapter only (gateway builds return false without mutation).
+ * Only after this exact newly verified withdrawn body/signature is retained
+ * as the relay wire. Never use new dates while retaining an older signature. */
+bool wnd_withdraw_wire_committed(struct wnd_directory *, const uint8_t device[16], uint64_t,
+                                  const uint8_t body_hash[32], const struct wendy_pki_mesh_key *,
+                                  int64_t monotonic_us);
+
+/* Cache-only transaction prelude: no authorization pruning or output. The
+ * caller must fully refresh after admission success/failure before routing. */
+void wnd_cache_route_policy(struct wnd_directory *, time_t, int64_t, bool);
