@@ -44,6 +44,9 @@
 #define WENDY_SERVER_BACKLOG      4
 #define WENDY_SERVER_TASK_STACK   CONFIG_WENDY_SERVER_TASK_STACK_SIZE
 #define WENDY_SERVER_MAX_LINKS    4
+// Same budget as the LAN mTLS handshake. A silent anonymous client must not
+// keep the server task away from accept() for longer than this.
+#define WENDY_SERVER_ANONYMOUS_HANDSHAKE_US (15LL * 1000 * 1000)
 
 
 //--- types ---//
@@ -493,13 +496,13 @@ static void _server_task(void *arg)
             continue;
         }
 
-        int ret;
-        while ((ret = esp_tls_server_session_continue_async(tls)) != 0) {
-            if (ret != ESP_TLS_ERR_SSL_WANT_READ && ret != ESP_TLS_ERR_SSL_WANT_WRITE)
-                break;
-        }
+        int ret = wendy_server_anonymous_handshake(tls, client_fd,
+                                                   WENDY_SERVER_ANONYMOUS_HANDSHAKE_US);
         if (ret != 0) {
-            ESP_LOGE(TAG, "TLS handshake failed: 0x%x", -ret);
+            if (ret == WENDY_SERVER_TLS_HANDSHAKE_TIMEOUT)
+                ESP_LOGW(TAG, "TLS handshake timed out");
+            else
+                ESP_LOGE(TAG, "TLS handshake failed: 0x%x", -ret);
             close(client_fd);
             esp_tls_server_session_delete(tls);
             continue;
