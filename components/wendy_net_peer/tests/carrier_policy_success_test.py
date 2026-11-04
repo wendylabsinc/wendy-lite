@@ -1331,6 +1331,34 @@ static void recovery_at_full_budget(void) {
     assert_no_allocations();
 }
 
+static void failed_probe_preserves_standby_during_penalty(void) {
+    struct fixture f;
+    full_redundant(&f);
+    struct peer_state *root = &f.links[0];
+    int probe = hint(&f, 0, NULL, WN_BLE, 8192);
+    wn_candidate_failed(&f.selection, (unsigned)probe, clock_us / 1000);
+    int64_t failed_at = clock_us;
+    /* The ordinary five-second retry can use spare room, but must not
+     * repeatedly evict a restored standby during the thirty-second penalty. */
+    clock_us += INT64_C(5000000);
+    assert(plan_additional_candidate(root, clock_us / 1000, true) == -1);
+    assert(!retired && atomic_load(&f.links[1].active));
+    clock_us = failed_at + INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS - 1;
+    f.selection.candidates[probe].seen_ms = clock_us / 1000;
+    assert(plan_additional_candidate(root, clock_us / 1000, true) == -1 && !retired);
+    clock_us++;
+    assert(plan_additional_candidate(root, clock_us / 1000, true) == probe);
+    assert(retired == 1 && last_retired == &f.links[1]);
+
+    root = reset(&f);
+    probe = hint(&f, 0, NULL, WN_BLE, 8192);
+    wn_candidate_failed(&f.selection, (unsigned)probe, clock_us / 1000);
+    clock_us += INT64_C(5000000);
+    assert(plan_additional_candidate(root, clock_us / 1000, true) == probe);
+    assert(!retired);
+    assert_no_allocations();
+}
+
 static void outgoing_probe_keeps_reclaimed_opportunity(void) {
     struct fixture f;
     full_redundant(&f);
@@ -1673,6 +1701,7 @@ int main(void) {
         recover_during_release();
         recovery_history_before_authentication();
         recovery_at_full_budget();
+        failed_probe_preserves_standby_during_penalty();
         outgoing_probe_keeps_reclaimed_opportunity();
         operator_reconnect_keeps_bounded_receipt();
         last_slot_recovery_starts_finite_deadline();

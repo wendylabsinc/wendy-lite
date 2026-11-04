@@ -21,6 +21,10 @@ before it can be reclaimed. Discovery hints schedule probes; TLS still establish
 identity and rejects same-medium aliases. The constrained C6 profile retains
 its single-carrier policy and resource limits.
 
+After a failed outgoing probe, ordinary retries can use spare capacity after
+five seconds; reclaiming another standby waits for the thirty-second failure
+penalty to elapse.
+
 A full native BLE node can reject an initial attempt while safely making room
 for its ordinary retry. After physical release, the existing 30-second failure
 interval temporarily gives new peers priority over restoring an old backup.
