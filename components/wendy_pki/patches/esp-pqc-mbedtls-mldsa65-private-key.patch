@@ -233,7 +233,7 @@
      int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
      size_t len = 0;
  
-+#if defined(MBEDTLS_MLDSA65_PRIVATE_KEY)
++#if defined(MBEDTLS_SSL_TLS1_3_SIG_MLDSA65)
 +    if (mbedtls_pk_get_type(key) == MBEDTLS_PK_MLDSA65) {
 +        if (key->pqc_raw == NULL || key->pub_raw_len != MBEDTLS_MLDSA65_PUBLIC_KEY_LEN)
 +            return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
@@ -249,7 +249,7 @@
      MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(&c, buf, MBEDTLS_ASN1_BIT_STRING));
  
      pk_type = pk_get_type_ext(key);
-+#if defined(MBEDTLS_MLDSA65_PRIVATE_KEY)
++#if defined(MBEDTLS_SSL_TLS1_3_SIG_MLDSA65)
 +    if (pk_type == MBEDTLS_PK_MLDSA65) has_par = 0;
 +#endif
  
