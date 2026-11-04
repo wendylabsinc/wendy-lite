@@ -2134,7 +2134,13 @@ static int additional_candidate(struct peer_state *root, int64_t now, bool lan)
             incoming_opportunity_reserved(root, candidate->medium, false, false))
             continue;
         if (!candidate_room(root, candidate->medium) &&
-            (working_peer || !reclaim_victim(root, candidate->medium)))
+            (working_peer ||
+             /* A normal retry may use spare capacity after five seconds.
+              * Reclaiming a restored standby must wait out the full failure
+              * penalty, even if this is the only discovered candidate. */
+             (candidate->failures && (now < candidate->failed_ms ||
+                now - candidate->failed_ms < WN_CANDIDATE_FAILURE_PENALTY_MS)) ||
+             !reclaim_victim(root, candidate->medium)))
             continue;
         unsigned best_rank = best < 0 ? UINT_MAX
                                      : candidate_class(root, &root->selection->candidates[best]);
