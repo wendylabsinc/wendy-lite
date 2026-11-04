@@ -19,3 +19,8 @@ add_executable(pending_success_test pending_success_test.c)
 target_include_directories(pending_success_test PRIVATE ../src)
 target_compile_options(pending_success_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 add_test(NAME server_physical_deferred_admission COMMAND pending_success_test)
+
+add_executable(keepalive_success_test keepalive_success_test.c)
+target_include_directories(keepalive_success_test PRIVATE ../src)
+target_compile_options(keepalive_success_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+add_test(NAME server_wendycom_link_keepalive COMMAND keepalive_success_test)
