@@ -55,7 +55,7 @@ static const time_t signed_now = 1800000000;
 static int64_t durable_floor;
 static unsigned floor_writes, revision_writes;
 static time_t reply_seconds, verifier_floor;
-static time_t clock_now, stored_expiry;
+static time_t clock_now, stored_not_before, stored_expiry;
 static bool have_certificate, invalid_certificate, expire_during_renewal;
 static int renewal_calls, broker_calls, identity_checks;
 static bool pending_certificate, issuance_success;
@@ -289,16 +289,22 @@ int wendy_pki_verify_time(const uint8_t *input, size_t size, const uint8_t nonce
 }
 int wendy_pki_verify_identity(const uint8_t *pem, size_t size, const uint8_t *roots,
                               size_t roots_size, const uint8_t *key, size_t key_size,
-                              const char *principal, time_t now, time_t *expires)
+                              const char *principal, time_t now, time_t *expires,
+                              struct wendy_pki_validity *leaf)
 {
     identity_checks++;
     assert(roots == (config.provision_trust ? usb_roots : wendy_pki_device_roots_start));
     assert(size == 6);
     if (!memcmp(pem, "issued", 6)) {
+        if (leaf)
+            *leaf = (struct wendy_pki_validity){issued_not_before, issued_expiry};
         *expires = issued_expiry;
         return invalid_certificate || now < issued_not_before || now >= issued_expiry ? -1 : 0;
     }
     assert(!memcmp(pem, "stored", 6));
+    /* Like the real verifier, report the leaf dates even when they fail. */
+    if (leaf)
+        *leaf = (struct wendy_pki_validity){stored_not_before, stored_expiry};
     *expires = stored_expiry;
     return invalid_certificate || now >= stored_expiry ? -1 : 0;
 }
@@ -434,6 +440,8 @@ static void reset(void)
     usb_data = (struct wendy_conf_enrollment_data){0};
     bad_roots = 0;
     build_roots_size = 1;
+    /* Past half its lifetime, so a default connection renews. */
+    stored_not_before = signed_now - 7200;
     stored_expiry = signed_now + 3600;
     have_certificate = true;
     invalid_certificate = expire_during_renewal = false;
@@ -645,7 +653,7 @@ static void test_post_issuance_time_and_recovery(void)
     assert(clock_now < issued_not_before);
     time_t expires;
     assert(wendy_pki_verify_identity((uint8_t *)"issued", 6, wendy_pki_device_roots_start,
-        1, key_der, key_der_size, "principal", clock_now, &expires) != 0);
+        1, key_der, key_der_size, "principal", clock_now, &expires, NULL) != 0);
     assert(wendy_pki_connect(&connection) == ESP_OK);
     assert(timestamp_calls == 2 && clock_now == issued_not_before);
     assert(stored_is_issued && !pending_certificate && renewal_calls == 1);
@@ -765,6 +773,53 @@ static void test_stream_stored_identity(void)
     assert(!stream_accepts);
 }
 
+static void test_half_life_renewal(void)
+{
+    wendy_pki_connection *connection = NULL;
+    /* Before half its lifetime the stored identity is used as is. */
+    reset();
+    stored_not_before = signed_now - 1000;
+    stored_expiry = signed_now + 3000;
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(renewal_calls == 0 && broker_calls == 1 && identity_checks == 1);
+
+    /* Renewal starts exactly at half its lifetime. */
+    reset();
+    stored_not_before = signed_now - 2000;
+    stored_expiry = signed_now + 2000;
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(renewal_calls == 1 && broker_calls == 1);
+
+    /* A 30-day identity renews with 10 days left, not only on its last day. */
+    reset();
+    stored_not_before = signed_now - 20 * 86400;
+    stored_expiry = signed_now + 10 * 86400;
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(renewal_calls == 1 && broker_calls == 1);
+
+    /* A 2-hour identity is not renewed on every connection of its only day. */
+    reset();
+    stored_not_before = signed_now - 1800;
+    stored_expiry = signed_now + 5400;
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(renewal_calls == 0 && broker_calls == 1);
+}
+
+static void test_format_lifetime(void)
+{
+    char text[24];
+    format_lifetime(text, 12 * 86400 + 43200);
+    assert(!strcmp(text, "12.5 days"));
+    format_lifetime(text, 86400);
+    assert(!strcmp(text, "1.0 days"));
+    format_lifetime(text, 3 * 3600 + 720);
+    assert(!strcmp(text, "3.2 h"));
+    format_lifetime(text, 42 * 60 + 59);
+    assert(!strcmp(text, "42 min"));
+    format_lifetime(text, -5);
+    assert(!strcmp(text, "0 min"));
+}
+
 static void test_mesh_certificate_clock(void)
 {
     reset();
@@ -806,6 +861,7 @@ static void test_mesh_certificate_clock(void)
     mesh_verified_generation = 0;
     reset();
 }
+
 static void test_signed_clock_generation(void)
 {
     reset();
@@ -987,7 +1043,10 @@ int main(int argc, char **argv)
     test_post_issuance_time_and_recovery();
     test_enrollment_reset();
     test_stream_stored_identity();
-    puts("renewal fallback, Lite authority lifecycle and local enrollment reset tests passed");
+    test_half_life_renewal();
+    test_format_lifetime();
+    puts("renewal fallback, half-life renewal, Lite authority lifecycle and local enrollment "
+         "reset tests passed");
 }
 
 int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, struct wendy_conf_span cert,

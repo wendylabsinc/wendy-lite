@@ -120,10 +120,16 @@ int main(int argc, char **argv)
         unsigned char *p = load(argv[1], name, &n);
         assert(wendy_pki_verify_roots(p, n) != 0); /* A leaf is not a trust anchor. */
         time_t expires = 0;
-        int r = wendy_pki_verify_identity(p, n, root, root_n, key, key_n, principal, t, &expires);
+        struct wendy_pki_validity leaf;
+        int r = wendy_pki_verify_identity(p, n, root, root_n, key, key_n, principal, t, &expires,
+                                          &leaf);
         printf("%s: %d\n", name, r);
         fflush(stdout);
         assert(i == 0 ? r == 0 : r != 0);
+        /* Leaf dates are reported even when verification rejects them. */
+        assert(leaf.not_before && leaf.not_before <= t);
+        assert(i == 1 ? leaf.not_after <= t && leaf.not_after - leaf.not_before == 3540
+                      : leaf.not_after > t && leaf.not_after - leaf.not_before == 7200);
         if (i == 0)
         {
             unsigned char *trailing_key = malloc(key_n + 1);
@@ -131,15 +137,15 @@ int main(int argc, char **argv)
             memcpy(trailing_key, key, key_n);
             trailing_key[key_n] = 0;
             assert(wendy_pki_verify_identity(p, n, root, root_n, trailing_key, key_n + 1,
-                                             principal, t, &expires) != 0);
+                                             principal, t, &expires, NULL) != 0);
             free(trailing_key);
             size_t wrong_n;
             unsigned char *wrong = load(argv[1], "wrong-key.der", &wrong_n);
             assert(wendy_pki_verify_identity(p, n, root, root_n, wrong, wrong_n, principal, t,
-                                             &expires) != 0);
+                                             &expires, NULL) != 0);
             free(wrong);
             assert(wendy_pki_verify_identity(p, n, (const unsigned char *)"bad", 3, key, key_n,
-                                             principal, t, &expires) != 0);
+                                             principal, t, &expires, NULL) != 0);
         }
         free(p);
     }

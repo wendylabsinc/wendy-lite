@@ -146,7 +146,10 @@ recovery. A fresh token is not silently substituted for an expired certificate.
 
 Lite opens an outbound TLS 1.3 connection authenticated with its issued identity.
 It refreshes signed time and reconnects every four minutes. A currently valid
-certificate with less than one day remaining is renewed over mTLS. An existing
+certificate past half of its validity period (notBefore to notAfter) is renewed
+over mTLS, so a failed renewal has time to retry before expiry. Each connection
+logs the remaining lifetime and the time until renewal, or how long ago the
+stored certificate expired. An existing
 identity without a Lite operator anchor also renews on the next connection,
 regardless of its remaining lifetime. A valid authority header in that response
 replaces the pin after the issued device identity verifies; an omitted header

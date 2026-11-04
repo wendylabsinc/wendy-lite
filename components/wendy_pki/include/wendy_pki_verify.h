@@ -19,10 +19,17 @@ int wendy_pki_verify_roots(const uint8_t *pem, size_t size);
 int wendy_pki_verify_time(const uint8_t *der, size_t size, const uint8_t nonce[32],
                           const uint8_t *roots, size_t roots_size, time_t floor,
                           time_t *verified_time);
-/* Verify a leaf-first PEM chain, exact SPIFFE URI, and its P-256 private key. */
+/* Leaf validity dates. They are authentic only when verification succeeds. */
+struct wendy_pki_validity {
+    time_t not_before, not_after;
+};
+/* Verify a leaf-first PEM chain, exact SPIFFE URI, and its P-256 private key.
+ * *expires is set only on success. An optional *leaf receives the leaf dates
+ * once the chain parses, also on failure, so callers can report an expiry. */
 int wendy_pki_verify_identity(const uint8_t *pem, size_t size, const uint8_t *roots,
                               size_t roots_size, const uint8_t *key, size_t key_size,
-                              const char *principal, time_t now, time_t *expires);
+                              const char *principal, time_t now, time_t *expires,
+                              struct wendy_pki_validity *leaf);
 #endif
 
 /* RFC 3161 request for a positive, nonzero 32-byte device nonce. */

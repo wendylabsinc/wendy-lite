@@ -1002,7 +1002,7 @@ verify:;
     }
     if (wendy_pki_verify_identity(certificate_der, der_size, data->device_roots.data,
                                   data->device_roots.size, key, key_size, principal, time(NULL),
-                                  expires))
+                                  expires, NULL))
         goto done;
     /* Only an authenticated response with a valid identity may replace the
      * operator pin. Renewal without the header preserves the existing pin. */
@@ -1128,6 +1128,43 @@ static int select_time_trust(const WendyConfEnrollment *cfg,
                : 0;
 }
 #endif
+/* One decimal without floating-point formatting: "12.5 days", "3.2 h", "42 min". */
+static void format_lifetime(char out[24], time_t seconds)
+{
+    if (seconds < 0)
+        seconds = 0;
+    if (seconds >= 86400)
+        snprintf(out, 24, "%d.%d days", (int)(seconds / 86400),
+                 (int)(seconds % 86400 * 10 / 86400));
+    else if (seconds >= 3600)
+        snprintf(out, 24, "%d.%d h", (int)(seconds / 3600), (int)(seconds % 3600 * 10 / 3600));
+    else
+        snprintf(out, 24, "%d min", (int)(seconds / 60));
+}
+/* Report the stored identity on every connection: its remaining lifetime and
+ * renewal schedule, or how long ago it expired. */
+static void log_identity_lifetime(bool valid, time_t now, const struct wendy_pki_validity *leaf,
+                                  time_t expires, time_t renew_at)
+{
+    char left[24], renew[24];
+    if (!valid)
+    {
+        if (leaf->not_after && leaf->not_after <= now)
+        {
+            format_lifetime(left, now - leaf->not_after);
+            ESP_LOGE(TAG, "device identity expired %s ago", left);
+        }
+        return;
+    }
+    format_lifetime(left, expires - now);
+    if (now >= renew_at)
+    {
+        ESP_LOGI(TAG, "device identity expires in %s; renewing now", left);
+        return;
+    }
+    format_lifetime(renew, renew_at - now);
+    ESP_LOGI(TAG, "device identity expires in %s; renewal in %s", left, renew);
+}
 static esp_err_t connect_identity(wendy_pki_connection **connection)
 {
     if (wendy_pki_crypto_init())
@@ -1157,7 +1194,8 @@ static esp_err_t connect_identity(wendy_pki_connection **connection)
     size_t key_size = 0, stored_size = 0;
     struct wendy_conf_span fresh = {0};
     esp_err_t result = ESP_FAIL;
-    time_t expires = 0;
+    time_t expires = 0, renew_at = 0;
+    struct wendy_pki_validity leaf = {0};
     char principal[160];
     snprintf(principal, sizeof principal, "spiffe://wendy.sh/tenant/%s/device/%s", cfg.tenant_id,
              cfg.device_id);
@@ -1183,9 +1221,16 @@ static esp_err_t connect_identity(wendy_pki_connection **connection)
     bool have_pending = pending_status == ESP_OK;
     if (stored)
     {
-        if (wendy_pki_verify_identity(stored, stored_size, data.device_roots.data,
-                                      data.device_roots.size, key, key_size, principal, time(NULL),
-                                      &expires) && !have_pending)
+        time_t now = time(NULL);
+        bool stored_valid = !wendy_pki_verify_identity(stored, stored_size, data.device_roots.data,
+                                                       data.device_roots.size, key, key_size,
+                                                       principal, now, &expires, &leaf);
+        /* Renew at half the validity window, so failed renewals have time
+         * to retry before the identity expires. */
+        if (stored_valid)
+            renew_at = leaf.not_before + (expires - leaf.not_before) / 2;
+        log_identity_lifetime(stored_valid, now, &leaf, expires, renew_at);
+        if (!stored_valid && !have_pending)
         {
             ESP_LOGE(TAG, "stored identity invalid or expired; operator recovery required");
             goto done;
@@ -1199,7 +1244,7 @@ static esp_err_t connect_identity(wendy_pki_connection **connection)
      * Renew their still-valid identity to obtain it through authenticated PKI. */
     bool have_authority = authority_status == ESP_OK && authority_size > 0 &&
                           authority_size <= PKI_MAX_RESPONSE;
-    if (have_pending || !stored || !have_authority || expires - time(NULL) < 86400)
+    if (have_pending || !stored || !have_authority || time(NULL) >= renew_at)
     {
         if (issue(h, &cfg, &data, key, key_size, (struct wendy_conf_span){stored, stored_size},
                   principal, &fresh, &expires)) {
@@ -1208,7 +1253,7 @@ static esp_err_t connect_identity(wendy_pki_connection **connection)
             if (!stored ||
                 wendy_pki_verify_identity(stored, stored_size, data.device_roots.data,
                                           data.device_roots.size, key, key_size, principal,
-                                          time(NULL), &expires))
+                                          time(NULL), &expires, NULL))
             {
                 ESP_LOGE(TAG, "pki-core issuance failed; no valid stored identity");
                 goto done;
@@ -1409,7 +1454,7 @@ static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
         goto done;
     if (!consume_native &&
         wendy_pki_verify_identity(cert, cert_size, data.device_roots.data, data.device_roots.size,
-                                  key, key_size, principal, time(NULL), &expires))
+                                  key, key_size, principal, time(NULL), &expires, NULL))
         goto done;
     /* An authorized relay stream can traverse a BLE mesh. Keep a bounded
      * setup window for the device chain, operator TLS and signed grant. Grant

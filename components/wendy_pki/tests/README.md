@@ -39,7 +39,8 @@ See `public-time-fixtures/README.md` for provenance and regeneration.
 `renewal_test` runs the production connection flow with in-memory NVS and HTTP
 stubs. It checks fallback after failed renewal, retries on the next connection,
 expiry during renewal, rejection of expired or invalid stored identities, failed
-initial enrollment, and connections that do not yet need renewal. It also checks
+initial enrollment, and connections that do not yet need renewal. Renewal starts
+at half the certificate's validity period, for long and short lifetimes. It also checks
 explicit USB trust selection and rejects partial or unauthorized bundles.
 The BLE stream accept path uses the stored identity without issuance or network
 time requests. Tests reject missing, expired, invalid and reset identities before
