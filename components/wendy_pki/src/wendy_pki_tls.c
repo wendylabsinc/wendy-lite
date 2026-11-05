@@ -627,7 +627,8 @@ static bool mesh_certificate_expired(const wendy_pki_connection *c)
          c->operator_signing_not_before > now);
 }
 /* Add Wendy's algorithm restrictions without overriding certificate-chain,
- * hostname, validity, or key-usage failures reported by mbedTLS. */
+ * hostname, validity, or key-usage failures reported by mbedTLS. Firmware mbedTLS
+ * has no date checks, so a connection with a verified clock checks dates here. */
 static int certificate_policy(void *context, mbedtls_x509_crt *cert, int depth,
                               uint32_t *flags)
 {
@@ -652,6 +653,9 @@ static int certificate_policy(void *context, mbedtls_x509_crt *cert, int depth,
                                                wendy_pki_certificate_is_uncertain(&c->certificate_time)))
             *flags |= start > now ? MBEDTLS_X509_BADCERT_FUTURE : MBEDTLS_X509_BADCERT_EXPIRED;
     }
+    /* After the block above, which clears date flags, so nothing removes this result. */
+    if (c->check_peer_dates)
+        *flags |= pki_parsed_date_flags(cert, time(NULL));
     if (c->mesh_tenant[0]) {
         time_t not_before = 0, expiry;
         bool start_missing = pki_parsed_peer_not_before(cert, &not_before) != 0;
@@ -1675,7 +1679,7 @@ static int open_tls(const char *host, unsigned port, const uint8_t *key, size_t 
                     wendy_pki_connection **out, const char *tenant, const char *device,
                     const char *router, const struct wendy_pki_stream *stream, bool server,
                     bool gateway, const char *interface, const char *resolver, const char *protocol,
-                    struct pki_tls_owned_identity *owned, int *accepted_fd)
+                    struct pki_tls_owned_identity *owned, int *accepted_fd, bool check_peer_dates)
 {
     if (out)
         *out = NULL;
@@ -1704,6 +1708,7 @@ static int open_tls(const char *host, unsigned port, const uint8_t *key, size_t 
     if (!c)
         return -1;
     c->allocation_scope = wendy_net_memory_scope_current();
+    c->check_peer_dates = check_peer_dates;
     c->fd = incoming ? *accepted_fd : -1;
     if (incoming)
         *accepted_fd = -1;
@@ -1865,7 +1870,14 @@ int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t 
                     wendy_pki_connection **out)
 {
     return open_tls(host, port, key, key_size, cert, roots, out, NULL, NULL, NULL, NULL, false,
-                    false, NULL, NULL, NULL, NULL, NULL);
+                    false, NULL, NULL, NULL, NULL, NULL, false);
+}
+int pki_tls_connect_dated(const char *host, unsigned port, const uint8_t *key, size_t key_size,
+                          struct wendy_conf_span cert, struct wendy_conf_span roots,
+                          wendy_pki_connection **out)
+{
+    return open_tls(host, port, key, key_size, cert, roots, out, NULL, NULL, NULL, NULL, false,
+                    false, NULL, NULL, NULL, NULL, NULL, true);
 }
 int pki_tls_bound_connect(const char *host, unsigned port, const char *interface,
                           const char *resolver, const uint8_t *key, size_t key_size,
@@ -1874,7 +1886,7 @@ int pki_tls_bound_connect(const char *host, unsigned port, const char *interface
 {
     if (!interface || !interface[0]) return -1;
     return open_tls(host, port, key, key_size, cert, roots, out, NULL, NULL, NULL, NULL, false,
-                    false, interface, resolver, NULL, NULL, NULL);
+                    false, interface, resolver, NULL, NULL, NULL, false);
 }
 /* Readiness is only a hint. Stream callbacks may wake spuriously. */
 int wendy_pki_wait(wendy_pki_connection* c, bool writing, int64_t deadline)
@@ -2307,7 +2319,7 @@ static int http_post(const char *url, const char *type, const char *token, const
     unsigned target_port = u.field_set & (1 << UF_PORT) ? u.port : 443;
     int connected =
         stream ? open_tls(host, target_port, NULL, 0, (struct wendy_conf_span){0}, roots, &c, NULL,
-                          NULL, NULL, stream, false, false, NULL, NULL, NULL, NULL, NULL)
+                          NULL, NULL, stream, false, false, NULL, NULL, NULL, NULL, NULL, false)
                : pki_tls_connect(host, target_port, key, key_size, cert, roots, &c);
     if (connected)
         return -1;
@@ -2977,7 +2989,7 @@ int pki_tls_net_connect(const char *host, unsigned port, const char *tenant, con
         result = open_tls(host, port, owned->key, owned->key_size,
                           (struct wendy_conf_span){owned->certificate, owned->certificate_size},
                           roots, out, tenant, device, peer, NULL, false, false, NULL, NULL,
-                          protocol, owned, NULL);
+                          protocol, owned, NULL, false);
     release_identity_input(owned);
     return result;
 }
@@ -2995,7 +3007,8 @@ int pki_tls_net_accept(int *fd, const char *tenant, const char *device,
         result =
             open_tls(NULL, 0, owned->key, owned->key_size,
                      (struct wendy_conf_span){owned->certificate, owned->certificate_size}, roots,
-                     out, tenant, device, NULL, NULL, true, false, NULL, NULL, protocol, owned, fd);
+                     out, tenant, device, NULL, NULL, true, false, NULL, NULL, protocol, owned, fd,
+                     false);
     if (fd && *fd >= 0) {
         close(*fd);
         *fd = -1;
@@ -3016,7 +3029,7 @@ int pki_tls_net_stream(const struct wendy_pki_stream *stream, bool server, const
         result = open_tls(NULL, 0, owned->key, owned->key_size,
                           (struct wendy_conf_span){owned->certificate, owned->certificate_size},
                           roots, out, tenant, device, expected_peer, stream, server, false, NULL,
-                          NULL, "wendy-local-mesh-ble/2", owned, NULL);
+                          NULL, "wendy-local-mesh-ble/2", owned, NULL, false);
     release_identity_input(owned);
     return result;
 }

@@ -381,9 +381,9 @@ int wendy_pki_lite_authority_from_header(const char *header, uint8_t **pem, size
     *pem_size = strlen((char *)*pem);
     return *pem ? 0 : -1;
 }
-int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t key_size,
-                    struct wendy_conf_span cert, struct wendy_conf_span roots,
-                    wendy_pki_connection **out)
+int pki_tls_connect_dated(const char *host, unsigned port, const uint8_t *key, size_t key_size,
+                          struct wendy_conf_span cert, struct wendy_conf_span roots,
+                          wendy_pki_connection **out)
 {
     broker_calls++;
     assert(roots.data == (config.provision_trust ? usb_roots : wendy_pki_https_roots_start));

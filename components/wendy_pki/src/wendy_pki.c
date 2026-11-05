@@ -1319,9 +1319,10 @@ static esp_err_t connect_identity(wendy_pki_connection **connection)
         goto done;
     }
     ESP_LOGI(TAG, "connecting to broker %s:%u", cfg.broker_host, (unsigned)cfg.broker_port);
-    if (pki_tls_connect(cfg.broker_host, cfg.broker_port, key, key_size,
-                        fresh.data ? fresh : (struct wendy_conf_span){stored, stored_size},
-                        data.https_roots, connection)) {
+    /* The clock is verified above, so this connection can check certificate dates. */
+    if (pki_tls_connect_dated(cfg.broker_host, cfg.broker_port, key, key_size,
+                              fresh.data ? fresh : (struct wendy_conf_span){stored, stored_size},
+                              data.https_roots, connection)) {
         ESP_LOGW(TAG, "broker TLS connection failed");
         goto done;
     }

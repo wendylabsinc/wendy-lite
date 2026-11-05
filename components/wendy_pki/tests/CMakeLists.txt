@@ -144,6 +144,21 @@ target_link_libraries(relay_stream_wait_test PRIVATE pki)
 add_test(NAME pki_relay_stream_deadlines COMMAND relay_stream_wait_test)
 set_tests_properties(pki_relay_stream_deadlines PROPERTIES TIMEOUT 5)
 find_program(GO_EXECUTABLE go REQUIRED)
+# Firmware mbedTLS has no date checks, and the libraries above do. This test
+# compiles its own X.509 objects without them. The linker then does not pull the
+# same objects from libmbedx509. The test checks at run time that this works.
+add_executable(broker_dates_test broker_dates_test.c "${IDF_COMPONENTS}/http_parser/http_parser.c"
+    "${CMAKE_BINARY_DIR}/wendy_patched/mbedtls/library/x509.c"
+    "${CMAKE_BINARY_DIR}/wendy_patched/mbedtls/library/x509_crt.c")
+target_include_directories(broker_dates_test PRIVATE stubs ../src "${IDF_COMPONENTS}/http_parser"
+    $<TARGET_PROPERTY:mbedx509,INCLUDE_DIRECTORIES>)
+target_compile_definitions(broker_dates_test PRIVATE
+    TF_PSA_CRYPTO_USER_CONFIG_FILE="${CMAKE_CURRENT_LIST_DIR}/tf_psa_crypto_user_config.h")
+target_compile_options(broker_dates_test PRIVATE -UNDEBUG)
+target_link_libraries(broker_dates_test PRIVATE pki)
+add_test(NAME pki_broker_certificate_dates COMMAND "${GO_EXECUTABLE}" run
+    "${CMAKE_CURRENT_LIST_DIR}/broker_dates_test_driver.go" "$<TARGET_FILE:broker_dates_test>")
+set_tests_properties(pki_broker_certificate_dates PROPERTIES TIMEOUT 60)
 # Linux router vectors made by the WendyOS manifest signer: ML-DSA-65 and P-256.
 add_executable(lite_authority_test lite_authority_test.c)
 target_link_libraries(lite_authority_test PRIVATE pki)

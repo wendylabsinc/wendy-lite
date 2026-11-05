@@ -169,6 +169,16 @@ both TLS roles, including transcript integrity and record counters across retrie
 A negative case ends the connection after the first complete encrypted
 Certificate record; the Go peer must reject the incomplete handshake message.
 
+`pki_broker_certificate_dates` checks the date rule of the broker connection.
+Firmware mbedTLS has no date checks, because the ESP-IDF preset turns off
+`MBEDTLS_HAVE_TIME_DATE`. The other host tests build mbedTLS with these checks, so
+they cannot show the firmware behavior. This test compiles its own X.509 objects
+without them, and uses a test clock. `pki_tls_connect_dated` refuses an expired or
+not yet valid leaf, intermediate or root, and refuses any chain when the clock is
+not set. `pki_tls_connect` accepts the same chains, which shows that the dates are
+the only fault and that mbedTLS does not check them in this test. The time fetch
+still works with a clock that is too early or too late.
+
 A second Mbed TLS client negotiates 512-byte TLS records and sends a valid
 ML-DSA-65-signed P-256 operator chain to the production stream server. This
 exercises incoming handshake reassembly across records, separately from the
