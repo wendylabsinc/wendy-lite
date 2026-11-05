@@ -912,6 +912,81 @@ static void test_control_time_fetch(void)
     assert(timestamp_calls == 4);
 }
 
+/* Tunnel off: the same work as a connection, up to the broker socket. */
+static void test_maintain(void)
+{
+    const time_t renewal_time = signed_now + 1000;
+
+    /* The time is fetched and the identity is checked, and nothing else happens. */
+    reset();
+    stored_renews_in_1000_s();
+    assert(wendy_pki_maintain() == ESP_OK);
+    assert(timestamp_calls == 1 && identity_checks == 1 && !renewal_calls && !broker_calls);
+
+    /* The renewal starts exactly at its date, after the time fetch. */
+    reset();
+    stored_renews_in_1000_s();
+    reply_seconds = renewal_time;
+    distinct_issued_certificate = issuance_success = true;
+    assert(wendy_pki_maintain() == ESP_OK);
+    assert(renewal_calls == 1 && stored_is_issued && clock_now == renewal_time && !broker_calls);
+
+    /* A failed renewal keeps the valid identity. The next check retries. */
+    reset();
+    stored_renews_in_1000_s();
+    reply_seconds = renewal_time;
+    assert(wendy_pki_maintain() == ESP_OK);
+    assert(renewal_calls == 1 && !stored_is_issued && !broker_calls);
+    assert(wendy_pki_maintain() == ESP_OK);
+    assert(renewal_calls == 2 && !broker_calls);
+
+    /* Only the tunnel uses the Lite authority pin, so a missing pin causes no
+     * renewal. After a renewal with no pin, there is no new issuance either. */
+    reset();
+    stored_renews_in_1000_s();
+    lite_authority[0] = 0;
+    assert(wendy_pki_maintain() == ESP_OK);
+    assert(!renewal_calls && !broker_calls);
+    reply_seconds = renewal_time;
+    distinct_issued_certificate = issuance_success = true;
+    response_authority = NULL;
+    assert(wendy_pki_maintain() == ESP_OK);
+    assert(renewal_calls == 1 && stored_is_issued && !lite_authority[0]);
+    assert(wendy_pki_maintain() == ESP_OK);
+    assert(renewal_calls == 1 && !broker_calls);
+
+    /* A first enrollment works without the tunnel. */
+    reset();
+    have_certificate = false;
+    lite_authority[0] = 0;
+    issuance_success = true;
+    assert(wendy_pki_maintain() == ESP_OK);
+    assert(have_certificate && renewal_calls == 1 && !broker_calls);
+    assert(!strcmp(lite_authority, "new-authority-pem"));
+
+    /* A failed time fetch is a failure, and no renewal follows it. */
+    reset();
+    stored_renews_in_1000_s();
+    issuance_received = fail_post_issue_time = true;
+    assert(wendy_pki_maintain() != ESP_OK);
+    assert(timestamp_calls == 1 && !identity_checks && !renewal_calls && !broker_calls);
+
+    /* An invalid identity is a failure. */
+    reset();
+    invalid_certificate = true;
+    assert(wendy_pki_maintain() != ESP_OK);
+    assert(!renewal_calls && !broker_calls);
+
+    /* No check during an enrollment reset, and the lock is released. */
+    reset();
+    identity_resetting = true;
+    assert(wendy_pki_maintain() == ESP_ERR_INVALID_STATE);
+    identity_resetting = false;
+    assert(!timestamp_calls && !broker_calls);
+    assert(!pthread_mutex_trylock(&identity_lock));
+    pthread_mutex_unlock(&identity_lock);
+}
+
 static void test_format_lifetime(void)
 {
     char text[24];
@@ -1153,6 +1228,7 @@ int main(int argc, char **argv)
     test_half_life_renewal();
     test_control_stop();
     test_control_time_fetch();
+    test_maintain();
     test_format_lifetime();
     puts("renewal fallback, half-life renewal, control stop and time fetch, Lite authority "
          "lifecycle and local enrollment reset tests passed");

@@ -69,7 +69,9 @@ share a 10-second deadline; outer control reads have a 30-second deadline.
 
 Build with ESP-IDF 6.0.3, or ESP-IDF 6.1 for the
 [ESP32-S31 preview target](../README.md#esp32-s31-notes), and enable
-`CONFIG_WENDY_CLOUD=y` as described in [enrollment](cloud-enrollment.md).
+`CONFIG_WENDY_CLOUD=y` as described in [enrollment](cloud-enrollment.md) and
+`CONFIG_WENDY_CLOUD_TUNNEL=y` (the default). With the tunnel off, the device opens
+no broker connection, and the relay cannot reach it.
 All images include PKI support. The relay uses
 esp-pqc's mbedTLS backend for ML-DSA-65 device or infrastructure certificate chains.
 ML-DSA-44 and ML-DSA-87 issuers are unsupported. The firmware requires compatible

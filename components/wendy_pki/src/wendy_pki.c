@@ -1282,10 +1282,12 @@ static esp_err_t connect_identity(wendy_pki_connection **connection)
     if (authority_status != ESP_OK && authority_status != ESP_ERR_NVS_NOT_FOUND)
         goto done;
     /* Existing installations predate the separately pinned Lite authority.
-     * Renew their still-valid identity to obtain it through authenticated PKI. */
+     * Renew their still-valid identity to obtain it through authenticated PKI.
+     * Only the tunnel uses this pin, so maintenance does not renew for it. */
     bool have_authority = authority_status == ESP_OK && authority_size > 0 &&
                           authority_size <= PKI_MAX_RESPONSE;
-    bool renew_due = have_pending || !stored || !have_authority || time(NULL) >= renew_at;
+    bool renew_due = have_pending || !stored || (connection && !have_authority) ||
+                     time(NULL) >= renew_at;
     if (renew_due)
     {
         struct wendy_pki_validity issued_leaf = {0};
@@ -1309,6 +1311,12 @@ static esp_err_t connect_identity(wendy_pki_connection **connection)
             have_authority = nvs_get_blob(h, "lite_ca", NULL, &authority_size) == ESP_OK &&
                              authority_size > 0 && authority_size <= PKI_MAX_RESPONSE;
         }
+    }
+    /* Maintenance ends here: the time is verified and the identity is valid. */
+    if (!connection)
+    {
+        result = ESP_OK;
+        goto done;
     }
     ESP_LOGI(TAG, "connecting to broker %s:%u", cfg.broker_host, (unsigned)cfg.broker_port);
     if (pki_tls_connect(cfg.broker_host, cfg.broker_port, key, key_size,
@@ -1348,6 +1356,21 @@ esp_err_t wendy_pki_connect(wendy_pki_connection **connection)
 {
     pthread_mutex_lock(&identity_lock);
     esp_err_t result = identity_use_allowed() ? connect_identity(connection) : ESP_ERR_INVALID_STATE;
+    pthread_mutex_unlock(&identity_lock);
+    return result;
+}
+
+esp_err_t wendy_pki_maintain(void)
+{
+    pthread_mutex_lock(&identity_lock);
+    int64_t started = esp_timer_get_time();
+    esp_err_t result = identity_use_allowed() ? connect_identity(NULL) : ESP_ERR_INVALID_STATE;
+    ESP_LOGI(TAG, "cloud check %s: ms=%u free=%u largest=%u minimum=%u",
+             result == ESP_OK ? "done" : "failed",
+             (unsigned)((esp_timer_get_time() - started) / 1000),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
     pthread_mutex_unlock(&identity_lock);
     return result;
 }

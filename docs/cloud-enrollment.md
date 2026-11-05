@@ -301,6 +301,14 @@ PKI enrollment task when enrollment configuration is present. Firmware without
 stored enrollment does not start the task. Custom profiles can still disable
 Cloud support explicitly.
 
+`CONFIG_WENDY_CLOUD_TUNNEL` (default on) controls only the broker connection. With
+it off, the same task still enrolls the device, fetches the signed time and renews
+the identity, but it opens no broker socket. It runs these checks once per hour, or
+after 60 seconds if a check fails. This keeps the memory of the broker connection
+free for LAN sessions. The device cannot be reached through the cloud in this mode.
+Without `CONFIG_WENDY_CLOUD`, a device that has no other time source has no verified
+clock, so LAN mTLS fails after a power cycle.
+
 Network services start when Wi-Fi obtains an IP address, including when DHCP
 finishes after the initial connection wait times out. The service worker retries
 mDNS and cloud-task startup failures while connected, without starting duplicate

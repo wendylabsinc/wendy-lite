@@ -21,6 +21,12 @@ esp_err_t wendy_pki_sync_time(const char *server, const uint8_t *reply, size_t s
                             bool *synchronized, int64_t *seconds);
 /* Called by the cloud task after Wi-Fi is up; all network operations are bounded. */
 esp_err_t wendy_pki_connect(wendy_pki_connection **connection);
+/* Called by the cloud task when the tunnel is off. Does the same work as
+ * wendy_pki_connect() up to the broker connection: fetches the signed time, checks
+ * the stored identity and renews it when due. Opens no broker connection.
+ * ESP_OK means that the time is verified and the identity is valid. A failed
+ * renewal of a still-valid identity is not a failure: the next call retries. */
+esp_err_t wendy_pki_maintain(void);
 void wendy_pki_close(wendy_pki_connection *connection);
 /* Waits up to 10 seconds for peer close_notify and replies before detaching.
  * Success frees connection and transfers the open fd to the caller.

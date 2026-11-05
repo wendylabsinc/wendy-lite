@@ -32,11 +32,25 @@ void wendy_cloud_network_changed(void)
     if (s_wake) xSemaphoreGive(s_wake);
 }
 
+/* idf.py build does not read a changed Kconfig. Without this check, an old build
+ * directory would compile with the tunnel off and give no warning. */
+#if !defined(CONFIG_WENDY_CLOUD_TUNNEL) && defined(CONFIG_WENDY_CLOUD_RECONNECT_DELAY_MS)
+#error "Old sdkconfig: run idf.py reconfigure"
+#endif
+
+#if !CONFIG_WENDY_CLOUD_TUNNEL
+/* Each check holds the identity lock, and a LAN accept waits for that lock. A
+ * device with no internet retries forever, so a retry must not come too often. */
+#define CLOUD_CHECK_PERIOD_MS (60 * 60 * 1000)
+#define CLOUD_CHECK_RETRY_MS (60 * 1000)
+#endif
+
 static void cloud_task(void *unused)
 {
     (void)unused;
     while (!s_stop) {
         s_state = WENDY_CLOUD_STATE_CONNECTING;
+#if CONFIG_WENDY_CLOUD_TUNNEL
         wendy_pki_connection *outer = NULL;
         struct wendy_lite_trust *trust = calloc(1, sizeof *trust);
         int fd = -1;
@@ -68,6 +82,18 @@ static void cloud_task(void *unused)
         // the normal transport/connect failure path retains its retry backoff.
         if (fd < 0 && !s_stop && !planned_renewal)
             xSemaphoreTake(s_wake, pdMS_TO_TICKS(CONFIG_WENDY_CLOUD_RECONNECT_DELAY_MS));
+#else
+        /* No tunnel: this task only keeps the time and the identity current. */
+        bool checked = wendy_pki_maintain() == ESP_OK;
+        if (checked)
+            atomic_store(&s_failures, 0);
+        else if (!s_stop && atomic_load(&s_failures) < 3)
+            atomic_fetch_add(&s_failures, 1);
+        s_state = WENDY_CLOUD_STATE_DISCONNECTED;
+        if (!s_stop)
+            xSemaphoreTake(s_wake,
+                           pdMS_TO_TICKS(checked ? CLOUD_CHECK_PERIOD_MS : CLOUD_CHECK_RETRY_MS));
+#endif
     }
     s_state = WENDY_CLOUD_STATE_IDLE;
     s_task = NULL;
