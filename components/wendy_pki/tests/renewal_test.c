@@ -74,7 +74,7 @@ static const char *response_authority;
 static const char *fail_set;
 static int authority_writes, lite_accepts, operator_accepts, lan_accepts;
 static int stream_accepts;
-static wendy_pki_connection stream_connection;
+static wendy_pki_connection stream_connection, broker_connection;
 static bool have_key, have_binding, have_nonce, config_cleared, fail_clear;
 static uint64_t snapshot_generation;
 static int64_t reset_pending;
@@ -390,6 +390,8 @@ int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t 
     assert((certificate_is(cert, "stored") || certificate_is(cert, "issued")));
     assert(clock_now < (certificate_is(cert, "issued") ? issued_expiry : stored_expiry) &&
            !invalid_certificate);
+    memset(&broker_connection, 0, sizeof broker_connection);
+    *out = &broker_connection;
     return 0;
 }
 cJSON *cJSON_CreateObject(void) { return calloc(1, sizeof(cJSON)); }
@@ -613,7 +615,7 @@ static void test_lite_authority_lifecycle(void)
     struct wendy_conf_span fresh = {0};
     time_t expires;
     assert(issue(1, &config, &data, key_der, key_der_size, (struct wendy_conf_span){"stored", 6},
-                 "principal", &fresh, &expires) != 0);
+                 "principal", &fresh, &expires, NULL) != 0);
     assert(!fresh.data && !strcmp(lite_authority, "old-authority-pem") && authority_writes == 0);
 
     /* Migration renews a valid long-lived device identity immediately. If the
@@ -803,6 +805,111 @@ static void test_half_life_renewal(void)
     stored_expiry = signed_now + 5400;
     assert(wendy_pki_connect(&connection) == ESP_OK);
     assert(renewal_calls == 0 && broker_calls == 1);
+}
+
+/* A 30-day identity whose renewal date is 1000 s after signed_now. */
+static void stored_renews_in_1000_s(void)
+{
+    stored_not_before = signed_now + 1000 - 15 * 86400;
+    stored_expiry = stored_not_before + 30 * 86400;
+}
+static int64_t control_stop_in(void)
+{
+    return (broker_connection.renew_deadline_us - monotonic_us) / 1000000;
+}
+
+static void test_control_stop(void)
+{
+    wendy_pki_connection *connection = NULL;
+    const time_t stop_time = signed_now + 1000 + 3600;
+
+    /* Before the renewal date: no renewal, and the stop is one hour after it. */
+    reset();
+    monotonic_us = 5000000;
+    stored_renews_in_1000_s();
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(renewal_calls == 0 && control_stop_in() == 1000 + 3600);
+    assert(broker_connection.refresh_time == control_refresh_time);
+
+    /* At that stop the exact date check passes, so the renewal happens. The
+     * next stop comes from the new certificate. */
+    reset();
+    stored_renews_in_1000_s();
+    reply_seconds = stop_time;
+    distinct_issued_certificate = issuance_success = true;
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(renewal_calls == 1 && stored_is_issued && clock_now == stop_time);
+    assert(control_stop_in() ==
+           issued_not_before + (issued_expiry - issued_not_before) / 2 + 3600 - stop_time);
+
+    /* A failed renewal keeps the stored identity and retries after one hour. */
+    reset();
+    stored_renews_in_1000_s();
+    reply_seconds = stop_time;
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(renewal_calls == 1 && !stored_is_issued && control_stop_in() == 3600);
+
+    /* A renewal that installs no Lite authority pin also retries after one hour. */
+    reset();
+    stored_renews_in_1000_s();
+    lite_authority[0] = 0;
+    distinct_issued_certificate = issuance_success = true;
+    response_authority = NULL;
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(renewal_calls == 1 && stored_is_issued && !lite_authority[0]);
+    assert(control_stop_in() == 3600);
+
+    /* A stop date already in the past cannot cause a tight loop. */
+    reset();
+    stored_renews_in_1000_s();
+    reply_seconds = stop_time;
+    distinct_issued_certificate = issuance_success = true;
+    issued_not_before = signed_now - 20000;
+    issued_expiry = signed_now + 8000;
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(renewal_calls == 1 && stored_is_issued && control_stop_in() == 3600);
+}
+
+static void test_control_time_fetch(void)
+{
+    wendy_pki_connection *connection = NULL;
+    reset();
+    monotonic_us = 1000000;
+    stored_renews_in_1000_s();
+    assert(wendy_pki_connect(&connection) == ESP_OK && timestamp_calls == 1);
+    void (*fetch)(void) = broker_connection.refresh_time;
+
+    /* The connect path has just verified the time. */
+    fetch();
+    monotonic_us += 299000000;
+    fetch();
+    assert(timestamp_calls == 1);
+    monotonic_us += 2000000;
+    fetch();
+    assert(timestamp_calls == 2);
+
+    /* Another identity user is active: skip. The next call fetches. */
+    monotonic_us += INT64_C(3600000000);
+    pthread_mutex_lock(&identity_lock);
+    fetch();
+    pthread_mutex_unlock(&identity_lock);
+    assert(timestamp_calls == 2);
+    fetch();
+    assert(timestamp_calls == 3);
+
+    /* A failed fetch has no other effect, and it releases the lock. */
+    monotonic_us += INT64_C(3600000000);
+    issuance_received = fail_post_issue_time = true;
+    fetch();
+    assert(timestamp_calls == 4);
+    assert(!pthread_mutex_trylock(&identity_lock));
+    pthread_mutex_unlock(&identity_lock);
+
+    /* No fetch during an enrollment reset. */
+    identity_resetting = true;
+    fetch();
+    identity_resetting = false;
+    assert(timestamp_calls == 4);
 }
 
 static void test_format_lifetime(void)
@@ -1044,9 +1151,11 @@ int main(int argc, char **argv)
     test_enrollment_reset();
     test_stream_stored_identity();
     test_half_life_renewal();
+    test_control_stop();
+    test_control_time_fetch();
     test_format_lifetime();
-    puts("renewal fallback, half-life renewal, Lite authority lifecycle and local enrollment "
-         "reset tests passed");
+    puts("renewal fallback, half-life renewal, control stop and time fetch, Lite authority "
+         "lifecycle and local enrollment reset tests passed");
 }
 
 int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, struct wendy_conf_span cert,

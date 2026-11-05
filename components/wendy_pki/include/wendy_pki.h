@@ -60,7 +60,7 @@ enum wendy_pki_relay_result {
     WENDY_PKI_RELAY_RENEW = -2,
 };
 /* Installs keys exclusively from authenticated outer TLS, then detaches TCP.
- * Returns the handed-off fd, FAILED, or RENEW for normal planned refresh.
+ * Returns the handed-off fd, FAILED, or RENEW when the renewal date has passed.
  * The caller must close connection on every outcome. A nonnegative return
  * transfers the detached fd to the caller independently of connection. */
 int wendy_pki_relay_upgrade(wendy_pki_connection *, struct wendy_lite_trust *);

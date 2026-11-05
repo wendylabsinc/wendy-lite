@@ -2670,6 +2670,7 @@ static int read_all(wendy_pki_connection *c, uint8_t *out, size_t n, int64_t dea
     return 0;
 }
 
+#define CONTROL_TIME_REFRESH_US INT64_C(3600000000)
 int wendy_pki_relay_upgrade(wendy_pki_connection *c, struct wendy_lite_trust *trust)
 {
     memset(trust, 0, sizeof *trust);
@@ -2687,17 +2688,20 @@ int wendy_pki_relay_upgrade(wendy_pki_connection *c, struct wendy_lite_trust *tr
         if (i && trust->keys[0].id_size == key->id_size &&
             !memcmp(trust->keys[0].id, key->id, key->id_size)) goto fail;
     }
-    int64_t renew = esp_timer_get_time() + 240000000;
+    /* The connection stays open while heartbeats work. The only voluntary stop
+     * is the renewal deadline that the connect path set. */
+    int64_t renew = c->renew_deadline_us;
+    int64_t next_time = esp_timer_get_time() + CONTROL_TIME_REFRESH_US;
     bool first = true;
     for (;;) {
         stage = "heartbeat";
         deadline = esp_timer_get_time() + 30000000;
-        if (deadline > renew) deadline = renew;
+        if (renew && deadline > renew) deadline = renew;
         int result = read_all(c, header, 4, deadline);
         if (result) {
             if (result == READ_ALL_IDLE_TIMEOUT && deadline == renew &&
                 !wendy_pki_reset_in_progress()) {
-                ESP_LOGI("wendy_pki", "refreshing broker control connection");
+                ESP_LOGI("wendy_pki", "renewal date passed; stopping broker control connection");
                 return WENDY_PKI_RELAY_RENEW;
             }
             goto fail;
@@ -2708,6 +2712,13 @@ int wendy_pki_relay_upgrade(wendy_pki_connection *c, struct wendy_lite_trust *tr
             if (write_all(c, "WR\x03\x02", 4, deadline)) goto fail;
             if (first) ESP_LOGI("wendy_pki", "broker control heartbeat received and answered");
             first = false;
+            /* The next heartbeat is now farthest away. Renewal fetches the time
+             * after this loop returns, so the two never run in parallel. */
+            int64_t now = esp_timer_get_time();
+            if (c->refresh_time && now >= next_time && (!renew || now < renew)) {
+                c->refresh_time();
+                next_time = esp_timer_get_time() + CONTROL_TIME_REFRESH_US;
+            }
         } else if (header[3] == 3) {
             stage = "relay handoff";
             deadline = esp_timer_get_time() + 10000000;
