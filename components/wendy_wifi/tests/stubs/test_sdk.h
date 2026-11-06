@@ -9,6 +9,7 @@
 #define strlcpy test_strlcpy
 #define CONFIG_WENDY_CLOUD 1
 #define CONFIG_WENDY_DEVICE_NAME_BUF_SIZE 64
+#define CONFIG_WENDY_DEVICE_NAME_DEFAULT_PREFIX "wendy"
 #define CONFIG_WENDY_WIFI_SSID ""
 #define CONFIG_WENDY_WIFI_PASSWORD ""
 typedef int esp_err_t;
