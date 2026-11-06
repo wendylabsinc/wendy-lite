@@ -13,6 +13,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/binary"
 	"encoding/pem"
 	"fmt"
@@ -88,6 +89,12 @@ func main() {
 		cert.KeyUsage = x509.KeyUsageDigitalSignature
 		cert.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}
 		cert.DNSNames = []string{"localhost"}
+		if id == "lite-operator" || id == "lite-operator-extra-eku" {
+			cert.UnknownExtKeyUsage = []asn1.ObjectIdentifier{{1, 3, 6, 1, 4, 1, 65441, 1, 9}}
+			if id == "lite-operator" {
+				cert.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
+			}
+		}
 		tenantID := "2558fd76-afc7-466e-9613-6b715296a526"
 		if id == "wrong-tenant" {
 			tenantID = "11111111-1111-4111-8111-111111111111"
@@ -122,6 +129,8 @@ func main() {
 		legacy               bool
 	}{
 		{"primary-operator", "operator", "alice_1", "wendy-net-operator-router/1", true, false},
+		{"lite-operator", "operator", "lite-operator", "wendy-net-operator-router/1", false, false},
+		{"lite-operator-extra-eku", "operator", "lite-operator-extra-eku", "wendy-net-operator-router/1", false, false},
 		{"ordinary-device", "device", "00000000-0000-4000-8000-000000000005", "wendy-local-mesh-ble/2", true, false},
 		{"wrong-tenant", "operator", "wrong-tenant", "wendy-net-operator-router/1", false, false},
 		{"expired", "operator", "expired", "wendy-net-operator-router/1", false, false},

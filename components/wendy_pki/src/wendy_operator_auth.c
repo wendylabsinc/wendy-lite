@@ -53,7 +53,7 @@ int wendy_operator_auth_init(struct wendy_operator_auth *auth,
     return result;
 }
 
-enum wendy_peer_role wendy_peer_auth_role(const mbedtls_x509_crt *crt,
+static enum wendy_peer_role peer_auth_role(const mbedtls_x509_crt *crt,
                                           const char *tenant)
 {
     unsigned char peer_tenant[36];
@@ -72,6 +72,30 @@ enum wendy_peer_role wendy_peer_auth_role(const mbedtls_x509_crt *crt,
         if (MBEDTLS_OID_CMP(MBEDTLS_OID_CLIENT_AUTH, &eku->buf) == 0) return role;
     }
     return WENDY_PEER_ROLE_NONE;
+}
+
+/* The Lite-authority marker never grants primary operator authority, even if
+ * its issuer was accidentally included in a primary trust bundle. */
+static bool has_lite_operator_usage(const mbedtls_x509_crt *crt)
+{
+    static const unsigned char oid[] = {0x2b, 0x06, 0x01, 0x04, 0x01, 0x83, 0xff, 0x21, 0x01, 0x09};
+    if (!crt) return false;
+    for (const mbedtls_x509_sequence *eku = &crt->ext_key_usage;
+         eku && eku->buf.p; eku = eku->next) {
+        if (eku->buf.len == sizeof oid && !memcmp(eku->buf.p, oid, sizeof oid)) return true;
+    }
+    return false;
+}
+
+enum wendy_peer_role wendy_peer_auth_role(const mbedtls_x509_crt *crt, const char *tenant)
+{
+    return has_lite_operator_usage(crt) ? WENDY_PEER_ROLE_NONE : peer_auth_role(crt, tenant);
+}
+
+int wendy_operator_auth_check_lite(const mbedtls_x509_crt *crt, const char *tenant)
+{
+    return has_lite_operator_usage(crt) && peer_auth_role(crt, tenant) == WENDY_PEER_ROLE_OPERATOR
+               ? 0 : -1;
 }
 
 int wendy_operator_auth_check(const mbedtls_x509_crt *crt, const char *tenant)

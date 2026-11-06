@@ -20,11 +20,18 @@ struct wendy_operator_auth {
 int wendy_operator_auth_init(struct wendy_operator_auth *auth,
                              const uint8_t *device_der, size_t size);
 
-/* Identity and explicit clientAuth checks only. The TLS handshake must also
+/* Primary identity and explicit clientAuth checks only; rejects the Lite marker.
+ * The TLS handshake must also
  * authenticate the chain, validity and possession of the private key. */
 int wendy_operator_auth_check(const mbedtls_x509_crt *crt, const char *tenant);
 
-/* Classify one same-tenant operator/device URI with explicit clientAuth.
+/* Lite relay identity only: requires the Lite operator marker and clientAuth.
+ * The caller must enforce the remaining Lite profile, chain and key possession.
+ * Never use this check to grant primary operator authority. */
+int wendy_operator_auth_check_lite(const mbedtls_x509_crt *crt, const char *tenant);
+
+/* Classify one same-tenant primary operator/device URI with explicit clientAuth.
+ * Certificates marked for the separate Lite authority are always rejected.
  * Identity policy only: TLS must verify the chain and private-key possession. */
 enum wendy_peer_role wendy_peer_auth_role(const mbedtls_x509_crt *crt,
                                           const char *tenant);
