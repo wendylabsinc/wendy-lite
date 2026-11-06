@@ -78,7 +78,7 @@ static void cloud_task(void *unused)
         s_state = WENDY_CLOUD_STATE_DISCONNECTED;
         // The handed-off stream belongs to the server. Open its replacement
         // immediately; shared broker caps prevent claiming it a second time.
-        // A planned stop for renewal retired a healthy waiter. Reopen it promptly;
+        // A planned stop retired a healthy waiter. Reopen it promptly;
         // the normal transport/connect failure path retains its retry backoff.
         if (fd < 0 && !s_stop && !planned_renewal)
             xSemaphoreTake(s_wake, pdMS_TO_TICKS(CONFIG_WENDY_CLOUD_RECONNECT_DELAY_MS));

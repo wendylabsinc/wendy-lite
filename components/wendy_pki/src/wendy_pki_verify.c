@@ -407,6 +407,14 @@ static bool valid_at(const mbedtls_x509_crt *cert, time_t now)
     return !cert_time(&cert->valid_from, &start) && !cert_time(&cert->valid_to, &end) &&
         start <= now && end > now;
 }
+uint32_t pki_parsed_date_flags(const mbedtls_x509_crt *cert, time_t now)
+{
+    time_t start, end;
+    uint32_t flags = 0;
+    if (cert_time(&cert->valid_from, &start) || start > now) flags |= MBEDTLS_X509_BADCERT_FUTURE;
+    if (cert_time(&cert->valid_to, &end) || end <= now) flags |= MBEDTLS_X509_BADCERT_EXPIRED;
+    return flags;
+}
 static int verify_at(void *context, mbedtls_x509_crt *cert, int depth, uint32_t *flags)
 {
     (void)depth;

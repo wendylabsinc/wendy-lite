@@ -18,6 +18,9 @@ int pki_key_encoding(const uint8_t *key, size_t key_size);
 /* Read already parsed peer metadata without allocating another DER/key copy. */
 int pki_parsed_peer_not_before(const mbedtls_x509_crt *cert, time_t *not_before);
 int pki_parsed_peer_expiry(const mbedtls_x509_crt *cert, time_t *expires);
+/* MBEDTLS_X509_BADCERT_EXPIRED and _FUTURE flags of a certificate at the given
+ * time. A date that cannot be read counts as outside the validity period. */
+uint32_t pki_parsed_date_flags(const mbedtls_x509_crt *cert, time_t now);
 
 struct wendy_pki_mesh_peer;
 /* Full independent proof verification; caller exclusively owns parsed anchors.

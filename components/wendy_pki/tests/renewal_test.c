@@ -64,6 +64,7 @@ static size_t pending_authority_size;
 static bool distinct_issued_certificate, stored_is_issued, pending_is_issued;
 static bool issuance_received, fail_post_issue_time;
 static time_t issued_not_before, issued_expiry;
+static time_t broker_chain_end;
 static int timestamp_calls;
 static bool reject_radio_time;
 static uint64_t mesh_reserved;
@@ -381,9 +382,9 @@ int wendy_pki_lite_authority_from_header(const char *header, uint8_t **pem, size
     *pem_size = strlen((char *)*pem);
     return *pem ? 0 : -1;
 }
-int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t key_size,
-                    struct wendy_conf_span cert, struct wendy_conf_span roots,
-                    wendy_pki_connection **out)
+int pki_tls_connect_dated(const char *host, unsigned port, const uint8_t *key, size_t key_size,
+                          struct wendy_conf_span cert, struct wendy_conf_span roots,
+                          wendy_pki_connection **out)
 {
     broker_calls++;
     assert(roots.data == (config.provision_trust ? usb_roots : wendy_pki_https_roots_start));
@@ -391,6 +392,7 @@ int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t 
     assert(clock_now < (certificate_is(cert, "issued") ? issued_expiry : stored_expiry) &&
            !invalid_certificate);
     memset(&broker_connection, 0, sizeof broker_connection);
+    broker_connection.peer_chain_expires = broker_chain_end;
     *out = &broker_connection;
     return 0;
 }
@@ -427,6 +429,8 @@ static void reset(void)
     issuance_received = fail_post_issue_time = false;
     issued_not_before = signed_now + 10;
     issued_expiry = signed_now + 172800;
+    /* Far enough that only the identity sets the stop date. */
+    broker_chain_end = signed_now + 3650 * 86400;
     timestamp_calls = 0;
     response_authority = "valid-new-authority";
     fail_set = NULL;
@@ -868,6 +872,41 @@ static void test_control_stop(void)
     issued_expiry = signed_now + 8000;
     assert(wendy_pki_connect(&connection) == ESP_OK);
     assert(renewal_calls == 1 && stored_is_issued && control_stop_in() == 3600);
+
+    /* The broker chain ends before the renewal stop: the chain sets the stop. */
+    reset();
+    monotonic_us = 5000000;
+    stored_renews_in_1000_s();
+    broker_chain_end = signed_now + 500;
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(renewal_calls == 0 && control_stop_in() == 500 + 60);
+
+    /* A chain that ends after the renewal stop does not move that stop. */
+    reset();
+    stored_renews_in_1000_s();
+    broker_chain_end = signed_now + 1000 + 3600;
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(control_stop_in() == 1000 + 3600);
+
+    /* The chain also caps the delay after a failed renewal. */
+    reset();
+    stored_renews_in_1000_s();
+    reply_seconds = stop_time;
+    broker_chain_end = stop_time + 500;
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(renewal_calls == 1 && !stored_is_issued && control_stop_in() == 500 + 60);
+
+    /* A chain that ends during the handshake, or no recorded date, is a failed
+     * connection. The cloud task then uses its retry delay, so no tight loop. */
+    const time_t ended[] = {signed_now, signed_now - 1, 0};
+    for (size_t i = 0; i < sizeof ended / sizeof *ended; i++) {
+        reset();
+        stored_renews_in_1000_s();
+        broker_chain_end = ended[i];
+        connection = &broker_connection;
+        assert(wendy_pki_connect(&connection) == ESP_FAIL);
+        assert(!connection && broker_calls == 1);
+    }
 }
 
 static void test_control_time_fetch(void)

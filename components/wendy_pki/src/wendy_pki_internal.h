@@ -70,10 +70,16 @@ struct wendy_pki_connection
     /* Full local/remote certificate path lifetime, independent of wall-clock
      * corrections, carrier leases and caller I/O deadlines. */
     int64_t session_deadline_us;
-    /* Broker control connection only. Monotonic time of the planned stop for
-     * certificate renewal (0 = none), and the hourly time fetch (NULL = none). */
+    /* Broker control connection only. Monotonic time of the planned stop, for
+     * certificate renewal or the end of the broker chain (0 = none), and the
+     * hourly time fetch (NULL = none). */
     int64_t renew_deadline_us;
     void (*refresh_time)(void);
+    /* Set before the handshake when the clock is verified. Firmware mbedTLS has
+     * no date checks, so the verify callback checks the dates of the peer chain
+     * and records the earliest end date of that chain. */
+    bool check_peer_dates;
+    time_t peer_chain_expires;
     /* Nonzero only for the authenticated native carrier transport. */
     int64_t mesh_deadline_us;
     char mesh_tenant[37];
@@ -139,6 +145,13 @@ static inline int pki_net_apply_time(wendy_pki_connection *c,
 int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t key_size,
                     struct wendy_conf_span cert, struct wendy_conf_span roots,
                     wendy_pki_connection **out);
+/* Same as pki_tls_connect, and also refuses a peer chain with a certificate
+ * outside its validity dates at time(NULL). Call only with a verified clock:
+ * the time fetch itself must stay on pki_tls_connect, because the clock can be
+ * wrong at that point and a valid chain would then look out of date. */
+int pki_tls_connect_dated(const char *host, unsigned port, const uint8_t *key, size_t key_size,
+                          struct wendy_conf_span cert, struct wendy_conf_span roots,
+                          wendy_pki_connection **out);
 int pki_http_post(const char *url, const char *type, const char *token, const void *body,
                   size_t body_size, const uint8_t *key, size_t key_size,
                   struct wendy_conf_span cert, struct wendy_conf_span roots, uint8_t **response,
