@@ -1,5 +1,5 @@
 /* Production app actor and real TLS with generated device certificates.
- * NVS/configuration and the loopback service use host facades. The client
+ * NVS/configuration and an ordinary guest-owned service use host facades. The client
  * closes its TLS and TCP write halves before the backend produces a reply. */
 #define main ordinary_tls_fixture_main
 #include "tls_test.c"
@@ -13,6 +13,8 @@ static struct pki_tls_owned_identity prepared;
 static struct wendy_conf_span prepared_roots;
 static int guest_fd = -1;
 static bool replied;
+static unsigned guest_connections;
+enum { GUEST_PORT = 0xa811 };
 struct wendy_pki_net_setup {
     wendy_pki_connection *connection;
     bool complete;
@@ -24,6 +26,11 @@ bool wendy_conf_is_current(void)
 bool wendy_conf_snapshot_current(uint64_t generation)
 {
     return generation == 1;
+}
+void wendy_conf_get_enrolled_ids(char tenant[37], char device[65])
+{
+    strcpy(tenant, "2558fd76-afc7-466e-9613-6b715296a526");
+    strcpy(device, "00000000-0000-4000-8000-000000000004");
 }
 void wnad_wake(void)
 {
@@ -41,17 +48,55 @@ int wnad_no_wait(void *context, bool writing, int64_t deadline)
     assert(0);
     return -1;
 }
+/* This inbound guest test must never fall back to a native loopback backend. */
 int wnad_connect(const char *host, unsigned port, bool *connecting)
 {
-    assert(!strcmp(host, "127.0.0.1") && port == TIME_PORT);
+    assert(!"unexpected native loopback backend");
+    return -1;
+}
+int wendy_net_guest_service_begin(uint16_t port)
+{
+    /* Preserve the driver's WAS1 request bytes; this is now an ordinary guest
+     * port, with no native timestamp backend or special-port dispatch. */
+    assert(port == GUEST_PORT && guest_fd < 0);
     int pair[2];
     assert(!socketpair(AF_UNIX, SOCK_STREAM, 0, pair));
     assert(!fcntl(pair[0], F_SETFL, O_NONBLOCK));
     assert(!fcntl(pair[1], F_SETFL, O_NONBLOCK));
     guest_fd = pair[1];
-    *connecting = false;
+    guest_connections++;
     return pair[0];
 }
+/* Unused guest modes fail closed. Only the ordinary inbound TCP service above
+ * may create a backend in this half-close fixture. */
+int wendy_net_guest_service_connect(uint16_t port) { return -1; }
+int wendy_net_guest_datagram_connect(uint16_t port, int *owner) { return -1; }
+int wendy_net_guest_datagram_owner(uint16_t port) { return -1; }
+unsigned wendy_net_guest_datagram_capacity(void) { return 0; }
+bool wendy_net_mesh_socket_live(int handle) { return false; }
+int wendy_net_mesh_connected(int handle, int fd) { assert(0); return -1; }
+int wendy_net_mesh_datagram_connected(int handle, unsigned maximum) { assert(0); return -1; }
+int wendy_net_guest_datagram_deliver_owned(int owner, int *association, uint8_t **packet,
+                                           size_t size, unsigned maximum,
+                                           wendy_net_packet_release_fn release)
+{ assert(0); return -1; }
+int wendy_net_mesh_datagram_receive_owned(int handle, uint8_t **packet, size_t size,
+                                          wendy_net_packet_release_fn release)
+{ assert(0); return -1; }
+int wendy_net_guest_datagram_take(int handle, uint8_t **packet, size_t *size)
+{ assert(0); return -1; }
+void wendy_net_guest_datagram_sent(int handle) { assert(0); }
+void wendy_net_guest_datagram_closed(int handle) { assert(0); }
+void wendy_net_mesh_discard_pending_datagrams(void) {}
+void wendy_net_set_mesh_connector(wendy_net_mesh_begin_fn fn) {}
+void wendy_net_set_mesh_resolver(wendy_net_mesh_resolve_fn fn) {}
+void wendy_net_set_service_catalog(wendy_net_service_fn fn) {}
+int wendy_net_peer_service_catalog(unsigned op, const void *in, size_t n, char *out, size_t cap)
+{ return -1; }
+esp_err_t wendy_net_peer_agent_endpoint_now(const char *peer, uint8_t address[16], uint16_t *port)
+{ return ESP_ERR_NOT_FOUND; }
+esp_err_t wendy_net_peer_app_endpoint_now(const char *peer, uint8_t address[16], uint16_t *port)
+{ return ESP_ERR_NOT_FOUND; }
 int wnad_connected(int fd)
 {
     return 1;
@@ -209,7 +254,7 @@ int main(int argc, char **argv)
         }
         usleep(100);
     }
-    assert(replied && completed);
+    assert(guest_connections == 1 && replied && completed);
     while (!wendy_net_app_stop())
         (void)wendy_pki_work_poll();
     close(guest_fd);

@@ -125,7 +125,7 @@ int wnsc_services_write(const struct wnsc_node *node, char *out, size_t cap)
 
 int wnsc_manifest_services(struct wnsc_node *node, const struct wn_doc *d, unsigned body,
                            const uint8_t device[16], uint64_t revision, int64_t issued,
-                           int64_t expires, bool withdraw)
+                           int64_t expires, int64_t deadline_us, bool withdraw)
 {
     struct wns_store staged;
     wns_store_init(&staged, node->records.limit, node->records.byte_limit);
@@ -183,6 +183,16 @@ int wnsc_manifest_services(struct wnsc_node *node, const struct wn_doc *d, unsig
         if (put < 0) {
             result = -1;
             goto done;
+        }
+        if (!put) {
+            struct wns_entry *entry = wns_store_find(&staged, device, r->app, r->service);
+            const struct wns_entry *old =
+                wns_store_find(&node->records, device, r->app, r->service);
+            entry->deadline_us = deadline_us;
+            /* A repeated projection cannot renew the original local receipt.
+             * Directory admission owns the origin-wide replay decision. */
+            if (old && old->generation == revision && old->deadline_us < entry->deadline_us)
+                entry->deadline_us = old->deadline_us;
         }
         /* A small device can retain a bounded subset of verified summaries.
          * The whole payload is still parsed and covered by one signature. */
@@ -253,12 +263,16 @@ int wnsc_entry_record(const struct wnsc_node *node, const struct wns_entry *entr
 }
 
 void wnsc_manifest_committed(struct wnsc_node *node, uint64_t revision, int64_t issued,
-                             int64_t expires)
+                             int64_t expires, int64_t deadline_us)
 {
     for (struct wns_entry *e = node->records.entries; e; e = e->next)
         if (e->own) {
+            int64_t deadline = deadline_us;
+            if (e->generation == revision && e->deadline_us > 0 && e->deadline_us < deadline)
+                deadline = e->deadline_us;
             e->generation = revision;
             e->issued = issued;
             e->expires = expires;
+            e->deadline_us = deadline;
         }
 }

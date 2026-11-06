@@ -46,6 +46,21 @@ static void release_payload(struct wg_object *o)
     else
         wendy_net_free(o->data);
 }
+static size_t drop_payload(struct wg_pool *p, struct wg_object *o)
+{
+    if (!o->data)
+        return 0;
+    size_t size = o->size;
+    if (p->config.evicted)
+        p->config.evicted(p->config.context, &o->id, o->data, size);
+    p->payload_bytes -= size;
+    p->type_payload[o->id.type - 1] -= size;
+    release_payload(o);
+    o->data = NULL;
+    o->size = 0;
+    o->release = NULL;
+    return size;
+}
 static void *meta(struct wg_pool *p, size_t n)
 {
     void *r = wendy_net_calloc(1, n);
@@ -121,7 +136,7 @@ static struct wg_fetch *find_fetch(struct wg_pool *p, const struct wg_id *id)
             return f;
     return NULL;
 }
-void wg_forget(struct wg_pool *p, const struct wg_id *id)
+static void forget(struct wg_pool *p, const struct wg_id *id, bool keep_retired)
 {
     if (!p || !id)
         return;
@@ -129,19 +144,25 @@ void wg_forget(struct wg_pool *p, const struct wg_id *id)
         struct wg_object *o = *at;
         if (!same(&o->id, id))
             continue;
-        if (p->config.fifo && !o->data)
+        if (keep_retired && p->config.fifo && !o->data)
             return; /* Keep the bounded retirement receipt. */
         o->expires = 0;
+        drop_payload(p, o);
         if (!o->refs) {
             *at = o->next;
-            p->payload_bytes -= o->size;
-            p->type_payload[o->id.type - 1] -= o->size;
-            release_payload(o);
             unmeta(p, o, sizeof *o);
             p->object_count--;
         }
         return;
     }
+}
+void wg_forget(struct wg_pool *p, const struct wg_id *id)
+{
+    forget(p, id, true);
+}
+void wg_expire(struct wg_pool *p, const struct wg_id *id)
+{
+    forget(p, id, false);
 }
 int wg_init(struct wg_pool *p, const struct wg_config *c)
 {
@@ -257,15 +278,22 @@ void wg_prune(struct wg_pool *p, uint64_t now)
 {
     for (struct wg_object **at = &p->objects; *at;) {
         struct wg_object *o = *at;
-        if (o->expires <= now && !o->refs) {
-            *at = o->next;
-            p->payload_bytes -= o->size;
-            p->type_payload[o->id.type - 1] -= o->size;
-            release_payload(o);
-            unmeta(p, o, sizeof *o);
-            p->object_count--;
-        } else
-            at = &o->next;
+        if (o->expires <= now) {
+            /* Uploads borrow the object, not its body between poll calls. An
+             * idle/busy peer must not retain expired payload RAM. The one
+             * exception is an accepting callback still borrowing adopted
+             * receive bytes while another offer reenters this pool. */
+            bool borrowed = p->delivering && p->delivering->accepted == o;
+            if (!borrowed)
+                drop_payload(p, o);
+            if (!o->refs) {
+                *at = o->next;
+                unmeta(p, o, sizeof *o);
+                p->object_count--;
+                continue;
+            }
+        }
+        at = &o->next;
     }
     for (struct wg_fetch **at = &p->pending; *at;) {
         struct wg_fetch *f = *at;
@@ -302,15 +330,7 @@ static struct wg_object *oldest_payload(struct wg_pool *p, uint8_t type)
 }
 static size_t retire_payload(struct wg_pool *p, struct wg_object *o)
 {
-    size_t size = o->size;
-    if (p->config.evicted)
-        p->config.evicted(p->config.context, &o->id, o->data, size);
-    p->payload_bytes -= size;
-    p->type_payload[o->id.type - 1] -= size;
-    release_payload(o);
-    o->data = NULL;
-    o->size = 0;
-    o->release = NULL;
+    size_t size = drop_payload(p, o);
     o->withdrawal = ++p->withdrawal;
     /* Exact digests stay forgotten through their lease plus stale-hint lifetime. */
     o->expires = o->expires > UINT64_MAX - WG_HINT_MS ? UINT64_MAX : o->expires + WG_HINT_MS;

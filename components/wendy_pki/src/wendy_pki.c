@@ -39,6 +39,7 @@
 #include <sys/time.h>
 #include <mbedtls/pk.h>
 #include "wendy_pki_crypto.h"
+#include "wendy_pki_clock_observation.h"
 #include <mbedtls/x509_csr.h>
 
 static const char *TAG = "wendy_pki";
@@ -51,6 +52,8 @@ static const char *TAG = "wendy_pki";
 static time_t mesh_verified_seconds;
 static int64_t mesh_verified_monotonic_us;
 static uint64_t mesh_verified_generation;
+static struct wendy_pki_certificate_time mesh_certificate_clock;
+static uint64_t mesh_certificate_generation;
 static bool mesh_time_recent(void)
 {
     int64_t age = esp_timer_get_time() - mesh_verified_monotonic_us;
@@ -425,6 +428,13 @@ esp_err_t wendy_pki_reset(const char *expected_device_id, const char *nonce_hex)
         goto done;
     }
     identity_resetting = true;
+    pki_clock_observation_reset();
+    wendy_pki_certificate_reset_certainty();
+    memset(&mesh_certificate_clock, 0, sizeof mesh_certificate_clock);
+    mesh_certificate_generation = 0;
+    mesh_verified_seconds = 0;
+    mesh_verified_monotonic_us = 0;
+    mesh_verified_generation = 0;
     pki_public_certificate_changed();
     result = nvs_set_i64(h, "reset_pending", 1);
     if (result == ESP_OK) result = nvs_commit(h);
@@ -468,6 +478,53 @@ static int clock_floor(nvs_handle_t h, int64_t *out)
         boot_floor.loaded = true;
     }
     *out = boot_floor.high_water;
+    return 0;
+}
+/* Called only under identity_lock on the existing setup worker. The own
+ * certificate floor is added by its normal parsed-path verification. */
+static int mesh_certificate_prepare(nvs_handle_t h, uint64_t generation,
+                                     struct wendy_pki_certificate_time *out)
+{
+    int64_t saved;
+    if (!out || clock_floor(h, &saved) || saved < 0)
+        return -1;
+    int64_t monotonic = esp_timer_get_time();
+    time_t wall = time(NULL), floor = (time_t)saved;
+    if (mesh_certificate_generation == generation) {
+        time_t prior = wendy_pki_certificate_now(&mesh_certificate_clock, monotonic, wall);
+        if (prior > floor)
+            floor = prior;
+    }
+    if (wall < floor)
+        wall = floor;
+    if (wall <= 0)
+        wall = 1; /* The parsed own certificate supplies the authenticated floor. */
+    *out = (struct wendy_pki_certificate_time){.seconds = wall, .floor = floor,
+        .monotonic_us = monotonic,
+        .uncertain = wendy_pki_certificate_generation_uncertain(generation),
+        .follow_certainty = true, .generation = generation};
+    return 0;
+}
+static void mesh_certificate_remember(uint64_t generation,
+                                       const struct wendy_pki_certificate_time *clock)
+{
+    mesh_certificate_clock = *clock;
+    mesh_certificate_generation = generation;
+    pki_clock_observation_publish_clock(generation, clock);
+}
+static int mesh_certificate_sync(struct wendy_pki_mesh_identity *identity, time_t when,
+                                  int64_t monotonic)
+{
+    time_t previous = wendy_pki_certificate_now(&identity->certificate_time, monotonic, time(NULL));
+    if (previous <= 0 || when <= 0)
+        return -1;
+    if (when > previous)
+        previous = when;
+    identity->certificate_time.seconds = previous;
+    identity->certificate_time.floor = previous;
+    identity->certificate_time.monotonic_us = monotonic;
+    identity->certificate_time.uncertain = false;
+    mesh_certificate_remember(identity->config_generation, &identity->certificate_time);
     return 0;
 }
 static int set_floor(nvs_handle_t h, time_t value)
@@ -608,15 +665,30 @@ static int refresh_time_source(nvs_handle_t h, const char *url,
     int64_t floor = 0;
     time_t when = 0;
     int result = -1;
+    bool direct_https = !stream && !magic;
+    struct pki_clock_observation_raw before = {0}, after = {0};
     if (esp_timer_get_time() - started <= 30000000 &&
         wendy_conf_snapshot_current(data->generation) && !clock_floor(h, &floor) &&
         !wendy_pki_verify_time(response, response_size, nonce, data->tsa_roots.data,
-                               data->tsa_roots.size, floor, &when))
+                               data->tsa_roots.size, floor, &when)) {
+        if (direct_https)
+            before = pki_clock_observation_read_raw();
         result = set_floor(h, when);
+        if (direct_https && !result)
+            after = pki_clock_observation_read_raw();
+    }
     if (!result) {
         mesh_verified_seconds = when;
         mesh_verified_monotonic_us = esp_timer_get_time();
         mesh_verified_generation = data->generation;
+        wendy_pki_certificate_mark_certain(data->generation);
+        pki_clock_observation_publish_proof(data->generation, mesh_verified_seconds,
+                                            mesh_verified_monotonic_us);
+        if (direct_https) {
+            bool sufficient = before.valid && when > 0 && when <= INT64_MAX / INT64_C(1000000) &&
+                before.utc_us >= (int64_t)when * INT64_C(1000000);
+            pki_clock_observation_direct_apply(before, after, data->generation, sufficient);
+        }
     }
     free(response);
     return result;
@@ -1189,8 +1261,9 @@ struct wendy_pki_agent_setup {
 static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
     const struct wendy_lite_trust *trust, bool allow_device,
                                       const struct wendy_pki_stream *stream,
-                                      struct wendy_pki_agent_setup *async)
+                                      struct wendy_pki_agent_setup *async, bool mesh_scope)
 {
+    struct wendy_pki_certificate_time certificate_clock = {0};
     const char *stage = "crypto/configuration";
     int crypto_status = wendy_pki_crypto_init();
     WendyConfEnrollment cfg = WendyConfEnrollment_init_zero;
@@ -1216,7 +1289,7 @@ static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
 #else
     bool consume_native = false;
 #endif
-    if (consume_native) {
+    if (consume_native && !mesh_scope) {
         stage = "trusted clock";
         bool recent = mesh_time_recent();
         if (async && !recent) {
@@ -1332,6 +1405,8 @@ static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
         ESP_LOGE(TAG, "accepted identity key/certificate allocation or storage read failed");
         goto done;
     }
+    if (mesh_scope && mesh_certificate_prepare(h, data.generation, &certificate_clock))
+        goto done;
     if (!consume_native &&
         wendy_pki_verify_identity(cert, cert_size, data.device_roots.data, data.device_roots.size,
                                   key, key_size, principal, time(NULL), &expires))
@@ -1365,7 +1440,11 @@ static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
             .key_size = key_size,
             .certificate = (char *)cert,
             .certificate_size = cert_size,
-            .verify_at = time(NULL),
+            .verify_at = mesh_scope ? certificate_clock.seconds : time(NULL),
+            .certificate_floor = certificate_clock.floor,
+            .mesh_certificate_policy = mesh_scope,
+            .boot_uncertain = certificate_clock.uncertain,
+            .certificate_generation = data.generation,
             .trust = data.storage,
             .trust_capacity = roots_size + 1,
             .read_der = certificate_source->count ? pki_der_cache_read : NULL,
@@ -1397,6 +1476,7 @@ static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
                 *connection = NULL;
                 goto done;
             }
+            mesh_certificate_remember(data.generation, &(*connection)->certificate_time);
             async->generation = data.generation;
             async->deadline = deadline;
             if (certificate_source->count) {
@@ -1478,7 +1558,7 @@ esp_err_t wendy_pki_agent_begin(const struct wendy_pki_stream *stream,
     struct wendy_pki_agent_setup *op = pki_owned_calloc(1, sizeof *op);
     esp_err_t r = op ? ESP_ERR_INVALID_STATE : ESP_ERR_NO_MEM;
     if (op && identity_use_allowed())
-        r = accept_identity_peer(-1, &op->connection, NULL, true, stream, op);
+        r = accept_identity_peer(-1, &op->connection, NULL, true, stream, op, true);
     pthread_mutex_unlock(&identity_lock);
     if (r != ESP_OK) {
         wendy_pki_agent_dispose(op);
@@ -1568,14 +1648,35 @@ int wendy_pki_mesh_local_part(const struct wendy_pki_mesh_identity *clock, const
     pthread_mutex_unlock(&identity_lock);
     return result;
 }
+int wendy_pki_net_mesh_status(void)
+{
+    if (pthread_mutex_trylock(&identity_lock))
+        return -1;
+    char tenant[37], device[65];
+    wendy_conf_enrollment_identity(tenant, device);
+    bool available = identity_use_allowed() && wendy_conf_is_current() &&
+        wendy_identity_uuid((const unsigned char *)tenant, strlen(tenant)) &&
+        wendy_identity_uuid((const unsigned char *)device, strlen(device));
+    pthread_mutex_unlock(&identity_lock);
+    return available ? 1 : 0;
+}
+time_t wendy_pki_mesh_identity_time(const struct wendy_pki_mesh_identity *identity,
+                                    int64_t now_us)
+{
+    return identity ? wendy_pki_certificate_now(&identity->certificate_time, now_us, time(NULL)) : 0;
+}
+bool wendy_pki_mesh_identity_current(const struct wendy_pki_mesh_identity *identity,
+                                     int64_t now_us)
+{
+    if (!identity || !wendy_conf_is_current() || wendy_pki_reset_in_progress() ||
+        !wendy_conf_snapshot_current(identity->config_generation))
+        return false;
+    time_t now = wendy_pki_mesh_identity_time(identity, now_us);
+    return now > 0 && identity->certificate_expires > now;
+}
 bool wendy_pki_operator_snapshot_current(const struct wendy_pki_mesh_identity *clock)
 {
-    if (!clock || !wendy_conf_is_current() || wendy_pki_reset_in_progress() ||
-        !wendy_conf_snapshot_current(clock->config_generation))
-        return false;
-    int64_t now = esp_timer_get_time();
-    return now >= clock->verified_monotonic_us &&
-           now - clock->verified_monotonic_us < INT64_C(300000000);
+    return wendy_pki_mesh_identity_current(clock, esp_timer_get_time());
 }
 static int public_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
                                   const uint8_t *const *der, const size_t *sizes, size_t count,
@@ -1585,8 +1686,7 @@ static int public_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
         wendy_pki_reset_in_progress())
         return -1;
     int64_t monotonic = esp_timer_get_time();
-    if (monotonic < clock->verified_monotonic_us ||
-        monotonic - clock->verified_monotonic_us >= INT64_C(300000000))
+    if (!wendy_pki_mesh_identity_current(clock, monotonic))
         return -1;
     WendyConfEnrollment config = WendyConfEnrollment_init_zero;
     struct wendy_conf_enrollment_data trust = {0};
@@ -1602,12 +1702,12 @@ static int public_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
         wendy_pki_sha256(trust.device_roots.data, trust.device_roots.size, hash) ||
         memcmp(hash, clock->trust_hash, 32))
         goto done;
-    time_t now =
-        clock->verified_seconds + (monotonic - clock->verified_monotonic_us) / INT64_C(1000000);
-    result = operator ? wendy_pki_operator_chain(der, sizes, count, trust.device_roots.data,
-                                                 trust.device_roots.size, clock->tenant, now, peer)
-                      : wendy_pki_mesh_chain(der, sizes, count, trust.device_roots.data,
-                                             trust.device_roots.size, clock->tenant, now, peer);
+    time_t now = wendy_pki_mesh_identity_time(clock, monotonic);
+    struct wendy_pki_certificate_time policy = clock->certificate_time;
+    result = operator ? wendy_pki_operator_chain_policy(der, sizes, count, trust.device_roots.data,
+                        trust.device_roots.size, clock->tenant, now, &policy, peer)
+                      : wendy_pki_mesh_chain_policy(der, sizes, count, trust.device_roots.data,
+                        trust.device_roots.size, clock->tenant, now, &policy, peer);
     if (!wendy_conf_snapshot_current(trust.generation) || wendy_pki_reset_in_progress())
         result = -1;
 done:
@@ -1672,12 +1772,12 @@ static esp_err_t mesh_connect(const char *host, unsigned port, const char *route
     size_t key_size = 0, cert_size = 0;
     esp_err_t result = ESP_FAIL;
     time_t expires = 0;
+    struct wendy_pki_certificate_time certificate_clock = {0};
     const char *stage = "configuration";
 #if CONFIG_WENDY_NET_PEER
     struct pki_der_source certificate_source = {0};
     uint8_t *input_reservation = NULL;
-    bool device_only =
-        protocol && mesh_time_recent() && wendy_conf_snapshot_current(mesh_verified_generation);
+    bool device_only = protocol != NULL;
 #endif
     if (!identity_use_allowed() || !wendy_conf_is_current() || wendy_pki_crypto_init())
         goto done;
@@ -1698,7 +1798,7 @@ static esp_err_t mesh_connect(const char *host, unsigned port, const char *route
             snapshot = wendy_conf_copy_device_trust(&cfg, &data);
         }
         if (snapshot != ESP_OK || !valid_config(&cfg) ||
-            data.generation != mesh_verified_generation)
+            !wendy_conf_snapshot_current(data.generation))
             goto done;
         if (!cfg.provision_trust)
             data.device_roots =
@@ -1725,17 +1825,8 @@ static esp_err_t mesh_connect(const char *host, unsigned port, const char *route
         (router && !strcmp(cfg.device_id, router)) || open_identity(&h) != ESP_OK)
         goto done;
     opened = true;
-    stage = "trusted time";
-    bool recent = mesh_time_recent() && mesh_verified_generation == data.generation;
-    bool need_time = !recent;
-#if CONFIG_WENDY_NET_PEER
-    if (device_only && !recent)
-        goto done; /* Retry through full cold bootstrap. */
-#endif
-    if (async && need_time)
-        goto done; /* Outer driver bootstraps time separately. */
-    if (need_time && (seed_clock(h, data.signed_time, data.tsa_roots) ||
-                      refresh_time_via(h, cfg.time_url, &data, NULL)))
+    stage = "local certificate clock";
+    if (mesh_certificate_prepare(h, data.generation, &certificate_clock))
         goto done;
 #if CONFIG_WENDY_NET_PEER
     if (protocol) {
@@ -1798,8 +1889,11 @@ static esp_err_t mesh_connect(const char *host, unsigned port, const char *route
             .key_size = key_size,
             .certificate = (char *)cert,
             .certificate_size = cert_size,
-            .verify_at = mesh_verified_seconds +
-                         (esp_timer_get_time() - mesh_verified_monotonic_us) / 1000000,
+            .verify_at = certificate_clock.seconds,
+            .certificate_floor = certificate_clock.floor,
+            .mesh_certificate_policy = true,
+            .boot_uncertain = certificate_clock.uncertain,
+            .certificate_generation = data.generation,
             .trust = data.storage,
             .trust_capacity = data.device_roots.size + 1,
             /* Preserve a receive-buffer hole while placing identity objects,
@@ -1846,8 +1940,8 @@ static esp_err_t mesh_connect(const char *host, unsigned port, const char *route
         expires = (*connection)->operator_expires;
     if (!wendy_conf_is_current() || !wendy_conf_snapshot_current(data.generation) ||
         wendy_pki_reset_in_progress() ||
-        esp_timer_get_time() - mesh_verified_monotonic_us >= INT64_C(300000000) ||
-        expires <= mesh_verified_seconds + 30) {
+        expires <= wendy_pki_certificate_now(&(*connection)->certificate_time,
+                                              esp_timer_get_time(), time(NULL))) {
         wendy_pki_close(*connection);
         *connection = NULL;
         goto done;
@@ -1862,16 +1956,22 @@ static esp_err_t mesh_connect(const char *host, unsigned port, const char *route
     memcpy(identity->tenant, cfg.tenant_id, 37);
     memcpy(identity->device, cfg.device_id, 37);
     memcpy(identity->peer, (*connection)->mesh_peer, sizeof identity->peer);
+    identity->certificate_not_before = (*connection)->device_signing_not_before;
     identity->certificate_expires = expires;
-    identity->verified_seconds = mesh_verified_seconds;
-    identity->verified_monotonic_us = mesh_verified_monotonic_us;
+    identity->certificate_time = (*connection)->certificate_time;
+    mesh_certificate_remember(data.generation, &identity->certificate_time);
+    if (mesh_verified_generation == data.generation) {
+        identity->verified_seconds = mesh_verified_seconds;
+        identity->verified_monotonic_us = mesh_verified_monotonic_us;
+    }
     identity->config_generation = data.generation;
     (*connection)->device_expires = expires;
-    int64_t lifetime = expires - mesh_verified_seconds;
-    if (lifetime > 300)
-        lifetime = 300;
+    int64_t admitted_us = esp_timer_get_time();
+    int64_t lifetime = expires - wendy_pki_mesh_identity_time(identity, admitted_us);
+    if (lifetime <= 0 || lifetime > (INT64_MAX - admitted_us) / INT64_C(1000000))
+        goto done;
     (*connection)->mesh_deadline_us =
-        application ? 0 : mesh_verified_monotonic_us + lifetime * INT64_C(1000000);
+        application ? 0 : admitted_us + lifetime * INT64_C(1000000);
     if (accepted_peer)
         memcpy(accepted_peer, (*connection)->mesh_peer, 37);
 #if CONFIG_WENDY_NET_PEER
@@ -1975,8 +2075,9 @@ int wendy_pki_net_step(struct wendy_pki_net_setup *op)
         return r;
     wendy_pki_connection *c = op->connection;
     if (!wendy_conf_snapshot_current(op->identity.config_generation) ||
-        wendy_pki_reset_in_progress() || c->operator_expires <= time(NULL) ||
-        esp_timer_get_time() - op->identity.verified_monotonic_us >= INT64_C(300000000))
+        wendy_pki_reset_in_progress() ||
+        !wendy_pki_mesh_identity_current(&op->identity, esp_timer_get_time()) ||
+        c->operator_expires <= wendy_pki_mesh_identity_time(&op->identity, esp_timer_get_time()))
         return -1;
     if (c->peer_role == WENDY_PEER_ROLE_OPERATOR) {
         const uint8_t *der[8];
@@ -1995,7 +2096,8 @@ int wendy_pki_net_step(struct wendy_pki_net_setup *op)
             return -1;
         if (c->authenticated_operator->expires < c->operator_expires)
             c->operator_expires = c->authenticated_operator->expires;
-        if (pki_limit_session(c, time(NULL), esp_timer_get_time()))
+        if (pki_limit_session(c, wendy_pki_mesh_identity_time(&op->identity, esp_timer_get_time()),
+                              esp_timer_get_time()))
             return -1;
         pki_tls_net_operator_verified(c);
     }
@@ -2003,8 +2105,7 @@ int wendy_pki_net_step(struct wendy_pki_net_setup *op)
         op->identity.certificate_expires = c->operator_expires;
     memcpy(op->identity.peer, c->mesh_peer, 37);
     c->device_expires = op->identity.certificate_expires;
-    c->mesh_deadline_us =
-        op->application ? 0 : op->identity.verified_monotonic_us + INT64_C(300000000);
+    c->mesh_deadline_us = op->application ? 0 : c->session_deadline_us;
     op->complete = true;
     /* Certificate presentation has finished on this worker. Taking the ready
      * TLS context on the actor must never close even a read-only NVS handle. */
@@ -2313,8 +2414,13 @@ esp_err_t wendy_pki_net_time_reply(struct wendy_pki_mesh_identity *identity,
     mesh_verified_seconds = when;
     mesh_verified_monotonic_us = esp_timer_get_time();
     mesh_verified_generation = trust.generation;
+    wendy_pki_certificate_mark_certain(trust.generation);
+    pki_clock_observation_publish_proof(trust.generation, mesh_verified_seconds,
+                                        mesh_verified_monotonic_us);
     identity->verified_seconds = when;
     identity->verified_monotonic_us = mesh_verified_monotonic_us;
+    if (mesh_certificate_sync(identity, when, mesh_verified_monotonic_us))
+        goto done;
     result = ESP_OK;
 done:
     if (opened)
@@ -2358,6 +2464,8 @@ esp_err_t wendy_pki_net_refresh_time(struct wendy_pki_mesh_identity *identity,
         goto done;
     identity->verified_seconds = mesh_verified_seconds;
     identity->verified_monotonic_us = mesh_verified_monotonic_us;
+    if (mesh_certificate_sync(identity, mesh_verified_seconds, mesh_verified_monotonic_us))
+        goto done;
     result = ESP_OK;
 done:
     if (opened)
@@ -2411,7 +2519,7 @@ static esp_err_t accept_peer(int fd, wendy_pki_connection **connection,
     pthread_mutex_lock(&identity_lock);
     esp_err_t result = ESP_ERR_INVALID_STATE;
     if (identity_use_allowed())
-        result = accept_identity_peer(fd, connection, trust, allow_device, NULL, NULL);
+        result = accept_identity_peer(fd, connection, trust, allow_device, NULL, NULL, false);
     else close(fd);
     pthread_mutex_unlock(&identity_lock);
     return result;
@@ -2431,7 +2539,7 @@ esp_err_t wendy_pki_accept_stream(const struct wendy_pki_stream *stream,
     pthread_mutex_lock(&identity_lock);
     esp_err_t result = ESP_ERR_INVALID_STATE;
     if (identity_use_allowed())
-        result = accept_identity_peer(-1, connection, NULL, false, stream, NULL);
+        result = accept_identity_peer(-1, connection, NULL, false, stream, NULL, false);
     pthread_mutex_unlock(&identity_lock);
     return result;
 }

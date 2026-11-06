@@ -26,7 +26,6 @@ void wendy_net_app_accept(int fd);
  * Only an authenticated signed TLS endpoint with a live route is returned. */
 esp_err_t wendy_net_peer_app_endpoint(const char *peer, uint8_t address[16], uint16_t *port);
 esp_err_t wendy_net_peer_agent_endpoint(const char *peer, uint8_t address[16], uint16_t *port);
-int wendy_net_app_time_listener(void);
 int wendy_net_peer_service_catalog(unsigned operation, const void *, size_t, char *, size_t);
 
 /* Experimental optional-payload pressure relief before TLS. Runs eviction

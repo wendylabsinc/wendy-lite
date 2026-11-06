@@ -38,3 +38,8 @@ add_executable(babel_constrained_test babel_test.c)
 target_link_libraries(babel_constrained_test PRIVATE wendy_babel_constrained)
 target_compile_options(babel_constrained_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 add_test(NAME babel_constrained_core COMMAND babel_constrained_test)
+
+add_executable(babel_usable_origin_test usable_origin_test.c)
+target_link_libraries(babel_usable_origin_test PRIVATE wendy_babel)
+target_compile_options(babel_usable_origin_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME babel_usable_origin COMMAND babel_usable_origin_test)

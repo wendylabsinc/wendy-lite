@@ -11,17 +11,22 @@ static void put64(uint8_t *p, uint64_t v)
     for (unsigned i = 0; i < 8; i++)
         p[7 - i] = (uint8_t)(v >> (8 * i));
 }
-static bool receipt_pending(const struct wnr_core *c, const uint8_t address[16])
+static bool receipt_pending(const struct wnr_core *c, const uint8_t address[16], uint64_t router,
+                             uint16_t seqno)
 {
     for (const struct wnd_entry *e = c->directory.entries; e; e = e->next)
         if (!memcmp(e->address, address, 16))
-            return e->pending_receipt;
+            /* A replacement cannot lend its uncommitted CURRENT tuple to
+             * forwarding. A separately committed retained old tuple remains
+             * governed by its original proof, lease and certificate caps. */
+            return e->pending_receipt && e->manifest.origin.router_id == router &&
+                   e->manifest.origin.seqno == seqno;
     return false;
 }
 static bool allowed(void *context, uint64_t router, const struct wb_prefix *p, uint16_t seqno)
 {
     struct wnr_core *c = context;
-    return p->family == 6 && p->bits == 128 && !receipt_pending(c, p->bytes) &&
+    return p->family == 6 && p->bits == 128 && !receipt_pending(c, p->bytes, router, seqno) &&
            (wnd_authorizes(&c->directory, p->bytes, router, seqno, c->now_us) ||
             wno_authorizes(c->operators, p->bytes, router, seqno, c->now_us));
 }
@@ -177,6 +182,9 @@ static int persist(struct wnr_core *c)
 }
 static int finish(struct wnr_core *c, int result)
 {
+    /* A single actor turn may settle multiple effects. Every checkpoint,
+     * publication and send callback belongs to the non-readable phase. */
+    c->ready = false;
     if (result < 0)
         return stop(c, "babel-event", result);
     int checkpoint = persist(c);
@@ -250,6 +258,118 @@ static int pending_finish(struct wnr_core *c)
     if (!wnr_busy(c))
         return 0;
     return finish(c, 0);
+}
+void wnr_cache_route_policy(struct wnr_core *c, time_t base, int64_t now, bool uncertain)
+{
+#if WN_ROUTE_HANDOFF_ENABLED
+    if (!c || c->config.endpoint_gateway)
+        return;
+    c->config.certificate_uncertain = uncertain;
+    wnd_cache_route_policy(&c->directory, base, now, uncertain);
+    wno_cache_route_policy(c->operators, base, now, uncertain);
+#else
+    (void)c; (void)base; (void)now; (void)uncertain;
+#endif
+}
+void wnr_route_policy(struct wnr_core *c, time_t base, int64_t now, bool uncertain)
+{
+#if WN_ROUTE_HANDOFF_ENABLED
+    if (!c || c->config.endpoint_gateway)
+        return;
+    c->config.certificate_uncertain = uncertain;
+    wnd_refresh_route_policy(&c->directory, base, now, uncertain);
+    wno_refresh_route_policy(c->operators, base, now, uncertain);
+#else
+    (void)c; (void)base; (void)now; (void)uncertain;
+#endif
+}
+static void current_route_policy(struct wnr_core *c)
+{
+    wnr_route_policy(c, (time_t)(c->unix_ms / 1000), c->now_us,
+#if WN_ROUTE_HANDOFF_ENABLED
+                     c->config.certificate_uncertain
+#else
+                     false
+#endif
+    );
+}
+static void cache_current_route_policy(struct wnr_core *c)
+{
+    wnr_cache_route_policy(c, (time_t)(c->unix_ms / 1000), c->now_us,
+#if WN_ROUTE_HANDOFF_ENABLED
+                           c->config.certificate_uncertain
+#else
+                           false
+#endif
+    );
+}
+/* One bounded actor transaction: a ready CURRENT candidate can retire the
+ * detached prior proof even when the prior route has the lower metric. */
+static int settle_route_handoffs(struct wnr_core *c)
+{
+#if WN_ROUTE_HANDOFF_ENABLED
+    wnr_route_policy(c, (time_t)(c->unix_ms / 1000), c->now_us,
+                     c->config.certificate_uncertain);
+    if (c->config.endpoint_gateway || wnr_busy(c))
+        return 0;
+    bool changed = false;
+    uint8_t address[16];
+    struct wn_origin current;
+    unsigned index = 0;
+    while (wnd_pending_handoff(&c->directory, index, c->now_us, address, &current)) {
+        struct wb_prefix prefix = {.family = 6, .bits = 128};
+        memcpy(prefix.bytes, address, sizeof address);
+        if (wb_has_usable_origin(&c->babel, babel_now(c), &prefix, current.router_id,
+                                  current.seqno) &&
+            wnd_complete_handoff(&c->directory, address, &current, c->now_us))
+            changed = true;
+        else
+            index++;
+    }
+    index = 0;
+    while (wno_pending_handoff(c->operators, index, c->now_us, address, &current)) {
+        struct wb_prefix prefix = {.family = 6, .bits = 128};
+        memcpy(prefix.bytes, address, sizeof address);
+        if (wb_has_usable_origin(&c->babel, babel_now(c), &prefix, current.router_id,
+                                  current.seqno) &&
+            wno_complete_handoff(c->operators, address, &current, c->now_us))
+            changed = true;
+        else
+            index++;
+    }
+    if (changed && finish(c, wb_tick(&c->babel, babel_now(c))))
+        return WB_STOPPED;
+    if (wnr_busy(c))
+        return 0;
+    /* Standard prefix requests only; the per-proof flag survives duplicate
+     * bodies. Failure leaves authority unchanged and the flag available for
+     * a later ordinary actor pass, without introducing a retry timer. */
+    bool queued = false;
+    index = 0;
+    while (wnd_pending_handoff(&c->directory, index++, c->now_us, address, &current))
+        if (wnd_handoff_request_needed(&c->directory, address, &current, c->now_us)) {
+            struct wb_prefix prefix = {.family = 6, .bits = 128};
+            memcpy(prefix.bytes, address, sizeof address);
+            if (!wb_request_prefix(&c->babel, &prefix)) {
+                wnd_handoff_requested(&c->directory, address, &current, c->now_us);
+                queued = true;
+            }
+        }
+    index = 0;
+    while (wno_pending_handoff(c->operators, index++, c->now_us, address, &current))
+        if (wno_handoff_request_needed(c->operators, address, &current, c->now_us)) {
+            struct wb_prefix prefix = {.family = 6, .bits = 128};
+            memcpy(prefix.bytes, address, sizeof address);
+            if (!wb_request_prefix(&c->babel, &prefix)) {
+                wno_handoff_requested(c->operators, address, &current, c->now_us);
+                queued = true;
+            }
+        }
+    return queued ? finish(c, 0) : 0;
+#else
+    (void)c;
+    return 0;
+#endif
 }
 int wnr_init(struct wnr_core *c, const struct wnr_config *cfg, int64_t monotonic,
              const void *journal, size_t size)
@@ -325,23 +445,27 @@ int wnr_identity(struct wnr_core *c, const struct wendy_pki_mesh_peer *peer, int
     int r = clock_at(c, unix_ms, now);
     if (r)
         return r;
+    current_route_policy(c);
     r = wnd_identity(&c->directory, peer);
+    current_route_policy(c);
     if (c->config.endpoint_gateway)
         wnd_forget_keyless(&c->directory);
     /* A replaced or shortened identity revokes old forwarding immediately. */
     if (finish(c, wnr_busy(c) ? 0 : wb_tick(&c->babel, babel_now(c))))
         return WB_STOPPED;
-    return r;
+    return settle_route_handoffs(c) ? WB_STOPPED : r;
 }
 int wnr_manifest(struct wnr_core *c, const void *data, size_t size, int64_t unix_ms, int64_t now)
 {
     int r = clock_at(c, unix_ms, now);
     if (r)
         return r;
+    cache_current_route_policy(c);
     r = wnd_accept(&c->directory, data, size, unix_ms, now);
+    current_route_policy(c);
     if (finish(c, wnr_busy(c) ? 0 : wb_tick(&c->babel, babel_now(c))))
         return WB_STOPPED;
-    return r;
+    return settle_route_handoffs(c) ? WB_STOPPED : r;
 }
 int wnr_manifest_verified(struct wnr_core *c, const void *data, size_t size, int64_t unix_ms,
                           int64_t now)
@@ -349,8 +473,12 @@ int wnr_manifest_verified(struct wnr_core *c, const void *data, size_t size, int
     int r = clock_at(c, unix_ms, now);
     if (r)
         return r;
+    cache_current_route_policy(c);
     r = wnd_accept_verified(&c->directory, data, size, unix_ms, now);
+    current_route_policy(c);
     if (finish(c, wnr_busy(c) ? 0 : wb_tick(&c->babel, babel_now(c))))
+        return WB_STOPPED;
+    if (settle_route_handoffs(c))
         return WB_STOPPED;
     return !r && !c->durable ? 4 : r;
 }
@@ -363,16 +491,24 @@ int wnr_operator_manifest_verified(struct wnr_core *c, const struct wno_manifest
     int r = clock_at(c, unix_ms, now);
     if (r)
         return r;
+    cache_current_route_policy(c);
     if (!c->operators) {
         c->operators = wendy_net_calloc(1, sizeof *c->operators);
         if (c->operators && wno_init(c->operators, c->directory.tenant, WNO_DIRECTORY_MAX))
             return -1;
     }
+#if WN_ROUTE_HANDOFF_ENABLED
+    /* The operator directory is lazy; install the current policy before its
+     * first admission, not only on the subsequent actor refresh. */
+    wno_cache_route_policy(c->operators, (time_t)(unix_ms / 1000), now,
+                             c->config.certificate_uncertain);
+#endif
     r = c->operators ? wno_accept_manifest_verified(c->operators, proof, identity, unix_ms, now)
                      : 3;
+    current_route_policy(c);
     if (finish(c, wnr_busy(c) ? 0 : wb_tick(&c->babel, babel_now(c))))
         return WB_STOPPED;
-    return r;
+    return settle_route_handoffs(c) ? WB_STOPPED : r;
 }
 static int attach(struct wnr_core *c, bool first, uint16_t cost, int64_t unix_ms, int64_t now,
                   uint64_t *id)
@@ -382,6 +518,7 @@ static int attach(struct wnr_core *c, bool first, uint16_t cost, int64_t unix_ms
     int r = clock_at(c, unix_ms, now);
     if (r)
         return r;
+    current_route_policy(c);
     if (pending_finish(c))
         return WB_STOPPED;
     if (wnr_busy(c))
@@ -423,6 +560,7 @@ int wnr_detach(struct wnr_core *c, uint64_t link, int64_t unix_ms, int64_t now)
     int r = clock_at(c, unix_ms, now);
     if (r)
         return r;
+    current_route_policy(c);
     if (pending_finish(c))
         return WB_STOPPED;
     if (wnr_busy(c)) {
@@ -433,7 +571,8 @@ int wnr_detach(struct wnr_core *c, uint64_t link, int64_t unix_ms, int64_t now)
     }
         return stop(c, "detach-bound", WB_LIMIT);
     }
-    return finish(c, wb_remove_link(&c->babel, babel_now(c), link));
+    r = finish(c, wb_remove_link(&c->babel, babel_now(c), link));
+    return r ? r : settle_route_handoffs(c);
 }
 int wnr_receive(struct wnr_core *c, uint64_t link, const void *data, size_t size, int64_t unix_ms,
                 int64_t now)
@@ -441,17 +580,21 @@ int wnr_receive(struct wnr_core *c, uint64_t link, const void *data, size_t size
     int r = clock_at(c, unix_ms, now);
     if (r)
         return r;
+    current_route_policy(c);
     if (pending_finish(c))
         return WB_STOPPED;
     if (wnr_busy(c))
         return 1; /* Caller retains this frame and pauses reads. */
-    return finish(c, wb_receive(&c->babel, babel_now(c), link, data, size));
+    r = finish(c, wb_receive(&c->babel, babel_now(c), link, data, size));
+    return r ? r : settle_route_handoffs(c);
 }
 int wnr_tick(struct wnr_core *c, int64_t unix_ms, int64_t now)
 {
     int r = clock_at(c, unix_ms, now);
     if (r)
         return r;
+    current_route_policy(c);
+    wnd_expire(&c->directory, now);
     wne_reap(&c->endpoints, now);
     wno_expire(c->operators, now);
     if (pending_finish(c))
@@ -466,7 +609,8 @@ int wnr_tick(struct wnr_core *c, int64_t unix_ms, int64_t now)
             if (r || wnr_busy(c))
                 return r;
         }
-    return finish(c, wb_tick(&c->babel, babel_now(c)));
+    r = finish(c, wb_tick(&c->babel, babel_now(c)));
+    return r ? r : settle_route_handoffs(c);
 }
 bool wnr_lookup(const struct wnr_core *c, const uint8_t address[16], int64_t now,
                 struct wb_route *out)
@@ -499,7 +643,7 @@ bool wnr_lookup(const struct wnr_core *c, const uint8_t address[16], int64_t now
     if (!route || route->unreachable || route->metric == WB_INFINITY ||
         !route_live(c, route, now) ||
         (!route->local &&
-         (receipt_pending(c, address) ||
+         (receipt_pending(c, address, route->router, route->seqno) ||
           !(wnd_authorizes(&c->directory, address, route->router, route->seqno, now) ||
             wno_authorizes(c->operators, address, route->router, route->seqno, now)))))
         return false;

@@ -116,6 +116,20 @@ int wendy_pki_mesh_local_part_snapshot(const struct wendy_pki_mesh_identity *ide
     (void)epoch;
     return wendy_pki_mesh_local_part(identity, hash, offset, out, total);
 }
+/* Fixture local clock snapshots represent already admitted certificate trust;
+ * the real policy is independently covered by PKI interoperability tests. */
+time_t wendy_pki_mesh_identity_time(const struct wendy_pki_mesh_identity *identity, int64_t now)
+{
+    time_t base = identity->certificate_time.seconds ? identity->certificate_time.seconds
+                                                     : identity->verified_seconds;
+    int64_t at = identity->certificate_time.seconds ? identity->certificate_time.monotonic_us
+                                                    : identity->verified_monotonic_us;
+    return base + (now - at) / INT64_C(1000000);
+}
+bool wendy_pki_mesh_identity_current(const struct wendy_pki_mesh_identity *identity, int64_t now)
+{
+    return identity->certificate_expires > wendy_pki_mesh_identity_time(identity, now);
+}
 #ifndef WENDY_NET_REAL_CERT_RELAY_TEST
 int wncs_read(void *s, const uint8_t hash[32], size_t offset, uint8_t out[WNCF_CHUNK],
               size_t *total)
@@ -461,7 +475,7 @@ static void origin(struct endpoint *peer, uint64_t revision)
     } else
         assert(!wnr_manifest(&peer->session->node->core, proof, (size_t)n, wall, clock_us));
 }
-static void remote_open(struct endpoint *peer, uint16_t cost)
+static void remote_open_routing(struct endpoint *peer, uint16_t cost)
 {
     struct wb_config config = {.router = 100 + peer->index,
                                .seed = peer->index,
@@ -482,6 +496,10 @@ static void remote_open(struct endpoint *peer, uint16_t cost)
     struct wb_prefix prefix = {.family = 6, .bits = 128};
     wn_address(uuid, prefix.bytes);
     remote_finish(peer, wb_originate(&peer->remote, milliseconds(), &prefix, 0));
+}
+static void remote_open(struct endpoint *peer, uint16_t cost)
+{
+    remote_open_routing(peer, cost);
     origin(peer, 1);
 }
 #if defined(WENDY_NET_ROUTE_CRYPTO_HOST_TEST)
@@ -898,6 +916,8 @@ static void operator_attachment_fixture(void)
     wnrs_close(first);
     assert(owner && owner->sessions == second);
     wnrs_close(second);
+    assert(owner && !owner->sessions);
+    wnrs_node_reset(&owner);
     assert(!owner);
 #endif
 }
@@ -1109,6 +1129,8 @@ static void optional_projection_fixture(void)
     }
     assert(accepted_size && node->pool.payload_bytes >= accepted_size);
     wnrs_close(session);
+    assert(node && !node->sessions);
+    wnrs_node_reset(&node);
     assert(!node);
 }
 /* Continuation identity follows accepted monotonic leases and signed
@@ -1230,6 +1252,313 @@ static void topology_clock_fixture(void)
     assert(topology_clock_generation(&node, 2) != generation);
     clock_us = saved_clock;
 }
+/* Use the normally authenticated peers, installed Babel FIB and signed route
+ * claims together. A live socket or a cached neighbor alone is not enough to
+ * suppress an independently available carrier. */
+static void forwarding_ready_fixture(struct wnrs *s)
+{
+    struct wnr_core *core = &s->node->core;
+    assert(wnrs_peer_forwarding_ready(s, clock_us));
+    struct wb_prefix host = {.family = 6, .bits = 128};
+    memcpy(host.bytes, s->peer_address, 16);
+    struct wb_route *route = NULL;
+    for (size_t i = 0; i < core->babel.route_count; i++)
+        if (wb_prefix_equal(&core->babel.routes[i].prefix, &host))
+            route = &core->babel.routes[i];
+    struct wb_link_state *neighbor = NULL, *other = NULL;
+    for (size_t i = 0; i < core->babel.links_capacity; i++)
+        if (core->babel.links[i].config.id == s->link)
+            neighbor = &core->babel.links[i];
+        else if (core->babel.links[i].config.id)
+            other = &core->babel.links[i];
+    struct wnd_entry *claim = NULL;
+    for (struct wnd_entry *e = core->directory.entries; e; e = e->next)
+        if (!memcmp(e->address, s->peer_address, 16))
+            claim = e;
+    assert(route && neighbor && other && claim);
+    uint64_t now_ms = (uint64_t)(clock_us - core->epoch_us) / 1000;
+    struct wb_link_state saved = *neighbor;
+    neighbor->hello_expires[0] = neighbor->hello_expires[1] = now_ms;
+    assert(!wnrs_peer_forwarding_ready(s, clock_us));
+    *neighbor = saved;
+    neighbor->ihu_expires = now_ms;
+    assert(!wnrs_peer_forwarding_ready(s, clock_us));
+    *neighbor = saved;
+    neighbor->tx = WB_INFINITY;
+    assert(!wnrs_peer_forwarding_ready(s, clock_us));
+    *neighbor = saved;
+    uint16_t sequence = claim->manifest.origin.seqno;
+    claim->manifest.origin.seqno++;
+    assert(!wnrs_peer_forwarding_ready(s, clock_us));
+    claim->manifest.origin.seqno = sequence;
+    int64_t deadline = claim->deadline_us;
+    claim->deadline_us = clock_us; /* Expiry/withdrawal invalidates current routing proof. */
+    assert(!wnrs_peer_forwarding_ready(s, clock_us));
+    claim->deadline_us = deadline;
+    uint16_t metric = route->metric;
+    route->metric = WB_INFINITY;
+    assert(!wnrs_peer_forwarding_ready(s, clock_us));
+    route->metric = metric;
+    bool committed = core->ready;
+    core->ready = false; /* A computed but uncommitted route cannot veto fallback. */
+    assert(!wnrs_peer_forwarding_ready(s, clock_us));
+    core->ready = committed;
+    struct wnrs different_attachment = *s;
+    different_attachment.link = other->config.id;
+    assert(!wnrs_peer_forwarding_ready(&different_attachment, clock_us));
+    s->attached = false;
+    assert(!wnrs_peer_forwarding_ready(s, clock_us));
+    s->attached = true;
+    time_t certificate_expires = s->identity.certificate_expires;
+    s->identity.certificate_expires = 1;
+    assert(!wnrs_peer_forwarding_ready(s, clock_us));
+    s->identity.certificate_expires = certificate_expires;
+    /* Endpoint-gateway lookup deliberately synthesizes forwarding through its
+     * one neighbor, without the full signed route/neighbor checks above. */
+    bool gateway = core->config.endpoint_gateway;
+    uint64_t other_link = other->config.id;
+    core->config.endpoint_gateway = true;
+    other->config.id = 0;
+    claim->deadline_us = clock_us;
+    struct wb_route synthetic;
+    assert(wnr_lookup(core, s->peer_address, clock_us, &synthetic));
+    assert(!wnrs_peer_forwarding_ready(s, clock_us));
+    claim->deadline_us = deadline;
+    other->config.id = other_link;
+    core->config.endpoint_gateway = gateway;
+    assert(wnrs_peer_forwarding_ready(s, clock_us));
+}
+#if !WENDY_NET_NON_TRANSIT
+#if WN_CARRIER_OBSERVATION_ENABLED
+static void carrier_observation_fixture(struct wnrs *slow, struct wnrs *fast)
+{
+    struct wnr_core *core = &slow->node->core;
+    struct wb_prefix prefix = {.family = 6, .bits = 128};
+    memcpy(prefix.bytes, slow->peer_address, 16);
+    struct wb_candidate *candidate = NULL;
+    struct wb_source *source = NULL;
+    struct wb_link_state *neighbor = NULL;
+    struct wnd_entry *proof = NULL;
+    struct wb_route *selected = NULL;
+    for (size_t i = 0; i < core->babel.candidates_capacity; i++) {
+        struct wb_candidate *row = &core->babel.candidates[i];
+        if (row->used && row->route.link == slow->link &&
+            wb_prefix_equal(&row->route.prefix, &prefix))
+            candidate = row;
+    }
+    assert(candidate);
+    for (size_t i = 0; i < core->babel.sources_capacity; i++) {
+        struct wb_source *row = &core->babel.sources[i];
+        if (row->used && row->router == candidate->route.router &&
+            wb_prefix_equal(&row->prefix, &prefix))
+            source = row;
+    }
+    for (size_t i = 0; i < core->babel.links_capacity; i++)
+        if (core->babel.links[i].config.id == slow->link)
+            neighbor = &core->babel.links[i];
+    for (struct wnd_entry *row = core->directory.entries; row; row = row->next)
+        if (!memcmp(row->address, slow->peer_address, 16))
+            proof = row;
+    for (size_t i = 0; i < core->babel.route_count; i++)
+        if (wb_prefix_equal(&core->babel.routes[i].prefix, &prefix))
+            selected = &core->babel.routes[i];
+    assert(source && neighbor && proof && selected && selected->link == fast->link);
+    uint64_t ms = (uint64_t)(clock_us - core->epoch_us) / 1000;
+    struct wn_carrier_observation row;
+    struct wb_engine before = core->babel;
+    size_t memory = wnr_memory(core) + wg_memory(&slow->node->pool);
+    assert(wnrs_carrier_observation(slow, clock_us, &row));
+    assert(row.current_identity && row.candidate && row.authorized && row.feasible &&
+           row.twoway && row.usable && row.link == slow->link &&
+           row.selected_link == fast->link && row.origin == candidate->route.router &&
+           row.sequence == candidate->route.seqno && row.metric == WNR_BLE_COST &&
+           row.advertised == 0 && row.candidate_expires_us > clock_us &&
+           row.proof_expires_us > clock_us && row.sampled_us == clock_us);
+    assert(!memcmp(&before, &core->babel, sizeof before));
+
+    /* Another carrier's usable candidate cannot establish this exact link's
+     * readiness, even though the existing any-link handoff query succeeds. */
+    assert(wb_has_usable_origin(&core->babel, ms, &prefix,
+                                candidate->route.router, candidate->route.seqno));
+    uint64_t wrong_link = core->babel.last_link + 1;
+    assert(!wb_link_has_usable_origin(&core->babel, ms, wrong_link, &prefix,
+                                      candidate->route.router, candidate->route.seqno));
+    uint64_t link = slow->link;
+    slow->link = wrong_link;
+    assert(wnrs_carrier_observation(slow, clock_us, &row) && !row.candidate && !row.usable);
+    slow->link = link;
+
+    uint64_t expires = candidate->expires;
+    candidate->expires = ms;
+    assert(wb_has_usable_origin(&core->babel, ms, &prefix,
+                                candidate->route.router, candidate->route.seqno));
+    assert(wnrs_carrier_observation(slow, clock_us, &row) && row.candidate &&
+           !row.feasible && !row.usable && row.candidate_expires_us == clock_us);
+    candidate->expires = expires;
+
+    uint16_t advertised = candidate->advertised, feasible_metric = source->metric;
+    candidate->advertised = source->metric = 128;
+    assert(wb_has_usable_origin(&core->babel, ms, &prefix,
+                                candidate->route.router, candidate->route.seqno));
+    assert(wnrs_carrier_observation(slow, clock_us, &row) && row.authorized &&
+           row.twoway && !row.feasible && !row.usable);
+    candidate->advertised = advertised;
+    source->metric = feasible_metric;
+
+    uint64_t ihu_expires = neighbor->ihu_expires;
+    neighbor->ihu_expires = ms;
+    assert(wnrs_carrier_observation(slow, clock_us, &row) && !row.twoway && !row.usable);
+    neighbor->ihu_expires = ihu_expires;
+    int64_t deadline = proof->deadline_us;
+    proof->deadline_us = clock_us;
+    assert(wnrs_carrier_observation(slow, clock_us, &row) && !row.authorized &&
+           !row.usable && row.proof_expires_us <= clock_us);
+    proof->deadline_us = deadline;
+    bool pending = proof->pending_receipt;
+    proof->pending_receipt = true;
+    assert(wnrs_carrier_observation(slow, clock_us, &row) && !row.authorized && !row.usable);
+    proof->pending_receipt = pending;
+    time_t identity_expires = slow->identity.certificate_expires;
+    slow->identity.certificate_expires = 1;
+    assert(wnrs_carrier_observation(slow, clock_us, &row) && !row.current_identity && !row.usable);
+    slow->identity.certificate_expires = identity_expires;
+
+    /* Read the current installed projection every time, not a remembered
+     * selected-link diagnostic from an earlier actor turn. */
+    selected->link = slow->link;
+    assert(wnrs_carrier_observation(slow, clock_us, &row) && row.usable &&
+           row.selected_link == slow->link);
+    selected->link = fast->link;
+    assert(wnrs_carrier_observation(fast, clock_us, &row) && row.usable &&
+           row.selected_link == fast->link && row.link == fast->link && row.metric == WNR_LAN_COST);
+    assert(wnrs_carrier_observation(slow, clock_us, &row) && row.usable &&
+           row.selected_link == fast->link);
+    assert(!memcmp(&before, &core->babel, sizeof before));
+    assert(wnr_memory(core) + wg_memory(&slow->node->pool) == memory);
+    puts("carrier observation distinguishes exact warm candidate from selected route");
+}
+#endif
+static void reclaim_transit_update(struct endpoint *carrier, const uint8_t address[16],
+                                    uint16_t metric)
+{
+    struct wb_message update = {.type = WB_UPDATE,
+                                .prefix = {.family = 6, .bits = 128},
+                                .router = 102,
+                                .seqno = 0,
+                                .metric = metric,
+                                .interval = 400};
+    memcpy(update.prefix.bytes, address, 16);
+    uint8_t packet[WB_PACKET_MAX] = {42, 2};
+    size_t size = wb_encode(&update, packet + 4, sizeof packet - 4);
+    packet[2] = (uint8_t)(size >> 8);
+    packet[3] = (uint8_t)size;
+    assert(size && !wnrs_routing(carrier->session, packet, size + 4));
+    drain();
+}
+/* A faster carrier may have learned its neighbor before that neighbor sends
+ * its complete routing update. Exercise that interval with authenticated
+ * same-peer sessions, real signed origins and normal encoded Babel updates. */
+static void reclaim_transit_fixture(const struct wendy_pki_mesh_identity *identity,
+                                     wendy_pki_connection *connection,
+                                     const struct wendy_pki_mesh_peer *transit_identity)
+{
+    struct wnrs_node *node = NULL;
+    struct endpoint slow = {.index = 1}, fast = {.index = 1};
+    assert(!wnrs_open(&slow.session, &node, connection, identity, ids[1], WNR_BLE_COST,
+                      send_frame, &slow));
+    remote_open(&slow, WNR_BLE_COST);
+    drain();
+    for (unsigned step = 0; step < 20; step++) {
+        clock_us += 100000;
+        remote_finish(&slow, wb_tick(&slow.remote, milliseconds()));
+        assert(!wnrs_tick(slow.session));
+        drain();
+    }
+    assert(wnrs_peer_forwarding_ready(slow.session, clock_us));
+    assert(!wnrs_reclaim_idle(slow.session, clock_us));
+
+    /* The next-hop peer relays another device's authorized /128. */
+    assert(!wnr_identity(&node->core, transit_identity, node_unix(node), clock_us));
+    struct endpoint transit = {.session = slow.session, .index = 2,
+                               .remote = {.config.router = 102, .seqno = 0}};
+    origin(&transit, 1);
+    uint8_t uuid[16], address[16];
+    assert(!wn_uuid_parse(ids[2], uuid));
+    wn_address(uuid, address);
+    reclaim_transit_update(&slow, address, 128);
+    struct wb_route installed;
+    assert(wnr_lookup(&node->core, address, clock_us, &installed));
+    assert(installed.link == slow.session->link);
+
+    assert(!wnrs_open(&fast.session, &node, connection, identity, ids[1], WNR_LAN_COST,
+                      send_frame, &fast));
+    remote_open_routing(&fast, WNR_LAN_COST);
+    origin(&fast, 2);
+    drain();
+    for (unsigned step = 0; step < 20; step++) {
+        clock_us += 100000;
+        remote_finish(&slow, wb_tick(&slow.remote, milliseconds()));
+        remote_finish(&fast, wb_tick(&fast.remote, milliseconds()));
+        assert(!wnrs_tick(slow.session) && !wnrs_tick(fast.session));
+        drain();
+    }
+    assert(wnrs_peer_forwarding_ready(fast.session, clock_us));
+    assert(wnr_lookup(&node->core, address, clock_us, &installed));
+    assert(installed.link == slow.session->link);
+    assert(!wnrs_reclaim_idle(slow.session, clock_us));
+
+    /* The normal complete update primes the transit prefix on the faster
+     * carrier too. Only then does the slower carrier own no installed route. */
+    reclaim_transit_update(&fast, address, 0);
+    assert(wnr_lookup(&node->core, address, clock_us, &installed));
+    assert(installed.link == fast.session->link);
+    assert(wnrs_peer_forwarding_ready(fast.session, clock_us));
+    assert(wnrs_reclaim_idle(slow.session, clock_us));
+#if WN_CARRIER_OBSERVATION_ENABLED
+    carrier_observation_fixture(slow.session, fast.session);
+#endif
+
+    size_t memory = wnr_memory(&node->core) + wg_memory(&node->pool);
+    struct wb_engine before = node->core.babel;
+    for (unsigned i = 0; i < 10; i++)
+        assert(wnrs_reclaim_idle(slow.session, clock_us));
+    assert(!memcmp(&before, &node->core.babel, sizeof before));
+    assert(wnr_memory(&node->core) + wg_memory(&node->pool) == memory);
+    struct wnrs copied = *slow.session;
+    assert(!wnrs_reclaim_idle(&copied, clock_us));
+    slow.session->attached = false;
+    assert(!wnrs_reclaim_idle(slow.session, clock_us));
+    slow.session->attached = true;
+    node->core.ready = false;
+    assert(!wnrs_reclaim_idle(slow.session, clock_us));
+    node->core.ready = true;
+    node->core.stopped = true;
+    assert(!wnrs_reclaim_idle(slow.session, clock_us));
+    node->core.stopped = false;
+    node->core.config.endpoint_gateway = true;
+    assert(!wnrs_reclaim_idle(slow.session, clock_us));
+    node->core.config.endpoint_gateway = false;
+    node->core.babel.pending = 1;
+    assert(!wnrs_reclaim_idle(slow.session, clock_us));
+    node->core.babel.pending = before.pending;
+    assert(!wnrs_reclaim_idle(slow.session, node->core.now_us - 1));
+    time_t expires = slow.session->identity.certificate_expires;
+    slow.session->identity.certificate_expires = 1;
+    assert(!wnrs_reclaim_idle(slow.session, clock_us));
+    slow.session->identity.certificate_expires = expires;
+    assert(wnrs_reclaim_idle(slow.session, clock_us));
+    wnrs_close(slow.session);
+    slow.session = NULL;
+    wnrs_close(fast.session);
+    fast.session = NULL;
+    drain();
+    wnrs_node_reset(&node);
+    assert(!node);
+    wb_deinit(&slow.remote);
+    wb_deinit(&fast.remote);
+    puts("reclaim waits for installed transit routes to move to the faster carrier");
+}
+#endif
 int main(int argc, char **argv)
 {
     /* The actor exists before its first authenticated carrier and after the
@@ -1314,6 +1643,8 @@ int main(int argc, char **argv)
     assert(!opens && !commits && peers[0].session->node == peers[1].session->node);
     assert(!node->core.checkpoint && !node->core.checkpoint_capacity);
     assert(wnrs_link_id(peers[0].session) != wnrs_link_id(peers[1].session));
+    assert(!wnrs_peer_forwarding_ready(peers[0].session, clock_us));
+    assert(!wnrs_peer_forwarding_ready(peers[1].session, clock_us));
     remote_open(&peers[0], FIRST_LINK_COST);
     remote_open(&peers[1], WNR_BLE_COST);
     drain();
@@ -1325,6 +1656,8 @@ int main(int argc, char **argv)
         }
         drain();
     }
+    forwarding_ready_fixture(peers[0].session);
+    forwarding_ready_fixture(peers[1].session);
     /* The live actor projection remains bounded, allocation-free and stable
      * across ordinary timer work; structural edits invalidate old cursors. */
     size_t topology_before = wnr_memory(&node->core) + wg_memory(&node->pool);
@@ -1418,24 +1751,26 @@ int main(int argc, char **argv)
     drain();
     wnrs_close(peers[1].session);
     peers[1].session = NULL;
-    assert(!node && !opens && !closes && !commits);
+    assert(node && !node->sessions && !opens && !closes && !commits);
     drain();
     uint64_t previous_router = fixture_router, previous_revision = fixture_revision;
     assert(!wnrs_open(&peers[0].session, &node, &connections[0], &identity, ids[1], FIRST_LINK_COST,
                       send_frame, &peers[0]));
-    assert(node->certificates.baseline_index_enabled && !node->certificates.baseline_index.count);
-    assert(!node->certificates.baseline_current(node->certificates.baseline_context,
-                                                &node->certificates.baseline_index));
-    assert(node->core.babel.config.router != previous_router);
-    assert(fixture_revision > previous_revision && node->core.directory.count == 1);
+    assert(node->certificates.baseline_index_enabled && node->certificates.baseline_index.count);
+    assert(node->core.babel.config.router == previous_router);
+    assert(fixture_revision > previous_revision && node->core.directory.count == 2);
     assert(!node->core.checkpoint && !node->core.checkpoint_capacity);
     wnrs_close(peers[0].session);
     peers[0].session = NULL;
+    wnrs_node_reset(&node);
     assert(!node);
     drain();
     assert(!opens && !closes && !commits && !journal_size && !service_journal_size);
     for (unsigned i = 0; i < 2; i++)
         wb_deinit(&peers[i].remote);
+#if !WENDY_NET_NON_TRANSIT
+    reclaim_transit_fixture(&identity, &connections[0], &connections[1].peer);
+#endif
     topology_clock_fixture();
     optional_projection_fixture();
     operator_attachment_fixture();

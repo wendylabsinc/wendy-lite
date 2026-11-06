@@ -60,6 +60,11 @@ struct wendy_pki_connection
     struct wendy_pki_stream stream;
     enum wendy_peer_role peer_role;
     uint8_t device_hash[32], operator_hash[32], operator_spki_hash[32];
+    struct wendy_pki_certificate_time certificate_time;
+    bool mesh_certificate_policy;
+    time_t device_not_before, operator_not_before;
+    time_t device_signing_not_before, operator_signing_not_before;
+    time_t operator_issuer_not_before;
     time_t device_expires, operator_expires;
     int64_t relay_expires_us;
     /* Full local/remote certificate path lifetime, independent of wall-clock
@@ -113,16 +118,18 @@ static inline int pki_net_apply_time(wendy_pki_connection *c,
         now - identity->verified_monotonic_us >= INT64_C(300000000))
         return -1;
     int64_t lifetime = identity->certificate_expires - identity->verified_seconds;
-    if (lifetime <= 30)
-        return -1;
-    if (lifetime > 300)
-        lifetime = 300;
-    if (identity->verified_monotonic_us > INT64_MAX - lifetime * INT64_C(1000000))
+    if (lifetime <= 0 || lifetime >
+        (INT64_MAX - identity->verified_monotonic_us) / INT64_C(1000000))
         return -1;
     int64_t deadline = identity->verified_monotonic_us + lifetime * INT64_C(1000000);
-    if (now >= deadline)
+    if (deadline <= now)
         return -1;
-    c->mesh_deadline_us = deadline;
+    if (c->session_deadline_us && deadline > c->session_deadline_us)
+        deadline = c->session_deadline_us;
+    if (deadline < c->mesh_deadline_us)
+        c->mesh_deadline_us = deadline;
+    c->certificate_time = identity->certificate_time;
+
     return 0;
 }
 int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t key_size,
@@ -194,6 +201,9 @@ struct pki_tls_owned_identity {
     size_t trust_capacity;
     /* Nonzero requests full verification of the consumed parsed identity. */
     time_t verify_at;
+    time_t certificate_floor;
+    bool mesh_certificate_policy, boot_uncertain;
+    uint64_t certificate_generation;
     /* Allocate final-sized receive storage before small certificate objects
      * fragment the heap. Zero selects the native device-chain reservation. */
     size_t input_reserve;

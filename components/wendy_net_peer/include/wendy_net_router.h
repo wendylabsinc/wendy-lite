@@ -22,6 +22,9 @@ struct wnr_config {
     /* Single authenticated neighbour is the gateway for mesh addresses.
      * Retain local origin publication, not a remote per-origin routing table. */
     bool endpoint_gateway;
+#if WN_ROUTE_HANDOFF_ENABLED
+    bool certificate_uncertain; /* Scoped local certificate policy, not public time. */
+#endif
     void *context;
     /* Optional checkpoint adapter for portable fixtures. NULL commits only to
      * bounded live RAM without allocating serialized history. Firmware uses
@@ -78,6 +81,12 @@ int wnr_detach(struct wnr_core *, uint64_t link, int64_t unix_ms, int64_t monoto
 int wnr_receive(struct wnr_core *, uint64_t link, const void *, size_t, int64_t unix_ms,
                 int64_t monotonic_us);
 int wnr_tick(struct wnr_core *, int64_t unix_ms, int64_t monotonic_us);
+/* Actor updates detached route-certificate bounds before admission/expiry.
+ * This records no fresh public-time assertion and never extends an old cap. */
+void wnr_route_policy(struct wnr_core *, time_t base, int64_t monotonic_us, bool uncertain);
+/* Fresh policy inputs for an atomic admission; the admission applies them to
+ * all resulting proofs before any route selection/output. No pruning here. */
+void wnr_cache_route_policy(struct wnr_core *, time_t base, int64_t monotonic_us, bool uncertain);
 /* Copies only a committed, presently authorized IPv6 /128 route. */
 bool wnr_lookup(const struct wnr_core *, const uint8_t address[16], int64_t monotonic_us,
                 struct wb_route *);

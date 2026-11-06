@@ -3,6 +3,9 @@
 #include "wendy_com_stdio.h"
 #include "wendy_com_link.h"
 #include "wendy_com_cmd.h"
+#if CONFIG_WENDY_PKI
+#include "wendy_pki_clock_observation.h"
+#endif
 #include <stdbool.h>
 #include <stdatomic.h>
 
@@ -28,6 +31,9 @@ void wcom_set_sensor_link_delegate(const struct wcom_sensor_link_delegate *deleg
 void wcom_start(void)
 {
     wcom_stdio_init();
+#if CONFIG_WENDY_PKI
+    wendy_pki_clock_observe_console_ready();
+#endif
     wcom_core_init();
     wcom_agent_init();
 

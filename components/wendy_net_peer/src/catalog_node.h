@@ -15,7 +15,10 @@ int wnsc_open(struct wnsc_node **, const struct wnsc_config *);
 void wnsc_close(struct wnsc_node *);
 int wnsc_publish(struct wnsc_node *, struct wns_record *, const char *const *, int64_t, uint64_t);
 size_t wnsc_memory(const struct wnsc_node *);
+/* Local lifecycle/browse clocks are monotonic microseconds, not wall time. */
 void wnsc_prune(struct wnsc_node *, int64_t);
+/* Revoke derived foreign claims without removing local listener intent. */
+void wnsc_revoke_owner(struct wnsc_node *, const uint8_t device[16]);
 int wnsc_browse(struct wnsc_node *, const char *, int64_t, char *, size_t);
 int wnsc_browse_endpoints(struct wnsc_node *, const char *, int64_t, char *, size_t);
 #define WNS_GUEST_APP_ID "sh.wendy.lite.app"
@@ -33,9 +36,10 @@ void wnsc_guest_clear(struct wnsc_registry **);
 bool wnsc_ready(const struct wnsc_node *, const uint8_t device[16]);
 void wnsc_browse_demand(struct wnsc_node *, uint64_t);
 int wnsc_services_write(const struct wnsc_node *, char *, size_t);
+/* Caller has admitted this revision and supplies its original local deadline. */
 int wnsc_manifest_services(struct wnsc_node *, const struct wn_doc *, unsigned, const uint8_t[16],
-                           uint64_t, int64_t, int64_t, bool);
+                           uint64_t, int64_t, int64_t, int64_t, bool);
 int wnsc_manifest_publish(struct wnsc_node *, struct wns_record *, const char *const *);
 int wnsc_entry_record(const struct wnsc_node *, const struct wns_entry *, int64_t,
                       struct wns_record *);
-void wnsc_manifest_committed(struct wnsc_node *, uint64_t, int64_t, int64_t);
+void wnsc_manifest_committed(struct wnsc_node *, uint64_t, int64_t, int64_t, int64_t);

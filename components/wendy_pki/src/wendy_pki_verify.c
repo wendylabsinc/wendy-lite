@@ -397,7 +397,9 @@ static int cert_time(const mbedtls_x509_time *t, time_t *out)
 struct verification_time {
     time_t now;
     const mbedtls_x509_crt *anchors;
-    time_t expires;
+    time_t not_before, issuer_not_before, expires;
+    bool mesh_policy;
+    const struct wendy_pki_certificate_time *policy;
 };
 static bool valid_at(const mbedtls_x509_crt *cert, time_t now)
 {
@@ -415,15 +417,29 @@ static int verify_at(void *context, mbedtls_x509_crt *cert, int depth, uint32_t 
         if (a->raw.len == cert->raw.len && !memcmp(a->raw.p, cert->raw.p, a->raw.len))
             anchor = true;
     if (wendy_pki_certificate_policy(cert, anchor)) *flags |= MBEDTLS_X509_BADCERT_OTHER;
-    // Replace only wall-clock date flags with checks at the authenticated time.
+    /* Replace date flags only; trust, constraints and signatures remain mandatory. */
     *flags &= ~(MBEDTLS_X509_BADCERT_EXPIRED | MBEDTLS_X509_BADCERT_FUTURE);
-    if (cert_time(&cert->valid_from, &start) || start > now) *flags |= MBEDTLS_X509_BADCERT_FUTURE;
-    if (cert_time(&cert->valid_to, &end) || end <= now) *flags |= MBEDTLS_X509_BADCERT_EXPIRED;
-    else if (!verification->expires || end < verification->expires) verification->expires=end;
+    if (cert_time(&cert->valid_from, &start) || cert_time(&cert->valid_to, &end))
+        *flags |= MBEDTLS_X509_BADCERT_OTHER;
+    else {
+        bool dates = verification->mesh_policy
+            ? wendy_pki_certificate_dates(start, end, depth == 0, now,
+                                            wendy_pki_certificate_is_uncertain(verification->policy))
+            : start <= now && end > now;
+        if (!dates)
+            *flags |= start > now ? MBEDTLS_X509_BADCERT_FUTURE : MBEDTLS_X509_BADCERT_EXPIRED;
+        if (start > verification->not_before)
+            verification->not_before = start;
+        if (depth > 0 && start > verification->issuer_not_before)
+            verification->issuer_not_before = start;
+        if (!verification->expires || end < verification->expires)
+            verification->expires = end;
+    }
     return 0;
 }
 static int verify_chain_parsed(mbedtls_x509_crt *leaf, mbedtls_x509_crt **certs, int count,
-    mbedtls_x509_crt *anchors, time_t now, time_t *expires)
+    mbedtls_x509_crt *anchors, time_t now, const struct wendy_pki_certificate_time *policy,
+    time_t *not_before, time_t *issuer_not_before, time_t *expires)
 {
     if (!leaf || count < 1 || count > 8)
         return -1;
@@ -470,7 +486,8 @@ static int verify_chain_parsed(mbedtls_x509_crt *leaf, mbedtls_x509_crt **certs,
         saved_next[i] = path[i]->next;
         path[i]->next = i + 1 < path_count ? path[i + 1] : NULL;
     }
-    struct verification_time verification = {.now = now, .anchors = valid[0]};
+    struct verification_time verification = {.now = now, .anchors = valid[0],
+        .policy = policy, .mesh_policy = policy != NULL};
     uint32_t flags = 0;
     int verified =
         mbedtls_x509_crt_verify_with_profile(leaf, valid[0], NULL, wendy_pki_certificate_profile(),
@@ -481,12 +498,18 @@ static int verify_chain_parsed(mbedtls_x509_crt *leaf, mbedtls_x509_crt **certs,
         valid[i]->next = anchor_next[i];
     if (verified || flags)
         return -1;
+    if (not_before)
+        *not_before = verification.not_before;
+    if (issuer_not_before)
+        *issuer_not_before = verification.issuer_not_before;
     if (expires)
         *expires = verification.expires;
     return 0;
 }
 static int verify_chain(mbedtls_x509_crt *leaf, mbedtls_x509_crt **certs, int count,
-    const uint8_t *roots, size_t size, time_t now, time_t *expires)
+    const uint8_t *roots, size_t size, time_t now,
+    const struct wendy_pki_certificate_time *policy, time_t *not_before,
+    time_t *issuer_not_before, time_t *expires)
 {
     if (!roots || !size || size > 16384)
         return -1;
@@ -496,7 +519,7 @@ static int verify_chain(mbedtls_x509_crt *leaf, mbedtls_x509_crt **certs, int co
     mbedtls_x509_crt_init(&anchors);
     int result = pki_parse_certificate_bundle(&anchors, roots, size, true)
                      ? -1
-                     : verify_chain_parsed(leaf, certs, count, &anchors, now, expires);
+                     : verify_chain_parsed(leaf, certs, count, &anchors, now, policy, not_before, issuer_not_before, expires);
     mbedtls_x509_crt_free(&anchors);
     return result;
 }
@@ -663,7 +686,7 @@ static int verify_time_direct(const uint8_t *input, size_t size, const uint8_t n
     if (tst.n && tst.p[0] == 0xa0)
         REQUIRE(!take(&tst, 0xa0, &tmp));
     REQUIRE(!tst.n);
-    REQUIRE(!verify_chain(certs[signer_index], certs, count, roots, roots_size, when, NULL));
+    REQUIRE(!verify_chain(certs[signer_index], certs, count, roots, roots_size, when, NULL, NULL, NULL, NULL));
     *verified_time = when;
     result = 0;
 done:
@@ -706,9 +729,10 @@ int pki_key_encoding(const uint8_t *key, size_t key_size)
     der key_der = {key, key, key_size, key_size, 0}, sequence;
     return take(&key_der, 0x30, &sequence) || key_der.n ? -1 : 0;
 }
-int pki_verify_parsed_identity(mbedtls_x509_crt *chain, mbedtls_pk_context *key,
+int pki_verify_parsed_identity_policy(mbedtls_x509_crt *chain, mbedtls_pk_context *key,
                                const uint8_t *roots, size_t roots_size, mbedtls_x509_crt *anchors,
-                               const char *principal, time_t now, time_t *expires)
+                               const char *principal, time_t now, const struct wendy_pki_certificate_time *policy,
+                               time_t *not_before, time_t *expires)
 {
     if (!chain || !key || !roots || !roots_size || !principal || !expires)
         return -1;
@@ -725,8 +749,8 @@ int pki_verify_parsed_identity(mbedtls_x509_crt *chain, mbedtls_pk_context *key,
         certs[count++] = c;
     }
     int verified = anchors
-                       ? verify_chain_parsed(chain, certs, count, anchors, now, &chain_expires)
-                       : verify_chain(chain, certs, count, roots, roots_size, now, &chain_expires);
+                       ? verify_chain_parsed(chain, certs, count, anchors, now, policy, not_before, NULL, &chain_expires)
+                       : verify_chain(chain, certs, count, roots, roots_size, now, policy, not_before, NULL, &chain_expires);
     if (!count || verified || chain->MBEDTLS_PRIVATE(ca_istrue) ||
         !has_eku(chain, MBEDTLS_OID_CLIENT_AUTH, MBEDTLS_OID_SIZE(MBEDTLS_OID_CLIENT_AUTH)) ||
         !has_eku(chain, MBEDTLS_OID_SERVER_AUTH, MBEDTLS_OID_SIZE(MBEDTLS_OID_SERVER_AUTH)) ||
@@ -736,6 +760,13 @@ int pki_verify_parsed_identity(mbedtls_x509_crt *chain, mbedtls_pk_context *key,
     if (chain_expires < *expires)
         *expires = chain_expires;
     return 0;
+}
+int pki_verify_parsed_identity(mbedtls_x509_crt *chain, mbedtls_pk_context *key,
+    const uint8_t *roots, size_t roots_size, mbedtls_x509_crt *anchors,
+    const char *principal, time_t now, time_t *expires)
+{
+    return pki_verify_parsed_identity_policy(chain, key, roots, roots_size, anchors,
+                                             principal, now, NULL, NULL, expires);
 }
 static int verify_identity_direct(const uint8_t *pem, size_t size, const uint8_t *roots,
                                   size_t roots_size, const uint8_t *key, size_t key_size,
@@ -761,7 +792,8 @@ done:
 
 static int mesh_chain(const uint8_t *const *data, const size_t *sizes, size_t count,
                       const uint8_t *roots, size_t roots_size, mbedtls_x509_crt *anchors,
-                      const char *tenant, time_t now, struct wendy_pki_mesh_peer *out)
+                      const char *tenant, time_t now, const struct wendy_pki_certificate_time *policy,
+                      struct wendy_pki_mesh_peer *out)
 {
     if (!data || !sizes || !count || count > 8 || ((!roots || !roots_size) && !anchors) ||
         !tenant || !wendy_identity_uuid((const unsigned char *)tenant, strlen(tenant)) || !out ||
@@ -786,9 +818,10 @@ static int mesh_chain(const uint8_t *const *data, const size_t *sizes, size_t co
     }
     mbedtls_x509_crt* leaf = certs[0];
     int verified =
-        anchors ? verify_chain_parsed(leaf, certs, (int)count, anchors, now, &peer->expires)
-                : verify_chain(leaf, certs, (int)count, roots, roots_size, now, &peer->expires);
-    if (verified || wendy_peer_auth_role(leaf, tenant) != WENDY_PEER_ROLE_DEVICE ||
+        anchors ? verify_chain_parsed(leaf, certs, (int)count, anchors, now, policy, &peer->not_before, &peer->issuer_not_before, &peer->expires)
+                : verify_chain(leaf, certs, (int)count, roots, roots_size, now, policy, &peer->not_before, &peer->issuer_not_before, &peer->expires);
+    if (verified || cert_time(&leaf->valid_from, &peer->signing_not_before) ||
+        wendy_peer_auth_role(leaf, tenant) != WENDY_PEER_ROLE_DEVICE ||
         !has_eku(leaf, MBEDTLS_OID_SERVER_AUTH, MBEDTLS_OID_SIZE(MBEDTLS_OID_SERVER_AUTH)) ||
         peer->expires <= now)
         goto done;
@@ -902,15 +935,27 @@ int wendy_pki_mesh_chain(const uint8_t *const *data, const size_t *sizes, size_t
                          const uint8_t *roots, size_t roots_size, const char *tenant, time_t now,
     struct wendy_pki_mesh_peer *peer)
 {
-    return mesh_chain(data, sizes, count, roots, roots_size, NULL, tenant, now, peer);
+    return mesh_chain(data, sizes, count, roots, roots_size, NULL, tenant, now, NULL, peer);
 }
 int pki_mesh_chain_anchors(const uint8_t *const *data, const size_t *sizes, size_t count,
                            mbedtls_x509_crt *anchors, const char *tenant, time_t now,
                            struct wendy_pki_mesh_peer *peer)
 {
-    return mesh_chain(data, sizes, count, NULL, 0, anchors, tenant, now, peer);
+    return mesh_chain(data, sizes, count, NULL, 0, anchors, tenant, now, NULL, peer);
 }
 
+int pki_mesh_chain_anchors_policy(const uint8_t *const *data, const size_t *sizes, size_t count,
+    mbedtls_x509_crt *anchors, const char *tenant, time_t now,
+    const struct wendy_pki_certificate_time *policy, struct wendy_pki_mesh_peer *peer)
+{
+    return mesh_chain(data, sizes, count, NULL, 0, anchors, tenant, now, policy, peer);
+}
+int wendy_pki_mesh_chain_policy(const uint8_t *const *data, const size_t *sizes, size_t count,
+    const uint8_t *roots, size_t roots_size, const char *tenant, time_t now,
+    const struct wendy_pki_certificate_time *policy, struct wendy_pki_mesh_peer *peer)
+{
+    return mesh_chain(data, sizes, count, roots, roots_size, NULL, tenant, now, policy, peer);
+}
 struct roots_cpu {
     const uint8_t *data;
     size_t size;
@@ -966,9 +1011,10 @@ int wendy_pki_verify_identity(const uint8_t *cert, size_t size, const uint8_t *r
     return wendy_pki_work_run(identity_cpu, &j) ? -1 : j.result;
 }
 
-int wendy_pki_operator_chain(const uint8_t *const *data, const size_t *sizes, size_t count,
+int wendy_pki_operator_chain_policy(const uint8_t *const *data, const size_t *sizes, size_t count,
                              const uint8_t *roots, size_t roots_size, const char *tenant,
-                             time_t now, struct wendy_pki_operator_peer *out)
+                             time_t now, const struct wendy_pki_certificate_time *policy,
+                             struct wendy_pki_operator_peer *out)
 {
     /* Reuse the actual primary verifier and its valid-at path selection. No
      * authority from the descriptor, attachment peer or Lite twin is adopted.
@@ -995,8 +1041,8 @@ int wendy_pki_operator_chain(const uint8_t *const *data, const size_t *sizes, si
     if (leaf->MBEDTLS_PRIVATE(ca_istrue) || wendy_pki_certificate_policy(leaf, false) ||
         !(leaf->MBEDTLS_PRIVATE(key_usage) & MBEDTLS_X509_KU_DIGITAL_SIGNATURE) ||
         !has_eku(leaf, MBEDTLS_OID_CLIENT_AUTH, MBEDTLS_OID_SIZE(MBEDTLS_OID_CLIENT_AUTH)) ||
-        verify_chain(leaf, certs, (int)count, roots, roots_size, now, &peer->expires) ||
-        peer->expires <= now)
+        verify_chain(leaf, certs, (int)count, roots, roots_size, now, policy, &peer->not_before, &peer->issuer_not_before, &peer->expires) ||
+        peer->expires <= now || cert_time(&leaf->valid_from, &peer->signing_not_before))
         goto done;
     unsigned uris = 0;
     for (const mbedtls_x509_sequence *a = &leaf->subject_alt_names; a && a->buf.p; a = a->next) {
@@ -1043,4 +1089,12 @@ done:
         free_cert(certs[i]);
     pki_owned_free(peer);
     return result;
+}
+
+int wendy_pki_operator_chain(const uint8_t *const *data, const size_t *sizes, size_t count,
+    const uint8_t *roots, size_t roots_size, const char *tenant, time_t now,
+    struct wendy_pki_operator_peer *out)
+{
+    return wendy_pki_operator_chain_policy(data, sizes, count, roots, roots_size, tenant,
+                                            now, NULL, out);
 }

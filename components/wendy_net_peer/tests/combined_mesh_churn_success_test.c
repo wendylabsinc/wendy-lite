@@ -150,7 +150,7 @@ static void accept(struct model *m, const char *fixtures, unsigned id, unsigned 
     unsigned body = (unsigned)wn_doc_member(doc, 0, "body");
     assert(!wnsc_manifest_services(m->catalog, doc, body, device, entry->revision,
                                    entry->manifest.issued, entry->manifest.expires,
-                                   entry->manifest.withdraw));
+                                   entry->deadline_us, entry->manifest.withdraw));
     wendy_net_free(doc);
     for (struct wns_entry *s = m->catalog->records.entries; s; s = s->next)
         if (!memcmp(s->device, device, 16)) {
@@ -283,7 +283,7 @@ static void run(const char *fixtures, bool small)
         m.pool.object_count, m.pool.payload_bytes, m.core->babel.route_count, memory.current_bytes,
         memory.high_water_bytes, (unsigned long long)memory.failed_admissions);
     const int64_t expired_at = 915000;
-    wnsc_prune(m.catalog, wall + expired_at);
+    wnsc_prune(m.catalog, epoch + expired_at * 1000);
     wne_reap(&m.core->endpoints, epoch + expired_at * 1000);
     wg_prune(&m.pool, (uint64_t)(epoch / 1000 + expired_at));
     assert(m.catalog->records.count == 24);

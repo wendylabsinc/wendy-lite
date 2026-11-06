@@ -112,6 +112,9 @@ static atomic_bool ready, starting;
 static atomic_bool quiescing;
 static atomic_bool router_accepting = true;
 static atomic_uint router_capacity_refusals;
+#if !WENDY_NET_NON_TRANSIT
+static struct wble_mesh_peer router_refusal_peer;
+#endif
 static bool timer_running, scan_paused, dialing, scan_owned;
 /* Capacity affects discovery only; an already queued dial remains valid. */
 static atomic_bool scan_interest = true, scan_listen_pending;
@@ -145,6 +148,50 @@ static void wake_actor(void)
     if (wake)
         wake();
 }
+#if !WENDY_NET_NON_TRANSIT
+static void note_capacity_refusal(void *context, uint16_t handle)
+{
+    if ((uintptr_t)context != CONFIG_WENDY_NET_BLE_PSM)
+        return;
+    struct wble_mesh_peer peer = {0};
+    struct ble_gap_conn_desc desc;
+    if (!ble_gap_conn_find(handle, &desc)) {
+        /* Match the on-air address used by discovery and admitted CoCs. This
+         * is a scheduling hint only; TLS still establishes the peer identity. */
+        memcpy(peer.address, desc.peer_ota_addr.val, sizeof peer.address);
+        peer.address_type = desc.peer_ota_addr.type;
+        peer.psm = CONFIG_WENDY_NET_BLE_PSM;
+        peer.server = true;
+    }
+    lock();
+    bool first = !atomic_load(&router_capacity_refusals);
+    if (first) {
+        router_refusal_peer = peer;
+        atomic_store(&router_capacity_refusals, 1);
+    }
+    unlock();
+    if (first)
+        wake_actor();
+}
+bool wble_mesh_take_capacity_refusal(struct wble_mesh_peer *out)
+{
+    if (!out)
+        return false;
+    *out = (struct wble_mesh_peer){0};
+    if (!atomic_load(&router_capacity_refusals) || !wble_report_acquire(&report_lifetime))
+        return false;
+    bool found = false;
+    if (trylock()) {
+        if (atomic_exchange(&router_capacity_refusals, 0)) {
+            *out = router_refusal_peer;
+            found = true;
+        }
+        unlock();
+    }
+    wble_report_release(&report_lifetime);
+    return found;
+}
+#endif
 static void terminate_unclaimed(uint16_t handle)
 {
     /* Only new mesh-created ACLs arriving during OFF enter this host-owned
@@ -555,19 +602,38 @@ static int coc_event(struct ble_l2cap_event *event, void *context)
     if (event->type == BLE_L2CAP_EVENT_COC_ACCEPT) {
         if (WENDY_NET_NON_TRANSIT || atomic_load(&quiescing))
             return BLE_HS_EBUSY;
-        if ((uint16_t)(uintptr_t)context != WBLE_MESH_TIME_PSM && !atomic_load(&router_accepting)) {
+        if (!atomic_load(&router_accepting)) {
+#if WENDY_NET_NON_TRANSIT
             unsigned count = atomic_fetch_add(&router_capacity_refusals, 1) + 1;
             (void)count;
+#else
+            note_capacity_refusal(context, event->accept.conn_handle);
+#endif
             return BLE_HS_EBUSY;
         }
         lock();
+#if !WENDY_NET_NON_TRANSIT
+        bool full = count() >= CHANNELS;
+        struct wble_mesh_pipe *p =
+            full ? NULL : make_pipe(event->accept.chan, event->accept.conn_handle, true,
+                                    (uint16_t)(uintptr_t)context);
+#else
         struct wble_mesh_pipe *p = make_pipe(event->accept.chan, event->accept.conn_handle, true,
                       (uint16_t)(uintptr_t)context);
+#endif
         if (p)
             p->held = true;
         unlock();
+#if !WENDY_NET_NON_TRANSIT
+        if (!p) {
+            if (full)
+                note_capacity_refusal(context, event->accept.conn_handle);
+            return BLE_HS_ENOMEM;
+        }
+#else
         if (!p)
             return BLE_HS_ENOMEM;
+#endif
         int rc = arm_receive_batch(p, RX_SLOTS);
         lock();
         p->held = false;
@@ -976,6 +1042,71 @@ bool wble_mesh_incoming_available(void)
     xSemaphoreGive(mutex);
     return available;
 }
+#if !WENDY_NET_NON_TRANSIT
+bool wble_mesh_capacity_snapshot(struct wble_mesh_capacity *out)
+{
+    if (!out)
+        return false;
+    *out = (struct wble_mesh_capacity){0};
+    if (!atomic_load(&ready)) {
+        /* Native accept/dial paths reject before the first ready publication.
+         * Failed initialization must not suppress unrelated LAN carriers.
+         * OFF publishes quiescing before closing the report lifetime, so an
+         * existing physical owner can never be mistaken for this empty case.
+         * Re-sample under a publication loan when one has become available;
+         * a concurrent ready transition makes this turn defer. */
+        bool lent = wble_report_acquire(&report_lifetime);
+        bool empty = !atomic_load(&quiescing) && !atomic_load(&ready);
+        if (lent)
+            wble_report_release(&report_lifetime);
+        return empty;
+    }
+    /* The publication loan pins mutex/pipes through OFF's final deletion. */
+    if (!wble_report_acquire(&report_lifetime))
+        return false;
+    bool available = atomic_load(&ready) && !atomic_load(&quiescing) && mutex && trylock();
+    if (available) {
+        struct wble_mesh_capacity snapshot = {0};
+        for (unsigned i = 0; i < CHANNELS; i++) {
+            const struct wble_mesh_pipe *p = pipes[i];
+            if (!p)
+                continue;
+            bool released = atomic_load_explicit(&p->release_requested, memory_order_acquire);
+            /* release_requested bridges the actor's relinquished pointer and
+             * the host changing owned/closing on its next existing turn. */
+            if (p->peer.psm != WBLE_MESH_TIME_PSM && (!p->owned || released))
+                snapshot.external++;
+            if (released || p->closing || p->disconnecting || p->gap_terminating ||
+                (p->gap_owned && !p->stack))
+                snapshot.retiring++;
+        }
+        if (dialing && dial_psm != WBLE_MESH_TIME_PSM)
+            snapshot.external++;
+        for (unsigned i = 0; i < MYNEWT_VAL(BLE_MAX_CONNECTIONS); i++) {
+            if (!stopping_acls[i].used)
+                continue;
+            bool represented = false;
+            for (unsigned n = 0; n < CHANNELS; n++)
+                if (pipes[n] && pipes[n]->handle == stopping_acls[i].handle) {
+                    represented = true;
+                    break;
+                }
+            /* Only mesh-created, unclaimed ACLs enter this table. Shared
+             * management ACLs never do. Retain the claim after pipe removal. */
+            if (!represented)
+                snapshot.external++;
+            snapshot.retiring++;
+        }
+        unsigned occupied = count() + (dialing ? 1 : 0);
+        snapshot.physical_free = occupied < CHANNELS ? CHANNELS - occupied : 0;
+        snapshot.physical_ready = !pending && snapshot.physical_free > 0;
+        *out = snapshot;
+        unlock();
+    }
+    wble_report_release(&report_lifetime);
+    return available;
+}
+#endif
 
 esp_err_t wble_mesh_init(void)
 {
@@ -1067,27 +1198,26 @@ static int initialize_host(void)
     if (ble_hs_id_infer_auto(0, &own_type))
         return ESP_FAIL;
     if (!WENDY_NET_NON_TRANSIT) {
-        int rc = ble_l2cap_create_server(WBLE_MESH_TIME_PSM, MTU, coc_event,
-                                      (void *)(uintptr_t)WBLE_MESH_TIME_PSM);
-        if (rc && rc != BLE_HS_EALREADY) {
-            ESP_LOGW(TAG, "timestamp HTTPS PSM%u registration failed: %d", WBLE_MESH_TIME_PSM, rc);
-            return ESP_FAIL;
-        }
-        rc = ble_l2cap_create_server(CONFIG_WENDY_NET_BLE_PSM, MTU, coc_event,
-                                  (void *)(uintptr_t)CONFIG_WENDY_NET_BLE_PSM);
+        int rc = ble_l2cap_create_server(CONFIG_WENDY_NET_BLE_PSM, MTU, coc_event,
+                                      (void *)(uintptr_t)CONFIG_WENDY_NET_BLE_PSM);
         if (rc && rc != BLE_HS_EALREADY)
             return ESP_FAIL;
     }
     if (atomic_load(&quiescing))
         return BLE_HS_EALREADY;
+#if !WENDY_NET_NON_TRANSIT
+    /* Clear OFF-era receipt bytes before actors can acquire this publication. */
+    router_refusal_peer = (struct wble_mesh_peer){0};
+    atomic_store(&router_capacity_refusals, 0);
+#endif
     wble_report_open(&report_lifetime);
     atomic_store(&router_accepting, !WENDY_NET_NON_TRANSIT);
     atomic_store(&ready, true);
     ESP_LOGI(
         TAG,
-        "mesh BLE mode=%s; peer PSM=%u time PSM=%u channel cap=%u MTU=%u; buffers allocated on demand",
+        "mesh BLE mode=%s; peer PSM=%u channel cap=%u MTU=%u; buffers allocated on demand",
         WENDY_NET_NON_TRANSIT ? "scan/dial only" : "scan/dial/listen", CONFIG_WENDY_NET_BLE_PSM,
-        WBLE_MESH_TIME_PSM, CHANNELS, MTU);
+        CHANNELS, MTU);
     unsigned selected_profile = wble_mesh_profile();
     ESP_LOGI(
         TAG,

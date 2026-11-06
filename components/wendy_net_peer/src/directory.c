@@ -9,9 +9,61 @@
 #include <arpa/inet.h>
 #endif
 #include <limits.h>
+#include <psa/crypto.h>
 #include <stdlib.h>
 #include <string.h>
 
+/* Hash all original optional/unknown body fields conservatively. Only the
+ * four publication/sequence scalars may differ in a pure route refresh. Map
+ * reordering clears continuity instead of inventing equivalence. */
+int wn_route_continuity(const struct wn_doc *doc, unsigned body, uint8_t out[32])
+{
+    const struct wn_token *root = wn_doc_token(doc, body);
+    if (!root || root->type != '{' || wendy_pki_crypto_init())
+        return -1;
+    static const uint8_t domain[] = "wendy-net/route-continuity/1";
+    psa_hash_operation_t op = PSA_HASH_OPERATION_INIT;
+    int result = -1;
+    size_t written = 0;
+    if (psa_hash_setup(&op, PSA_ALG_SHA_256) != PSA_SUCCESS ||
+        psa_hash_update(&op, domain, sizeof domain) != PSA_SUCCESS)
+        goto done;
+    for (unsigned key = body + 1; key < root->next;) {
+        unsigned value = key + 1;
+        const struct wn_token *k = wn_doc_token(doc, key), *v = wn_doc_token(doc, value);
+        if (!k || !v)
+            goto done;
+        if (!wn_doc_equal(doc, key, wn_key_name("revision")) && !wn_doc_equal(doc, key, wn_key_name("Issued")) &&
+            !wn_doc_equal(doc, key, wn_key_name("Expires"))) {
+            if (psa_hash_update(&op, (const uint8_t *)doc->text + k->start, k->end - k->start) != PSA_SUCCESS)
+                goto done;
+            if (wn_doc_equal(doc, key, wn_key_name("route"))) {
+                if (v->type != '{')
+                    goto done;
+                for (unsigned rk = value + 1; rk < v->next;) {
+                    const struct wn_token *rkey = wn_doc_token(doc, rk), *rv = wn_doc_token(doc, rk + 1);
+                    if (!rkey || !rv)
+                        goto done;
+                    if (!wn_doc_equal(doc, rk, wn_key_name("seqno")) &&
+                        psa_hash_update(&op, (const uint8_t *)doc->text + rkey->start,
+                                        rv->end - rkey->start) != PSA_SUCCESS)
+                        goto done;
+                    rk = rv->next;
+                }
+                static const uint8_t end[] = {0xff};
+                if (psa_hash_update(&op, end, sizeof end) != PSA_SUCCESS)
+                    goto done;
+            } else if (psa_hash_update(&op, (const uint8_t *)doc->text + v->start,
+                                       v->end - v->start) != PSA_SUCCESS)
+                goto done;
+        }
+        key = v->next;
+    }
+    result = psa_hash_finish(&op, out, 32, &written) == PSA_SUCCESS && written == 32 ? 0 : -1;
+done:
+    psa_hash_abort(&op);
+    return result;
+}
 static int number(const struct wn_doc *d, unsigned object, const char *name, uint64_t *value)
 {
     return wn_doc_u64(d, wn_doc_member(d, object, name), value);
@@ -82,6 +134,9 @@ int wne_update(struct wne_cache *c, const struct wnd_manifest *m, const uint8_t 
     e->agent_port = m->agent_port;
     e->agent_mtls = m->agent_mtls;
     e->withdraw = m->withdraw;
+    e->certificate_not_before = m->certificate_not_before;
+    e->certificate_issuer_not_before = m->certificate_issuer_not_before;
+    e->certificate_expires = m->certificate_expires;
     return 0;
 }
 bool wne_endpoint(const struct wne_cache *c, const uint8_t device[16], bool agent, int64_t now,
@@ -101,6 +156,9 @@ void wnd_forget_keyless(struct wnd_directory *d)
         struct wnd_entry *e = *at;
         if (!e->peer.spki_size && !e->key_pinned) {
             *at = e->next;
+            #if WN_ROUTE_HANDOFF_ENABLED
+            wendy_net_free(e->handoff);
+#endif
             wendy_net_free(e);
             d->count--;
         } else
@@ -113,20 +171,6 @@ static struct wnd_entry *find(const struct wnd_directory *d, const uint8_t devic
         if (!memcmp(e->device, device, 16))
             return e;
     return NULL;
-}
-static struct wnd_entry *insert(struct wnd_directory *d, const uint8_t device[16])
-{
-    if (d->count >= WND_ORIGINS_MAX)
-        return NULL;
-    struct wnd_entry *e = wendy_net_calloc(1, sizeof *e);
-    if (e) {
-        memcpy(e->device, device, 16);
-        wn_address(device, e->address);
-        e->next = d->entries;
-        d->entries = e;
-        d->count++;
-    }
-    return e;
 }
 int wnd_init(struct wnd_directory *d, const char *tenant, const char *self)
 {
@@ -146,9 +190,93 @@ void wnd_deinit(struct wnd_directory *d)
         struct wnd_entry *e = d->entries;
         d->entries = e->next;
         wendy_net_free((void *)e->peer.spki);
+#if WN_ROUTE_HANDOFF_ENABLED
+        wendy_net_free(e->handoff);
+#endif
         wendy_net_free(e);
     }
+    while (d->receipts) {
+        struct wnd_receipt *r = d->receipts;
+        d->receipts = r->next;
+        wendy_net_free(r);
+    }
     memset(d, 0, sizeof *d);
+}
+static struct wnd_receipt *receipt(const struct wnd_directory *d, const uint8_t device[16])
+{
+    for (struct wnd_receipt *r = d->receipts; r; r = r->next)
+        if (!memcmp(r->device, device, 16))
+            return r;
+    return NULL;
+}
+const struct wnd_receipt *wnd_receipt_find(const struct wnd_directory *d, const uint8_t device[16],
+                                          int64_t now)
+{
+    struct wnd_receipt *r = d && device && now >= 0 ? receipt(d, device) : NULL;
+    return r && r->receipt_deadline_us > now ? r : NULL;
+}
+void wnd_expire(struct wnd_directory *d, int64_t now)
+{
+    if (!d || now < 0)
+        return;
+#if WN_ROUTE_HANDOFF_ENABLED
+    for (struct wnd_entry *e = d->entries; e; e = e->next)
+        if (e->handoff && e->handoff->has_prior && !wnrh_live(&e->handoff->prior, now))
+            e->handoff->has_prior = false;
+#endif
+    for (struct wnd_entry *e = d->entries; e; e = e->next)
+        if (e->manifest.revision && e->lease_deadline_us <= now) {
+            memset(&e->manifest, 0, sizeof e->manifest);
+            memset(e->body_hash, 0, sizeof e->body_hash);
+            e->revision = 0;
+            e->deadline_us = 0;
+            e->pending_receipt = false;
+#if WN_ROUTE_HANDOFF_ENABLED
+            wendy_net_free(e->handoff);
+            e->handoff = NULL;
+#endif
+        }
+    for (struct wnd_receipt **at = &d->receipts; *at;)
+        if ((*at)->receipt_deadline_us <= now) {
+            struct wnd_receipt *r = *at;
+            *at = r->next;
+            wendy_net_free(r);
+            d->receipt_count--;
+        } else
+            at = &(*at)->next;
+}
+int64_t wnd_next_deadline(const struct wnd_directory *d, int64_t now)
+{
+    int64_t next = INT64_MAX;
+    if (!d)
+        return next;
+    for (const struct wnd_entry *e = d->entries; e; e = e->next)
+        if (e->manifest.revision) {
+            if (e->lease_deadline_us <= now)
+                return now;
+            if (e->lease_deadline_us < next)
+                next = e->lease_deadline_us;
+        }
+#if WN_ROUTE_HANDOFF_ENABLED
+    for (const struct wnd_entry *e = d->entries; e; e = e->next)
+        if (e->handoff) {
+            const struct wn_route_handoff *state = e->handoff;
+            if (state->current_eligible && state->current.path_deadline_us < next)
+                next = state->current.path_deadline_us <= now ? now : state->current.path_deadline_us;
+            if (state->has_prior) {
+                int64_t end = state->prior.deadline_us < state->prior.path_deadline_us ?
+                                  state->prior.deadline_us : state->prior.path_deadline_us;
+                if (end < next)
+                    next = end <= now ? now : end;
+            }
+        }
+#endif
+    for (const struct wnd_receipt *r = d->receipts; r; r = r->next)
+        if (r->receipt_deadline_us <= now)
+            return now;
+        else if (r->receipt_deadline_us < next)
+            next = r->receipt_deadline_us;
+    return next;
 }
 int wnd_key_limit(struct wnd_directory *d, unsigned limit)
 {
@@ -166,6 +294,9 @@ int wnd_key_limit(struct wnd_directory *d, unsigned limit)
         evict->peer.spki = NULL;
         evict->peer.spki_size = 0;
         evict->peer.expires = 0;
+        evict->peer.not_before = 0;
+        evict->peer.signing_not_before = 0;
+        evict->peer.issuer_not_before = 0;
         evict->key_serial = 0;
         evict->certificate_chain_until = 0;
         memset(evict->certificate_chain_hash, 0, 32);
@@ -183,20 +314,15 @@ int wnd_key_pin(struct wnd_directory *d, const uint8_t device[16], bool pinned)
     e->key_pinned = pinned;
     return 0;
 }
-static struct wnd_entry *oldest_key(struct wnd_directory *d)
-{
-    struct wnd_entry *oldest = NULL;
-    for (struct wnd_entry *e = d->entries; e; e = e->next)
-        if (e->peer.spki_size && !e->key_pinned && (!oldest || e->key_serial < oldest->key_serial))
-            oldest = e;
-    return oldest;
-}
 static void drop_key(struct wnd_directory *d, struct wnd_entry *e)
 {
     wendy_net_free((void *)e->peer.spki);
     e->peer.spki = NULL;
     e->peer.spki_size = 0;
     e->peer.expires = 0;
+    e->peer.not_before = 0;
+    e->peer.signing_not_before = 0;
+    e->peer.issuer_not_before = 0;
     e->key_serial = 0;
     e->certificate_chain_until = 0;
     memset(e->certificate_chain_hash, 0, sizeof e->certificate_chain_hash);
@@ -208,7 +334,10 @@ int wnd_identity(struct wnd_directory *d, const struct wendy_pki_mesh_peer *peer
     uint8_t uuid[16], address[16];
     if (!d || !peer || wn_uuid_parse(peer->device, uuid) || !peer->spki_size ||
         peer->spki_size > sizeof peer->spki || peer->expires <= 0 ||
-        peer->expires > INT64_MAX / 1000)
+        peer->expires > INT64_MAX / 1000 ||
+        (peer->not_before > 0 && peer->not_before > INT64_MAX / 1000) ||
+        (peer->signing_not_before > 0 && peer->signing_not_before > INT64_MAX / 1000) ||
+        (peer->issuer_not_before > 0 && peer->issuer_not_before > INT64_MAX / 1000))
         return -1;
     wn_address(uuid, address);
     if (!memcmp(d->self_address, address, 16))
@@ -218,22 +347,58 @@ int wnd_identity(struct wnd_directory *d, const struct wendy_pki_mesh_peer *peer
         memcmp(e->peer.spki, peer->spki, peer->spki_size);
     if (changed) {
         bool adding = !e || !e->peer.spki_size;
-        struct wnd_entry *evict = NULL;
-        if (adding && d->key_count >= d->key_limit) {
-            evict = oldest_key(d);
+        struct wnd_entry *victim = NULL, *evict = NULL;
+        if (!e && d->count >= WND_ORIGINS_MAX) {
+            for (struct wnd_entry *old = d->entries; old; old = old->next)
+                if (!old->key_pinned && !old->manifest.revision &&
+                    (!victim || old->key_serial < victim->key_serial))
+                    victim = old;
+            if (!victim)
+                return 3;
+        }
+        unsigned replacing_key = victim && victim->peer.spki_size ? 1 : 0;
+        if (adding && d->key_count - replacing_key >= d->key_limit) {
+            for (struct wnd_entry *old = d->entries; old; old = old->next)
+                if (old != victim && old->peer.spki_size && !old->key_pinned &&
+                    (!evict || old->key_serial < evict->key_serial))
+                    evict = old;
             if (!evict)
                 return 3;
         }
         uint8_t *key = wendy_net_malloc(peer->spki_size);
-        if (!key)
-            return 3;
-        memcpy(key, peer->spki, peer->spki_size);
-        if (!e && !(e = insert(d, uuid))) {
+        struct wnd_entry *fresh = !e ? wendy_net_calloc(1, sizeof *fresh) : NULL;
+        if (!key || (!e && !fresh)) {
             wendy_net_free(key);
+            wendy_net_free(fresh);
             return 3;
+        }
+        memcpy(key, peer->spki, peer->spki_size);
+        /* All allocations are complete before any existing cache state changes.
+         * Compact receipt ownership is independent of active/key slot reuse. */
+        if (victim) {
+            struct wnd_entry **at = &d->entries;
+            while (*at != victim)
+                at = &(*at)->next;
+            *at = victim->next;
+            if (victim->peer.spki_size)
+                d->key_count--;
+            wendy_net_free((void *)victim->peer.spki);
+#if WN_ROUTE_HANDOFF_ENABLED
+            wendy_net_free(victim->handoff);
+#endif
+            wendy_net_free(victim);
+            d->count--;
         }
         if (evict)
             drop_key(d, evict);
+        if (fresh) {
+            e = fresh;
+            memcpy(e->device, uuid, 16);
+            memcpy(e->address, address, 16);
+            e->next = d->entries;
+            d->entries = e;
+            d->count++;
+        }
         wendy_net_free((void *)e->peer.spki);
         e->peer.spki = key;
         e->peer.spki_size = peer->spki_size;
@@ -241,13 +406,40 @@ int wnd_identity(struct wnd_directory *d, const struct wendy_pki_mesh_peer *peer
             d->key_count++;
         e->key_serial = ++d->key_serial;
         e->deadline_us = 0;
+#if WN_ROUTE_HANDOFF_ENABLED
+        if (e->handoff) {
+            e->handoff->current_verified = false;
+            e->handoff->current_eligible = false;
+            e->handoff->has_prior = false;
+        }
+#else
+        e->lease_deadline_us = 0;
+#endif
         e->certificate_chain_until = 0;
     }
     memcpy(e->peer.device, peer->device, sizeof e->peer.device);
     e->peer.expires = peer->expires;
-    /* A shortened certified path can revoke sooner, never extend a proof. */
-    if (e->manifest.expires > (int64_t)peer->expires * 1000)
-        e->deadline_us = 0;
+    e->peer.not_before = peer->not_before;
+    e->peer.signing_not_before = peer->signing_not_before;
+    e->peer.issuer_not_before = peer->issuer_not_before;
+#if WN_ROUTE_HANDOFF_ENABLED
+    /* The currently selected independently verified same-key leaf governs
+     * CURRENT eligibility. Its dates never overwrite the original signer
+     * provenance retained in state.current for a future HELD proof. */
+    if (!changed && e->handoff) {
+        e->manifest.certificate_not_before = peer->signing_not_before;
+        e->manifest.certificate_issuer_not_before = peer->issuer_not_before;
+        e->manifest.certificate_expires = peer->expires;
+        if (!wnrh_window(&e->handoff->current, peer->signing_not_before, peer->expires)) {
+            e->handoff->current_eligible = false;
+            e->deadline_us = 0;
+        }
+        if (e->handoff->has_prior &&
+            !wnrh_window(&e->handoff->prior, peer->signing_not_before, peer->expires))
+            e->handoff->has_prior = false;
+    }
+#endif
+    /* Actual signer NotBefore changes only after a signature under a new key. */
     return 0;
 }
 static int app_endpoints(const struct wn_doc *d, unsigned body, struct wnd_manifest *m)
@@ -401,8 +593,8 @@ static int accept_manifest(struct wnd_directory *d, const void *data, size_t siz
     uint8_t uuid[16], hash[32];
     const uint8_t *signature;
     size_t signature_size = 0;
-    if (!d || now <= 0 || now > INT64_MAX - 905000 || monotonic < 0 ||
-        monotonic > INT64_MAX - INT64_C(905000000) ||
+    (void)now; /* Receiver UTC does not start or refresh an announcement lease. */
+    if (!d || monotonic < 0 ||
         wn_doc_parse_array_view(&doc, data, size, 40 * 1024, "s"))
         return -1;
     /* Envelope extensions are optional. The exact principal and body bytes
@@ -416,40 +608,137 @@ static int accept_manifest(struct wnd_directory *d, const void *data, size_t siz
     if (wn_doc_string(&doc, wn_doc_member(&doc, 0, "principal"), principal, sizeof principal) < 0 ||
         wn_principal_device(principal, d->tenant, uuid) || memcmp(uuid, m.device, 16) ||
         wn_doc_bytes(&doc, wn_doc_member(&doc, 0, "signature"), &signature, &signature_size) ||
-        signature_size < 8 || m.issued > now + 5000)
+        signature_size < 8)
         return -1;
     /* An opaque larger signature is an unsupported origin artifact, not a
      * malformed carrier frame. The session may continue other gossip. */
     if (signature_size > WN_ORIGIN_SIGNATURE_MAX)
         return WND_UNSUPPORTED;
-    if (m.expires <= now)
-        return 1;
-    struct wnd_entry *e = find(d, uuid);
-    if (!e || !e->peer.spki_size)
-        return 2;
-    if (e->peer.expires <= now / 1000 || m.expires > (int64_t)e->peer.expires * 1000)
-        return -1;
-    if (m.revision < e->revision)
-        return 1;
     const struct wn_token *t = &doc.tokens[body];
     const char *raw = doc.text + t->start;
     size_t n = t->end - t->start;
-    if (n > 32768 ||
-        (!verified &&
-         wendy_pki_mesh_verify_key(&e->peer, principal, raw, n, signature, signature_size)) ||
-        wendy_pki_sha256((const uint8_t *)raw, n, hash))
+    if (n > 32768 || wendy_pki_sha256((const uint8_t *)raw, n, hash))
         return -1;
-    if (m.revision == e->revision && memcmp(hash, e->body_hash, 32))
+    const struct wnd_receipt *seen = wnd_receipt_find(d, m.device, monotonic);
+    if (seen && m.revision < seen->revision)
+        return 1;
+    struct wnd_entry *e = find(d, uuid);
+    bool duplicate = seen && m.revision == seen->revision;
+    if (duplicate && memcmp(hash, seen->body_hash, 32))
         return -1;
-    int64_t deadline = m.withdraw ? 0 : monotonic + (m.expires - now) * 1000;
-    if (m.revision == e->revision && e->deadline_us > 0 && deadline > e->deadline_us)
-        deadline = e->deadline_us;
-    if (m.revision > e->revision)
-        e->pending_receipt = true;
+    if (!e || !e->peer.spki_size)
+        return duplicate ? 1 : 2;
+    if (duplicate && (e->manifest.revision != m.revision || e->lease_deadline_us <= monotonic))
+        return 1;
+#if !WN_ROUTE_HANDOFF_ENABLED
+    if (duplicate) {
+        if (!verified && wendy_pki_mesh_verify_key(&e->peer, principal, raw, n, signature, signature_size))
+            return -1;
+        return 0;
+    }
+#endif
+    if (m.expires > (int64_t)e->peer.expires * 1000 ||
+        (e->peer.signing_not_before > 0 && m.issued < (int64_t)e->peer.signing_not_before * 1000) ||
+        (!verified && wendy_pki_mesh_verify_key(&e->peer, principal, raw, n, signature, signature_size)))
+        return -1;
+    int64_t lease_us = (m.expires - m.issued) * 1000;
+    if (lease_us > INT64_MAX / 10 || monotonic > INT64_MAX - lease_us * 10)
+        return -1;
+#if WN_ROUTE_HANDOFF_ENABLED
+    time_t policy_base = d->route_policy_set ?
+        wnrh_policy_at(d->route_policy_base, d->route_policy_monotonic, monotonic) : 0;
+    if (d->route_policy_set && policy_base <= 0)
+        return -1;
+    struct wn_route_proof next = {.origin = m.origin,
+        .deadline_us = duplicate ? e->lease_deadline_us : monotonic + (m.expires - m.issued) * 1000,
+        .issued = m.issued, .expires = m.expires,
+        .path_deadline_us = policy_base > 0 ? wnrh_cap(e->peer.expires, policy_base, monotonic) : INT64_MAX,
+        .signing_not_before = e->peer.signing_not_before,
+        .issuer_not_before = e->peer.issuer_not_before, .not_after = e->peer.expires};
+    if (!m.withdraw && (wendy_pki_sha256(e->peer.spki, e->peer.spki_size, next.key) ||
+        wn_route_continuity(&doc, (unsigned)body, next.continuity)))
+        return -1;
+    if (d->route_policy_set && !wnrh_refresh_proof(&next, policy_base, monotonic,
+                                                 d->route_policy_uncertain))
+        return 1;
+    bool new_state = !e->handoff;
+    struct wn_route_handoff *state = e->handoff;
+    if (!state && !m.withdraw && !duplicate) {
+        state = wendy_net_calloc(1, sizeof *state);
+        if (!state)
+            return 3;
+    }
+    if (duplicate) {
+        if (m.withdraw)
+            return 0;
+        if (!state || !wnrh_live(&state->current, monotonic) || next.path_deadline_us <= monotonic)
+            return 1;
+        struct wn_route_handoff candidate = *state;
+        wnrh_resign(&candidate, &next);
+        if (d->route_policy_set)
+            wnrh_refresh(&candidate, policy_base, monotonic, d->route_policy_uncertain,
+                          e->peer.signing_not_before, e->peer.issuer_not_before, e->peer.expires);
+        if (!candidate.current_eligible)
+            return 1;
+        *state = candidate;
+        m = e->manifest;
+        m.certificate_not_before = e->peer.signing_not_before;
+        m.certificate_issuer_not_before = e->peer.issuer_not_before;
+        m.certificate_expires = e->peer.expires;
+        e->manifest = m;
+        e->deadline_us = m.withdraw ? 0 : e->lease_deadline_us;
+        return 0;
+    }
+#else
+    if (duplicate)
+        return 0;
+#endif
+    struct wnd_receipt *floor = receipt(d, m.device);
+    if (!floor) {
+        floor = wendy_net_calloc(1, sizeof *floor);
+        if (!floor) {
+#if WN_ROUTE_HANDOFF_ENABLED
+            if (new_state)
+                wendy_net_free(state);
+#endif
+            return 3;
+        }
+        memcpy(floor->device, m.device, 16);
+        floor->next = d->receipts;
+        d->receipts = floor;
+        d->receipt_count++;
+    }
+    floor->revision = m.revision;
+    memcpy(floor->body_hash, hash, 32);
+    floor->withdrawn = m.withdraw;
+    floor->receipt_deadline_us = monotonic + lease_us * 10;
+#if WN_ROUTE_HANDOFF_ENABLED
+    if (m.withdraw) {
+        wendy_net_free(state);
+        e->handoff = NULL;
+    } else {
+        wnrh_replace(state, &next, true, !e->pending_receipt, monotonic);
+        if (d->route_policy_set)
+            wnrh_refresh(state, policy_base, monotonic, d->route_policy_uncertain,
+                          e->peer.signing_not_before, e->peer.issuer_not_before, e->peer.expires);
+        e->handoff = state;
+    }
+#endif
+    e->pending_receipt = true;
     e->revision = m.revision;
     memcpy(e->body_hash, hash, 32);
+    m.certificate_not_before = e->peer.signing_not_before;
+    m.certificate_issuer_not_before = e->peer.issuer_not_before;
+    m.certificate_expires = e->peer.expires;
     e->manifest = m;
-    e->deadline_us = deadline;
+    e->lease_deadline_us = monotonic + lease_us;
+#if WN_ROUTE_HANDOFF_ENABLED
+    /* Withdrawals retain no routing tracker. Pin the original selected-path
+     * monotonic cap into their existing lease scalar at FIRST admission. */
+    if (m.withdraw && next.path_deadline_us < e->lease_deadline_us)
+        e->lease_deadline_us = next.path_deadline_us;
+#endif
+    e->deadline_us = m.withdraw ? 0 : e->lease_deadline_us;
     return 0;
 }
 static const struct wnd_entry *owner(const struct wnd_directory *d, const uint8_t address[16],
@@ -474,7 +763,16 @@ bool wnd_authorizes(const struct wnd_directory *d, const uint8_t address[16], ui
                     uint16_t seqno, int64_t now)
 {
     const struct wnd_entry *e = owner(d, address, now);
-    return e && e->manifest.origin.router_id == router && e->manifest.origin.seqno == seqno;
+    if (!e)
+        return false;
+#if WN_ROUTE_HANDOFF_ENABLED
+    if (e->handoff && (!e->handoff->current_verified || !e->handoff->current_eligible || !wnrh_live(&e->handoff->current, now)))
+        return false;
+    if (e->handoff && e->handoff->has_prior && wnrh_live(&e->handoff->prior, now) &&
+        e->handoff->prior.origin.router_id == router && e->handoff->prior.origin.seqno == seqno)
+        return true;
+#endif
+    return e->manifest.origin.router_id == router && e->manifest.origin.seqno == seqno;
 }
 static void put64(uint8_t *out, uint64_t n)
 {
@@ -490,59 +788,60 @@ static uint64_t get64(const uint8_t *in)
 }
 int wnd_save(const struct wnd_directory *d, void *data, size_t capacity)
 {
-    if (!d || (data && capacity < 6))
+    if (!d || d->receipt_count > UINT32_MAX || d->receipt_count > (INT_MAX - 8) / 65 ||
+        (data && capacity < 8))
         return -1;
     uint8_t *out = data;
-    unsigned count = 0;
-    size_t n = 6;
-    if (out)
-        memcpy(out, "WDR1", 4);
-    const struct wnd_entry *previous = NULL;
-    for (;;) {
-        const struct wnd_entry *next = NULL;
-        for (const struct wnd_entry *e = d->entries; e; e = e->next)
-            if (e->revision && (!previous || memcmp(e->device, previous->device, 16) > 0) &&
-                (!next || memcmp(e->device, next->device, 16) < 0))
-                next = e;
-        if (!next)
-            break;
-        if (out && capacity - n < 56)
+    size_t n = 8;
+    if (out) {
+        memcpy(out, "WDR2", 4);
+        wn_put32(out + 4, (uint32_t)d->receipt_count);
+    }
+    for (const struct wnd_receipt *r = d->receipts; r; r = r->next) {
+        if (out && capacity - n < 65)
             return -1;
         if (out) {
-            memcpy(out + n, next->device, 16);
-            put64(out + n + 16, next->revision);
-            memcpy(out + n + 24, next->body_hash, 32);
+            memcpy(out + n, r->device, 16);
+            put64(out + n + 16, r->revision);
+            memcpy(out + n + 24, r->body_hash, 32);
+            put64(out + n + 56, (uint64_t)r->receipt_deadline_us);
+            out[n + 64] = r->withdrawn;
         }
-        n += 56;
-        count++;
-        previous = next;
+        n += 65;
     }
-    if (out)
-        wn_put16(out + 4, (uint16_t)count);
     return (int)n;
 }
 int wnd_restore(struct wnd_directory *d, const void *data, size_t size)
 {
     const uint8_t *in = data;
-    if (!d || !in || size < 6 || d->entries || d->count || memcmp(in, "WDR1", 4))
+    /* WDR1 had no monotonic lifetime. Do not invent a new clock for an old
+     * snapshot. WDR2 is a RAM-only snapshot within the same mesh epoch. */
+    if (!d || !in || size < 8 || d->entries || d->receipts || memcmp(in, "WDR2", 4))
         return -1;
-    unsigned count = wn_get16(in + 4);
-    if (count > WND_ORIGINS_MAX || size != 6 + count * 56)
+    uint32_t count = wn_get32(in + 4);
+    if ((size - 8) / 65 != count || (size - 8) % 65)
         return -1;
     struct wnd_directory next = *d;
     uint8_t zero[16] = {0};
-    for (unsigned i = 0; i < count; i++) {
-        const uint8_t *p = in + 6 + i * 56;
+    for (uint32_t i = 0; i < count; i++) {
+        const uint8_t *p = in + 8 + (size_t)i * 65;
         uint8_t address[16];
         wn_address(p, address);
-        if (!memcmp(p, zero, 16) || !memcmp(address, d->self_address, 16) || find(&next, p) ||
-            !get64(p + 16))
+        uint64_t deadline = get64(p + 56);
+        if (!memcmp(p, zero, 16) || !memcmp(address, d->self_address, 16) ||
+            receipt(&next, p) || !get64(p + 16) || deadline > INT64_MAX || p[64] > 1)
             goto fail;
-        struct wnd_entry *e = insert(&next, p);
-        if (!e)
+        struct wnd_receipt *r = wendy_net_calloc(1, sizeof *r);
+        if (!r)
             goto fail;
-        e->revision = get64(p + 16);
-        memcpy(e->body_hash, p + 24, 32);
+        memcpy(r->device, p, 16);
+        r->revision = get64(p + 16);
+        memcpy(r->body_hash, p + 24, 32);
+        r->receipt_deadline_us = (int64_t)deadline;
+        r->withdrawn = p[64];
+        r->next = next.receipts;
+        next.receipts = r;
+        next.receipt_count++;
     }
     *d = next;
     return 0;
@@ -554,7 +853,12 @@ size_t wnd_memory(const struct wnd_directory *d)
 {
     size_t bytes = sizeof *d;
     for (const struct wnd_entry *e = d->entries; e; e = e->next)
-        bytes += sizeof *e + e->peer.spki_size;
+        bytes += sizeof *e + e->peer.spki_size
+#if WN_ROUTE_HANDOFF_ENABLED
+                 + (e->handoff ? sizeof *e->handoff : 0)
+#endif
+            ;
+    bytes += d->receipt_count * sizeof(struct wnd_receipt);
     return bytes;
 }
 
@@ -567,4 +871,181 @@ int wnd_accept_verified(struct wnd_directory *d, const void *data, size_t size, 
                         int64_t monotonic)
 {
     return accept_manifest(d, data, size, now, monotonic, true);
+}
+
+bool wnd_route_signature_current(const struct wnd_entry *e)
+{
+#if WN_ROUTE_HANDOFF_ENABLED
+    return e && (!e->handoff || (e->handoff->current_verified && e->handoff->current_eligible));
+#else
+    return e != NULL;
+#endif
+}
+bool wnd_pending_handoff(const struct wnd_directory *d, unsigned index, int64_t now,
+                              uint8_t address[16], struct wn_origin *current)
+{
+#if WN_ROUTE_HANDOFF_ENABLED
+    for (const struct wnd_entry *e = d ? d->entries : NULL; e; e = e->next)
+        if (e->handoff && e->handoff->current_verified && e->handoff->current_eligible && e->handoff->has_prior &&
+            wnrh_live(&e->handoff->current, now) && wnrh_live(&e->handoff->prior, now)) {
+            if (index--)
+                continue;
+            memcpy(address, e->address, 16);
+            *current = e->manifest.origin;
+            return true;
+        }
+#else
+    (void)d; (void)index; (void)now; (void)address; (void)current;
+#endif
+    return false;
+}
+bool wnd_complete_handoff(struct wnd_directory *d, const uint8_t address[16],
+                               const struct wn_origin *current, int64_t now)
+{
+#if WN_ROUTE_HANDOFF_ENABLED
+    for (struct wnd_entry *e = d ? d->entries : NULL; e; e = e->next)
+        if (!memcmp(e->address, address, 16) && e->handoff && e->handoff->has_prior &&
+            e->manifest.origin.router_id == current->router_id && e->manifest.origin.seqno == current->seqno &&
+            wnrh_live(&e->handoff->current, now)) {
+            e->handoff->has_prior = false;
+            return true;
+        }
+#else
+    (void)d; (void)address; (void)current; (void)now;
+#endif
+    return false;
+}
+void wnd_refresh_route_policy(struct wnd_directory *d, time_t base, int64_t now, bool uncertain)
+{
+    wnd_cache_route_policy(d, base, now, uncertain);
+#if WN_ROUTE_HANDOFF_ENABLED
+    if (!d)
+        return;
+    for (struct wnd_entry *e = d->entries; e; e = e->next)
+        if (e->handoff) {
+            wnrh_refresh(e->handoff, base, now, uncertain,
+                          e->manifest.certificate_not_before,
+                          e->manifest.certificate_issuer_not_before,
+                          e->manifest.certificate_expires);
+            e->deadline_us = !e->manifest.withdraw && e->handoff->current_eligible ?
+                                 e->lease_deadline_us : 0;
+        }
+#else
+    (void)d; (void)base; (void)now; (void)uncertain;
+#endif
+}
+
+bool wnd_handoff_request_needed(const struct wnd_directory *d, const uint8_t address[16],
+                                      const struct wn_origin *current, int64_t now)
+{
+#if WN_ROUTE_HANDOFF_ENABLED
+    for (const struct wnd_entry *e = d ? d->entries : NULL; e; e = e->next)
+        if (!memcmp(e->address, address, 16) && e->handoff && e->handoff->has_prior &&
+            !e->handoff->requested && e->handoff->current_verified && e->handoff->current_eligible &&
+            wnrh_live(&e->handoff->current, now) && wnrh_live(&e->handoff->prior, now) &&
+            e->manifest.origin.router_id == current->router_id && e->manifest.origin.seqno == current->seqno)
+            return true;
+#else
+    (void)d; (void)address; (void)current; (void)now;
+#endif
+    return false;
+}
+void wnd_handoff_requested(struct wnd_directory *d, const uint8_t address[16],
+                                const struct wn_origin *current, int64_t now)
+{
+#if WN_ROUTE_HANDOFF_ENABLED
+    for (struct wnd_entry *e = d ? d->entries : NULL; e; e = e->next)
+        if (!memcmp(e->address, address, 16) && e->handoff && e->handoff->has_prior &&
+            e->manifest.origin.router_id == current->router_id && e->manifest.origin.seqno == current->seqno &&
+            wnrh_live(&e->handoff->current, now))
+            e->handoff->requested = true;
+#else
+    (void)d; (void)address; (void)current; (void)now;
+#endif
+}
+
+int64_t wnd_route_deadline(const struct wnd_directory *d, const uint8_t address[16],
+                               uint64_t router, uint16_t seqno, int64_t now)
+{
+    if (!wnd_authorizes(d, address, router, seqno, now))
+        return 0;
+    const struct wnd_entry *e = owner(d, address, now);
+    int64_t until = e->deadline_us;
+#if WN_ROUTE_HANDOFF_ENABLED
+    if (e->handoff) {
+        const struct wn_route_proof *proof = &e->handoff->current;
+        if (e->handoff->has_prior && e->handoff->prior.origin.router_id == router &&
+            e->handoff->prior.origin.seqno == seqno)
+            proof = &e->handoff->prior;
+        if (proof->deadline_us < until)
+            until = proof->deadline_us;
+        if (proof->path_deadline_us < until)
+            until = proof->path_deadline_us;
+        if (e->handoff->current.path_deadline_us < until)
+            until = e->handoff->current.path_deadline_us;
+    }
+#endif
+    return until;
+}
+
+bool wnd_withdraw_wire_committed(struct wnd_directory *d, const uint8_t device[16],
+                                  uint64_t revision, const uint8_t body_hash[32],
+                                  const struct wendy_pki_mesh_key *signer, int64_t now)
+{
+#if !WN_ROUTE_HANDOFF_ENABLED
+    (void)d; (void)device; (void)revision; (void)body_hash; (void)signer; (void)now;
+    return false;
+#else
+    struct wnd_entry *e = d && device ? find(d, device) : NULL;
+    uint8_t signer_device[16];
+    if (!e || !signer || !body_hash || now < 0 || !e->manifest.withdraw ||
+        e->revision != revision || e->lease_deadline_us <= now ||
+        memcmp(e->body_hash, body_hash, 32) ||
+        wn_uuid_parse(signer->device, signer_device) || memcmp(signer_device, device, 16) ||
+        !signer->spki || !signer->spki_size || signer->spki_size > WENDY_PKI_MESH_SPKI_MAX ||
+        signer->spki_size != e->peer.spki_size ||
+        memcmp(signer->spki, e->peer.spki, signer->spki_size) ||
+        signer->expires <= 0 || signer->expires > INT64_MAX / 1000 ||
+        signer->signing_not_before < 0 || signer->signing_not_before > INT64_MAX / 1000 ||
+        signer->issuer_not_before < 0 || signer->issuer_not_before > INT64_MAX / 1000 ||
+        e->manifest.issued < (int64_t)signer->signing_not_before * 1000 ||
+        e->manifest.expires > (int64_t)signer->expires * 1000)
+        return false;
+    time_t end = e->manifest.certificate_expires;
+    if (!end || signer->expires < end)
+        end = signer->expires;
+    int64_t deadline = e->lease_deadline_us;
+#if WN_ROUTE_HANDOFF_ENABLED
+    if (d->route_policy_set) {
+        time_t base = wnrh_policy_at(d->route_policy_base, d->route_policy_monotonic, now);
+        struct wn_route_proof proof = {.deadline_us = deadline, .path_deadline_us = deadline,
+            .issued = e->manifest.issued, .expires = e->manifest.expires,
+            .signing_not_before = signer->signing_not_before,
+            .issuer_not_before = signer->issuer_not_before, .not_after = end};
+        if (!wnrh_refresh_proof(&proof, base, now, d->route_policy_uncertain))
+            return false;
+        if (proof.path_deadline_us < deadline)
+            deadline = proof.path_deadline_us;
+    }
+#endif
+    e->manifest.certificate_not_before = signer->signing_not_before;
+    e->manifest.certificate_issuer_not_before = signer->issuer_not_before;
+    e->manifest.certificate_expires = end;
+    e->lease_deadline_us = deadline;
+    return true;
+#endif
+}
+
+void wnd_cache_route_policy(struct wnd_directory *d, time_t base, int64_t now, bool uncertain)
+{
+#if WN_ROUTE_HANDOFF_ENABLED
+    if (!d)
+        return;
+    d->route_policy_base = base;
+    d->route_policy_monotonic = now;
+    d->route_policy_set = true;
+    d->route_policy_uncertain = uncertain;
+#else
+    (void)d; (void)base; (void)now; (void)uncertain;
+#endif
 }

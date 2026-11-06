@@ -403,6 +403,9 @@ static void reset(void)
 {
     memset(&boot_revisions, 0, sizeof boot_revisions);
     memset(&boot_floor, 0, sizeof boot_floor);
+    memset(&mesh_certificate_clock, 0, sizeof mesh_certificate_clock);
+    mesh_certificate_generation = 0;
+    wendy_pki_certificate_reset_certainty();
     durable_floor = signed_now;
     floor_writes = revision_writes = 0;
     reply_seconds = verifier_floor = 0;
@@ -762,6 +765,47 @@ static void test_stream_stored_identity(void)
     assert(!stream_accepts);
 }
 
+static void test_mesh_certificate_clock(void)
+{
+    reset();
+    snapshot_generation = 7;
+    clock_now = 1;
+    struct wendy_pki_certificate_time local;
+    assert(!mesh_certificate_prepare(1, 7, &local));
+    assert(local.seconds == signed_now && local.uncertain);
+    assert(clock_now == 1 && !timestamp_calls && !floor_writes && !mesh_verified_seconds);
+    mesh_certificate_remember(7, &local);
+    monotonic_us = INT64_C(600000000);
+    assert(!mesh_certificate_prepare(1, 7, &local));
+    assert(local.seconds == signed_now + 600 && local.uncertain);
+    struct wendy_pki_mesh_identity identity = {.certificate_time = local,
+        .config_generation = 7, .certificate_expires = signed_now + 1000};
+    assert(wendy_pki_mesh_identity_current(&identity, monotonic_us));
+    assert(wendy_pki_mesh_identity_time(&identity, monotonic_us) == signed_now + 600);
+    assert(!mesh_certificate_sync(&identity, signed_now + 5, monotonic_us));
+    assert(identity.certificate_time.seconds == signed_now + 600);
+    assert(!identity.certificate_time.uncertain && clock_now == 1);
+    clock_now = signed_now + 1000;
+    assert(!wendy_pki_mesh_identity_current(&identity, monotonic_us));
+    clock_now = 1;
+    snapshot_generation = 8;
+    assert(!wendy_pki_mesh_identity_current(&identity, monotonic_us));
+    assert(!mesh_certificate_prepare(1, 8, &local) && local.uncertain);
+    assert(local.seconds == signed_now); /* No other generation's progressing clock. */
+    mesh_verified_generation = 8;
+    mesh_verified_seconds = signed_now;
+    mesh_verified_monotonic_us = 0;
+    wendy_pki_certificate_mark_certain(8);
+    assert(!mesh_time_recent());
+    assert(!mesh_certificate_prepare(1, 8, &local) && !local.uncertain);
+    mesh_verified_generation = 7;
+    assert(!mesh_certificate_prepare(1, 8, &local) && !local.uncertain);
+    wendy_pki_certificate_reset_certainty();
+    assert(!mesh_certificate_prepare(1, 8, &local) && local.uncertain);
+    mesh_verified_seconds = 0;
+    mesh_verified_generation = 0;
+    reset();
+}
 static void test_signed_clock_generation(void)
 {
     reset();
@@ -850,6 +894,7 @@ int main(int argc, char **argv)
     }
 #endif
     test_signed_clock_generation();
+    test_mesh_certificate_clock();
     assert(argc == 2);
     FILE *f = fopen(argv[1], "rb");
     assert(f);
@@ -1041,4 +1086,19 @@ int wendy_pki_operator_chain(const uint8_t *const *der, const size_t *sizes, siz
     (void)now;
     (void)peer;
     abort();
+}
+
+int wendy_pki_mesh_chain_policy(const uint8_t *const *der, const size_t *sizes, size_t count,
+    const uint8_t *roots, size_t roots_size, const char *tenant, time_t now,
+    const struct wendy_pki_certificate_time *policy, struct wendy_pki_mesh_peer *peer)
+{
+    (void)policy;
+    return wendy_pki_mesh_chain(der, sizes, count, roots, roots_size, tenant, now, peer);
+}
+int wendy_pki_operator_chain_policy(const uint8_t *const *der, const size_t *sizes, size_t count,
+    const uint8_t *roots, size_t roots_size, const char *tenant, time_t now,
+    const struct wendy_pki_certificate_time *policy, struct wendy_pki_operator_peer *peer)
+{
+    (void)policy;
+    return wendy_pki_operator_chain(der, sizes, count, roots, roots_size, tenant, now, peer);
 }

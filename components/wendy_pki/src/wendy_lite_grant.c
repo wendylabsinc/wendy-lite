@@ -69,12 +69,11 @@ int wendy_lite_verify_grant(const uint8_t *r, size_t n,
     return result;
 }
 
-int pki_parsed_peer_expiry(const mbedtls_x509_crt *cert, time_t *expires)
+static int parsed_time(const mbedtls_x509_time *t, time_t *out)
 {
-    if (!cert || !expires || !cert->raw.len)
+    if (!t || !out)
         return -1;
     int result = -1;
-    const mbedtls_x509_time *t = &cert->valid_to;
     if (t->year >= 1970 && t->year <= 9999) {
         /* Gregorian civil date to UTC seconds, independent of process TZ. */
         int year = t->year - (t->mon <= 2);
@@ -85,11 +84,19 @@ int pki_parsed_peer_expiry(const mbedtls_x509_crt *cert, time_t *expires)
             t->hour * 3600 + t->min * 60 + t->sec;
         time_t value = (time_t)seconds;
         if (seconds >= 0 && (int64_t)value == seconds) {
-            *expires = value;
+            *out = value;
             result = 0;
         }
     }
     return result;
+}
+int pki_parsed_peer_not_before(const mbedtls_x509_crt *cert, time_t *not_before)
+{
+    return !cert || !cert->raw.len ? -1 : parsed_time(&cert->valid_from, not_before);
+}
+int pki_parsed_peer_expiry(const mbedtls_x509_crt *cert, time_t *expires)
+{
+    return !cert || !cert->raw.len ? -1 : parsed_time(&cert->valid_to, expires);
 }
 int wendy_lite_peer_expiry(const uint8_t *der, size_t n, time_t *expires)
 {

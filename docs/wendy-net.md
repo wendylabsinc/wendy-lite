@@ -95,14 +95,93 @@ profile disables Cloud connectivity; use USB or an available local or mesh
 management connection. Internet sharing and borrowing are not implemented for
 Lite, and the CLI rejects those settings.
 
+## Clock and announcement lifetime
+
+Mesh connections can start without a recent public timestamp. Their certificate
+checks use the later of the device clock and a progressing local boot anchor
+derived from its own provisioned certificate and saved time floor. While boot
+time is uncertain, a peer leaf's `NotBefore` may be up to 24 hours ahead of that
+base; chain signatures, trust, tenant, role and expiry checks still apply.
+Successful trusted public-time synchronization ends this boot-uncertain grace
+for the current enrollment generation; aging that timestamp does not re-enable
+the grace.
+This is mesh bootstrap trust, not proof of the current public time. Cloud and
+direct LAN management retain their existing time checks.
+
+Peers do not relay public timestamp requests. When an ordinary physical network
+can reach the configured timestamp authority, the device can refresh signed
+time directly. A BLE-only device can continue using mesh bootstrap trust without
+that access.
+
+Each receiver measures an announcement's lifetime with its own monotonic clock.
+The lifetime is the signed `Expires - Issued`, at most fifteen minutes, starting
+at its first acceptance. Repeated copies, including a new signature over the
+same revision and body, do not restart it. A newer revision starts a new lifetime.
+At expiry, the receiver removes the announcement bytes, foreign service details
+and gossip copies and revokes the route authorization even if the mesh is idle.
+Local application declarations remain available for the next publication;
+their expired signed publication is no longer browseable.
+Certificate trust remains required throughout: a trusted clock update that
+reveals an expired certificate can revoke that state before its local lifetime
+ends. The compact receipt is still retained for its original period.
+
+It retains a small highest-revision/hash receipt for ten times that lifetime:
+a fifteen-minute announcement leaves a receipt for 150 minutes from first
+acceptance. Receipts survive neighbour changes and reconnects, so a delayed copy
+from another neighbour cannot immediately restore expired state. They allocate
+on demand and expire independently of the full announcement. After a receipt
+expires, or after mesh is stopped or the device restarts, an old copy can be
+learned for one new local lifetime if its signer still passes current certificate
+checks. These receipts are not written to flash.
+
+The signed version-4 encoding is unchanged. Older receivers still use UTC
+freshness checks and may reject announcements from a booting device with an
+uncertain clock. Use updated WendyOS and Lite receivers for clock-independent
+bootstrap.
+
+### Clock observations
+
+Targets without always-lock-free atomic support omit these optional diagnostic
+records. Certificate-time validation and synchronization continue normally.
+
+Firmware logs `WN_CLOCK_OBS` followed by compact JSON with events `boot`,
+`first_remote_mesh_admission` (the first admitted live foreign manifest) and
+`direct_https_time_apply`. Every marker has `monotonic_us` for capture time and
+`emitted_monotonic_us` for emission time. Boot values are captured at application
+startup and emitted unchanged once the console buffer is ready.
+Read logs soon after boot: the bounded console buffer can overwrite the record.
+The `raw_utc_before_us` and `raw_utc_after_us` fields read the actual device UTC clock;
+failed reads produce `null` with `raw_utc_read_error=true`. In contrast,
+`certificate_base_seconds` and the `anchor_*` fields describe the local
+certificate-validation clock. Topology timestamps also use that derived clock;
+they are not raw UTC readings. The boot observation does not
+initialize an anchor: it reports `anchor_available=false` and a zero base.
+
+State flags describe capture time. `boot_uncertain` reports bootstrap trust
+state. `fresh_tsa` means a genuine proof was younger than 300 seconds for the
+current configuration; it is `null` when a bounded read cannot obtain a
+consistent snapshot (`snapshot_available=false`).
+`tsa_verified_this_boot` records whether a genuine proof had already been
+verified during that boot, even after its freshness window ended. Direct-time
+events report
+`source=direct_https_signed_time` and `status=applied` or `already_sufficient`.
+The latter means the raw UTC reading was already at least the signed time.
+Direct-time events are capped at 16 per boot without stopping subsequent proof
+processing.
+
+These observations add no clock-setting command. Normal USB connection, device
+information and log reads do not synchronize time; `SyncTime` is unsupported.
+The ordinary ESP log prefix uses RTOS time, not UTC.
+
 ## Services and device capabilities
 
 The signed device manifest contains the device's management endpoint,
 capabilities and all active application services. Services share the manifest's
 expiry. A change is published immediately when possible, with further changes
 batched to at most one publication per second. Unchanged devices refresh the
-manifest every five minutes with a fifteen-minute lease. Browsing shows services
-only while their owner has a usable mesh route and a current verified manifest.
+manifest every five minutes with a fifteen-minute lifetime. Browsing shows
+services only while their owner has a usable mesh route and a verified manifest
+whose local lifetime has not expired.
 
 WendyCom management and SensorLink use an encrypted connection to the destination
 device. WendyCom does not add another TLS connection inside that connection.
@@ -127,7 +206,11 @@ Small synchronous guests can use the socket imports without async Swift.
 
 C5 retains bounded full manifests, certificate data and service details in RAM.
 C6 instead keeps small verified endpoint summaries, up to 64 allocated on demand,
-and a limited key cache. It scans and connects out to an authenticated neighbour,
+and a limited key cache. Compact expiry receipts are separate from those active
+summaries and grow with the origins observed within their retention periods.
+All of this state shares the configured mesh memory limit; allocation pressure
+can refuse a new record without erasing an existing receipt. C6 scans and
+connects out to an authenticated neighbour,
 which supplies its next hop. Large manifests, busy handshakes or cache pressure
 can make remote browsing and outgoing service connections temporarily unavailable.
 Incoming mesh management and SensorLink share one client slot, alongside one guest

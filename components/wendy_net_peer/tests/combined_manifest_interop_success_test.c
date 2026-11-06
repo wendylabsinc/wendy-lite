@@ -75,7 +75,7 @@ int main(int argc, char **argv)
             uint8_t device[16];
             assert(!wn_uuid_parse(devices[profile], device));
             assert(!wnsc_manifest_services(catalog, doc, body, device, index + 1, issued,
-                                           issued + 900000, false));
+                                           issued + 900000, 900001000 + (int64_t)index * 1000, false));
             assert(catalog->records.count == counts[index]);
             for (struct wns_entry *e = catalog->records.entries; e; e = e->next)
                 assert(e->generation == index + 1 && e->expires == issued + 900000);

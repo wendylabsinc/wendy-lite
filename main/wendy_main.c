@@ -1,5 +1,8 @@
 #include "wendy_core.h"
 #include "wendy_pki_crypto.h"
+#if CONFIG_WENDY_PKI
+#include "wendy_pki_clock_observation.h"
+#endif
 #include "esp_log.h"
 #if CONFIG_WENDY_BLE
 #include "wendy_ble.h"
@@ -20,6 +23,9 @@
 
 void app_main(void)
 {
+#if CONFIG_WENDY_PKI
+    wendy_pki_clock_observe_boot();
+#endif
     ESP_ERROR_CHECK(wendy_pki_memory_init() ? ESP_FAIL : ESP_OK);
     ESP_ERROR_CHECK(wendy_pki_crypto_init() ? ESP_FAIL : ESP_OK);
 #if CONFIG_WENDY_NET_TEST_SENSOR_SERVICE

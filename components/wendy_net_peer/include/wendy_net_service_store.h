@@ -12,6 +12,7 @@ struct wns_entry {
     uint8_t artifact_hash[32]; /* Local scheduling receipt, not authority. */
     uint64_t generation;
     int64_t issued, expires;
+    int64_t deadline_us; /* Local manifest receipt lifetime; never a wire timestamp. */
     uint16_t port;
     int listener; /* Volatile local ownership handle; absent after restart. */
     bool own, withdraw, unavailable, gateway, summary_verified, body_retired, artifact_known;

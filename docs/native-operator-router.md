@@ -8,7 +8,10 @@ fallback to the direct WendyCom management service.
 
 An operator must present a current, same-tenant primary client-auth certificate
 chain anchored in the enrollment's independently configured trust. The device
-rechecks the exact chain against its generation-bound signed-time snapshot.
+rechecks the exact chain against its generation-bound mesh certificate policy.
+That policy uses a local progressing boot-time floor when public time is not
+yet available; it does not mark a public timestamp as fresh. Trust, tenant,
+primary-operator role and certificate expiry remain independently checked.
 A Lite authority twin or discovery advertisement grants no operator authority.
 The post-TLS CBOR hello supplies a nonzero 16-byte installation ID; the principal
 and installation remain typed operator identity, never a fabricated device UUID.

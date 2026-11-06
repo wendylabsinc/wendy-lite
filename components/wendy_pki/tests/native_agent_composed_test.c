@@ -1,11 +1,20 @@
 /* Compose production native flow/BIO + real PQC TLS + actual WendyCom backend.
  * Existing TLS fixture utilities provide normal generated identity material;
  * only the NVS/configuration facade is replaced, never TLS/auth/protocol code. */
+#if defined(WENDY_MESH_BOOT_CLOCK_TEST)
+#include <time.h>
+time_t time(time_t *out)
+{
+    if (out) *out = 1;
+    return 1;
+}
+#endif
 #define main ordinary_tls_fixture_main
 #include "tls_test.c"
 #undef main
 #include "native_tls_fixture.h"
 #include "wendy_operator_auth.h"
+#include "wendy_pki_operator.h"
 #include "wendy_net_alloc.h"
 #include <psa/crypto_extra.h>
 #include "../../wendy_net_peer/src/native_agent.c"
@@ -132,8 +141,52 @@ int wnad_channel_io(struct wna_channel *channel, int fd, const struct wendy_pki_
     }
     return progress;
 }
+#if defined(WENDY_MESH_BOOT_CLOCK_TEST)
+static void check_live_clock_transition(void)
+{
+    const time_t base = 1800000000;
+    struct wendy_pki_operator_peer peer = {0};
+    wendy_pki_connection c = {.mesh_certificate_policy = true,
+        .certificate_time = {.seconds = base, .floor = base,
+            .monotonic_us = esp_timer_get_time(), .uncertain = true,
+            .follow_certainty = true, .generation = 17},
+        .device_expires = base + 1000, .operator_expires = base + 1000,
+        .operator_not_before = base + 60, .operator_signing_not_before = base + 60,
+        .operator_issuer_not_before = base - 10, .peer_role = WENDY_PEER_ROLE_OPERATOR,
+        .session_deadline_us = esp_timer_get_time() + 1000000, .authenticated_operator = &peer};
+    wendy_pki_certificate_reset_certainty();
+    assert(wendy_pki_mesh_authenticated_operator(&c) == &peer);
+    wendy_pki_certificate_mark_certain(18);
+    assert(wendy_pki_mesh_authenticated_operator(&c) == &peer);
+    wendy_pki_certificate_mark_certain(17);
+    assert(!wendy_pki_mesh_authenticated_operator(&c));
+    char byte;
+    assert(wendy_pki_read(&c, &byte, 1) == -1 && wendy_pki_write(&c, "x", 1) == -1);
+    c.mesh_certificate_policy = false;
+    assert(wendy_pki_mesh_authenticated_operator(&c) == &peer); /* Legacy clock unchanged. */
+    c.mesh_certificate_policy = true;
+    c.operator_not_before = base;
+    c.operator_signing_not_before = base;
+    assert(wendy_pki_mesh_authenticated_operator(&c) == &peer);
+    wendy_pki_certificate_reset_certainty();
+    c.operator_signing_not_before = c.operator_not_before = base + 60;
+    c.operator_issuer_not_before = base + 30;
+    c.certificate_time.seconds = base + 45;
+    assert(wendy_pki_mesh_authenticated_operator(&c) == &peer);
+    c.certificate_time.seconds = base; /* Wall rollback below selected issuer NB. */
+    assert(!wendy_pki_mesh_authenticated_operator(&c));
+    c.operator_issuer_not_before = base - 10;
+    assert(wendy_pki_mesh_authenticated_operator(&c) == &peer); /* Leaf-only grace retained. */
+    c.certificate_time.seconds = base + 1000;
+    assert(!wendy_pki_mesh_authenticated_operator(&c));
+    wendy_pki_certificate_reset_certainty();
+}
+#endif
 int main(int argc, char **argv)
 {
+#if defined(WENDY_MESH_BOOT_CLOCK_TEST)
+    check_live_clock_transition();
+#endif
     if (argc != 5 || strncmp(argv[4], "owned-lan-", 10)) {
         unsetenv("WENDY_TLS_DEFER_INPUT_SHRINK");
         return ordinary_tls_fixture_main(argc, argv);
@@ -171,6 +224,11 @@ int main(int argc, char **argv)
                                                .hash_der = hash_der_test,
                                                .read_der_range = read_der_range_test,
                                                .der_context = &source};
+#if defined(WENDY_MESH_BOOT_CLOCK_TEST)
+    prepared.mesh_certificate_policy = true;
+    prepared.boot_uncertain = true;
+    assert(prepared.verify_at == 1); /* No UTC correction or TSA supplied. */
+#endif
     prepared_roots = (struct wendy_conf_span){roots, roots_size};
     composed_com_init();
     wendy_pki_work_enable();

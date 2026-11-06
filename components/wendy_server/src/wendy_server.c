@@ -345,7 +345,6 @@ static void _server_task(void *arg)
         _mesh_shutdown_poll();
 #endif
         int apps = wendy_net_app_listener();
-        int clock = wendy_net_app_time_listener();
         bool management_ready = wendy_net_app_management_ready();
         fd_set reading;
         FD_ZERO(&reading);
@@ -354,20 +353,11 @@ static void _server_task(void *arg)
         FD_SET(listen_fd, &reading);
         if (apps >= 0)
             FD_SET(apps, &reading);
-        if (clock >= 0)
-            FD_SET(clock, &reading);
         int maximum = apps > listen_fd ? apps : listen_fd;
-        if (clock > maximum)
-            maximum = clock;
         struct timeval poll={.tv_usec=250000};
         int available = select(maximum + 1, &reading, NULL, NULL, &poll);
         if (available < 0)
             continue;
-        if (available > 0 && clock >= 0 && FD_ISSET(clock, &reading)) {
-            int incoming = accept(clock, NULL, NULL);
-            if (incoming >= 0)
-                wendy_pki_net_time_relay(incoming);
-        }
         if (available > 0 && apps >= 0 && FD_ISSET(apps, &reading)) {
             int incoming = accept(apps, NULL, NULL);
             if (incoming >= 0)

@@ -12,7 +12,9 @@ struct observed {
 static void evicted(void *ctx, const struct wg_id *id, const void *data, size_t size)
 {
     struct observed *o = ctx;
-    assert(size == 1536 && ((const uint8_t *)data)[0] == 2);
+    assert((id->type == 2 && size == 1536 && ((const uint8_t *)data)[0] >= 1 &&
+            ((const uint8_t *)data)[0] <= 3) ||
+           (id->type == 1 && size == 512 && ((const uint8_t *)data)[0] == 4));
     o->evictions++;
     o->gone = *id;
 }
@@ -121,7 +123,7 @@ int main(void)
     assert(!wg_poll(&routes, 1013, emit, &o) && o.gone_count == 1); /* Independent category. */
     wg_prune(&pool, 130001);
     assert(!pool.object_count && !pool.payload_bytes && !pool.type_payload[0] &&
-           !pool.type_payload[1]);
+           !pool.type_payload[1] && o.evictions == 4);
     wg_close(&services);
     wg_close(&routes);
     wg_deinit(&pool);

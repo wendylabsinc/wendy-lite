@@ -10,7 +10,7 @@
  * This worker-owned output contains no private material. */
 struct wendy_pki_operator_peer {
     char principal[WENDY_PKI_OPERATOR_PRINCIPAL_MAX + 1];
-    time_t expires;
+    time_t not_before, signing_not_before, issuer_not_before, expires;
     uint8_t leaf_hash[32];
     uint8_t spki[WENDY_PKI_MESH_SPKI_MAX];
     size_t spki_size;
@@ -26,8 +26,11 @@ int wendy_pki_operator_chain(const uint8_t *const *der, const size_t *, size_t,
                              const uint8_t *roots, size_t roots_size, const char *tenant, time_t,
                              struct wendy_pki_operator_peer *);
 
+int wendy_pki_operator_chain_policy(const uint8_t *const *, const size_t *, size_t,
+    const uint8_t *, size_t, const char *, time_t, const struct wendy_pki_certificate_time *,
+    struct wendy_pki_operator_peer *);
 /* Crypto-worker snapshot is tied to the current enrollment/trust generation
- * and five-minute verified clock. These helpers perform no network I/O. */
+ * and local certificate-clock policy. These helpers perform no network I/O. */
 bool wendy_pki_operator_snapshot_current(const struct wendy_pki_mesh_identity *);
 int wendy_pki_operator_verify_snapshot(const struct wendy_pki_mesh_identity *,
                                        const uint8_t *const *, const size_t *, size_t,

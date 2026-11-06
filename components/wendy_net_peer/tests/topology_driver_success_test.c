@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <string.h>
 #include <time.h>
 typedef void *TaskHandle_t;
@@ -20,6 +21,13 @@ struct peer_state {
     struct {
         unsigned medium;
     } candidate;
+#if WN_CARRIER_OBSERVATION_ENABLED
+    uint64_t attachment;
+    atomic_bool active, setup_pending;
+    bool failed, setup_waiting;
+    struct { bool cancel, lent; } tls_state;
+    void *connection;
+#endif
 };
 static _Atomic(struct peer_state *) state;
 static atomic_bool stopping;
@@ -28,6 +36,11 @@ static _Thread_local TaskHandle_t task_id = (void *)2;
 static atomic_llong clock_us;
 static atomic_uint wakes;
 static atomic_bool picked, hold, finish;
+#if WN_CARRIER_OBSERVATION_ENABLED
+static atomic_bool print_hold, print_entered, print_finish, fail_observation_alloc;
+static atomic_uint printed_rows, rejected_observation_allocations;
+static bool projection_error;
+#endif
 static TaskHandle_t xTaskGetCurrentTaskHandle(void)
 {
     return task_id;
@@ -75,6 +88,10 @@ static int wnrs_topology(struct wnrs_node *node, uint32_t cursor, uint64_t gener
     atomic_store(&picked, true);
     while (atomic_load(&hold) && !atomic_load(&finish))
         tick();
+#if WN_CARRIER_OBSERVATION_ENABLED
+    if (projection_error)
+        return -1;
+#endif
     const char *principal =
         "spiffe://wendy.sh/tenant/11111111-1111-4111-8111-111111111111/operator/Alice";
     struct wnt_record_view view = {.record = WendyComNetTopologyRecord_init_zero,
@@ -87,7 +104,58 @@ static int wnrs_topology(struct wnrs_node *node, uint32_t cursor, uint64_t gener
     page->runtime_available = true;
     return wnt_record_copy(page, &view);
 }
+#if WN_CARRIER_OBSERVATION_ENABLED
+static bool wncrypto_borrowed(const void *connection)
+{
+    return connection != NULL;
+}
+static bool wnrs_carrier_observation(const struct wnrs *s, int64_t now,
+                                      struct wn_carrier_observation *row)
+{
+    *row = (struct wn_carrier_observation){.link = s->id, .selected_link = 1,
+        .sampled_us = now, .origin = 7, .sequence = 8, .advertised = 0, .metric = 128,
+        .candidate_expires_us = now + 1000000, .proof_expires_us = now + 2000000,
+        .current_identity = true, .candidate = true, .authorized = true,
+        .feasible = true, .twoway = true, .usable = true};
+    return true;
+}
+static void *fixture_calloc(size_t count, size_t bytes)
+{
+    if (count == 1 && bytes == sizeof(struct wn_carrier_observations) &&
+        atomic_load(&fail_observation_alloc)) {
+        atomic_fetch_add(&rejected_observation_allocations, 1);
+        return NULL;
+    }
+    return wendy_net_calloc(count, bytes);
+}
+static int fixture_printf(const char *format, ...)
+{
+    assert(task_id != (void *)1); /* Rendering never runs on the actor. */
+    assert(!pthread_mutex_trylock(&state_lock));
+    pthread_mutex_unlock(&state_lock);
+    char rendered[640];
+    va_list args;
+    va_start(args, format);
+    int size = vsnprintf(rendered, sizeof rendered, format, args);
+    va_end(args);
+    assert(size > 0 && (size_t)size < sizeof rendered);
+    assert(strstr(rendered, "wn_carrier_observation "));
+    if (strstr(rendered, "link=2 "))
+        assert(strstr(rendered, "retiring=1 usable=0 "));
+    atomic_fetch_add(&printed_rows, 1);
+    atomic_store(&print_entered, true);
+    while (atomic_load(&print_hold) && !atomic_load(&print_finish))
+        tick();
+    return size;
+}
+#define wendy_net_calloc fixture_calloc
+#define printf fixture_printf
+#endif
 #include "topology_driver.inc"
+#if WN_CARRIER_OBSERVATION_ENABLED
+#undef printf
+#undef wendy_net_calloc
+#endif
 static void *project(void *argument)
 {
     task_id = (void *)1;
@@ -132,6 +200,24 @@ int main(void)
     assert(!atomic_load(&wakes));
     struct wnrs_node node = {0};
     struct peer_state root = {.router_node = &node};
+#if WN_CARRIER_OBSERVATION_ENABLED
+    /* The actor walks at most eight scalar rows, even with an oversized test
+     * list. A retiring carrier cannot become usable through formatting. */
+    struct peer_state extra[8] = {0};
+    struct wnrs routes[9] = {0};
+    struct peer_state *link = &root;
+    for (unsigned i = 0; i < 9; i++) {
+        routes[i].id = i + 1;
+        link->router = &routes[i];
+        link->attachment = 20 + i;
+        link->active = i != 1;
+        if (i < 8) {
+            link->next = &extra[i];
+            link = link->next;
+        }
+    }
+    assert(sizeof(struct wn_carrier_observations) <= 1024);
+#endif
     atomic_store(&state, &root);
     assert(wendy_net_runtime_memory_open());
     atomic_store(&topology_actor, (void *)1);
@@ -147,12 +233,75 @@ int main(void)
     pthread_join(actor, NULL);
     pthread_join(caller, NULL);
     assert(read.result == WendyComResult_WENDY_COM_RESULT_OK && read.page.has_record);
+#if WN_CARRIER_OBSERVATION_ENABLED
+    assert(atomic_load(&printed_rows) == WN_CARRIER_OBSERVATION_ROWS);
+#endif
     wendy_net_runtime_memory_close();
     assert(!wendy_net_runtime_memory_drained());
     wnt_page_release(&read.page);
     assert(wendy_net_runtime_memory_drained());
     assert_empty();
     assert(wendy_net_runtime_memory_open());
+#if WN_CARRIER_OBSERVATION_ENABLED
+    /* Optional allocation pressure never changes the normal topology result. */
+    read = (struct read){0};
+    unsigned printed_before = atomic_load(&printed_rows);
+    atomic_store(&fail_observation_alloc, true);
+    assert(!pthread_create(&caller, NULL, read_page, &read));
+    queued();
+    assert(!pthread_create(&actor, NULL, project, &root));
+    pthread_join(actor, NULL);
+    pthread_join(caller, NULL);
+    assert(read.result == WendyComResult_WENDY_COM_RESULT_OK && read.page.has_record);
+    assert(atomic_load(&printed_rows) == printed_before);
+    assert(atomic_load(&rejected_observation_allocations) == 1);
+    atomic_store(&fail_observation_alloc, false);
+    wnt_page_release(&read.page);
+    assert_empty();
+    /* Projection failure releases the optional scalar buffer without printing. */
+    read = (struct read){0};
+    projection_error = true;
+    assert(!pthread_create(&caller, NULL, read_page, &read));
+    queued();
+    assert(!pthread_create(&actor, NULL, project, &root));
+    pthread_join(actor, NULL);
+    pthread_join(caller, NULL);
+    assert(read.result == WendyComResult_WENDY_COM_RESULT_BUSY);
+    assert(atomic_load(&printed_rows) == printed_before);
+    projection_error = false;
+    assert_empty();
+    /* A blocked console owns flat scalars only. Another caller/actor round
+     * trip finishes while the earlier renderer remains blocked. */
+    read = (struct read){0};
+    atomic_store(&print_hold, true);
+    atomic_store(&print_finish, false);
+    atomic_store(&print_entered, false);
+    assert(!pthread_create(&caller, NULL, read_page, &read));
+    queued();
+    assert(!pthread_create(&actor, NULL, project, &root));
+    pthread_join(actor, NULL);
+    while (!atomic_load(&print_entered))
+        tick();
+    pthread_mutex_lock(&state_lock);
+    assert(!topology_query);
+    pthread_mutex_unlock(&state_lock);
+    struct read next = {.params = {.cursor = 1}};
+    pthread_t next_caller;
+    assert(!pthread_create(&next_caller, NULL, read_page, &next));
+    queued();
+    assert(!pthread_create(&actor, NULL, project, &root));
+    pthread_join(actor, NULL);
+    pthread_join(next_caller, NULL);
+    assert(next.result == WendyComResult_WENDY_COM_RESULT_OK && next.page.has_record);
+    assert(!atomic_load(&print_finish));
+    wnt_page_release(&next.page);
+    atomic_store(&print_finish, true);
+    pthread_join(caller, NULL);
+    assert(read.result == WendyComResult_WENDY_COM_RESULT_OK);
+    wnt_page_release(&read.page);
+    atomic_store(&print_hold, false);
+    assert_empty();
+#endif
     /* Timeout before pickup removes both leases without an actor touching it. */
     read = (struct read){0};
     assert(wn_peer_topology(&read.params, &read.page) == WendyComResult_WENDY_COM_RESULT_BUSY);
@@ -189,4 +338,9 @@ int main(void)
     printf(
         "PASS production topology caller/actor/OFF: fixed page=%zu mailbox=%zu, row lease drains ledger\n",
         sizeof read.page, sizeof(struct topology_query));
+#if WN_CARRIER_OBSERVATION_ENABLED
+    printf("local carrier observation: rows=%u scalar_row=%zu snapshot=%zu policy_state=0\n",
+           WN_CARRIER_OBSERVATION_ROWS, sizeof(struct wn_carrier_observation),
+           sizeof(struct wn_carrier_observations));
+#endif
 }
