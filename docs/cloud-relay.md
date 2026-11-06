@@ -55,6 +55,11 @@ both authenticated certificate expiries. The presentation deadline does not
 terminate an established session. The upgrade hash and session bind admission
 to the single-use outer connection.
 
+The control connection stays open while its heartbeat works. Firmware stops it
+voluntarily only for certificate renewal (see [enrollment](cloud-enrollment.md)).
+While it is open, firmware refreshes signed time once per hour, because the grant
+check above has no clock tolerance.
+
 The cloud task opens a replacement control connection after handing off the
 operator stream. PostgreSQL-backed broker caps permit one active session per
 device and four per user, including replacement connections. The broker closes
@@ -64,7 +69,9 @@ share a 10-second deadline; outer control reads have a 30-second deadline.
 
 Build with ESP-IDF 6.0.3, or ESP-IDF 6.1 for the
 [ESP32-S31 preview target](../README.md#esp32-s31-notes), and enable
-`CONFIG_WENDY_CLOUD=y` as described in [enrollment](cloud-enrollment.md).
+`CONFIG_WENDY_CLOUD=y` as described in [enrollment](cloud-enrollment.md) and
+`CONFIG_WENDY_CLOUD_TUNNEL=y` (the default). With the tunnel off, the device opens
+no broker connection, and the relay cannot reach it.
 All images include PKI support. The relay uses
 esp-pqc's mbedTLS backend for ML-DSA-65 device or infrastructure certificate chains.
 ML-DSA-44 and ML-DSA-87 issuers are unsupported. The firmware requires compatible

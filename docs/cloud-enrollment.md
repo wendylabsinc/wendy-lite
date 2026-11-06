@@ -145,21 +145,32 @@ recovery. A fresh token is not silently substituted for an expired certificate.
 ## Connection and renewal
 
 Lite opens an outbound TLS 1.3 connection authenticated with its issued identity.
-It refreshes signed time and reconnects every four minutes. A currently valid
-certificate with less than one day remaining is renewed over mTLS. An existing
-identity without a Lite operator anchor also renews on the next connection,
-regardless of its remaining lifetime. A valid authority header in that response
+Each new connection first refreshes signed time and checks the certificate. A
+currently valid certificate past half of its validity period (notBefore to
+notAfter) is renewed over mTLS, so a failed renewal has time to retry before
+expiry. Each connection logs the remaining lifetime and the time until renewal,
+or how long ago the stored certificate expired.
+
+The connection then stays open while its heartbeat works. If it breaks, Lite
+reconnects and does the same checks. The only voluntary stop is one hour after the
+renewal date. That margin makes sure that the date has passed when Lite refreshes
+signed time again, so the stop leads to a renewal. While the connection is open,
+Lite refreshes signed time once per hour, between heartbeats, because the relay
+grant check has no clock tolerance. A failed refresh has no effect on the connection.
+
+An existing identity without a Lite operator anchor also renews on the next
+connection, regardless of its remaining lifetime. A valid authority header in that response
 replaces the pin after the issued device identity verifies; an omitted header
 preserves the current pin, and a malformed header cannot overwrite it. The device
 retains renewal responses before verification so it can recover without spending
 the predecessor again. Before accepting a new certificate, it refreshes signed
 time again because the certificate's validity starts at issuance.
 It continues using its stored certificate if renewal fails and that certificate
-still passes validation after the request. It retries renewal on the next
-connection. An expired or invalid certificate cannot be used as a fallback.
+still passes validation after the request. It stops the connection one hour later
+to retry, or retries earlier if the connection breaks. An expired or invalid
+certificate cannot be used as a fallback.
 If renewal omits the header and no pin exists yet, the control connection can
-continue, but relay sessions remain unavailable and the next connection retries
-renewal.
+continue, but relay sessions remain unavailable and Lite retries renewal in the same way.
 The device persists the signed-time floor and rejects rollback, invalid
 certificates, and unverified timestamps. A delayed fresh-time exchange over
 30 seconds fails.
@@ -289,6 +300,14 @@ Standard builds enable `CONFIG_WENDY_CLOUD` so a Wi-Fi connection can start the
 PKI enrollment task when enrollment configuration is present. Firmware without
 stored enrollment does not start the task. Custom profiles can still disable
 Cloud support explicitly.
+
+`CONFIG_WENDY_CLOUD_TUNNEL` (default on) controls only the broker connection. With
+it off, the same task still enrolls the device, fetches the signed time and renews
+the identity, but it opens no broker socket. It runs these checks once per hour, or
+after 60 seconds if a check fails. This keeps the memory of the broker connection
+free for LAN sessions. The device cannot be reached through the cloud in this mode.
+Without `CONFIG_WENDY_CLOUD`, a device that has no other time source has no verified
+clock, so LAN mTLS fails after a power cycle.
 
 Network services start when Wi-Fi obtains an IP address, including when DHCP
 finishes after the initial connection wait times out. The service worker retries

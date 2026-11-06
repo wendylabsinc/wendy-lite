@@ -770,7 +770,8 @@ int pki_verify_parsed_identity(mbedtls_x509_crt *chain, mbedtls_pk_context *key,
 }
 static int verify_identity_direct(const uint8_t *pem, size_t size, const uint8_t *roots,
                                   size_t roots_size, const uint8_t *key, size_t key_size,
-                                  const char *principal, time_t now, time_t *expires)
+                                  const char *principal, time_t now, time_t *expires,
+                                  struct wendy_pki_validity *leaf)
 {
     if (!pem || !size || size > 65536 || !roots || !roots_size || !key || !key_size || !principal ||
         !expires)
@@ -781,8 +782,14 @@ static int verify_identity_direct(const uint8_t *pem, size_t size, const uint8_t
     int result = -1;
     der key_der = {key, key, key_size, key_size, 0}, key_sequence;
     if (take(&key_der, 0x30, &key_sequence) || key_der.n ||
-        pki_parse_certificate_bundle(&chain, pem, size, true) ||
-        mbedtls_pk_parse_key(&private_key, key, key_size, NULL, 0))
+        pki_parse_certificate_bundle(&chain, pem, size, true))
+        goto done;
+    // A date that does not parse stays 0; the chain check below rejects it.
+    if (leaf && cert_time(&chain.valid_from, &leaf->not_before))
+        leaf->not_before = 0;
+    if (leaf && cert_time(&chain.valid_to, &leaf->not_after))
+        leaf->not_after = 0;
+    if (mbedtls_pk_parse_key(&private_key, key, key_size, NULL, 0))
         goto done;
     result = pki_verify_parsed_identity(&chain, &private_key, roots, roots_size, NULL, principal,
                                         now, expires);
@@ -994,20 +1001,24 @@ struct identity_cpu {
     size_t cert_size, roots_size, key_size;
     const char *principal;
     time_t now, *expires;
+    struct wendy_pki_validity *leaf;
     int result;
 };
 static void identity_cpu(void *context)
 {
     struct identity_cpu *j = context;
     j->result = verify_identity_direct(j->cert, j->cert_size, j->roots, j->roots_size, j->key,
-                                       j->key_size, j->principal, j->now, j->expires);
+                                       j->key_size, j->principal, j->now, j->expires, j->leaf);
 }
 int wendy_pki_verify_identity(const uint8_t *cert, size_t size, const uint8_t *roots,
                               size_t roots_size, const uint8_t *key, size_t key_size,
-                              const char *principal, time_t now, time_t *expires)
+                              const char *principal, time_t now, time_t *expires,
+                              struct wendy_pki_validity *leaf)
 {
+    if (leaf)
+        *leaf = (struct wendy_pki_validity){0};
     struct identity_cpu j = {cert,     roots,     key, size,    roots_size,
-                             key_size, principal, now, expires, -1};
+                             key_size, principal, now, expires, leaf, -1};
     return wendy_pki_work_run(identity_cpu, &j) ? -1 : j.result;
 }
 

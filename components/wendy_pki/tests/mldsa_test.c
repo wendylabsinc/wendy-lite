@@ -202,13 +202,19 @@ int main(int argc, char **argv)
             snprintf(name, sizeof name, "%s-identity-%s.pem", levels[level], identities[i]);
             unsigned char *identity = load(argv[1], name, &n);
             time_t expires = 123;
-            int result = wendy_pki_verify_identity(identity, n, root, root_n, key, key_n, principal, signed_time, &expires);
+            struct wendy_pki_validity leaf;
+            int result = wendy_pki_verify_identity(identity, n, root, root_n, key, key_n, principal, signed_time, &expires, &leaf);
             printf("ML-DSA %s P-256 identity %s: %d\n", levels[level], identities[i], result);
             fflush(stdout);
             assert(i == 0 && supported_ca ? result == 0 && expires == signed_time + 3600 : result != 0 && expires == 123);
+            if (i == 0 && supported_ca)
+                assert(leaf.not_before == signed_time - 3600 && leaf.not_after == signed_time + 3600);
+            /* Leaf dates are reported even when verification rejects them. */
+            if (!strcmp(identities[i], "expired") && supported_ca)
+                assert(leaf.not_before == signed_time - 3600 && leaf.not_after == signed_time - 60);
             if (i == 0 && supported_ca) {
-                assert(wendy_pki_verify_identity(identity, n, root, root_n, wrong_key, wrong_key_n, principal, signed_time, &expires) != 0);
-                assert(wendy_pki_verify_identity(identity, n, root, root_n, key, key_n, principal, signed_time + 3601, &expires) != 0);
+                assert(wendy_pki_verify_identity(identity, n, root, root_n, wrong_key, wrong_key_n, principal, signed_time, &expires, NULL) != 0);
+                assert(wendy_pki_verify_identity(identity, n, root, root_n, key, key_n, principal, signed_time + 3601, &expires, NULL) != 0);
             }
             free(identity);
         }
@@ -235,7 +241,7 @@ int main(int argc, char **argv)
         }
         time_t expires = 123;
         int result = wendy_pki_verify_identity(chain, n, root, root_n,
-            key, key_n, principal, signed_time, &expires);
+            key, key_n, principal, signed_time, &expires, NULL);
         printf("Mixed ML-DSA-87 CA chain %s: %d\n", mixed[i], result);
         assert(i == 0 ? result == 0 && expires == signed_time + 3600 : result != 0 && expires == 123);
         if (i) free(chain);

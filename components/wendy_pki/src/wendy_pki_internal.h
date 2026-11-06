@@ -70,6 +70,10 @@ struct wendy_pki_connection
     /* Full local/remote certificate path lifetime, independent of wall-clock
      * corrections, carrier leases and caller I/O deadlines. */
     int64_t session_deadline_us;
+    /* Broker control connection only. Monotonic time of the planned stop for
+     * certificate renewal (0 = none), and the hourly time fetch (NULL = none). */
+    int64_t renew_deadline_us;
+    void (*refresh_time)(void);
     /* Nonzero only for the authenticated native carrier transport. */
     int64_t mesh_deadline_us;
     char mesh_tenant[37];

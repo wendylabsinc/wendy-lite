@@ -55,7 +55,7 @@ static const time_t signed_now = 1800000000;
 static int64_t durable_floor;
 static unsigned floor_writes, revision_writes;
 static time_t reply_seconds, verifier_floor;
-static time_t clock_now, stored_expiry;
+static time_t clock_now, stored_not_before, stored_expiry;
 static bool have_certificate, invalid_certificate, expire_during_renewal;
 static int renewal_calls, broker_calls, identity_checks;
 static bool pending_certificate, issuance_success;
@@ -74,7 +74,7 @@ static const char *response_authority;
 static const char *fail_set;
 static int authority_writes, lite_accepts, operator_accepts, lan_accepts;
 static int stream_accepts;
-static wendy_pki_connection stream_connection;
+static wendy_pki_connection stream_connection, broker_connection;
 static bool have_key, have_binding, have_nonce, config_cleared, fail_clear;
 static uint64_t snapshot_generation;
 static int64_t reset_pending;
@@ -289,16 +289,22 @@ int wendy_pki_verify_time(const uint8_t *input, size_t size, const uint8_t nonce
 }
 int wendy_pki_verify_identity(const uint8_t *pem, size_t size, const uint8_t *roots,
                               size_t roots_size, const uint8_t *key, size_t key_size,
-                              const char *principal, time_t now, time_t *expires)
+                              const char *principal, time_t now, time_t *expires,
+                              struct wendy_pki_validity *leaf)
 {
     identity_checks++;
     assert(roots == (config.provision_trust ? usb_roots : wendy_pki_device_roots_start));
     assert(size == 6);
     if (!memcmp(pem, "issued", 6)) {
+        if (leaf)
+            *leaf = (struct wendy_pki_validity){issued_not_before, issued_expiry};
         *expires = issued_expiry;
         return invalid_certificate || now < issued_not_before || now >= issued_expiry ? -1 : 0;
     }
     assert(!memcmp(pem, "stored", 6));
+    /* Like the real verifier, report the leaf dates even when they fail. */
+    if (leaf)
+        *leaf = (struct wendy_pki_validity){stored_not_before, stored_expiry};
     *expires = stored_expiry;
     return invalid_certificate || now >= stored_expiry ? -1 : 0;
 }
@@ -384,6 +390,8 @@ int pki_tls_connect(const char *host, unsigned port, const uint8_t *key, size_t 
     assert((certificate_is(cert, "stored") || certificate_is(cert, "issued")));
     assert(clock_now < (certificate_is(cert, "issued") ? issued_expiry : stored_expiry) &&
            !invalid_certificate);
+    memset(&broker_connection, 0, sizeof broker_connection);
+    *out = &broker_connection;
     return 0;
 }
 cJSON *cJSON_CreateObject(void) { return calloc(1, sizeof(cJSON)); }
@@ -434,6 +442,8 @@ static void reset(void)
     usb_data = (struct wendy_conf_enrollment_data){0};
     bad_roots = 0;
     build_roots_size = 1;
+    /* Past half its lifetime, so a default connection renews. */
+    stored_not_before = signed_now - 7200;
     stored_expiry = signed_now + 3600;
     have_certificate = true;
     invalid_certificate = expire_during_renewal = false;
@@ -605,7 +615,7 @@ static void test_lite_authority_lifecycle(void)
     struct wendy_conf_span fresh = {0};
     time_t expires;
     assert(issue(1, &config, &data, key_der, key_der_size, (struct wendy_conf_span){"stored", 6},
-                 "principal", &fresh, &expires) != 0);
+                 "principal", &fresh, &expires, NULL) != 0);
     assert(!fresh.data && !strcmp(lite_authority, "old-authority-pem") && authority_writes == 0);
 
     /* Migration renews a valid long-lived device identity immediately. If the
@@ -645,7 +655,7 @@ static void test_post_issuance_time_and_recovery(void)
     assert(clock_now < issued_not_before);
     time_t expires;
     assert(wendy_pki_verify_identity((uint8_t *)"issued", 6, wendy_pki_device_roots_start,
-        1, key_der, key_der_size, "principal", clock_now, &expires) != 0);
+        1, key_der, key_der_size, "principal", clock_now, &expires, NULL) != 0);
     assert(wendy_pki_connect(&connection) == ESP_OK);
     assert(timestamp_calls == 2 && clock_now == issued_not_before);
     assert(stored_is_issued && !pending_certificate && renewal_calls == 1);
@@ -765,6 +775,233 @@ static void test_stream_stored_identity(void)
     assert(!stream_accepts);
 }
 
+static void test_half_life_renewal(void)
+{
+    wendy_pki_connection *connection = NULL;
+    /* Before half its lifetime the stored identity is used as is. */
+    reset();
+    stored_not_before = signed_now - 1000;
+    stored_expiry = signed_now + 3000;
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(renewal_calls == 0 && broker_calls == 1 && identity_checks == 1);
+
+    /* Renewal starts exactly at half its lifetime. */
+    reset();
+    stored_not_before = signed_now - 2000;
+    stored_expiry = signed_now + 2000;
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(renewal_calls == 1 && broker_calls == 1);
+
+    /* A 30-day identity renews with 10 days left, not only on its last day. */
+    reset();
+    stored_not_before = signed_now - 20 * 86400;
+    stored_expiry = signed_now + 10 * 86400;
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(renewal_calls == 1 && broker_calls == 1);
+
+    /* A 2-hour identity is not renewed on every connection of its only day. */
+    reset();
+    stored_not_before = signed_now - 1800;
+    stored_expiry = signed_now + 5400;
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(renewal_calls == 0 && broker_calls == 1);
+}
+
+/* A 30-day identity whose renewal date is 1000 s after signed_now. */
+static void stored_renews_in_1000_s(void)
+{
+    stored_not_before = signed_now + 1000 - 15 * 86400;
+    stored_expiry = stored_not_before + 30 * 86400;
+}
+static int64_t control_stop_in(void)
+{
+    return (broker_connection.renew_deadline_us - monotonic_us) / 1000000;
+}
+
+static void test_control_stop(void)
+{
+    wendy_pki_connection *connection = NULL;
+    const time_t stop_time = signed_now + 1000 + 3600;
+
+    /* Before the renewal date: no renewal, and the stop is one hour after it. */
+    reset();
+    monotonic_us = 5000000;
+    stored_renews_in_1000_s();
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(renewal_calls == 0 && control_stop_in() == 1000 + 3600);
+    assert(broker_connection.refresh_time == control_refresh_time);
+
+    /* At that stop the exact date check passes, so the renewal happens. The
+     * next stop comes from the new certificate. */
+    reset();
+    stored_renews_in_1000_s();
+    reply_seconds = stop_time;
+    distinct_issued_certificate = issuance_success = true;
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(renewal_calls == 1 && stored_is_issued && clock_now == stop_time);
+    assert(control_stop_in() ==
+           issued_not_before + (issued_expiry - issued_not_before) / 2 + 3600 - stop_time);
+
+    /* A failed renewal keeps the stored identity and retries after one hour. */
+    reset();
+    stored_renews_in_1000_s();
+    reply_seconds = stop_time;
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(renewal_calls == 1 && !stored_is_issued && control_stop_in() == 3600);
+
+    /* A renewal that installs no Lite authority pin also retries after one hour. */
+    reset();
+    stored_renews_in_1000_s();
+    lite_authority[0] = 0;
+    distinct_issued_certificate = issuance_success = true;
+    response_authority = NULL;
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(renewal_calls == 1 && stored_is_issued && !lite_authority[0]);
+    assert(control_stop_in() == 3600);
+
+    /* A stop date already in the past cannot cause a tight loop. */
+    reset();
+    stored_renews_in_1000_s();
+    reply_seconds = stop_time;
+    distinct_issued_certificate = issuance_success = true;
+    issued_not_before = signed_now - 20000;
+    issued_expiry = signed_now + 8000;
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(renewal_calls == 1 && stored_is_issued && control_stop_in() == 3600);
+}
+
+static void test_control_time_fetch(void)
+{
+    wendy_pki_connection *connection = NULL;
+    reset();
+    monotonic_us = 1000000;
+    stored_renews_in_1000_s();
+    assert(wendy_pki_connect(&connection) == ESP_OK && timestamp_calls == 1);
+    void (*fetch)(void) = broker_connection.refresh_time;
+
+    /* The connect path has just verified the time. */
+    fetch();
+    monotonic_us += 299000000;
+    fetch();
+    assert(timestamp_calls == 1);
+    monotonic_us += 2000000;
+    fetch();
+    assert(timestamp_calls == 2);
+
+    /* Another identity user is active: skip. The next call fetches. */
+    monotonic_us += INT64_C(3600000000);
+    pthread_mutex_lock(&identity_lock);
+    fetch();
+    pthread_mutex_unlock(&identity_lock);
+    assert(timestamp_calls == 2);
+    fetch();
+    assert(timestamp_calls == 3);
+
+    /* A failed fetch has no other effect, and it releases the lock. */
+    monotonic_us += INT64_C(3600000000);
+    issuance_received = fail_post_issue_time = true;
+    fetch();
+    assert(timestamp_calls == 4);
+    assert(!pthread_mutex_trylock(&identity_lock));
+    pthread_mutex_unlock(&identity_lock);
+
+    /* No fetch during an enrollment reset. */
+    identity_resetting = true;
+    fetch();
+    identity_resetting = false;
+    assert(timestamp_calls == 4);
+}
+
+/* Tunnel off: the same work as a connection, up to the broker socket. */
+static void test_maintain(void)
+{
+    const time_t renewal_time = signed_now + 1000;
+
+    /* The time is fetched and the identity is checked, and nothing else happens. */
+    reset();
+    stored_renews_in_1000_s();
+    assert(wendy_pki_maintain() == ESP_OK);
+    assert(timestamp_calls == 1 && identity_checks == 1 && !renewal_calls && !broker_calls);
+
+    /* The renewal starts exactly at its date, after the time fetch. */
+    reset();
+    stored_renews_in_1000_s();
+    reply_seconds = renewal_time;
+    distinct_issued_certificate = issuance_success = true;
+    assert(wendy_pki_maintain() == ESP_OK);
+    assert(renewal_calls == 1 && stored_is_issued && clock_now == renewal_time && !broker_calls);
+
+    /* A failed renewal keeps the valid identity. The next check retries. */
+    reset();
+    stored_renews_in_1000_s();
+    reply_seconds = renewal_time;
+    assert(wendy_pki_maintain() == ESP_OK);
+    assert(renewal_calls == 1 && !stored_is_issued && !broker_calls);
+    assert(wendy_pki_maintain() == ESP_OK);
+    assert(renewal_calls == 2 && !broker_calls);
+
+    /* Only the tunnel uses the Lite authority pin, so a missing pin causes no
+     * renewal. After a renewal with no pin, there is no new issuance either. */
+    reset();
+    stored_renews_in_1000_s();
+    lite_authority[0] = 0;
+    assert(wendy_pki_maintain() == ESP_OK);
+    assert(!renewal_calls && !broker_calls);
+    reply_seconds = renewal_time;
+    distinct_issued_certificate = issuance_success = true;
+    response_authority = NULL;
+    assert(wendy_pki_maintain() == ESP_OK);
+    assert(renewal_calls == 1 && stored_is_issued && !lite_authority[0]);
+    assert(wendy_pki_maintain() == ESP_OK);
+    assert(renewal_calls == 1 && !broker_calls);
+
+    /* A first enrollment works without the tunnel. */
+    reset();
+    have_certificate = false;
+    lite_authority[0] = 0;
+    issuance_success = true;
+    assert(wendy_pki_maintain() == ESP_OK);
+    assert(have_certificate && renewal_calls == 1 && !broker_calls);
+    assert(!strcmp(lite_authority, "new-authority-pem"));
+
+    /* A failed time fetch is a failure, and no renewal follows it. */
+    reset();
+    stored_renews_in_1000_s();
+    issuance_received = fail_post_issue_time = true;
+    assert(wendy_pki_maintain() != ESP_OK);
+    assert(timestamp_calls == 1 && !identity_checks && !renewal_calls && !broker_calls);
+
+    /* An invalid identity is a failure. */
+    reset();
+    invalid_certificate = true;
+    assert(wendy_pki_maintain() != ESP_OK);
+    assert(!renewal_calls && !broker_calls);
+
+    /* No check during an enrollment reset, and the lock is released. */
+    reset();
+    identity_resetting = true;
+    assert(wendy_pki_maintain() == ESP_ERR_INVALID_STATE);
+    identity_resetting = false;
+    assert(!timestamp_calls && !broker_calls);
+    assert(!pthread_mutex_trylock(&identity_lock));
+    pthread_mutex_unlock(&identity_lock);
+}
+
+static void test_format_lifetime(void)
+{
+    char text[24];
+    format_lifetime(text, 12 * 86400 + 43200);
+    assert(!strcmp(text, "12.5 days"));
+    format_lifetime(text, 86400);
+    assert(!strcmp(text, "1.0 days"));
+    format_lifetime(text, 3 * 3600 + 720);
+    assert(!strcmp(text, "3.2 h"));
+    format_lifetime(text, 42 * 60 + 59);
+    assert(!strcmp(text, "42 min"));
+    format_lifetime(text, -5);
+    assert(!strcmp(text, "0 min"));
+}
+
 static void test_mesh_certificate_clock(void)
 {
     reset();
@@ -806,6 +1043,7 @@ static void test_mesh_certificate_clock(void)
     mesh_verified_generation = 0;
     reset();
 }
+
 static void test_signed_clock_generation(void)
 {
     reset();
@@ -987,7 +1225,13 @@ int main(int argc, char **argv)
     test_post_issuance_time_and_recovery();
     test_enrollment_reset();
     test_stream_stored_identity();
-    puts("renewal fallback, Lite authority lifecycle and local enrollment reset tests passed");
+    test_half_life_renewal();
+    test_control_stop();
+    test_control_time_fetch();
+    test_maintain();
+    test_format_lifetime();
+    puts("renewal fallback, half-life renewal, control stop and time fetch, Lite authority "
+         "lifecycle and local enrollment reset tests passed");
 }
 
 int pki_tls_accept(int fd, const uint8_t *key, size_t key_size, struct wendy_conf_span cert,

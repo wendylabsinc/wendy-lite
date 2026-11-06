@@ -1,12 +1,25 @@
 menu "Wendy Cloud"
     config WENDY_CLOUD
-        bool "Enable cloud mTLS connection"
+        bool "Enable Wendy Cloud"
         default y
         depends on WENDY_PKI
         help
-            Open a persistent mTLS socket to the cloud endpoint using
-            a device identity enrolled directly with pki-core.
+            Run the cloud task. It fetches the signed time, and it enrolls and
+            renews the device identity directly with pki-core.
             The task starts only when stored enrollment is present.
+
+    config WENDY_CLOUD_TUNNEL
+        bool "Enable the cloud tunnel"
+        default y
+        depends on WENDY_CLOUD
+        help
+            Keep an mTLS control connection to the broker open, so that an
+            operator can reach the device through the cloud.
+
+            If this is off, the device opens no broker connection and cannot be
+            reached through the cloud. This keeps the connection's memory free.
+            The cloud task still fetches the time and renews the identity, once
+            per hour.
 
     config WENDY_CLOUD_TASK_STACK_SIZE
         int "Cloud task stack size (bytes)"
@@ -44,6 +57,6 @@ menu "Wendy Cloud"
 
     config WENDY_CLOUD_RECONNECT_DELAY_MS
         int "Reconnect delay (ms)"
-        depends on WENDY_CLOUD
+        depends on WENDY_CLOUD_TUNNEL
         default 5000
 endmenu

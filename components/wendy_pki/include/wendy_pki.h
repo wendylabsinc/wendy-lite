@@ -21,6 +21,12 @@ esp_err_t wendy_pki_sync_time(const char *server, const uint8_t *reply, size_t s
                             bool *synchronized, int64_t *seconds);
 /* Called by the cloud task after Wi-Fi is up; all network operations are bounded. */
 esp_err_t wendy_pki_connect(wendy_pki_connection **connection);
+/* Called by the cloud task when the tunnel is off. Does the same work as
+ * wendy_pki_connect() up to the broker connection: fetches the signed time, checks
+ * the stored identity and renews it when due. Opens no broker connection.
+ * ESP_OK means that the time is verified and the identity is valid. A failed
+ * renewal of a still-valid identity is not a failure: the next call retries. */
+esp_err_t wendy_pki_maintain(void);
 void wendy_pki_close(wendy_pki_connection *connection);
 /* Waits up to 10 seconds for peer close_notify and replies before detaching.
  * Success frees connection and transfers the open fd to the caller.
@@ -60,7 +66,7 @@ enum wendy_pki_relay_result {
     WENDY_PKI_RELAY_RENEW = -2,
 };
 /* Installs keys exclusively from authenticated outer TLS, then detaches TCP.
- * Returns the handed-off fd, FAILED, or RENEW for normal planned refresh.
+ * Returns the handed-off fd, FAILED, or RENEW when the renewal date has passed.
  * The caller must close connection on every outcome. A nonnegative return
  * transfers the detached fd to the caller independently of connection. */
 int wendy_pki_relay_upgrade(wendy_pki_connection *, struct wendy_lite_trust *);

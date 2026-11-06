@@ -4,6 +4,7 @@
 #include "wendy_com_service.h"
 #include "wendy_server.h"
 #include "wendy_server_tls.h"
+#include "wendy_server_keepalive.h"
 #include "wendy_conf.h"
 #include "wendy_pki.h"
 #if CONFIG_WENDY_NET_PEER
@@ -44,6 +45,9 @@
 #define WENDY_SERVER_BACKLOG      4
 #define WENDY_SERVER_TASK_STACK   CONFIG_WENDY_SERVER_TASK_STACK_SIZE
 #define WENDY_SERVER_MAX_LINKS    4
+// Same budget as the LAN mTLS handshake. A silent anonymous client must not
+// keep the server task away from accept() for longer than this.
+#define WENDY_SERVER_ANONYMOUS_HANDSHAKE_US (15LL * 1000 * 1000)
 
 
 //--- types ---//
@@ -398,6 +402,16 @@ static void _server_task(void *arg)
             continue;
         }
 
+        // Cover the TLS handshake and the WendyCom session of every LAN
+        // client, anonymous or mTLS. Native VIP sockets later get their own
+        // values from wendy_net_peer. A failure means the peer already reset
+        // the connection or lwIP is out of memory; never run without it.
+        if (wendy_server_enable_keepalive(client_fd)) {
+            ESP_LOGW(TAG, "enabling TCP keepalive failed: %d", errno);
+            close(client_fd);
+            continue;
+        }
+
         // Once enrollment is configured, never fall back to anonymous TLS.
         if (wendy_conf_has_enrollment()) {
 #if CONFIG_WENDY_PKI
@@ -493,13 +507,13 @@ static void _server_task(void *arg)
             continue;
         }
 
-        int ret;
-        while ((ret = esp_tls_server_session_continue_async(tls)) != 0) {
-            if (ret != ESP_TLS_ERR_SSL_WANT_READ && ret != ESP_TLS_ERR_SSL_WANT_WRITE)
-                break;
-        }
+        int ret = wendy_server_anonymous_handshake(tls, client_fd,
+                                                   WENDY_SERVER_ANONYMOUS_HANDSHAKE_US);
         if (ret != 0) {
-            ESP_LOGE(TAG, "TLS handshake failed: 0x%x", -ret);
+            if (ret == WENDY_SERVER_TLS_HANDSHAKE_TIMEOUT)
+                ESP_LOGW(TAG, "TLS handshake timed out");
+            else
+                ESP_LOGE(TAG, "TLS handshake failed: 0x%x", -ret);
             close(client_fd);
             esp_tls_server_session_delete(tls);
             continue;
@@ -548,6 +562,14 @@ void wendy_server_start(void)
 void wendy_server_accept_operator(int fd, const struct wendy_lite_trust *trust)
 {
 #if CONFIG_WENDY_PKI
+    // The broker heartbeat ends with the handoff. From here, only TCP
+    // keepalive finds a broken path to the broker. Without it, refuse the
+    // session; wendy_cloud then opens a new control connection at once.
+    if (wendy_server_enable_keepalive(fd)) {
+        ESP_LOGW(TAG, "enabling TCP keepalive failed: %d", errno);
+        close(fd);
+        return;
+    }
     struct _add_link_op *op = calloc(1, sizeof *op);
     if (!op) { close(fd); return; }
 #if CONFIG_WENDY_NET_PEER

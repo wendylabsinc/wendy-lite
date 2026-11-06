@@ -16,7 +16,8 @@ typedef enum {
 } wendy_cloud_state_t;
 
 /**
- * Start the cloud connection task.
+ * Start the cloud task. It keeps the time and the device identity current. With
+ * CONFIG_WENDY_CLOUD_TUNNEL, it also keeps the broker control connection open.
  * Call after nvs_flash_init() and network stack initialization.
  * Wi-Fi or mesh may supply connectivity.
  * Returns ESP_ERR_INVALID_STATE if the device has no enrollment configuration.
@@ -24,7 +25,7 @@ typedef enum {
 esp_err_t wendy_cloud_start(void);
 
 /**
- * Stop the cloud connection task and tear down the TLS session.
+ * Stop the cloud task and tear down any TLS session.
  */
 void wendy_cloud_stop(void);
 
@@ -35,13 +36,14 @@ wendy_cloud_state_t wendy_cloud_get_state(void);
 
 /**
  * Convenience: true when state == WENDY_CLOUD_STATE_CONNECTED.
+ * Always false without CONFIG_WENDY_CLOUD_TUNNEL.
  */
 bool wendy_cloud_is_connected(void);
 
 unsigned wendy_cloud_connect_failures(void);
 void wendy_cloud_reset_failures(void);
 
-/* Wake the connector after a route change. Call outside the lwIP core thread. */
+/* Wake the cloud task after a route change. Call outside the lwIP core thread. */
 void wendy_cloud_network_changed(void);
 
 #ifdef __cplusplus

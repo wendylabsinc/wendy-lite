@@ -10,3 +10,4 @@ typedef struct esp_tls { int fd; } esp_tls_t;
 ssize_t esp_tls_conn_read(esp_tls_t *tls, void *data, size_t size);
 ssize_t esp_tls_conn_write(esp_tls_t *tls, const void *data, size_t size);
 esp_err_t esp_tls_get_conn_sockfd(esp_tls_t *tls, int *fd);
+int esp_tls_server_session_continue_async(esp_tls_t *tls);

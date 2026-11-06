@@ -39,7 +39,8 @@ See `public-time-fixtures/README.md` for provenance and regeneration.
 `renewal_test` runs the production connection flow with in-memory NVS and HTTP
 stubs. It checks fallback after failed renewal, retries on the next connection,
 expiry during renewal, rejection of expired or invalid stored identities, failed
-initial enrollment, and connections that do not yet need renewal. It also checks
+initial enrollment, and connections that do not yet need renewal. Renewal starts
+at half the certificate's validity period, for long and short lifetimes. It also checks
 explicit USB trust selection and rejects partial or unauthorized bundles.
 The BLE stream accept path uses the stored identity without issuance or network
 time requests. Tests reject missing, expired, invalid and reset identities before
@@ -84,8 +85,10 @@ LAN cases also accept same-tenant device clients and assert the verified peer
 role. They reject wrong tenants, malformed or ambiguous identities, missing
 clientAuth, CA leaves, invalid dates, untrusted issuers, and signature tampering.
 `relay_control_test` runs the production broker control loop with deterministic
-TLS reads, writes and socket waits. Healthy heartbeats reach the four-minute
-refresh deadline and return the planned-renewal result. Early heartbeat timeout,
+TLS reads, writes and socket waits. Healthy heartbeats reach the renewal
+deadline and return the planned-renewal result. With no deadline, the loop keeps
+answering heartbeats and runs the time fetch hook once per hour. The hook does
+not run after the renewal deadline. Early heartbeat timeout,
 EOF, invalid or partial headers, stalled writes, reset and socket errors retain
 the failure result even at that deadline. Successful handoff preserves the
 detached fd and its trust data for the caller.
