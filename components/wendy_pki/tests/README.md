@@ -40,8 +40,11 @@ See `public-time-fixtures/README.md` for provenance and regeneration.
 stubs. It checks fallback after failed renewal, retries on the next connection,
 expiry during renewal, rejection of expired or invalid stored identities, failed
 initial enrollment, and connections that do not yet need renewal. Renewal starts
-at half the certificate's validity period, for long and short lifetimes. It also checks
-explicit USB trust selection and rejects partial or unauthorized bundles.
+at half the certificate's validity period, for long and short lifetimes. The planned
+stop of the control connection is the earlier of the renewal stop and the end of the
+broker chain, and a chain that ended during the handshake gives a failed connection.
+The test also checks explicit USB trust selection and rejects partial or unauthorized
+bundles.
 The BLE stream accept path uses the stored identity without issuance or network
 time requests. Tests reject missing, expired, invalid and reset identities before
 calling the TLS backend.
@@ -177,7 +180,9 @@ without them, and uses a test clock. `pki_tls_connect_dated` refuses an expired 
 not yet valid leaf, intermediate or root, and refuses any chain when the clock is
 not set. `pki_tls_connect` accepts the same chains, which shows that the dates are
 the only fault and that mbedTLS does not check them in this test. The time fetch
-still works with a clock that is too early or too late.
+still works with a clock that is too early or too late. An accepted dated connection
+records the earliest end date in the chain, whether that date is on the leaf, the
+intermediate or the root. An undated connection records no date.
 
 A second Mbed TLS client negotiates 512-byte TLS records and sends a valid
 ML-DSA-65-signed P-256 operator chain to the production stream server. This

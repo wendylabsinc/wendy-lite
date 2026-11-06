@@ -1,6 +1,7 @@
 /* Production outbound TLS with a test clock. CMake builds this target with its
  * own X.509 objects, without mbedTLS date checks, to match the firmware.
- * Usage: broker_dates_test dated|undated|http roots.pem port clock accept|reject */
+ * Usage: broker_dates_test dated|undated|http roots.pem port clock accept|reject chain_end
+ * chain_end is the recorded end date of the chain on an accepted connection. */
 #include "wendy_pki_internal.h"
 #include "wendy_cert_bundle.h"
 #include "esp_timer.h"
@@ -47,12 +48,13 @@ static struct wendy_conf_span load_roots(const char *path)
 
 int main(int argc, char **argv)
 {
-    assert(argc == 6);
+    assert(argc == 7);
     const char *mode = argv[1];
     struct wendy_conf_span roots = load_roots(argv[2]);
     unsigned port = (unsigned)strtoul(argv[3], NULL, 10);
     test_clock = (time_t)strtoll(argv[4], NULL, 10);
     bool expect_accept = !strcmp(argv[5], "accept");
+    time_t chain_end = (time_t)strtoll(argv[6], NULL, 10);
     const struct wendy_conf_span no_cert = {0};
     wendy_pki_connection *c = NULL;
     int result;
@@ -73,7 +75,10 @@ int main(int argc, char **argv)
         free(response);
     }
     assert(result ? !c : (strcmp(mode, "http") ? c != NULL : !c));
-    if (c) wendy_pki_close(c);
+    if (c) {
+        assert(c->peer_chain_expires == chain_end);
+        wendy_pki_close(c);
+    }
     free((void *)roots.data);
     if ((result == 0) != expect_accept) {
         fprintf(stderr, "%s at clock %s: expected %s, connect returned %d\n", mode, argv[4], argv[5],

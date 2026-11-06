@@ -56,8 +56,8 @@ terminate an established session. The upgrade hash and session bind admission
 to the single-use outer connection.
 
 The control connection stays open while its heartbeat works. Firmware stops it
-voluntarily only for certificate renewal (see [enrollment](cloud-enrollment.md)).
-While it is open, firmware refreshes signed time once per hour, because the grant
+voluntarily only for certificate renewal or when the broker's certificate chain
+ends (see [enrollment](cloud-enrollment.md)). While it is open, firmware refreshes signed time once per hour, because the grant
 check above has no clock tolerance.
 
 The cloud task opens a replacement control connection after handing off the

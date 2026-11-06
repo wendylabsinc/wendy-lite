@@ -654,8 +654,14 @@ static int certificate_policy(void *context, mbedtls_x509_crt *cert, int depth,
             *flags |= start > now ? MBEDTLS_X509_BADCERT_FUTURE : MBEDTLS_X509_BADCERT_EXPIRED;
     }
     /* After the block above, which clears date flags, so nothing removes this result. */
-    if (c->check_peer_dates)
+    if (c->check_peer_dates) {
+        time_t expiry;
         *flags |= pki_parsed_date_flags(cert, time(NULL));
+        if (pki_parsed_peer_expiry(cert, &expiry))
+            *flags |= MBEDTLS_X509_BADCERT_OTHER;
+        else if (!c->peer_chain_expires || expiry < c->peer_chain_expires)
+            c->peer_chain_expires = expiry;
+    }
     if (c->mesh_tenant[0]) {
         time_t not_before = 0, expiry;
         bool start_missing = pki_parsed_peer_not_before(cert, &not_before) != 0;
@@ -2701,7 +2707,8 @@ int wendy_pki_relay_upgrade(wendy_pki_connection *c, struct wendy_lite_trust *tr
             !memcmp(trust->keys[0].id, key->id, key->id_size)) goto fail;
     }
     /* The connection stays open while heartbeats work. The only voluntary stop
-     * is the renewal deadline that the connect path set. */
+     * is the deadline that the connect path set, for certificate renewal or the
+     * end of the broker chain. The peer cannot delay it. */
     int64_t renew = c->renew_deadline_us;
     int64_t next_time = esp_timer_get_time() + CONTROL_TIME_REFRESH_US;
     bool first = true;
@@ -2713,7 +2720,7 @@ int wendy_pki_relay_upgrade(wendy_pki_connection *c, struct wendy_lite_trust *tr
         if (result) {
             if (result == READ_ALL_IDLE_TIMEOUT && deadline == renew &&
                 !wendy_pki_reset_in_progress()) {
-                ESP_LOGI("wendy_pki", "renewal date passed; stopping broker control connection");
+                ESP_LOGI("wendy_pki", "planned stop reached; stopping broker control connection");
                 return WENDY_PKI_RELAY_RENEW;
             }
             goto fail;

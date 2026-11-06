@@ -152,11 +152,16 @@ expiry. Each connection logs the remaining lifetime and the time until renewal,
 or how long ago the stored certificate expired.
 
 The connection then stays open while its heartbeat works. If it breaks, Lite
-reconnects and does the same checks. The only voluntary stop is one hour after the
-renewal date. That margin makes sure that the date has passed when Lite refreshes
-signed time again, so the stop leads to a renewal. While the connection is open,
-Lite refreshes signed time once per hour, between heartbeats, because the relay
-grant check has no clock tolerance. A failed refresh has no effect on the connection.
+reconnects and does the same checks. Lite stops the connection voluntarily at the
+earlier of two dates. The first is one hour after the renewal date. That margin
+makes sure that the date has passed when Lite refreshes signed time again, so the
+stop leads to a renewal. The second is 60 seconds after the earliest end date in the
+broker's certificate chain, including its root. A new handshake refuses that chain
+from this date, and a broker that an attacker controls would never close the
+connection itself. In normal operation the broker replaces its certificate and
+restarts first, so this stop does not occur. While the connection is open, Lite
+refreshes signed time once per hour, between heartbeats, because the relay grant
+check has no clock tolerance. A failed refresh has no effect on the connection.
 
 An existing identity without a Lite operator anchor also renews on the next
 connection, regardless of its remaining lifetime. A valid authority header in that response

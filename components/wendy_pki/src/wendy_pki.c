@@ -1171,6 +1171,10 @@ static void log_identity_lifetime(bool valid, time_t now, const struct wendy_pki
 #define RENEW_STOP_MARGIN_S 3600
 /* After a failed renewal, stay connected this long before the next try. */
 #define RENEW_RETRY_S 3600
+/* Stop the control connection this long after the broker chain ends. The next
+ * handshake then refuses that chain, and timer drift cannot cause repeated
+ * reconnects: a stop before the end date only leads to one more short connection. */
+#define BROKER_CHAIN_STOP_MARGIN_S 60
 /* Renew at half the validity window, so failed renewals have time to retry
  * before the identity expires. */
 static time_t renewal_date(const struct wendy_pki_validity *leaf, time_t expires)
@@ -1326,17 +1330,33 @@ static esp_err_t connect_identity(wendy_pki_connection **connection)
         ESP_LOGW(TAG, "broker TLS connection failed");
         goto done;
     }
+    /* The chain can end during the handshake. This also refuses a connection with
+     * no recorded date. The result is a normal failed connection with its retry delay. */
+    time_t chain_left = (*connection)->peer_chain_expires - time(NULL);
+    if (chain_left <= 0) {
+        ESP_LOGW(TAG, "broker certificate chain ended during the handshake");
+        wendy_pki_close(*connection);
+        *connection = NULL;
+        goto done;
+    }
     ESP_LOGI(TAG, "broker TLS authenticated; awaiting control handshake");
     /* Keep the connection open until the renewal is due. A stop always leaves
      * time to run, and a failed renewal retries after the retry delay. */
     time_t stop_in = renew_at + RENEW_STOP_MARGIN_S - time(NULL);
     if ((renew_due && !fresh.data) || !have_authority || stop_in <= 0)
         stop_in = RENEW_RETRY_S;
+    /* A fake broker never closes the connection, so the device must not stay
+     * connected past the date on which a new handshake refuses this chain. */
+    const char *stop_reason = "renewal";
+    if (chain_left + BROKER_CHAIN_STOP_MARGIN_S < stop_in) {
+        stop_in = chain_left + BROKER_CHAIN_STOP_MARGIN_S;
+        stop_reason = "broker certificate end date";
+    }
     (*connection)->renew_deadline_us = esp_timer_get_time() + stop_in * INT64_C(1000000);
     (*connection)->refresh_time = control_refresh_time;
     char stop_text[24];
     format_lifetime(stop_text, stop_in);
-    ESP_LOGI(TAG, "broker control connection: planned stop in %s", stop_text);
+    ESP_LOGI(TAG, "broker control connection: planned stop in %s (%s)", stop_text, stop_reason);
     result = ESP_OK;
 done:
     if (key)

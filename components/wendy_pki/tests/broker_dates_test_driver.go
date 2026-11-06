@@ -26,6 +26,17 @@ import (
 type dates struct{ from, to time.Time }
 type chainDates struct{ root, intermediate, leaf dates }
 
+// end returns the earliest end date in the chain.
+func (c chainDates) end() time.Time {
+	end := c.root.to
+	for _, to := range []time.Time{c.intermediate.to, c.leaf.to} {
+		if to.Before(end) {
+			end = to
+		}
+	}
+	return end
+}
+
 func must(err error) {
 	if err != nil {
 		panic(err)
@@ -69,7 +80,12 @@ func run(binary, directory, name, mode string, validity chainDates, clock int64,
 	if accept {
 		expect = "accept"
 	}
-	command := exec.Command(binary, mode, roots, fmt.Sprint(listener.Addr().(*net.TCPAddr).Port), fmt.Sprint(clock), expect)
+	// Only the dated connection records the end date of the chain.
+	chainEnd := int64(0)
+	if mode == "dated" {
+		chainEnd = validity.end().Unix()
+	}
+	command := exec.Command(binary, mode, roots, fmt.Sprint(listener.Addr().(*net.TCPAddr).Port), fmt.Sprint(clock), expect, fmt.Sprint(chainEnd))
 	command.Stdout, command.Stderr = os.Stdout, os.Stderr
 	must(command.Start())
 	defer command.Process.Kill()
@@ -135,6 +151,11 @@ func main() {
 
 	run(binary, directory, "valid", "dated", valid, clock, true)
 	run(binary, directory, "leaf-starts-now", "dated", chainDates{good, good, dates{now, good.to}}, clock, true)
+	// The recorded end date is the earliest one in the chain, at any position.
+	soon := dates{good.from, now.Add(10 * time.Minute)}
+	run(binary, directory, "leaf-ends-first", "dated", chainDates{good, good, soon}, clock, true)
+	run(binary, directory, "intermediate-ends-first", "dated", chainDates{good, soon, good}, clock, true)
+	run(binary, directory, "root-ends-first", "dated", chainDates{soon, good, good}, clock, true)
 	// Without a verified clock, the broker connection fails closed.
 	run(binary, directory, "clock-not-set", "dated", valid, 0, false)
 	// The time fetch does not use the clock, which can be wrong in both directions.
