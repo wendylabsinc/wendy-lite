@@ -31,6 +31,8 @@ static bool cancel_retry_with_ip, cancel_retry_with_deinit;
 static unsigned connect_calls, connect_failures, reconnect_waits, restore_after_waits;
 static wifi_config_t last_config;
 static char log_output[16384];
+static const char *resolved_device_name = "test-board";
+static const char *expected_hostname = "test-board";
 
 void test_log(const char *format, ...)
 {
@@ -267,7 +269,7 @@ esp_err_t mdns_init(void)
 }
 esp_err_t mdns_hostname_set(const char *hostname)
 {
-    assert(!strcmp(hostname, "wendylt-test-board"));
+    assert(!strcmp(hostname, expected_hostname));
     hostname_sets++;
     if (hostname_failures) { hostname_failures--; return ESP_FAIL; }
     return ESP_OK;
@@ -281,7 +283,7 @@ esp_err_t wendy_cloud_start(void)
     if (cloud_failures) { cloud_failures--; return ESP_ERR_NO_MEM; }
     return ESP_OK;
 }
-const char *wendy_conf_get_resolved_device_name(void) { return "test-board"; }
+const char *wendy_conf_get_resolved_device_name(void) { return resolved_device_name; }
 struct wendy_conf_span wendy_conf_get_network_ssid(void)
 {
     return (struct wendy_conf_span){(const uint8_t *)conf_ssid, strlen(conf_ssid)};
@@ -300,6 +302,7 @@ size_t strlcpy(char *dest, const char *source, size_t size)
 
 static void reset_test(void)
 {
+    resolved_device_name = expected_hostname = "test-board";
     wendy_wifi_deinit();
     s_wifi_events = NULL;
     s_infra_initialized = s_connected = false;
@@ -662,8 +665,43 @@ static void test_security_diagnostics_do_not_log_password(void)
     assert(strstr(log_output, "channel=11 authmode=6"));
 }
 
+static void test_mdns_hostname_uses_resolved_device_name(void)
+{
+    static const struct {
+        const char *name, *hostname;
+    } cases[] = {
+        {"test-board", "test-board"},
+        {"Wendy-4824", "wendy-4824"},
+        {"Test.Board_01!", "test-board-01"},
+        {"!!!", "wendy-badname"},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        reset_test();
+        resolved_device_name = cases[i].name;
+        expected_hostname = cases[i].hostname;
+        assert(start_mdns_service() == ESP_OK);
+        assert(mdns_inits == 1 && hostname_sets == 1);
+    }
+
+    // Removing the synthetic prefix leaves the full buffer available for the
+    // configured name, with room for the terminating NUL.
+    char long_name[CONFIG_WENDY_DEVICE_NAME_BUF_SIZE + 8];
+    char truncated[CONFIG_WENDY_DEVICE_NAME_BUF_SIZE];
+    memset(long_name, 'A', sizeof(long_name) - 1);
+    long_name[sizeof(long_name) - 1] = '\0';
+    memset(truncated, 'a', sizeof(truncated) - 1);
+    truncated[sizeof(truncated) - 1] = '\0';
+    reset_test();
+    resolved_device_name = long_name;
+    expected_hostname = truncated;
+    assert(start_mdns_service() == ESP_OK);
+    assert(mdns_inits == 1 && hostname_sets == 1);
+    reset_test();
+}
+
 int main(void)
 {
+    test_mdns_hostname_uses_resolved_device_name();
     test_late_ip();
     test_startup_retry();
     test_disconnect_during_retry();

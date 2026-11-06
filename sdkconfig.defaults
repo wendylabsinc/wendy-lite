@@ -67,6 +67,10 @@ CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y
 # App-facing networking (sockets, DNS, TLS)
 CONFIG_WENDY_NET=n
 
+# mDNS is used through firmware APIs; its interactive console CLI is unused.
+# Keep the optional CLI out of minimal builds that do not link console.
+CONFIG_MDNS_ENABLE_CONSOLE_CLI=n
+
 # Console over UART (compatible with Wokwi and most debug setups)
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 # Disable ROM secondary console so the wendy_usj buffered driver owns the USB
