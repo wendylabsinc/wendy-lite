@@ -49,7 +49,7 @@ void wn_put32(uint8_t *p, uint32_t v);
 int wn_uuid_parse(const char *text, uint8_t out[16]);
 void wn_uuid_format(const uint8_t uuid[16], char out[37]);
 void wn_address(const uint8_t device[16], uint8_t out[16]);
-/* Native catalogue and WendyOS mDNS device names, optionally absolute/cased.
+/* Canonical device-<uuid>.wendy.internal and legacy mesh names, optionally absolute/cased.
  * Returns1 for a device name,0 for ordinary DNS,-1 for a malformed device id.
  * Name resolution supplies an address hint; it does not authorize a route. */
 int wn_device_hostname_parse(const char *host, uint8_t device[16]);
