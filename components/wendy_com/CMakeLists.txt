@@ -15,7 +15,7 @@ idf_component_register(
         "include"
     REQUIRES
         esp-tls mbedtls freertos vfs log
-        nanopb wendy_stdio wendy_conf esp_timer wendy_pki
+        nanopb wendy_stdio wendy_conf esp_timer wendy_pki esp_psram
 )
 idf_component_get_property(nanopb_dir nanopb COMPONENT_DIR)
 target_include_directories(${COMPONENT_LIB} PUBLIC "${nanopb_dir}")

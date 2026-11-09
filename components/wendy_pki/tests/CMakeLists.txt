@@ -185,22 +185,23 @@ add_library(capability_proto STATIC ../../wendy_com/src/wendy_com_msg.pb.c
     ../../wendy_com/src/sensorlink.pb.c
     ../../nanopb/pb_common.c ../../nanopb/pb_decode.c ../../nanopb/pb_encode.c)
 target_include_directories(capability_proto PUBLIC ../../wendy_com/include ../../nanopb)
-function(add_capabilities_test name pki cloud wifi mldsa65 reset_supported cloud_supported mldsa_supported)
+function(add_capabilities_test name pki cloud wifi mldsa65 spiram reset_supported cloud_supported mldsa_supported)
     add_executable(${name} capabilities_test.c)
     target_link_libraries(${name} PRIVATE capability_proto)
     target_compile_definitions(${name} PRIVATE CONFIG_WENDY_PKI=${pki}
         CONFIG_WENDY_CLOUD=${cloud} CONFIG_WENDY_WIFI_ENABLED=${wifi}
-        CONFIG_MBEDTLS_SSL_TLS1_3_SIG_MLDSA65=${mldsa65}
+        CONFIG_MBEDTLS_SSL_TLS1_3_SIG_MLDSA65=${mldsa65} CONFIG_SPIRAM=${spiram}
         EXPECT_RESET=${reset_supported} EXPECT_CLOUD=${cloud_supported}
         EXPECT_MLDSA=${mldsa_supported})
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
-add_capabilities_test(enrollment_capabilities_enabled 1 1 1 0 1 1 0)
-add_capabilities_test(enrollment_capabilities_cloud_disabled 1 0 1 0 1 0 0)
-add_capabilities_test(enrollment_capabilities_wifi_disabled 1 1 0 0 1 0 0)
-add_capabilities_test(enrollment_capabilities_pki_disabled 0 1 1 0 0 0 0)
-add_capabilities_test(enrollment_capabilities_mldsa65 1 1 1 1 1 1 1)
-add_capabilities_test(enrollment_capabilities_mldsa65_pki_disabled 0 1 1 1 0 0 0)
+add_capabilities_test(enrollment_capabilities_enabled 1 1 1 0 1 1 1 0)
+add_capabilities_test(enrollment_capabilities_cloud_disabled 1 0 1 0 1 1 0 0)
+add_capabilities_test(enrollment_capabilities_wifi_disabled 1 1 0 0 1 1 0 0)
+add_capabilities_test(enrollment_capabilities_pki_disabled 0 1 1 0 1 0 0 0)
+add_capabilities_test(enrollment_capabilities_mldsa65 1 1 1 1 1 1 1 1)
+add_capabilities_test(enrollment_capabilities_mldsa65_no_psram 1 1 1 1 0 1 1 0)
+add_capabilities_test(enrollment_capabilities_mldsa65_pki_disabled 0 1 1 1 1 0 0 0)
 
 add_executable(link_permissions_test ../../wendy_com/tests/permissions_test.c)
 target_include_directories(link_permissions_test PRIVATE ../../wendy_com/tests/stubs stubs
