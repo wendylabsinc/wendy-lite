@@ -2408,6 +2408,15 @@ done:
                  "PKI HTTP failed at %s: status=%u parser=%s tls=%d wire=%u body=%u capacity=%u",
                  failure_stage, status, http_errno_name(parse_error), read_error, (unsigned)total,
                  (unsigned)r.size, (unsigned)r.capacity);
+#if ESP_PLATFORM
+        /* Taken while the partial body is still held: a read that stalls until
+         * its deadline with no parser or allocation error is otherwise
+         * indistinguishable from a slow peer (WDY-4140). */
+        ESP_LOGW("wendy_pki", "PKI HTTP failure heap: internal free=%u largest=%u minimum=%u",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+#endif
         /* Keep public diagnostics from the original consumed-token failure
          * visible when later 401 retries have displaced it from the console. */
         if (lite_authority_header) {
