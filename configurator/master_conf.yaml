@@ -1,0 +1,86 @@
+format_version: "1.0"
+attributes:
+  - board:
+      type: string
+      enum: [custom, dfr1172_firebeetle_2, seeed_xiao, m5_stamp_s3, esp32c5_devkit_c_1, esp32c6_devkit_c_1, esp32c61_devkit_c_1]
+  - chip:
+      type: string
+      enum: [esp32c6, esp32c61, esp32c5, esp32p4, esp32s3, esp32c31]
+  - flash_size:
+      type: size
+  - spram_size:
+      type: size
+  - app_type:
+      type: string
+      enum: [native, wasm]
+relations:
+  - if: board == "esp32c5_devkit_c_1"
+    then:
+      - chip: esp32c5
+      - flash_size: 4MiB
+      - spram_size: 0
+  - if: board == "esp32c6_devkit_c_1"
+    then:
+      - chip: esp32c6
+      - flash_size: 4MiB
+      - spram_size: 0
+  - if: board == "esp32c61_devkit_c_1"
+    then:
+      - chip: esp32c61
+      - flash_size: 4MiB
+      - spram_size: 0
+  - if: board == "m5_stamp_s3"
+    then:
+      - chip: esp32s3
+      - flash_size: 8MiB
+      - spram_size: 0
+  - if: board == "dfr1172_firebeetle_2"
+    then:
+      - chip: esp32p4
+      - flash_size: 16MiB
+      - spram_size: 32MiB
+  - if: board == "seeed_xiao"
+    then:
+      - chip: esp32s3
+      - flash_size: 8MiB
+      - spram_size: 8MiB
+
+  # define the sdkconfig
+
+  # set flash size
+  - if: flash_size == 4MiB
+    sdkconfig: |
+      CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+  - if: flash_size == 8MiB
+    sdkconfig: |
+      CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+  - if: flash_size == 16MiB
+    sdkconfig: |
+      CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+  # set partition table
+  - if: flash_size == 4MiB && app_type == "native"
+    sdkconfig: |
+      CONFIG_PARTITION_TABLE_CUSTOM=y
+      CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.ota.csv"
+  - if: flash_size == 8MiB && app_type == "native"
+    sdkconfig: |
+      CONFIG_PARTITION_TABLE_CUSTOM=y
+      CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.ota.8mb.csv"
+  - if: flash_size == 16MiB && app_type == "native"
+    sdkconfig: |
+      CONFIG_PARTITION_TABLE_CUSTOM=y
+      CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.ota.16mb.csv"
+
+  - if: app_type != "wasm"
+    sdkconfig: |
+      CONFIG_WENDY_CORE_WASM_APP_SUPPORT=n
+      CONFIG_WENDY_WASM=n
+      CONFIG_WENDY_CALLBACK=n
+      CONFIG_WENDY_NET=n
+      CONFIG_WENDY_HAL_GPIO=n
+      CONFIG_WENDY_HAL_I2C=n
+      CONFIG_WENDY_HAL_TIMER=n
+      CONFIG_WENDY_HAL_NEOPIXEL=n
+      CONFIG_WENDY_HAL_RMT=n
+      CONFIG_WENDY_BLE_EXPORT=n

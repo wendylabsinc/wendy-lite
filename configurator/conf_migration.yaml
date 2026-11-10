@@ -1,0 +1,21 @@
+# Old board configurations and their new configurator values.
+#
+# old_conf: the old configuration, the name of boards/<old_conf>.cfg.
+# new_conf: the configurator attribute values that replace it. configure.py with
+#           these values must give the same sdkconfig as
+#           idf.py @boards/<old_conf>.cfg set-target <chip from new_conf>.
+#
+# Used by test_configure.py.
+
+- old_conf: esp32c5_generic_native
+  new_conf: { board: esp32c5_devkit_c_1, app_type: native }
+- old_conf: esp32c6_generic_native
+  new_conf: { board: esp32c6_devkit_c_1, app_type: native }
+- old_conf: esp32c61_generic_native
+  new_conf: { board: esp32c61_devkit_c_1, app_type: native }
+- old_conf: seeed_xiao_esp32s3_native
+  new_conf: { board: seeed_xiao, app_type: native }
+- old_conf: m5_stamp_s3_native
+  new_conf: { board: m5_stamp_s3, app_type: native }
+- old_conf: dfr1172_firebeetle_native
+  new_conf: { board: dfr1172_firebeetle_2, app_type: native }
