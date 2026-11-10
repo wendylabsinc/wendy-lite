@@ -59,3 +59,47 @@ to depend on these selections. For example:
 
 - the flash size at level 1 sets `CONFIG_ESPTOOLPY_FLASHSIZE_8MB`
 - WASM at level 2 sets `CONFIG_WENDY_WASM`
+
+## Why not just use Kconfig?
+
+Kconfig alone cannot do what the configurator must do. There are three reasons.
+
+### Some settings cannot depend on other settings
+
+In ESP-IDF, some hardware settings are a Kconfig `choice`. For example, the
+flash size is the choice `ESPTOOLPY_FLASHSIZE`, with the members
+`ESPTOOLPY_FLASHSIZE_1MB` to `ESPTOOLPY_FLASHSIZE_128MB`. The PSRAM mode and
+speed (`SPIRAM_MODE_*`, `SPIRAM_SPEED_*`) are choices too.
+
+`select`, `imply`, `set` and `set default` have no effect on a choice member.
+Thus a board option or a feature option cannot set the flash size. The other
+possible methods have problems:
+
+- A `default <member> if <option>` works only in a copy of the choice that
+  Kconfig reads before the ESP-IDF definition. Also, if an `sdkconfig` file
+  exists, the default does not change when the option changes. The old value
+  stays.
+- A `sdkconfig.defaults` file can set a choice member, but it is a static file.
+  Its values cannot depend on other options.
+
+### The Wendy CLI must show the menu
+
+`wendy install` and `wendy run` must let the user select the configuration. The
+Wendy CLI is a console application in Go. ESP-IDF shows Kconfig with
+`menuconfig`, which is a Python tool. We know of no Go library that reads
+Kconfig files and shows them as a menu.
+
+### Users must see only a few options
+
+A Wendy Lite build has more than 1,000 Kconfig options. Most of them are for
+experts, or are internal to ESP-IDF and its components. `menuconfig` shows all
+the ESP-IDF menus, and a project cannot hide them.
+
+The configurator is a front end on top of Kconfig. It shows the user a small
+set of options and hides the complexity. It then changes each selection into
+the related Kconfig settings.
+
+## Proposal 1
+
+```yaml
+```
