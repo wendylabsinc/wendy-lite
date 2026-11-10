@@ -14,7 +14,9 @@ code as solve.py. Then it runs, in the repository root:
 sdkconfig.wendy comes last, so its lines win over sdkconfig.defaults and
 sdkconfig.defaults.<chip> (ESP-IDF adds that file itself).
 
-The chip and the attributes that the sdkconfig lines need must be defined.
+The chip and the attributes that the sdkconfig lines need must be defined,
+and the combination must be allowed (no "valid: false" rule matches).
+Otherwise configure.py prints an error and does not run idf.py.
 Activate ESP-IDF first: configure.py needs IDF_PATH.
 """
 

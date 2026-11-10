@@ -68,7 +68,8 @@ def _shown(path: str) -> str:
 
 
 def conf_arguments(conf: dict[str, Any]) -> list[str]:
-    return [f"{name}={value}" for name, value in conf.items()]
+    """Return NAME=VALUE arguments. A YAML boolean is written true or false."""
+    return [f"{name}={str(value).lower() if isinstance(value, bool) else value}" for name, value in conf.items()]
 
 
 def solve_target(model: Model, graph: dict[str, list[str]], new_conf: dict[str, Any]) -> str:
@@ -80,6 +81,8 @@ def solve_target(model: Model, graph: dict[str, list[str]], new_conf: dict[str, 
             raise ConfError(f'unknown attribute "{name}"')
         inputs[name] = attr.normalize(raw)
     solution = conf_model.evaluate(model, graph, inputs, {name: "new_conf" for name in inputs})
+    if not solution.allowed:
+        raise ConfError(conf_model.not_allowed_text(solution.forbidden))
     chip = solution.values.get(CHIP)
     if chip is None:
         raise ConfError(f"{CHIP} is undefined")

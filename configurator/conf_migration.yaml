@@ -7,15 +7,46 @@
 #
 # Used by test_configure.py.
 
+# ESP32-C5
+- old_conf: esp32c5_generic
+  new_conf: { board: esp32c5_devkit_c_1_v1.2, app_type: wasm, wendy_net: false }
 - old_conf: esp32c5_generic_native
-  new_conf: { board: esp32c5_devkit_c_1, app_type: native }
+  new_conf: { board: esp32c5_devkit_c_1_v1.2, app_type: native, wendy_net: false }
+- old_conf: esp32c5_net_psram
+  new_conf: { board: esp32c5_devkit_c_1_v1.2, app_type: wasm, wendy_net: true }
+
+# ESP32-C6
+- old_conf: esp32c6_generic
+  new_conf: { board: esp32c6_devkit_c_1, app_type: wasm, wendy_net: false }
 - old_conf: esp32c6_generic_native
-  new_conf: { board: esp32c6_devkit_c_1, app_type: native }
+  new_conf: { board: esp32c6_devkit_c_1, app_type: native, wendy_net: false }
+- old_conf: esp32c6_net
+  new_conf: { board: esp32c6_devkit_c_1, app_type: wasm, wendy_net: true }
+
+# ESP32-C61
 - old_conf: esp32c61_generic_native
   new_conf: { board: esp32c61_devkit_c_1, app_type: native }
+
+# ESP32-S3
+- old_conf: esp32s3_generic
+  new_conf: { board: esp32s3_devkit_c_1, app_type: wasm }
+- old_conf: esp32s3_generic_native
+  new_conf: { board: esp32s3_devkit_c_1, app_type: native }
 - old_conf: seeed_xiao_esp32s3_native
   new_conf: { board: seeed_xiao, app_type: native }
 - old_conf: m5_stamp_s3_native
   new_conf: { board: m5_stamp_s3, app_type: native }
+
+# ESP32-S31 (ESP-IDF 6.1 preview target)
+- old_conf: esp32s31_generic_native
+  new_conf: { board: custom, chip: esp32s31, flash_size: 4MiB, spram_size: 0, app_type: native, wendy_net: false }
+- old_conf: esp32s31_korvo_1_native
+  new_conf: { board: esp32s31_korvo_1, app_type: native }
+
+# ESP32-P4
+- old_conf: dfr1172_firebeetle
+  new_conf: { board: dfr1172_firebeetle_2, app_type: wasm }
 - old_conf: dfr1172_firebeetle_native
   new_conf: { board: dfr1172_firebeetle_2, app_type: native }
+- old_conf: waveshare_lcd_4b
+  new_conf: { board: waveshare_esp32p4_lcd_4b, app_type: wasm }

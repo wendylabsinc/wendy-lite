@@ -1,20 +1,31 @@
-"""Configurator model: attributes, relations, dependency graph and solver.
+"""Configurator model: attributes, rules, dependency graph and solver.
 
-The master configuration (configurator/master_conf.yaml) has two lists:
+The master configuration (configurator/master_conf.yaml) has two parts:
 
 attributes
-    Each item maps a name to a type ("string" or "size") and an optional
-    enum of allowed values. A size is an integer number of bytes; the YAML
-    can write it with a KiB, MiB or GiB unit. An attribute can be undefined.
+    A map from each name to a type ("string", "size" or "boolean") and an
+    optional enum of allowed values (not for a boolean). A size is an integer
+    number of bytes; the YAML can write it with a KiB, MiB or GiB unit. A
+    boolean is true or false. An attribute can be undefined.
 
-relations
-    Each item has an optional "if" condition, a "then" list of attribute
-    values and/or a "sdkconfig" text block. When the condition is true, the
-    relation sets the attributes and appends the lines to the intrinsic
-    "sdkconfig" attribute.
+rules
+    A list. Each item has an optional "if" condition, a "set" map of
+    attribute values and/or a "sdkconfig" text block. When the condition is
+    true, the rule sets the attributes and appends the lines to the
+    intrinsic "sdkconfig" attribute.
 
-An attribute depends on each attribute in the condition of a relation that
-sets it. The solver evaluates the relations in the order of this graph.
+    A chain is an "if" rule, then zero or more "else-if" rules, then
+    an optional "else" rule (written "else:" alone), as consecutive
+    items. An "else-if" or "else" rule applies only when all the earlier
+    conditions of its chain are false. At load time, it gets the full
+    condition: "else-if C" after "if A" is "!A && C", "else" is "!A".
+
+    "valid: false" (with a condition, no "set" and no "sdkconfig") marks the
+    condition as a combination that is not allowed. When its condition is
+    true after the solve, the solution is not allowed.
+
+An attribute depends on each attribute in the condition of a rule that
+sets it. The solver evaluates the rules in the order of this graph.
 """
 
 from __future__ import annotations
@@ -29,7 +40,7 @@ from typing import Any, Iterator, Union
 import yaml
 
 SDKCONFIG = "sdkconfig"
-TYPES = ("string", "size")
+TYPES = ("string", "size", "boolean")
 FORMAT_VERSIONS = ("1.0",)  # format_version values that this code reads
 VALUES_FILE = "values file"
 COMMAND_LINE = "command line"
@@ -37,6 +48,10 @@ COMMAND_LINE = "command line"
 _SIZE_UNITS = {"KiB": 1024, "MiB": 1024 ** 2, "GiB": 1024 ** 3}
 _SIZE_RE = re.compile(r"^\s*(\d+)\s*(KiB|MiB|GiB)?\s*$")
 _NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Boolean texts (command line, values file). Conditions use only true and false.
+_TRUE_TEXTS = {"true", "yes", "on", "1"}
+_FALSE_TEXTS = {"false", "no", "off", "0"}
+_BOOL_LITERALS = {"true": True, "false": False}
 
 
 class ConfError(Exception):
@@ -75,6 +90,21 @@ def format_size(n: int) -> str:
     return str(n)
 
 
+def parse_bool(raw: Any) -> bool:
+    """Return a boolean. Accept a YAML boolean, 0/1, or true/false, yes/no, on/off."""
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, int) and raw in (0, 1):
+        return bool(raw)
+    if isinstance(raw, str):
+        text = raw.strip().lower()
+        if text in _TRUE_TEXTS:
+            return True
+        if text in _FALSE_TEXTS:
+            return False
+    raise ConfError(f"{raw!r} is not a boolean (use true or false)")
+
+
 @dataclass
 class Attribute:
     name: str
@@ -85,6 +115,8 @@ class Attribute:
         """Convert a YAML value to the attribute type. No enum check."""
         if self.type == "size":
             return parse_size(raw)
+        if self.type == "boolean":
+            return parse_bool(raw)
         if isinstance(raw, str):
             return raw
         raise ConfError(f"{raw!r} is not a string (put quotes around it)")
@@ -103,6 +135,8 @@ class Attribute:
             return "<undefined>"
         if self.type == "size":
             return format_size(value)
+        if self.type == "boolean":
+            return "true" if value else "false"
         return str(value)
 
 
@@ -136,8 +170,24 @@ class Compare:
         return _COMPARE[self.op](actual, self.value)
 
     def __str__(self) -> str:
-        literal = f'"{self.value}"' if self.attr.type == "string" else str(self.value)
+        literal = f'"{self.value}"' if self.attr.type == "string" else self.attr.format(self.value)
         return f"{self.attr.name} {self.op} {literal}"
+
+
+@dataclass
+class BoolTest:
+    """A boolean attribute alone in a condition: true only if the value is true."""
+
+    attr: Attribute
+
+    def attrs(self) -> set[str]:
+        return {self.attr.name}
+
+    def eval(self, values: dict[str, Any]) -> bool:
+        return values.get(self.attr.name) is True
+
+    def __str__(self) -> str:
+        return self.attr.name
 
 
 @dataclass
@@ -151,7 +201,7 @@ class Not:
         return not self.operand.eval(values)
 
     def __str__(self) -> str:
-        if isinstance(self.operand, Not):
+        if isinstance(self.operand, (Not, BoolTest)):
             return f"!{self.operand}"
         return f"!({self.operand})"
 
@@ -173,7 +223,7 @@ class BoolOp:
         return f" {self.op} ".join(parts)
 
 
-Node = Union[Compare, Not, BoolOp]
+Node = Union[Compare, BoolTest, Not, BoolOp]
 
 _TOKEN_RE = re.compile(
     r"(?P<op>==|!=|<=|>=|&&|\|\||[<>!()])"
@@ -207,12 +257,14 @@ def _tokenize(text: str) -> list[_Token]:
 
 
 class _Parser:
-    """Recursive-descent parser for a relation condition.
+    """Recursive-descent parser for a rule condition.
 
     expr    := and ('||' and)*
     and     := unary ('&&' unary)*
     unary   := '!' unary | '(' expr ')' | compare
     compare := NAME op LITERAL     op: == != < <= > >=
+             | NAME                a boolean attribute alone
+    LITERAL := "string" | size such as 8MiB | true | false
     """
 
     def __init__(self, text: str, attributes: dict[str, Attribute]):
@@ -281,6 +333,10 @@ class _Parser:
         if attr is None:
             raise ConfError(f'unknown attribute "{tok.text}" at column {tok.col}')
 
+        nxt = self._peek()
+        if attr.type == "boolean" and not (nxt.kind == "op" and nxt.text in _COMPARE):
+            return BoolTest(attr)
+
         op = self._take()
         if op.kind != "op" or op.text not in _COMPARE:
             raise self._error(op, f"expected a comparison after {attr.name}")
@@ -292,6 +348,10 @@ class _Parser:
             if lit.kind != "string":
                 raise self._error(lit, f"expected a quoted string after {attr.name} {op.text}")
             raw = lit.text[1:-1]
+        elif attr.type == "boolean":
+            if lit.kind != "name" or lit.text not in _BOOL_LITERALS:
+                raise self._error(lit, f"expected true or false after {attr.name} {op.text}")
+            raw = _BOOL_LITERALS[lit.text]
         else:
             if lit.kind != "number":
                 raise self._error(lit, f"expected a size such as 8MiB after {attr.name} {op.text}")
@@ -305,22 +365,34 @@ def parse_condition(text: str, attributes: dict[str, Attribute]) -> Node:
     return _Parser(text, attributes).parse()
 
 
-# --- Relations and model ---------------------------------------------------
+# --- Rules and model -------------------------------------------------------
+
+
+_KEYWORDS = ("if", "else-if", "else")
+
+
+def _rule_name(index: int, keyword: str | None, text: Any) -> str:
+    name = f"rules[{index}]"
+    if keyword == "else":
+        return f"{name} (else)"
+    if keyword is not None and isinstance(text, str):
+        return f"{name} ({keyword} {text})"
+    return name
 
 
 @dataclass
-class Relation:
+class Rule:
     index: int
-    if_text: str | None
-    condition: Node | None
+    keyword: str | None  # "if", "else-if", "else", or None (no condition)
+    if_text: str | None  # the condition text as written (None for else)
+    condition: Node | None  # for else-if and else, it includes the chain
     sets: dict[str, Any]
     sdkconfig: list[str]
+    forbidden: bool = False  # valid: false: the condition is not allowed
 
     @property
     def name(self) -> str:
-        if self.if_text is None:
-            return f"relations[{self.index}]"
-        return f"relations[{self.index}] (if {self.if_text})"
+        return _rule_name(self.index, self.keyword, self.if_text)
 
     def reads(self) -> set[str]:
         return self.condition.attrs() if self.condition is not None else set()
@@ -336,44 +408,49 @@ class Relation:
 class Model:
     path: str
     attributes: dict[str, Attribute]
-    relations: list[Relation]
+    rules: list[Rule]
     format_version: str | None = None
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """A safe YAML loader that rejects a key given twice in one map."""
+
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
+        seen = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                duplicate = key in seen
+                seen.add(key)
+            except TypeError:  # an unhashable key: the base class reports it
+                continue
+            if duplicate:
+                raise yaml.constructor.ConstructorError(None, None, f"{key!r} is given twice", key_node.start_mark)
+        return super().construct_mapping(node, deep)
 
 
 def read_yaml(path: str) -> Any:
     try:
         with open(path, encoding="utf-8") as f:
-            return yaml.safe_load(f)
+            return yaml.load(f, Loader=_UniqueKeyLoader)
     except OSError as e:
         raise ConfError(f"{path}: {e.strerror}") from None
     except yaml.YAMLError as e:
         raise ConfError(f"{path}: {e}") from None
 
 
-def _pairs(node: Any, what: str) -> list[tuple[Any, Any]]:
-    """Read a map, or a list of single-key maps, as (key, value) pairs."""
-    if isinstance(node, dict):
-        return list(node.items())
-    if isinstance(node, list):
-        pairs = []
-        for i, item in enumerate(node):
-            if not isinstance(item, dict) or len(item) != 1:
-                raise ConfError(f"{what}[{i}]: expected one 'name: value' entry")
-            pairs.extend(item.items())
-        return pairs
-    raise ConfError(f"{what}: expected a map or a list of 'name: value' entries")
-
-
 def _parse_attributes(node: Any) -> dict[str, Attribute]:
+    if not isinstance(node, dict):
+        raise ConfError("attributes must be a map of 'name: {type, enum}' entries")
     attributes: dict[str, Attribute] = {}
-    for name, spec in _pairs(node, "attributes"):
+    for name, spec in node.items():
         with _where(f"attributes: {name}"):
             if not isinstance(name, str) or not _NAME_RE.match(name):
                 raise ConfError("not a valid attribute name")
             if name == SDKCONFIG:
                 raise ConfError(f"{SDKCONFIG} is intrinsic, it cannot be declared")
-            if name in attributes:
-                raise ConfError("declared twice")
+            if name in _BOOL_LITERALS:
+                raise ConfError(f"{name} is a reserved word")
             if not isinstance(spec, dict):
                 raise ConfError("expected a map with type and enum")
             unknown = set(spec) - {"type", "enum"}
@@ -382,6 +459,8 @@ def _parse_attributes(node: Any) -> dict[str, Attribute]:
             if spec.get("type") not in TYPES:
                 raise ConfError(f"type must be one of: {', '.join(TYPES)}")
             attr = Attribute(name, spec["type"])
+            if "enum" in spec and attr.type == "boolean":
+                raise ConfError("a boolean has no enum")
             if "enum" in spec:
                 enum = spec["enum"]
                 if not isinstance(enum, list) or not enum:
@@ -401,44 +480,79 @@ def _parse_sdkconfig(node: Any) -> list[str]:
     return [line.strip() for chunk in chunks for line in chunk.splitlines() if line.strip()]
 
 
-def _parse_relation(index: int, node: Any, attributes: dict[str, Attribute]) -> Relation:
-    if not isinstance(node, dict):
-        raise ConfError(f"relations[{index}]: expected a map with if, then and {SDKCONFIG}")
-    if_text = node.get("if")
-    location = f"relations[{index}]"
-    if isinstance(if_text, str):
-        location += f" (if {if_text})"
+def _all(operands: list[Node]) -> Node:
+    return operands[0] if len(operands) == 1 else BoolOp("&&", operands)
 
-    with _where(location):
-        unknown = set(node) - {"if", "then", SDKCONFIG}
+
+def _parse_rule(
+    index: int, node: Any, attributes: dict[str, Attribute], chain: list[Node] | None
+) -> tuple[Rule, list[Node] | None]:
+    """Read one rule.
+
+    chain holds the conditions of the open if/else-if chain, or None when no
+    chain is open. Return the rule and the chain after it.
+    """
+    if not isinstance(node, dict):
+        raise ConfError(f"rules[{index}]: expected a map with if, else-if or else, set, {SDKCONFIG} or valid")
+    keywords = [k for k in _KEYWORDS if k in node]
+    keyword = keywords[0] if keywords else None
+    if_text = node.get(keyword) if keyword in ("if", "else-if") else None
+
+    with _where(_rule_name(index, keyword, if_text)):
+        unknown = set(node) - {*_KEYWORDS, "set", SDKCONFIG, "valid"}
         if unknown:
             raise ConfError(f"unknown key(s): {', '.join(sorted(map(str, unknown)))}")
+        if len(keywords) > 1:
+            raise ConfError("use only one of if, else-if and else")
+        if keyword in ("else-if", "else") and chain is None:
+            raise ConfError(f"{keyword} must follow an if or else-if rule")
 
-        condition = None
-        if "if" in node:
+        condition: Node | None = None
+        new_chain: list[Node] | None = None
+        if keyword in ("if", "else-if"):
             if not isinstance(if_text, str) or not if_text.strip():
-                raise ConfError("if must be a condition text")
-            condition = parse_condition(if_text, attributes)
+                raise ConfError(f"{keyword} must be a condition text")
+            own = parse_condition(if_text, attributes)
+            if keyword == "if":
+                condition, new_chain = own, [own]
+            else:
+                assert chain is not None
+                condition, new_chain = _all([*(Not(c) for c in chain), own]), [*chain, own]
+        elif keyword == "else":
+            if node["else"] is not None:
+                raise ConfError("else takes no condition (write else: alone, or use else-if)")
+            assert chain is not None
+            condition = _all([Not(c) for c in chain])
+
+        if "valid" in node:
+            if node["valid"] is not False:
+                raise ConfError("valid must be false (leave it out for an allowed combination)")
+            if condition is None:
+                raise ConfError("valid: false needs an if, else-if or else")
+            if "set" in node or SDKCONFIG in node:
+                raise ConfError(f"valid: false cannot have set or {SDKCONFIG}")
+            return Rule(index, keyword, if_text, condition, {}, [], forbidden=True), new_chain
+
+        values = node.get("set", {})
+        if not isinstance(values, dict):
+            raise ConfError("set must be a map of 'name: value' entries")
 
         sets: dict[str, Any] = {}
-        if "then" in node:
-            for name, raw in _pairs(node["then"], "then"):
-                if name == SDKCONFIG:
-                    raise ConfError(f"then: use the {SDKCONFIG} key to add {SDKCONFIG} lines")
-                attr = attributes.get(name)
-                if attr is None:
-                    raise ConfError(f'then: unknown attribute "{name}"')
-                if name in sets:
-                    raise ConfError(f"then: {name} is set twice")
-                if raw is None:
-                    raise ConfError(f"then: {name} has no value")
-                sets[name] = attr.normalize(raw)
+        for name, raw in values.items():
+            if name == SDKCONFIG:
+                raise ConfError(f"set: use the {SDKCONFIG} key to add {SDKCONFIG} lines")
+            attr = attributes.get(name)
+            if attr is None:
+                raise ConfError(f'set: unknown attribute "{name}"')
+            if raw is None:
+                raise ConfError(f"set: {name} has no value")
+            sets[name] = attr.normalize(raw)
 
         lines = _parse_sdkconfig(node[SDKCONFIG]) if SDKCONFIG in node else []
         if not sets and not lines:
-            raise ConfError(f"the relation sets nothing (add then or {SDKCONFIG})")
+            raise ConfError(f"the rule sets nothing (add set or {SDKCONFIG})")
 
-    return Relation(index, if_text, condition, sets, lines)
+    return Rule(index, keyword, if_text, condition, sets, lines), new_chain
 
 
 def load(path: str) -> Model:
@@ -446,8 +560,8 @@ def load(path: str) -> Model:
     data = read_yaml(path)
     with _where(path):
         if not isinstance(data, dict):
-            raise ConfError("expected a map with attributes and relations")
-        unknown = set(data) - {"format_version", "attributes", "relations"}
+            raise ConfError("expected a map with attributes and rules")
+        unknown = set(data) - {"format_version", "attributes", "rules"}
         if unknown:
             raise ConfError(f"unknown key(s): {', '.join(sorted(map(str, unknown)))}")
         format_version = None
@@ -460,15 +574,19 @@ def load(path: str) -> Model:
         if "attributes" not in data:
             raise ConfError("attributes is missing")
         attributes = _parse_attributes(data["attributes"])
-        relations_node = data.get("relations") or []
-        if not isinstance(relations_node, list):
-            raise ConfError("relations must be a list")
-        relations = [_parse_relation(i, n, attributes) for i, n in enumerate(relations_node)]
-    return Model(path, attributes, relations, format_version)
+        rules_node = data.get("rules") or []
+        if not isinstance(rules_node, list):
+            raise ConfError("rules must be a list")
+        rules: list[Rule] = []
+        chain: list[Node] | None = None
+        for i, n in enumerate(rules_node):
+            rule, chain = _parse_rule(i, n, attributes, chain)
+            rules.append(rule)
+    return Model(path, attributes, rules, format_version)
 
 
 def load_values(model: Model, path: str) -> dict[str, Any]:
-    """Read a values file: a map (or list of single-key maps) name -> value.
+    """Read a values file: a map name -> value.
 
     An empty value leaves the attribute undefined.
     """
@@ -476,17 +594,15 @@ def load_values(model: Model, path: str) -> dict[str, Any]:
     values: dict[str, Any] = {}
     if data is None:
         return values
-    seen: set[str] = set()
     with _where(path):
-        for name, raw in _pairs(data, "values"):
+        if not isinstance(data, dict):
+            raise ConfError("expected a map of 'name: value' entries")
+        for name, raw in data.items():
             if name == SDKCONFIG:
                 raise ConfError(f"{SDKCONFIG} cannot be given in a values file")
             attr = model.attributes.get(name)
             if attr is None:
                 raise ConfError(f'unknown attribute "{name}"')
-            if name in seen:
-                raise ConfError(f"{name} is given twice")
-            seen.add(name)
             if raw is not None:
                 values[name] = attr.normalize(raw)
     return values
@@ -523,15 +639,15 @@ def parse_assignments(model: Model, items: list[str]) -> dict[str, Any]:
 def build_graph(model: Model) -> dict[str, list[str]]:
     """Map each node (attributes + sdkconfig) to the attributes it depends on.
 
-    A node depends on each attribute in the condition of a relation that sets
+    A node depends on each attribute in the condition of a rule that sets
     it. The dependency lists follow the declaration order.
     """
     rank = {name: i for i, name in enumerate(model.attributes)}
     deps: dict[str, set[str]] = {name: set() for name in model.attributes}
     deps[SDKCONFIG] = set()
-    for rel in model.relations:
-        reads = rel.reads()
-        for target in rel.targets():
+    for rule in model.rules:
+        reads = rule.reads()
+        for target in rule.targets():
             deps[target] |= reads
     return {node: sorted(d, key=rank.__getitem__) for node, d in deps.items()}
 
@@ -550,7 +666,18 @@ class Solution:
     values: dict[str, Any]  # None = undefined
     sources: dict[str, str]  # who set each defined attribute
     sdkconfig: list[str]
-    applied: list[Relation]  # relations with a true condition, file order
+    applied: list[Rule]  # rules with a true condition, file order
+    forbidden: list[Rule]  # valid: false rules with a true condition, file order
+
+    @property
+    def allowed(self) -> bool:
+        """True when no valid: false rule matches the solved values."""
+        return not self.forbidden
+
+
+def not_allowed_text(rules: list[Rule]) -> str:
+    """Return the error text for the valid: false rules that match."""
+    return "not allowed: " + "; ".join(rule.name for rule in rules)
 
 
 def evaluate(
@@ -559,7 +686,7 @@ def evaluate(
     inputs: dict[str, Any],
     input_sources: dict[str, str] | None = None,
 ) -> Solution:
-    """Apply the relations to the input values, in dependency order.
+    """Apply the rules to the input values, in dependency order.
 
     input_sources tells where each input value comes from (for the messages).
     """
@@ -570,28 +697,33 @@ def evaluate(
         values[name] = value
         sources[name] = (input_sources or {}).get(name, "input")
 
-    # A relation is evaluated at the first of its targets in the graph order.
+    # A rule is evaluated at the first of its targets in the graph order.
     # All the attributes in its condition come before, so they are final.
+    # A valid: false rule has no target: it is evaluated after the loop.
+    setters = [rule for rule in model.rules if not rule.forbidden]
     applied = []
-    for rel in sorted(model.relations, key=lambda r: min(rank[t] for t in r.targets())):
-        if not rel.applies(values):
+    for rule in sorted(setters, key=lambda r: min(rank[t] for t in r.targets())):
+        if not rule.applies(values):
             continue
-        applied.append(rel)
-        for name, value in rel.sets.items():
+        applied.append(rule)
+        for name, value in rule.sets.items():
             current = values[name]
             if current is None:
                 values[name] = value
-                sources[name] = rel.name
+                sources[name] = rule.name
             elif current != value:
                 attr = model.attributes[name]
                 raise ConfError(
-                    f"conflict on {name}: {rel.name} sets {attr.format(value)}, "
+                    f"conflict on {name}: {rule.name} sets {attr.format(value)}, "
                     f"but {sources[name]} set {attr.format(current)}"
                 )
 
+    # A value never changes after it is set, so these are the final values.
+    forbidden = [rule for rule in model.rules if rule.forbidden and rule.applies(values)]
+
     applied.sort(key=lambda r: r.index)
-    lines = [line for rel in applied for line in rel.sdkconfig]
-    return Solution(values, sources, lines, applied)
+    lines = [line for rule in applied for line in rule.sdkconfig]
+    return Solution(values, sources, lines, applied, forbidden)
 
 
 def sdkconfig_requirements(graph: dict[str, list[str]]) -> dict[str, list[str]]:
@@ -602,7 +734,7 @@ def sdkconfig_requirements(graph: dict[str, list[str]]) -> dict[str, list[str]]:
 @dataclass
 class Missing:
     needed_by: list[str]  # what needs the attribute
-    set_by: list[str]  # attributes whose relations can set it
+    set_by: list[str]  # attributes whose rules can set it
 
 
 def find_missing(

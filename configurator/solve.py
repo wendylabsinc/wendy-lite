@@ -4,13 +4,17 @@
 Read configurator/master_conf.yaml and the user selections. The selections
 come from NAME=VALUE arguments and from an optional values file (--values).
 A command-line value replaces the same value from the file; NAME= makes the
-attribute undefined. Print the attributes, the relations, the dependency
+attribute undefined. Print the attributes, the rules, the dependency
 graph and the solved values. Then write the sdkconfig lines to
 sdkconfig.wendy at the repository root.
 
 If an attribute that the sdkconfig lines need is undefined, list the missing
 values, do not write the file and exit with code 1. Other attributes can stay
 undefined: when flash_size is given, board is not needed.
+
+If the condition of a "valid: false" rule is true for the solved values,
+the combination is not allowed: list the rule and the values in its
+condition, do not write the file and exit with code 1.
 
 configure.py uses the same code (add_arguments, solve, run_cli).
 
@@ -59,12 +63,22 @@ def print_model(model: Model, width: int) -> None:
         print(line)
     print(f"  {SDKCONFIG:<{width}}  intrinsic (lines, append only)")
 
-    _section("Relations")
-    for rel in model.relations:
-        print(f"  [{rel.index}] " + (f"if {rel.condition}" if rel.condition else "always"))
-        for name, value in rel.sets.items():
+    _section("Rules")
+    for rule in model.rules:
+        if rule.keyword == "else":
+            head = f"else (if {rule.condition})"
+        elif rule.keyword == "else-if":
+            head = f"else-if {rule.if_text} (if {rule.condition})"
+        elif rule.condition is not None:
+            head = f"if {rule.condition}"
+        else:
+            head = "always"
+        print(f"  [{rule.index}] {head}")
+        if rule.forbidden:
+            print("        not allowed")
+        for name, value in rule.sets.items():
             print(f"        {name} = {model.attributes[name].format(value)}")
-        for line in rel.sdkconfig:
+        for line in rule.sdkconfig:
             print(f"        {SDKCONFIG} += {line}")
 
 
@@ -87,6 +101,15 @@ def print_solution(model: Model, solution: Solution, missing: dict[str, Missing]
         print(f"  {line}")
     if not solution.sdkconfig:
         print("  (empty)")
+
+    _section("Not allowed")
+    for rule in solution.forbidden:
+        print(f"  {rule.name}")
+        for name in (n for n in model.attributes if n in rule.reads()):
+            source = solution.sources.get(name, "")
+            print(f"      {name:<{width}}  {texts[name]:<{text_width}}  {source}".rstrip())
+    if solution.allowed:
+        print("  (none)")
 
     _section("Missing values")
     for name, m in missing.items():
@@ -142,7 +165,9 @@ def solve(args: argparse.Namespace, extra_required: dict[str, list[str]] | None 
 
     The attributes that the sdkconfig lines need must be defined after the
     solve. extra_required adds more attributes, mapped to what needs them.
-    Raise ConfError when one is missing; the file is then not written.
+    The combination must be allowed (no "valid: false" rule matches).
+    Raise ConfError when one is missing or when the combination is not
+    allowed; the file is then not written.
     """
     model = conf_model.load(args.conf)
     width = max(len(name) for name in [*model.attributes, SDKCONFIG])
@@ -177,8 +202,13 @@ def solve(args: argparse.Namespace, extra_required: dict[str, list[str]] | None 
     print_solution(model, solution, missing, width)
     print()
 
+    problems = []
+    if not solution.allowed:
+        problems.append(conf_model.not_allowed_text(solution.forbidden))
     if missing:
-        raise ConfError(f"{len(missing)} missing value(s), {args.output} not written")
+        problems.append(f"{len(missing)} missing value(s)")
+    if problems:
+        raise ConfError(f"{', '.join(problems)}, {args.output} not written")
     write_sdkconfig(args.output, solution.sdkconfig, args.conf, args.values, args.assignments)
     print(f"wrote {args.output} ({len(solution.sdkconfig)} {SDKCONFIG} lines)")
     return solution
