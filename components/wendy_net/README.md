@@ -1,8 +1,9 @@
 # Guest networking and native mesh services
 
-The guest socket API can connect to a verified mesh service using its canonical
-`device-<uuid>.mesh.wendy.internal` hostname and port. The native mesh actor owns
-its TCP/UDP VIP TLS context; the guest receives ordinary socket data. The remote
+The guest socket API can connect to a verified mesh service using the short
+`device-<uuid>.wendy.internal` hostname and port. Existing catalogue names under
+`device-<uuid>.mesh.wendy.internal` and projected `device-<uuid>.mesh.local`
+names remain accepted. The native mesh actor owns its TCP/UDP VIP TLS context; the guest receives ordinary socket data. The remote
 endpoint independently checks that the requested port belongs to a live guest
 listener. Native WendyCom uses its signed agent endpoint and its own end-to-end
 TLS session, with no additional WendyCom TLS wrapper.

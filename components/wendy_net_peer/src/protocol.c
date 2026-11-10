@@ -65,7 +65,7 @@ void wn_address(const uint8_t u[16], uint8_t out[16])
 }
 int wn_device_hostname_parse(const char *host, uint8_t device[16])
 {
-    static const char *const suffixes[] = {".mesh.wendy.internal", ".mesh.local"};
+    static const char *const suffixes[] = {".wendy.internal", ".mesh.wendy.internal", ".mesh.local"};
     if (!host || !device)
         return 0;
     size_t size = strlen(host);
