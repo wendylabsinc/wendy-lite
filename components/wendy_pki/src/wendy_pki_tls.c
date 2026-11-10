@@ -2475,12 +2475,19 @@ static int finish_accept_peer(wendy_pki_connection *c, const char *tenant, bool 
     const mbedtls_x509_crt *peer = mbedtls_ssl_get_peer_cert(&c->ssl);
     if (!peer || mbedtls_ssl_get_verify_result(&c->ssl))
         return -1;
-    enum wendy_peer_role role = wendy_pki_certificate_policy(peer, false)
-                                    ? WENDY_PEER_ROLE_NONE
-                                    : wendy_peer_auth_role(peer, tenant);
+    enum wendy_peer_role role = WENDY_PEER_ROLE_NONE;
+    if (!wendy_pki_certificate_policy(peer, false)) {
+        if (lite) {
+            /* The relay requires its separate Lite profile; ordinary paths
+             * must never promote that credential to a primary operator. */
+            if (!wendy_pki_verify_lite_operator(peer->raw.p, peer->raw.len, tenant))
+                role = WENDY_PEER_ROLE_OPERATOR;
+        } else {
+            role = wendy_peer_auth_role(peer, tenant);
+        }
+    }
     if (role == WENDY_PEER_ROLE_NONE || (!allow_device && role != WENDY_PEER_ROLE_OPERATOR) ||
-        (lite && wendy_pki_verify_lite_operator(peer->raw.p, peer->raw.len, tenant)) ||
-       !peer->pk_raw.p || !peer->pk_raw.len ||
+        !peer->pk_raw.p || !peer->pk_raw.len ||
         wendy_pki_sha256(peer->pk_raw.p, peer->pk_raw.len, c->operator_spki_hash))
         return -1;
     unsigned uri_count = 0;
