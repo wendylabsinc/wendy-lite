@@ -128,6 +128,11 @@ attributes:
   chip:
     type: string
     enum: [esp32c6, esp32c61, esp32c5, esp32p4, esp32s3, esp32s31]
+  idf_version:
+    type: string
+    enum: ["6.0.3", "6.1"]
+  idf_preview:
+    type: boolean
   flash_size:
     type: size
     enum: [4MiB, 8MiB, 16MiB, 32MiB]
@@ -225,3 +230,29 @@ and `sdkconfig.defaults.<chip>`. `sdkconfig.wendy` is a defaults file, but the
 configurator makes it from the attributes. This solves the problem of
 [the settings that cannot depend on other settings](#some-settings-cannot-depend-on-other-settings).
 
+### ESP-IDF version
+
+The attribute `idf_version` gives the ESP-IDF version that the build needs. It
+is 6.0.3, except for the ESP32-S31, which needs ESP-IDF 6.1. ESP-IDF 6.1
+supports the ESP32-S31 only as a preview target, so the attribute
+`idf_preview` is true for it:
+
+```yaml
+  - if: chip == "esp32s31"
+    set:
+      idf_version: "6.1"
+      idf_preview: true
+  - else:
+    set:
+      idf_version: "6.0.3"
+      idf_preview: false
+```
+
+When `idf_preview` is true, `configure.py` adds `--preview` to `idf.py`.
+
+Before `idf.py set-target`, `configure.py` reads the version of the active
+ESP-IDF from `$IDF_PATH/tools/cmake/version.cmake`. If it is not the version of
+`idf_version`, `configure.py` stops with an error and does not run `idf.py`.
+The versions must be equal. A missing number is 0, as in the ESP-IDF tags:
+`6.1` is 6.1.0. For now, `configure.py` does not select ESP-IDF. The user must
+activate the correct version first.

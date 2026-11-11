@@ -39,7 +39,7 @@
 
 # ESP32-S31 (ESP-IDF 6.1 preview target)
 - old_conf: esp32s31_generic_native
-  new_conf: { board: custom, chip: esp32s31, flash_size: 4MiB, spram_size: 0, app_type: native, wendy_net: false }
+  new_conf: { board: custom, chip: esp32s31, flash_size: 4MiB, app_type: native, wendy_net: false }
 - old_conf: esp32s31_korvo_1_native
   new_conf: { board: esp32s31_korvo_1, app_type: native }
 

@@ -7,6 +7,11 @@ attributes:
   chip:
     type: string
     enum: [esp32c6, esp32c61, esp32c5, esp32p4, esp32s3, esp32s31]
+  idf_version:
+    type: string
+    enum: ["6.0.3", "6.1"]
+  idf_preview:
+    type: boolean
   flash_size:
     type: size
     enum: [4MiB, 8MiB, 16MiB, 32MiB]
@@ -74,6 +79,18 @@ rules:
       flash_size: 32MiB
       spram_size: 32MiB
       wendy_net: false
+
+  # select the ESP-IDF version
+  # configure.py checks that the active ESP-IDF has this version, and adds
+  # idf.py --preview when idf_preview is true.
+  - if: chip == "esp32s31"
+    set:
+      idf_version: "6.1"
+      idf_preview: true
+  - else:
+    set:
+      idf_version: "6.0.3"
+      idf_preview: false
 
   # define the sdkconfig
 

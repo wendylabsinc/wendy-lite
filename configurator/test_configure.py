@@ -9,12 +9,22 @@ Read configurator/conf_migration.yaml. Each entry has:
 The target is the chip that the new configuration gives (master_conf.yaml).
 For each entry, in the project folder:
 
-1. Old conf: idf.py "$(cat boards/<old_conf>.cfg);version.defaults" set-target <target>
+1. Old conf: idf.py [--preview] "$(cat boards/<old_conf>.cfg);version.defaults" set-target <target>
 2. New conf: configurator/configure.py <new_conf as NAME=VALUE ...>
 3. Compare the two generated sdkconfig files and report the differences.
 
+--preview is added when the new configuration gives idf_preview: true, as
+configure.py does.
+
+Each entry also needs the ESP-IDF version that its new configuration gives
+(idf_version). An entry that needs another version than the active ESP-IDF
+fails at once, without a set-target run. Thus a run of all the entries needs
+one run for each ESP-IDF version.
+
 Before each run, dependencies.lock is reset to its committed version (HEAD),
 so both runs start from the same file. Uncommitted changes to it are lost.
+build/ is deleted before each run: a failed run can leave a build/ that
+idf.py refuses to clean, and all the next runs would then fail.
 
 The test changes the project: sdkconfig, build/, dependencies.lock,
 managed_components, sdkconfig.wendy and version.defaults. After the test, the
@@ -39,7 +49,15 @@ from typing import Any
 
 import conf_model
 from conf_model import ConfError, Model, read_yaml
-from configure import CHIP, idf_command
+from configure import (
+    CHIP,
+    IDF_PREVIEW,
+    IDF_VERSION,
+    active_idf_version,
+    idf_command,
+    idf_version_matches,
+    preview_option,
+)
 import solve
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -60,6 +78,8 @@ class Entry:
     new_conf: dict[str, Any]
     cfg: str  # text of boards/<old_conf>.cfg
     target: str | None  # chip from the new configuration
+    idf_version: str | None  # ESP-IDF version from the new configuration
+    idf_preview: bool | None  # idf.py --preview, from the new configuration
     error: str | None  # why the new configuration cannot be solved
 
 
@@ -72,8 +92,13 @@ def conf_arguments(conf: dict[str, Any]) -> list[str]:
     return [f"{name}={str(value).lower() if isinstance(value, bool) else value}" for name, value in conf.items()]
 
 
-def solve_target(model: Model, graph: dict[str, list[str]], new_conf: dict[str, Any]) -> str:
-    """Solve the new configuration without printing and return its chip."""
+def solve_target(
+    model: Model, graph: dict[str, list[str]], new_conf: dict[str, Any]
+) -> tuple[str, str, bool]:
+    """Solve the new configuration without printing.
+
+    Return its chip, ESP-IDF version and idf_preview.
+    """
     inputs = {}
     for name, raw in new_conf.items():
         attr = model.attributes.get(name)
@@ -83,10 +108,10 @@ def solve_target(model: Model, graph: dict[str, list[str]], new_conf: dict[str, 
     solution = conf_model.evaluate(model, graph, inputs, {name: "new_conf" for name in inputs})
     if not solution.allowed:
         raise ConfError(conf_model.not_allowed_text(solution.forbidden))
-    chip = solution.values.get(CHIP)
-    if chip is None:
-        raise ConfError(f"{CHIP} is undefined")
-    return str(chip)
+    for name in (CHIP, IDF_VERSION, IDF_PREVIEW):
+        if solution.values.get(name) is None:
+            raise ConfError(f"{name} is undefined")
+    return str(solution.values[CHIP]), str(solution.values[IDF_VERSION]), solution.values[IDF_PREVIEW] is True
 
 
 def load_entries(list_path: str, model: Model, graph: dict[str, list[str]]) -> list[Entry]:
@@ -117,12 +142,12 @@ def load_entries(list_path: str, model: Model, graph: dict[str, list[str]]) -> l
         with open(cfg_path, encoding="utf-8") as f:
             cfg = f.read().strip()
 
-        target, error = None, None
+        target, idf_version, idf_preview, error = None, None, None, None
         try:
-            target = solve_target(model, graph, new_conf)
+            target, idf_version, idf_preview = solve_target(model, graph, new_conf)
         except ConfError as e:
             error = f"new_conf: {e}"
-        entries.append(Entry(old_conf, new_conf, cfg, target, error))
+        entries.append(Entry(old_conf, new_conf, cfg, target, idf_version, idf_preview, error))
     return entries
 
 
@@ -153,6 +178,9 @@ def run_step(label: str, command: list[str], shown: list[str], out: str, stem: s
     sdkconfig = os.path.join(src, "sdkconfig")
     if os.path.exists(sdkconfig):
         os.remove(sdkconfig)  # so a failed run cannot leave an old file
+    # A failed run can leave a build/ without CMakeCache.txt. idf.py then
+    # refuses to clean it, and set-target fails at once.
+    shutil.rmtree(os.path.join(src, "build"), ignore_errors=True)
     reset_lock_file()
     log = os.path.join(out, f"{stem}.log")
     print(f"  {label}: {shlex.join(shown)}")
@@ -204,19 +232,26 @@ def format_diffs(diffs: list[tuple[str, str, str]]) -> list[str]:
     return [f"{name:<{name_width}}  old: {a:<{old_width}}  new: {b}" for name, a, b in diffs]
 
 
-def run_entry(entry: Entry, idf: list[str]) -> str:
-    """Run the old and the new configuration of one entry and compare. Return its status."""
+def run_entry(entry: Entry, idf: list[str], active_version: str) -> str:
+    """Run the old and the new configuration of one entry and compare. Return its status.
+
+    active_version is the version of the active ESP-IDF.
+    """
     out = os.path.join(RESULTS, entry.old_conf)
     shutil.rmtree(out, ignore_errors=True)
     os.makedirs(out)
     if entry.error:
         print(f"  error: {entry.error}")
         return f"failed: {entry.error}"
-    assert entry.target is not None
+    assert entry.target is not None and entry.idf_version is not None
+    if not idf_version_matches(entry.idf_version, active_version):
+        status = f"needs ESP-IDF {entry.idf_version}, active ESP-IDF is {active_version}"
+        print(f"  error: {status}")
+        return f"failed: {status}"
 
     with open(os.path.join(solve.REPO_ROOT, "version.defaults"), "w", encoding="utf-8") as f:
         f.write(VERSION_DEFAULTS)
-    old_args = [f"{entry.cfg};version.defaults", "set-target", entry.target]
+    old_args = [*preview_option(entry.idf_preview is True), f"{entry.cfg};version.defaults", "set-target", entry.target]
     if not run_step("old conf", [*idf, *old_args], ["idf.py", *old_args], out, "old_conf"):
         return "failed: old conf"
 
@@ -257,6 +292,7 @@ def print_entries(entries: list[Entry]) -> None:
             print(f"      error:    {entry.error}")
         else:
             print(f"      target:   {entry.target}")
+            print(f"      ESP-IDF:  {entry.idf_version}{', preview' if entry.idf_preview else ''}")
     if not entries:
         print("  (none)")
 
@@ -275,7 +311,9 @@ def main(argv: list[str] | None = None) -> int:
         metavar="OLD_CONF",
         help="test only this entry, by its old_conf name (give it more times for more entries)",
     )
-    parser.add_argument("--list", action="store_true", help="list the entries and their targets, and stop")
+    parser.add_argument(
+        "--list", action="store_true", help="list the entries, their targets and ESP-IDF versions, and stop"
+    )
     args = parser.parse_args(argv)
 
     def body() -> int:
@@ -293,10 +331,12 @@ def main(argv: list[str] | None = None) -> int:
             return 1 if any(e.error for e in entries) else 0
 
         idf = idf_command()
+        active_version = active_idf_version()
+        print(f"\nactive ESP-IDF: {active_version}")
         statuses: dict[str, str] = {}
         for entry in entries:
             print(f"\n== {entry.old_conf}")
-            statuses[entry.old_conf] = run_entry(entry, idf)
+            statuses[entry.old_conf] = run_entry(entry, idf, active_version)
 
         print(f"\n== Summary (results in {_shown(RESULTS)})")
         width = max(len(name) for name in statuses)
