@@ -431,3 +431,59 @@ rules:
       # ESP32-P4-86-Panel-ETH-2RO, which shares the same PCB).
 
       CONFIG_WENDY_P4_BOARD_NAME="waveshare_lcd_4b"
+
+# Display: how the Wendy CLI asks the questions (go/internal/cli/litebuild in
+# WendyOS). The solver (conf_model.py) ignores this section.
+#
+# An attribute that is not in this section is internal: the CLI never shows
+# it. If it has only one allowed value, the CLI takes it. If the CLI must ask
+# for it, the CLI stops with an error.
+#
+#   title     the question title (default: the attribute name)
+#   help      an optional line under the question
+#   priority  the order of the questions, smaller first. The dependencies come
+#             first: an attribute is asked after the attributes it depends on.
+#             No priority: after the others, in the order of the attributes.
+#   default   the preselected answer, used only when it is allowed
+#   values    the label of each enum value (or of true and false)
+display:
+  board:
+    title: Board
+    help: Select your board, or Custom board to give the hardware yourself.
+    priority: 1
+    values:
+      custom: Custom board
+      dfr1172_firebeetle_2: DFRobot FireBeetle 2 ESP32-P4 (DFR1172)
+      seeed_xiao: Seeed Studio XIAO ESP32S3
+      m5_stamp_s3: M5Stack StampS3
+      esp32c5_devkit_c_1_n8r8: Espressif ESP32-C5-DevKitC-1 N8R8
+      esp32c6_devkit_c_1: Espressif ESP32-C6-DevKitC-1
+      esp32c61_devkit_c_1: Espressif ESP32-C61-DevKitC-1
+      esp32s3_devkit_c_1_n8: Espressif ESP32-S3-DevKitC-1 N8
+      esp32s31_korvo_1: Espressif ESP32-S31-Korvo-1 V1.1 (preview)
+      waveshare_esp32p4_lcd_4b: Waveshare ESP32-P4-WIFI6-Touch-LCD-4B
+  chip:
+    title: Chip
+    priority: 2
+    values:
+      esp32c6: ESP32-C6
+      esp32c61: ESP32-C61
+      esp32c5: ESP32-C5
+      esp32p4: ESP32-P4
+      esp32s3: ESP32-S3
+      esp32s31: ESP32-S31 (preview)
+  flash_size:
+    title: Flash size
+    priority: 3
+  app_type:
+    title: Application type
+    priority: 4
+    values:
+      native: Native app
+      wasm: WebAssembly app
+  wendy_net:
+    title: Wendy Net mesh networking
+    priority: 6
+    values:
+      true: Enabled
+      false: Disabled

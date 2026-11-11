@@ -256,3 +256,81 @@ ESP-IDF from `$IDF_PATH/tools/cmake/version.cmake`. If it is not the version of
 The versions must be equal. A missing number is 0, as in the ESP-IDF tags:
 `6.1` is 6.1.0. For now, `configure.py` does not select ESP-IDF. The user must
 activate the correct version first.
+
+## Questions in the Wendy CLI
+
+`wendy install` and `wendy run` ask the user for the input values. The Go
+configurator of the Wendy CLI (`go/internal/cli/litebuild` in WendyOS) reads
+the same `master_conf.yaml`. For the same input values, it gives the same
+`sdkconfig` lines as `solve.py`.
+
+### Display
+
+The section `display` of `master_conf.yaml` tells the Wendy CLI how to ask the
+questions. The Python configurator does not read it. Each entry is the name of
+an attribute, with these keys. All the keys are optional.
+
+- `title`: the question title. The default is the attribute name.
+- `help`: a line under the question.
+- `priority`: the order of the questions, smaller first. See
+  [Order of the questions](#order-of-the-questions).
+- `default`: the preselected answer. The CLI uses it only when it is allowed.
+- `values`: the label of each enum value, or of `true` and `false`.
+
+```yaml
+display:
+  board:
+    title: Board
+    priority: 1
+    values:
+      seeed_xiao: Seeed Studio XIAO ESP32S3
+```
+
+The type of the attribute gives the type of the question: a list for an enum,
+yes or no for a boolean, and a text for an attribute without enum.
+
+An attribute that is not in `display` is internal, for example `spram_size`
+or `idf_version`. The CLI never shows an internal attribute. An entry with no
+keys (`spram_size:` alone) makes the attribute visible. When an internal
+attribute has only one allowed value, the CLI takes it and does not show it.
+When the CLI must ask for an internal attribute, it stops with an error: the
+attribute must be added to `display`.
+
+### Order of the questions
+
+The question order is an order of the graph: an attribute comes after the
+attributes that it depends on. The attributes are sorted by `priority`, then
+in the order of `attributes`. An attribute without priority comes after the
+others. Each attribute takes the attributes that it depends on with it, before
+it.
+
+The CLI goes through the attributes in this order. At each attribute, it
+applies the rules that set the attribute, as in
+[From the attributes to the sdkconfig](#from-the-attributes-to-the-sdkconfig).
+Then:
+
+- If a rule set the attribute, the CLI shows the value of a visible attribute.
+  There is no question.
+- If the `sdkconfig` lines and the chip do not need the attribute, directly or
+  through the rules, the CLI skips it. The attribute stays undefined.
+- Else the CLI finds the allowed answers. If only one answer is allowed, the
+  CLI takes it, shows it for a visible attribute and asks no question. If more
+  answers are allowed, the CLI asks the question and shows only the allowed
+  answers. For an internal attribute, this is an error.
+
+### Allowed answers
+
+An answer is allowed when the next questions have answers that give an allowed
+configuration: no conflict, no `valid: false` rule with a true condition, and
+no missing value. These are the checks of `solve.py`. The CLI finds the
+allowed answers with a search over the values of the next questions. For an
+attribute without enum, the search uses one value of each set of values that
+the conditions cannot tell apart.
+
+The CLI applies a rule only when all the attributes in its condition have
+their final values. Thus a condition such as `!wendy_net` is not true before
+the user answers the `wendy_net` question.
+
+The answers and the only allowed values are the input values. They go to
+`CONFIG_WENDY_BUILD_PROFILE`. `solve.py` with the same values as `NAME=VALUE`
+arguments gives the same `sdkconfig.wendy`.

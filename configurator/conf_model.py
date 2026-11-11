@@ -1,6 +1,9 @@
 """Configurator model: attributes, rules, dependency graph and solver.
 
-The master configuration (configurator/master_conf.yaml) has two parts:
+The master configuration (configurator/master_conf.yaml) has two parts that
+this code reads. A third part, "display", tells the Wendy CLI how to ask the
+questions (titles, labels, order). This code accepts it and ignores it; the
+Go configurator (go/internal/cli/litebuild in WendyOS) reads it.
 
 attributes
     A map from each name to a type ("string", "size" or "boolean") and an
@@ -40,6 +43,7 @@ from typing import Any, Iterator, Union
 import yaml
 
 SDKCONFIG = "sdkconfig"
+DISPLAY = "display"  # top-level section for the Wendy CLI questions, not read here
 TYPES = ("string", "size", "boolean")
 FORMAT_VERSIONS = ("1.0",)  # format_version values that this code reads
 VALUES_FILE = "values file"
@@ -576,7 +580,8 @@ def load(path: str) -> Model:
     with _where(path):
         if not isinstance(data, dict):
             raise ConfError("expected a map with attributes and rules")
-        unknown = set(data) - {"format_version", "attributes", "rules"}
+        # display: how the Wendy CLI asks the questions. The solver ignores it.
+        unknown = set(data) - {"format_version", "attributes", "rules", DISPLAY}
         if unknown:
             raise ConfError(f"unknown key(s): {', '.join(sorted(map(str, unknown)))}")
         format_version = None
