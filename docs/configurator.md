@@ -99,7 +99,114 @@ The configurator is a front end on top of Kconfig. It shows the user a small
 set of options and hides the complexity. It then changes each selection into
 the related Kconfig settings.
 
-## Proposal 1
+## Solution
+
+One YAML file describes the configuration:
+[configurator/master_conf.yaml](../configurator/master_conf.yaml). The file has
+two parts:
+
+- the **attributes**: the values that make a configuration
+- the **rules**: the links between the attributes, and between the attributes
+  and the Kconfig settings
+
+The user gives the values of some attributes. The rules calculate the other
+attributes. From all the attribute values, the configurator makes the
+`sdkconfig` lines of the build.
+
+### Attributes
+
+An attribute is one value of the configuration. For example: the board, the
+target chip, the flash size, or a feature such as Wendy Net. Each attribute has
+a type (`string`, `size` or `boolean`) and can have a list of allowed values
+(`enum`).
 
 ```yaml
+attributes:
+  board:
+    type: string
+    enum: [custom, seeed_xiao, esp32c6_devkit_c_1, ...]
+  chip:
+    type: string
+    enum: [esp32c6, esp32c61, esp32c5, esp32p4, esp32s3, esp32s31]
+  flash_size:
+    type: size
+    enum: [4MiB, 8MiB, 16MiB, 32MiB]
+  app_type:
+    type: string
+    enum: [native, wasm]
+  wendy_net:
+    type: boolean
 ```
+
+### Rules
+
+A rule has a condition on the attributes. When the condition is true, the rule
+can:
+
+- set the values of other attributes (`set`)
+- add Kconfig lines to the `sdkconfig` (`sdkconfig`)
+- mark the combination of values as not allowed (`valid: false`). The
+  configurator then stops with an error.
+
+A rule can continue the rule before it with `else-if` or `else`, as in a
+programming language.
+
+For example, this rule sets the hardware of a board:
+
+```yaml
+  - if: board == "esp32c6_devkit_c_1"
+    set:
+      chip: esp32c6
+      flash_size: 4MiB
+      spram_size: 0
+```
+
+### Inputs and dependencies
+
+The rules make a dependency graph. An attribute depends on the attributes in
+the condition of each rule that sets it. In the example above, `chip`,
+`flash_size` and `spram_size` depend on `board`.
+
+- An attribute that no rule sets is an **input**. It depends on no other
+  attribute, and the user must give its value. For example, `board` and
+  `app_type` are inputs.
+- An attribute that a rule sets is **derived**. The configurator calculates its
+  value.
+
+For some values, no rule sets a derived attribute. For example, no rule sets
+the chip and the flash size of a custom board. Then the user must give these
+values too. If a value that the `sdkconfig` lines need stays undefined, the
+configurator lists the missing values and stops. If a rule sets a value that is
+different from the value of the user or of another rule, the configurator stops
+with an error.
+
+The levels of [Basic principles](#basic-principles) are not written in the
+file. They come from the rules: the board rules set the hardware attributes,
+and the attributes of all levels can add Kconfig lines. An attribute can depend
+on any other attribute, but the graph must not have a cycle.
+
+### From the attributes to the sdkconfig
+
+The configurator applies the rules in the order of the graph. Thus, when the
+configurator reads a condition, the attributes in it have their final values.
+Then the configurator collects the `sdkconfig` lines of all the rules with a
+true condition, in the order of the file, and writes them to `sdkconfig.wendy`.
+
+For example, these rules change the flash size into a member of the Kconfig
+choice `ESPTOOLPY_FLASHSIZE`:
+
+```yaml
+  - if: flash_size == 4MiB
+    sdkconfig: |
+      CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+  - if: flash_size == 8MiB
+    sdkconfig: |
+      CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+```
+
+`configure.py` then runs `idf.py set-target <chip>` with `sdkconfig.wendy` as
+the last `SDKCONFIG_DEFAULTS` file. Thus its lines win over `sdkconfig.defaults`
+and `sdkconfig.defaults.<chip>`. `sdkconfig.wendy` is a defaults file, but the
+configurator makes it from the attributes. This solves the problem of
+[the settings that cannot depend on other settings](#some-settings-cannot-depend-on-other-settings).
+
