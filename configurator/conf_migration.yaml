@@ -9,11 +9,11 @@
 
 # ESP32-C5
 - old_conf: esp32c5_generic
-  new_conf: { board: esp32c5_devkit_c_1_v1.2, app_type: wasm, wendy_net: false }
+  new_conf: { board: esp32c5_devkit_c_1_n8r8, app_type: wasm, wendy_net: false }
 - old_conf: esp32c5_generic_native
-  new_conf: { board: esp32c5_devkit_c_1_v1.2, app_type: native, wendy_net: false }
+  new_conf: { board: esp32c5_devkit_c_1_n8r8, app_type: native, wendy_net: false }
 - old_conf: esp32c5_net_psram
-  new_conf: { board: esp32c5_devkit_c_1_v1.2, app_type: wasm, wendy_net: true }
+  new_conf: { board: esp32c5_devkit_c_1_n8r8, app_type: wasm, wendy_net: true }
 
 # ESP32-C6
 - old_conf: esp32c6_generic
@@ -29,9 +29,9 @@
 
 # ESP32-S3
 - old_conf: esp32s3_generic
-  new_conf: { board: esp32s3_devkit_c_1, app_type: wasm }
+  new_conf: { board: esp32s3_devkit_c_1_n8, app_type: wasm }
 - old_conf: esp32s3_generic_native
-  new_conf: { board: esp32s3_devkit_c_1, app_type: native }
+  new_conf: { board: esp32s3_devkit_c_1_n8, app_type: native }
 - old_conf: seeed_xiao_esp32s3_native
   new_conf: { board: seeed_xiao, app_type: native }
 - old_conf: m5_stamp_s3_native
