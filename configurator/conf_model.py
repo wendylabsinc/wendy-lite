@@ -44,6 +44,8 @@ TYPES = ("string", "size", "boolean")
 FORMAT_VERSIONS = ("1.0",)  # format_version values that this code reads
 VALUES_FILE = "values file"
 COMMAND_LINE = "command line"
+# Kconfig option (components/wendy_core/Kconfig) with the input values.
+BUILD_PROFILE = "CONFIG_WENDY_BUILD_PROFILE"
 
 _SIZE_UNITS = {"KiB": 1024, "MiB": 1024 ** 2, "GiB": 1024 ** 3}
 _SIZE_RE = re.compile(r"^\s*(\d+)\s*(KiB|MiB|GiB)?\s*$")
@@ -138,6 +140,19 @@ class Attribute:
         if self.type == "boolean":
             return "true" if value else "false"
         return str(value)
+
+    def to_yaml(self, value: Any) -> Any:
+        """Return the value for a values file: convert() accepts it again.
+
+        A size gets the largest unit that divides it ("8MiB"), else it stays
+        a number of bytes.
+        """
+        if self.type == "size":
+            for unit in ("GiB", "MiB", "KiB"):
+                mult = _SIZE_UNITS[unit]
+                if value and value % mult == 0:
+                    return f"{value // mult}{unit}"
+        return value
 
 
 # --- Conditions ------------------------------------------------------------
@@ -631,6 +646,32 @@ def parse_assignments(model: Model, items: list[str]) -> dict[str, Any]:
             raw = raw.strip()
             values[name] = attr.normalize(raw) if raw else None
     return values
+
+
+def build_profile(model: Model, inputs: dict[str, Any]) -> str:
+    """Return the input values as flat YAML, one "name: value" per line.
+
+    The lines follow the declaration order, so the order of the arguments
+    does not change the text. The text is a valid values file. No inputs
+    give "".
+    """
+    data = {name: attr.to_yaml(inputs[name]) for name, attr in model.attributes.items() if name in inputs}
+    if not data:
+        return ""
+    text = yaml.safe_dump(data, sort_keys=False, default_flow_style=False, width=1_000_000)
+    return text.rstrip("\n")
+
+
+def build_profile_line(text: str) -> str:
+    r"""Return the sdkconfig line that gives text to BUILD_PROFILE.
+
+    Kconfig cannot store a newline, so each newline becomes the 2 characters
+    \n (backslash, n). Then the value is escaped as Kconfig does (kconfiglib
+    _escape): \ becomes \\, then " becomes \".
+    """
+    value = text.replace("\n", "\\n")
+    value = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'{BUILD_PROFILE}="{value}"'
 
 
 # --- Graph and solver ------------------------------------------------------

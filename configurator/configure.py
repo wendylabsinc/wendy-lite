@@ -7,7 +7,9 @@ configure.py takes the same arguments as solve.py, for example:
     configurator/configure.py --values my_board.yaml app_type=wasm
 
 It solves the master configuration and writes sdkconfig.wendy with the same
-code as solve.py. Then it runs, in the repository root:
+code as solve.py. sdkconfig.wendy also contains CONFIG_WENDY_BUILD_PROFILE,
+the input values as flat YAML (see solve.py). Then it runs, in the
+repository root:
 
     idf.py -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.wendy" set-target <chip>
 

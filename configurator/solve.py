@@ -8,6 +8,11 @@ attribute undefined. Print the attributes, the rules, the dependency
 graph and the solved values. Then write the sdkconfig lines to
 sdkconfig.wendy at the repository root.
 
+The first line of sdkconfig.wendy is CONFIG_WENDY_BUILD_PROFILE: the input
+values (values file and NAME=VALUE arguments, after the merge) as flat YAML.
+Kconfig cannot store a newline, so the 2 characters \\n separate the lines.
+The rule lines come after it.
+
 If an attribute that the sdkconfig lines need is undefined, list the missing
 values, do not write the file and exit with code 1. Other attributes can stay
 undefined: when flash_size is given, board is not needed.
@@ -121,6 +126,14 @@ def print_solution(model: Model, solution: Solution, missing: dict[str, Missing]
         print("  (none)")
 
 
+def print_build_profile(text: str) -> None:
+    _section(f"Build profile ({conf_model.BUILD_PROFILE})")
+    for line in text.splitlines():
+        print(f"  {line}")
+    if not text:
+        print("  (empty)")
+
+
 def write_sdkconfig(
     path: str, lines: list[str], conf_path: str, values_path: str | None, assignments: list[str]
 ) -> None:
@@ -197,9 +210,11 @@ def solve(args: argparse.Namespace, extra_required: dict[str, list[str]] | None 
             inputs[name] = value
             sources[name] = conf_model.COMMAND_LINE
 
+    profile = conf_model.build_profile(model, inputs)
     solution = conf_model.evaluate(model, graph, inputs, sources)
     missing = conf_model.find_missing(graph, solution.values, required)
     print_solution(model, solution, missing, width)
+    print_build_profile(profile)
     print()
 
     problems = []
@@ -209,8 +224,9 @@ def solve(args: argparse.Namespace, extra_required: dict[str, list[str]] | None 
         problems.append(f"{len(missing)} missing value(s)")
     if problems:
         raise ConfError(f"{', '.join(problems)}, {args.output} not written")
-    write_sdkconfig(args.output, solution.sdkconfig, args.conf, args.values, args.assignments)
-    print(f"wrote {args.output} ({len(solution.sdkconfig)} {SDKCONFIG} lines)")
+    lines = [conf_model.build_profile_line(profile), *solution.sdkconfig]
+    write_sdkconfig(args.output, lines, args.conf, args.values, args.assignments)
+    print(f"wrote {args.output} ({len(lines)} {SDKCONFIG} lines)")
     return solution
 
 

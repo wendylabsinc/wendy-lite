@@ -204,6 +204,21 @@ choice `ESPTOOLPY_FLASHSIZE`:
       CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 ```
 
+The first line of `sdkconfig.wendy` is `CONFIG_WENDY_BUILD_PROFILE`. It
+contains the input values (the values file and the `NAME=VALUE` arguments) as
+flat YAML, in the order of the attributes in `master_conf.yaml`. The values
+that the rules set are not in it. Kconfig cannot store a newline, so the
+2 characters `\n` (backslash, n) separate the lines. In `sdkconfig.wendy`,
+Kconfig escapes the backslash:
+
+```text
+CONFIG_WENDY_BUILD_PROFILE="board: m5_stamp_s3\\napp_type: native"
+```
+
+The firmware gets the string `board: m5_stamp_s3\napp_type: native`, with the
+2 characters `\n` between the lines. When `\n` is changed into a newline, the
+text is a valid values file.
+
 `configure.py` then runs `idf.py set-target <chip>` with `sdkconfig.wendy` as
 the last `SDKCONFIG_DEFAULTS` file. Thus its lines win over `sdkconfig.defaults`
 and `sdkconfig.defaults.<chip>`. `sdkconfig.wendy` is a defaults file, but the
