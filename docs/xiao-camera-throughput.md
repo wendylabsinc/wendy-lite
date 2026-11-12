@@ -14,11 +14,45 @@ parts into one contiguous staging buffer and submits one transmit node per
 SensorData message. The encoded protocol bytes and chunk sequencing are
 unchanged. Other boards retain their existing borrowed-payload path.
 
-The staging buffer is at most 10 KiB per in-flight frame. It is reused across
+The staging buffer is at most the transport message budget per in-flight frame. It is reused across
 that frame's messages and remains owned until transport completion, including
 cancellation, disconnect and failed transmission. It is freed before notifying
 the producer that its frame can be released. TLS and peer authentication are
 unchanged.
+
+## SensorLink scheduling by transport
+
+Direct LAN and Cloud socket connections retain messages of up to 10 KiB.
+Physical BLE streams use a 1 KiB limit. Routed mesh sockets and streams also
+use 1 KiB because WendyCom does not know the complete carrier path and a route
+can move onto a BLE backup. This is a conservative scheduling policy, not a
+measurement that all mesh paths are slow. Direct serial retains its existing
+10 KiB limit. The limit comes from the local link provider, never a discovery
+record or peer request.
+
+Each ready sensor stream gets one message per turn. Queued control replies run
+before the next sensor message. Smaller messages reduce the amount of sensor
+data that control and audio must wait behind, but require more framing and TLS
+writes on an all-LAN mesh. They cannot preempt bytes already buffered by TCP or
+the radio. Chunk sequence numbers, complete-frame bytes and the wire version
+are unchanged. Cancellation still waits for the in-flight message's completion
+before releasing borrowed storage.
+
+The host `parallel` scenario decodes two 32 KiB frames with a control response
+queued behind the first sensor message. Both scatter and XIAO coalesced builds
+produce these counts:
+
+| Message limit | Sensor messages | Encoded sensor bytes | Scatter transmit nodes | Coalesced transmit nodes | Sensor bytes before control |
+|---|---:|---:|---:|---:|---:|
+| 10 KiB | 8 | 65,772 | 24 | 8 | 10,211 |
+| 1 KiB | 68 | 67,572 | 204 | 68 | 995 |
+
+The smaller profile adds 1,800 encoded bytes for 65,536 payload bytes in this
+fixture. At a hypothetical 1 Mbit/s, the sensor bytes before control serialize
+in 7.96 ms instead of 81.69 ms. These are byte-count calculations, not measured
+radio latency or throughput. TLS records, retransmissions and downstream queues
+add overhead. Hardware qualification should compare camera plus microphone
+streaming and management response latency on BLE, all-LAN mesh and direct LAN.
 
 ## Hardware observations (2026-10-23)
 

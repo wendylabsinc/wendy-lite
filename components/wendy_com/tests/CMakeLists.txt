@@ -56,3 +56,13 @@ add_executable(topology_codec_success_test topology_codec_success_test.c
 target_include_directories(topology_codec_success_test PRIVATE ../include ../../nanopb ../../wendy_net_common/include)
 target_compile_options(topology_codec_success_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 add_test(NAME topology_codec_success COMMAND topology_codec_success_test "${CMAKE_CURRENT_LIST_DIR}/fixtures/topology_page.hex")
+
+# Run the lifecycle and fairness cases with a slow transport's message budget.
+foreach(target sensor_stream_test sensor_stream_coalesced_test)
+    foreach(scenario parallel independent_links busy cancel cancel_deferred disconnect
+            link_failure core_queue core_parallel)
+        add_test(NAME ${target}_slow_${scenario} COMMAND ${target} ${scenario} slow)
+        set_tests_properties(${target}_slow_${scenario} PROPERTIES TIMEOUT 10)
+    endforeach()
+    add_test(NAME ${target}_mixed_links COMMAND ${target} independent_links mixed)
+endforeach()

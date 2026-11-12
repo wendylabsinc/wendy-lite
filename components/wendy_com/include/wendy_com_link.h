@@ -181,6 +181,11 @@ int wcom_add_routed_socket_link_with_permission(const struct wcom_stream_ops *op
                          wcom_interruption_handler_t interruption_handler,
                          enum wcom_link_permission permission);
 bool wcom_link_is_local(int link_id);
+/* Complete SensorData message budget, including WendyCom framing. Direct
+ * sockets retain 10 KiB; BLE streams and routed connections use 1 KiB because
+ * their path can contain BLE. This is local transport state, not a peer hint.
+ * Returns zero for an absent or disconnected link. Com owner only. */
+size_t wcom_link_sensor_message_limit(int link_id);
 enum wcom_link_permission wcom_link_get_permission(int link_id);
 int wcom_add_tls_link(esp_tls_t *tls, wcom_interruption_handler_t interruption_handler);
 int wcom_add_tls_link_with_permission(esp_tls_t *tls,
