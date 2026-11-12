@@ -27,9 +27,12 @@ build/ is deleted before each run: a failed run can leave a build/ that
 idf.py refuses to clean, and all the next runs would then fail.
 
 The test changes the project: sdkconfig, build/, dependencies.lock,
-managed_components, sdkconfig.wendy and version.defaults. After the test, the
-project has the new configuration of the last entry. The results are in
-tools/configurator/test_results/<old_conf>/.
+managed_components, sdkconfig.defaults.wendy and version.defaults. After the
+test, the project has the new configuration of the last entry. The results are
+in tools/configurator/test_results/<old_conf>/.
+
+The comparison skips CONFIG_WENDY_VERSION: configure.py sets it from git, and
+the old configuration has no source for it.
 
 Activate ESP-IDF first. Each entry needs two set-target runs (about 1 min each).
 """
@@ -59,6 +62,7 @@ from esp_idf import (
     preview_option,
 )
 import solve
+from wendy_version import WENDY_VERSION
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 ENTRY_LIST = os.path.join(_HERE, "conf_migration.yaml")
@@ -68,6 +72,8 @@ LOCK_FILE = "dependencies.lock"
 VERSION_DEFAULTS = "# Release version overlay. Empty: no release version.\n"
 NOT_SET = "<not set>"
 ABSENT = "<absent>"
+# configure.py sets these options from git; the old configuration has no source for them.
+NOT_COMPARED = frozenset({WENDY_VERSION})
 LOG_TAIL = 20
 _NOT_SET_RE = re.compile(r"^# (CONFIG_\w+) is not set$")
 
@@ -217,9 +223,12 @@ def parse_sdkconfig(path: str) -> dict[str, str]:
 
 
 def compare(old: dict[str, str], new: dict[str, str]) -> list[tuple[str, str, str]]:
-    """Return (name, old value, new value) for each difference, sorted by name."""
+    """Return (name, old value, new value) for each difference, sorted by name.
+
+    The options in NOT_COMPARED are skipped.
+    """
     diffs = []
-    for name in sorted(old.keys() | new.keys()):
+    for name in sorted((old.keys() | new.keys()) - NOT_COMPARED):
         a, b = old.get(name, ABSENT), new.get(name, ABSENT)
         if a != b:
             diffs.append((name, a, b))
@@ -303,7 +312,8 @@ def main(argv: list[str] | None = None) -> int:
         "of the old configuration (boards/<old_conf>.cfg) with the sdkconfig of the new "
         "configuration (configurator values). Runs in the project folder: it changes sdkconfig, "
         "build/, dependencies.lock (reset to HEAD before each run), managed_components, "
-        "sdkconfig.wendy and version.defaults. Results go to tools/configurator/test_results/.",
+        "sdkconfig.defaults.wendy and version.defaults. Results go to "
+        "tools/configurator/test_results/.",
     )
     parser.add_argument(
         "--board",

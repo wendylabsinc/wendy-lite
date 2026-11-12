@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Solve the configurator master configuration and write sdkconfig.wendy.
+"""Solve the configurator master configuration, write sdkconfig.defaults.wendy.
 
 Read master_config.yaml (repository root) and the user selections. The selections
 come from NAME=VALUE arguments and from an optional values file (--values).
 A command-line value replaces the same value from the file; NAME= makes the
 attribute undefined. Print the attributes, the rules, the dependency
 graph and the solved values. Then write the sdkconfig lines to
-sdkconfig.wendy at the repository root.
+sdkconfig.defaults.wendy at the repository root.
 
-The first line of sdkconfig.wendy is CONFIG_WENDY_BUILD_PROFILE: the input
-values (values file and NAME=VALUE arguments, after the merge) as flat YAML.
-Kconfig cannot store a newline, so the 2 characters \\n separate the lines.
-The rule lines come after it.
+The first line of sdkconfig.defaults.wendy is CONFIG_WENDY_BUILD_PROFILE: the
+input values (values file and NAME=VALUE arguments, after the merge) as flat
+YAML. Kconfig cannot store a newline, so the 2 characters \\n separate the
+lines. The rule lines come after it. tools/configure.py adds
+CONFIG_WENDY_VERSION between the two (extra_lines of solve()); solve.py does
+not write it.
 
 If an attribute that the sdkconfig lines need is undefined, list the missing
 values, do not write the file and exit with code 1. Other attributes can stay
@@ -168,12 +170,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "-o",
         "--output",
-        default=relative(os.path.join(REPO_ROOT, "sdkconfig.wendy"), os.getcwd()),
+        default=relative(os.path.join(REPO_ROOT, "sdkconfig.defaults.wendy"), os.getcwd()),
         help="sdkconfig file to write (default: %(default)s)",
     )
 
 
-def solve(args: argparse.Namespace, extra_required: dict[str, list[str]] | None = None) -> Solution:
+def solve(
+    args: argparse.Namespace,
+    extra_required: dict[str, list[str]] | None = None,
+    extra_lines: list[str] | None = None,
+) -> Solution:
     """Solve, print each step and write the sdkconfig file.
 
     The attributes that the sdkconfig lines need must be defined after the
@@ -181,6 +187,10 @@ def solve(args: argparse.Namespace, extra_required: dict[str, list[str]] | None 
     The combination must be allowed (no "valid: false" rule matches).
     Raise ConfError when one is missing or when the combination is not
     allowed; the file is then not written.
+
+    extra_lines are sdkconfig lines that do not come from the master
+    configuration (configure.py: CONFIG_WENDY_VERSION). They go after the
+    CONFIG_WENDY_BUILD_PROFILE line, before the rule lines.
     """
     model = conf_model.load(args.conf)
     width = max(len(name) for name in [*model.attributes, SDKCONFIG])
@@ -224,7 +234,7 @@ def solve(args: argparse.Namespace, extra_required: dict[str, list[str]] | None 
         problems.append(f"{len(missing)} missing value(s)")
     if problems:
         raise ConfError(f"{', '.join(problems)}, {args.output} not written")
-    lines = [conf_model.build_profile_line(profile), *solution.sdkconfig]
+    lines = [conf_model.build_profile_line(profile), *(extra_lines or []), *solution.sdkconfig]
     write_sdkconfig(args.output, lines, args.conf, args.values, args.assignments)
     print(f"wrote {args.output} ({len(lines)} {SDKCONFIG} lines)")
     return solution
@@ -245,7 +255,8 @@ def run_cli(body: Callable[[], int]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Solve the configurator master configuration and write sdkconfig.wendy."
+        description="Solve the configurator master configuration and write "
+        "sdkconfig.defaults.wendy."
     )
     add_arguments(parser)
     args = parser.parse_args(argv)

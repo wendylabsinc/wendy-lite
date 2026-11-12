@@ -71,6 +71,18 @@ menu "Wendy Core"
             (values file and NAME=VALUE arguments), as flat YAML, for example
             "board: m5_stamp_s3\napp_type: native". The 2 characters \n
             (backslash, n) separate the lines, because Kconfig cannot store
-            a newline. configure.py writes this option to sdkconfig.wendy.
-            Empty when the build was not configured with configure.py.
+            a newline. configure.py writes this option to
+            sdkconfig.defaults.wendy. Empty when the build was not configured
+            with configure.py.
+
+    config WENDY_VERSION
+        string "Wendy version (from git)"
+        default ""
+        help
+            The version of the wendy-lite source: X.Y.Z when the commit has
+            the tag vX.Y.Z, else the short commit hash, for example "6e2ae72".
+            "-dirty" is added when tracked files have uncommitted changes.
+            tools/configure.py gets it from git and writes this option to
+            sdkconfig.defaults.wendy. Empty when the build was not configured
+            with configure.py.
 endmenu

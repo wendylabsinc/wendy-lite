@@ -668,16 +668,23 @@ def build_profile(model: Model, inputs: dict[str, Any]) -> str:
     return text.rstrip("\n")
 
 
+def kconfig_string_line(option: str, value: str) -> str:
+    r"""Return the sdkconfig line that gives the string value to option.
+
+    The value is escaped as Kconfig does (kconfiglib _escape): \ becomes \\,
+    then " becomes \".
+    """
+    value = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'{option}="{value}"'
+
+
 def build_profile_line(text: str) -> str:
     r"""Return the sdkconfig line that gives text to BUILD_PROFILE.
 
     Kconfig cannot store a newline, so each newline becomes the 2 characters
-    \n (backslash, n). Then the value is escaped as Kconfig does (kconfiglib
-    _escape): \ becomes \\, then " becomes \".
+    \n (backslash, n). Then kconfig_string_line() escapes the value.
     """
-    value = text.replace("\n", "\\n")
-    value = value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'{BUILD_PROFILE}="{value}"'
+    return kconfig_string_line(BUILD_PROFILE, text.replace("\n", "\\n"))
 
 
 # --- Graph and solver ------------------------------------------------------

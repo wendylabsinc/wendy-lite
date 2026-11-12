@@ -117,7 +117,7 @@ The code of the configurator is in [tools/configurator/](../tools/configurator/)
 To configure the build, run [tools/configure.py](../tools/configure.py) in the
 repository root, for example `tools/configure.py board=seeed_xiao app_type=native`.
 `tools/configurator/solve.py` takes the same arguments, but it only writes
-`sdkconfig.wendy`.
+`sdkconfig.defaults.wendy`.
 
 ### Attributes
 
@@ -205,7 +205,8 @@ on any other attribute, but the graph must not have a cycle.
 The configurator applies the rules in the order of the graph. Thus, when the
 configurator reads a condition, the attributes in it have their final values.
 Then the configurator collects the `sdkconfig` lines of all the rules with a
-true condition, in the order of the file, and writes them to `sdkconfig.wendy`.
+true condition, in the order of the file, and writes them to
+`sdkconfig.defaults.wendy`.
 
 For example, these rules change the flash size into a member of the Kconfig
 choice `ESPTOOLPY_FLASHSIZE`:
@@ -219,12 +220,12 @@ choice `ESPTOOLPY_FLASHSIZE`:
       CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 ```
 
-The first line of `sdkconfig.wendy` is `CONFIG_WENDY_BUILD_PROFILE`. It
-contains the input values (the values file and the `NAME=VALUE` arguments) as
-flat YAML, in the order of the attributes in `master_config.yaml`. The values
-that the rules set are not in it. Kconfig cannot store a newline, so the
-2 characters `\n` (backslash, n) separate the lines. In `sdkconfig.wendy`,
-Kconfig escapes the backslash:
+The first line of `sdkconfig.defaults.wendy` is `CONFIG_WENDY_BUILD_PROFILE`.
+It contains the input values (the values file and the `NAME=VALUE` arguments)
+as flat YAML, in the order of the attributes in `master_config.yaml`. The
+values that the rules set are not in it. Kconfig cannot store a newline, so the
+2 characters `\n` (backslash, n) separate the lines. In
+`sdkconfig.defaults.wendy`, Kconfig escapes the backslash:
 
 ```text
 CONFIG_WENDY_BUILD_PROFILE="board: m5_stamp_s3\\napp_type: native"
@@ -234,11 +235,39 @@ The firmware gets the string `board: m5_stamp_s3\napp_type: native`, with the
 2 characters `\n` between the lines. When `\n` is changed into a newline, the
 text is a valid values file.
 
-`configure.py` then runs `idf.py set-target <chip>` with `sdkconfig.wendy` as
-the last `SDKCONFIG_DEFAULTS` file. Thus its lines win over `sdkconfig.defaults`
-and `sdkconfig.defaults.<chip>`. `sdkconfig.wendy` is a defaults file, but the
-configurator makes it from the attributes. This solves the problem of
+`configure.py` adds `CONFIG_WENDY_VERSION` after `CONFIG_WENDY_BUILD_PROFILE`.
+It is the version of the wendy-lite source, from git (see
+[Wendy version](#wendy-version)). `solve.py` does not write it.
+
+`configure.py` then runs `idf.py set-target <chip>` with
+`sdkconfig.defaults.wendy` as the last `SDKCONFIG_DEFAULTS` file. Thus its lines
+win over `sdkconfig.defaults` and `sdkconfig.defaults.<chip>`. It is a defaults
+file, but the configurator makes it from the attributes. This solves the
+problem of
 [the settings that cannot depend on other settings](#some-settings-cannot-depend-on-other-settings).
+
+### Wendy version
+
+`CONFIG_WENDY_VERSION` (Kconfig menu "Wendy Core") is the version of the
+wendy-lite source. It does not come from `master_config.yaml`: `configure.py`
+gets it from git in the repository root
+([tools/configurator/wendy_version.py](../tools/configurator/wendy_version.py)).
+
+| Source                                      | `CONFIG_WENDY_VERSION`            |
+| ------------------------------------------- | --------------------------------- |
+| HEAD has the tag `v0.15.0`                  | `0.15.0`                          |
+| HEAD has another tag (`v1.0.0-rc1`) or none | `6e2ae72` (short hash)            |
+| tracked files with uncommitted changes      | `0.15.0-dirty` or `6e2ae72-dirty` |
+| no git, or not a git checkout               | empty, with a warning             |
+
+Only tags `vX.Y.Z` give a version, as in the release CI
+(`.github/workflows/build.yml`). If HEAD has more than one, the highest version
+is used. Untracked files do not add `-dirty`, as with `git describe --dirty`.
+`idf.py set-target` can change `dependencies.lock`, which is tracked. Then the
+next `configure.py` run gives `-dirty`.
+
+`solve.py`, the Wendy CLI and the CI board builds do not write
+`CONFIG_WENDY_VERSION`. In these builds it is empty.
 
 ### ESP-IDF version
 
@@ -346,7 +375,7 @@ the user answers the `wendy_net` question.
 
 The answers and the only allowed values are the input values. They go to
 `CONFIG_WENDY_BUILD_PROFILE`. `solve.py` with the same values as `NAME=VALUE`
-arguments gives the same `sdkconfig.wendy`.
+arguments gives the same `sdkconfig.defaults.wendy`.
 
 ### Previous answers
 
