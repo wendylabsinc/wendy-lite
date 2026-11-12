@@ -81,7 +81,7 @@ rules:
       wendy_net: false
 
   # select the ESP-IDF version
-  # configure.py checks that the active ESP-IDF has this version, and adds
+  # tools/configure.py checks that the active ESP-IDF has this version, and adds
   # idf.py --preview when idf_preview is true.
   - if: chip == "esp32s31"
     set:
@@ -91,6 +91,10 @@ rules:
     set:
       idf_version: "6.0.3"
       idf_preview: false
+
+  - if: chip == "esp32c61"
+    set:
+      app_type: "native"
 
   # define the sdkconfig
 

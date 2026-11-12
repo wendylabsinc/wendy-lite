@@ -1,7 +1,7 @@
 # Old board configurations and their new configurator values.
 #
 # old_conf: the old configuration, the name of boards/<old_conf>.cfg.
-# new_conf: the configurator attribute values that replace it. configure.py with
+# new_conf: the configurator attribute values that replace it. tools/configure.py with
 #           these values must give the same sdkconfig as
 #           idf.py @boards/<old_conf>.cfg set-target <chip from new_conf>.
 #

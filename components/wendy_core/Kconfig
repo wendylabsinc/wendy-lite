@@ -67,7 +67,7 @@ menu "Wendy Core"
         string "Build profile (configurator input values)"
         default ""
         help
-            The attribute values that configurator/configure.py was given
+            The attribute values that tools/configure.py was given
             (values file and NAME=VALUE arguments), as flat YAML, for example
             "board: m5_stamp_s3\napp_type: native". The 2 characters \n
             (backslash, n) separate the lines, because Kconfig cannot store

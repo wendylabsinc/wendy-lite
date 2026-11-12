@@ -102,7 +102,7 @@ the related Kconfig settings.
 ## Solution
 
 One YAML file describes the configuration:
-[configurator/master_conf.yaml](../configurator/master_conf.yaml). The file has
+[master_config.yaml](../master_config.yaml), in the repository root. The file has
 two parts:
 
 - the **attributes**: the values that make a configuration
@@ -112,6 +112,12 @@ two parts:
 The user gives the values of some attributes. The rules calculate the other
 attributes. From all the attribute values, the configurator makes the
 `sdkconfig` lines of the build.
+
+The code of the configurator is in [tools/configurator/](../tools/configurator/).
+To configure the build, run [tools/configure.py](../tools/configure.py) in the
+repository root, for example `tools/configure.py board=seeed_xiao app_type=native`.
+`tools/configurator/solve.py` takes the same arguments, but it only writes
+`sdkconfig.wendy`.
 
 ### Attributes
 
@@ -211,7 +217,7 @@ choice `ESPTOOLPY_FLASHSIZE`:
 
 The first line of `sdkconfig.wendy` is `CONFIG_WENDY_BUILD_PROFILE`. It
 contains the input values (the values file and the `NAME=VALUE` arguments) as
-flat YAML, in the order of the attributes in `master_conf.yaml`. The values
+flat YAML, in the order of the attributes in `master_config.yaml`. The values
 that the rules set are not in it. Kconfig cannot store a newline, so the
 2 characters `\n` (backslash, n) separate the lines. In `sdkconfig.wendy`,
 Kconfig escapes the backslash:
@@ -261,12 +267,12 @@ activate the correct version first.
 
 `wendy install` and `wendy run` ask the user for the input values. The Go
 configurator of the Wendy CLI (`go/internal/cli/litebuild` in WendyOS) reads
-the same `master_conf.yaml`. For the same input values, it gives the same
+the same `master_config.yaml`. For the same input values, it gives the same
 `sdkconfig` lines as `solve.py`.
 
 ### Display
 
-The section `display` of `master_conf.yaml` tells the Wendy CLI how to ask the
+The section `display` of `master_config.yaml` tells the Wendy CLI how to ask the
 questions. The Python configurator does not read it. Each entry is the name of
 an attribute, with these keys. All the keys are optional.
 
@@ -344,5 +350,5 @@ The CLI keeps the input values of the last run in its cache
 (`wendy-lite-build/answers.json`). The next run preselects the previous answer
 of each question when it is allowed, else `display.default`. An input value of
 an older run stays in the file until a run answers the same question again.
-When `master_conf.yaml` changes, the CLI ignores the attributes and the values
+When `master_config.yaml` changes, the CLI ignores the attributes and the values
 that are no longer valid.

@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """Compare the sdkconfig of each old configuration with its new configuration.
 
-Read configurator/conf_migration.yaml. Each entry has:
+Read tools/configurator/conf_migration.yaml. Each entry has:
 
     old_conf  the old configuration: the name of boards/<old_conf>.cfg
     new_conf  the new configuration: configurator attribute values
 
-The target is the chip that the new configuration gives (master_conf.yaml).
+The target is the chip that the new configuration gives (master_config.yaml).
 For each entry, in the project folder:
 
 1. Old conf: idf.py [--preview] "$(cat boards/<old_conf>.cfg);version.defaults" set-target <target>
-2. New conf: configurator/configure.py <new_conf as NAME=VALUE ...>
+2. New conf: tools/configure.py <new_conf as NAME=VALUE ...>
 3. Compare the two generated sdkconfig files and report the differences.
 
 --preview is added when the new configuration gives idf_preview: true, as
@@ -29,7 +29,7 @@ idf.py refuses to clean, and all the next runs would then fail.
 The test changes the project: sdkconfig, build/, dependencies.lock,
 managed_components, sdkconfig.wendy and version.defaults. After the test, the
 project has the new configuration of the last entry. The results are in
-configurator/test_results/<old_conf>/.
+tools/configurator/test_results/<old_conf>/.
 
 Activate ESP-IDF first. Each entry needs two set-target runs (about 1 min each).
 """
@@ -49,7 +49,7 @@ from typing import Any
 
 import conf_model
 from conf_model import ConfError, Model, read_yaml
-from configure import (
+from esp_idf import (
     CHIP,
     IDF_PREVIEW,
     IDF_VERSION,
@@ -62,7 +62,7 @@ import solve
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 ENTRY_LIST = os.path.join(_HERE, "conf_migration.yaml")
-MASTER_CONF = os.path.join(_HERE, "master_conf.yaml")
+MASTER_CONF = os.path.join(solve.REPO_ROOT, "master_config.yaml")
 RESULTS = os.path.join(_HERE, "test_results")
 LOCK_FILE = "dependencies.lock"
 VERSION_DEFAULTS = "# Release version overlay. Empty: no release version.\n"
@@ -256,8 +256,8 @@ def run_entry(entry: Entry, idf: list[str], active_version: str) -> str:
         return "failed: old conf"
 
     new_args = conf_arguments(entry.new_conf)
-    configure_py = os.path.join(_HERE, "configure.py")
-    shown = ["configurator/configure.py", *new_args]
+    configure_py = os.path.join(solve.REPO_ROOT, "tools", "configure.py")
+    shown = ["tools/configure.py", *new_args]
     if not run_step("new conf", [sys.executable, configure_py, *new_args], shown, out, "new_conf"):
         return "failed: new conf"
 
@@ -299,11 +299,11 @@ def print_entries(entries: list[Entry]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="For each entry in configurator/conf_migration.yaml, compare the sdkconfig "
+        description="For each entry in tools/configurator/conf_migration.yaml, compare the sdkconfig "
         "of the old configuration (boards/<old_conf>.cfg) with the sdkconfig of the new "
         "configuration (configurator values). Runs in the project folder: it changes sdkconfig, "
         "build/, dependencies.lock (reset to HEAD before each run), managed_components, "
-        "sdkconfig.wendy and version.defaults. Results go to configurator/test_results/.",
+        "sdkconfig.wendy and version.defaults. Results go to tools/configurator/test_results/.",
     )
     parser.add_argument(
         "--board",

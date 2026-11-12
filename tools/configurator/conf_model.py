@@ -1,9 +1,10 @@
 """Configurator model: attributes, rules, dependency graph and solver.
 
-The master configuration (configurator/master_conf.yaml) has two parts that
-this code reads. A third part, "display", tells the Wendy CLI how to ask the
-questions (titles, labels, order). This code accepts it and ignores it; the
-Go configurator (go/internal/cli/litebuild in WendyOS) reads it.
+The master configuration (master_config.yaml, in the repository root) has
+two parts that this code reads. A third part, "display", tells the Wendy CLI
+how to ask the questions (titles, labels, order). This code accepts it and
+ignores it; the Go configurator (go/internal/cli/litebuild in WendyOS) reads
+it.
 
 attributes
     A map from each name to a type ("string", "size" or "boolean") and an

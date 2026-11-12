@@ -1,42 +1,16 @@
-#!/usr/bin/env python3
-"""Configure the firmware build from the configurator master configuration.
+"""ESP-IDF helpers of tools/configure.py and test_configure.py.
 
-configure.py takes the same arguments as solve.py, for example:
-
-    configurator/configure.py board=seeed_xiao app_type=native
-    configurator/configure.py --values my_board.yaml app_type=wasm
-
-It solves the master configuration and writes sdkconfig.wendy with the same
-code as solve.py. sdkconfig.wendy also contains CONFIG_WENDY_BUILD_PROFILE,
-the input values as flat YAML (see solve.py). Then it runs, in the
-repository root:
-
-    idf.py [--preview] -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.wendy" set-target <chip>
-
---preview is added only when idf_preview is true (master_conf.yaml: the
-esp32s31, a preview target of ESP-IDF 6.1).
-
-sdkconfig.wendy comes last, so its lines win over sdkconfig.defaults and
-sdkconfig.defaults.<chip> (ESP-IDF adds that file itself).
-
-The chip, the ESP-IDF version (idf_version) and the attributes that the
-sdkconfig lines need must be defined, and the combination must be allowed
-(no "valid: false" rule matches). The active ESP-IDF (IDF_PATH) must have the
-version of idf_version. Otherwise configure.py prints an error and does not
-run idf.py. configure.py does not select ESP-IDF: activate the correct
-version first.
+Find idf.py in IDF_PATH, read the version of the active ESP-IDF and compare
+it with idf_version. The names of the attributes that configure.py needs
+besides the sdkconfig lines are here too.
 """
 
 from __future__ import annotations
 
-import argparse
 import os
 import re
-import shlex
-import subprocess
 import sys
 
-import solve
 from conf_model import ConfError
 
 CHIP = "chip"
@@ -48,6 +22,7 @@ IDF_PREVIEW = "idf_preview"
 _VERSION_CMAKE = os.path.join("tools", "cmake", "version.cmake")
 _VERSION_CMAKE_RE = re.compile(r"^\s*set\s*\(\s*IDF_VERSION_(MAJOR|MINOR|PATCH)\s+(\d+)\s*\)")
 _VERSION_PARTS = ("MAJOR", "MINOR", "PATCH")
+
 
 def preview_option(preview: bool) -> list[str]:
     """Return ["--preview"] when preview is true (idf_preview), else [].
@@ -128,47 +103,3 @@ def check_idf_version(wanted: str) -> None:
             f"has ESP-IDF {active}: activate ESP-IDF {wanted} first"
         )
     print(f"ESP-IDF {active} in {idf_path()} matches {IDF_VERSION} {wanted}")
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Solve the configurator master configuration, write sdkconfig.wendy, "
-        "check the ESP-IDF version and run idf.py set-target with the solved chip."
-    )
-    solve.add_arguments(parser)
-    args = parser.parse_args(argv)
-
-    def body() -> int:
-        idf = idf_command()  # check ESP-IDF before anything is written
-
-        solution = solve.solve(
-            args,
-            extra_required={
-                CHIP: ["idf.py set-target"],
-                IDF_VERSION: ["ESP-IDF version check"],
-                IDF_PREVIEW: ["idf.py --preview"],
-            },
-        )
-        chip = str(solution.values[CHIP])
-        preview = solution.values[IDF_PREVIEW] is True
-        check_idf_version(str(solution.values[IDF_VERSION]))
-
-        sdkconfig_wendy = solve.relative(args.output, solve.REPO_ROOT)
-        command: list[str] = [
-            *idf,
-            *preview_option(preview),
-            "-D",
-            f"SDKCONFIG_DEFAULTS=sdkconfig.defaults;{sdkconfig_wendy}",
-            "set-target",
-            chip,
-        ]
-        print(f"\nrun in {solve.REPO_ROOT}:\n  {shlex.join(command)}\n")
-        sys.stdout.flush()
-        rc = subprocess.call(command, cwd=solve.REPO_ROOT)
-        return rc if rc >= 0 else 128 - rc
-
-    return solve.run_cli(body)
-
-
-if __name__ == "__main__":
-    sys.exit(main())

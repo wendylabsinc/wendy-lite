@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Solve the configurator master configuration and write sdkconfig.wendy.
 
-Read configurator/master_conf.yaml and the user selections. The selections
+Read master_config.yaml (repository root) and the user selections. The selections
 come from NAME=VALUE arguments and from an optional values file (--values).
 A command-line value replaces the same value from the file; NAME= makes the
 attribute undefined. Print the attributes, the rules, the dependency
@@ -21,12 +21,12 @@ If the condition of a "valid: false" rule is true for the solved values,
 the combination is not allowed: list the rule and the values in its
 condition, do not write the file and exit with code 1.
 
-configure.py uses the same code (add_arguments, solve, run_cli).
+tools/configure.py uses the same code (add_arguments, solve, run_cli).
 
 Examples:
 
-    configurator/solve.py board=seeed_xiao app_type=native
-    configurator/solve.py --values my_board.yaml app_type=wasm
+    tools/configurator/solve.py board=seeed_xiao app_type=native
+    tools/configurator/solve.py --values my_board.yaml app_type=wasm
 
 Values file example:
 
@@ -45,7 +45,7 @@ import conf_model
 from conf_model import SDKCONFIG, ConfError, Missing, Model, Solution
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT = os.path.dirname(_HERE)
+REPO_ROOT = os.path.dirname(os.path.dirname(_HERE))  # tools/configurator/ -> root
 
 
 def relative(path: str, base: str) -> str:
@@ -162,7 +162,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--conf",
-        default=relative(os.path.join(_HERE, "master_conf.yaml"), os.getcwd()),
+        default=relative(os.path.join(REPO_ROOT, "master_config.yaml"), os.getcwd()),
         help="master configuration (default: %(default)s)",
     )
     parser.add_argument(
