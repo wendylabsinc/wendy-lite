@@ -2,7 +2,7 @@ format_version: "1.0"
 attributes:
   board:
     type: string
-    enum: [custom, dfr1172_firebeetle_2, seeed_xiao, m5_stamp_s3, esp32c5_devkit_c_1_n8r8, esp32c6_devkit_c_1, esp32c6_devkit_m_1,
+    enum: [custom, dfr1172_firebeetle_2, seeed_xiao, m5_stamp_s3, esp32c5_devkit_c_1_n8r8, esp32c6_devkit_c_1_n8, esp32c6_devkit_m_1,
            esp32c61_devkit_c_1, esp32s3_devkit_c_1_n8, esp32s31_korvo_1, waveshare_esp32p4_lcd_4b]
   chip:
     type: string
@@ -22,6 +22,10 @@ attributes:
     enum: [native, wasm]
   wendy_net:
     type: boolean
+  sensor_link_av:
+    type: boolean
+  cloud_tunnel:
+    type: boolean
 rules:
   - if: board == "custom"
     set:
@@ -32,12 +36,11 @@ rules:
       chip: esp32c5
       flash_size: 8MiB
       spram_size: 8MiB
-  - if: board == "esp32c6_devkit_c_1"
+  - if: board == "esp32c6_devkit_c_1_n8"
     set:
       chip: esp32c6
-      flash_size: 4MiB
+      flash_size: 8MiB
       spram_size: 0
-      wendy_net: false
   - if: board == "esp32c6_devkit_m_1"
     set:
       chip: esp32c6
@@ -100,6 +103,25 @@ rules:
   - if: chip == "esp32c61"
     set:
       app_type: "native"
+
+  # SensorLink camera and microphone: the XIAO user selects it, the Korvo-1
+  # always has it. SensorLink needs WASM app support off: it forces a native app.
+  - if: board == "esp32s31_korvo_1"
+    set:
+      sensor_link_av: true
+  - else-if: board != "seeed_xiao"
+    set:
+      sensor_link_av: false
+  - if: sensor_link_av
+    set:
+      app_type: "native"
+
+  # Wendy Cloud tunnel: control of the device through Wendy Cloud. The tunnel
+  # needs Wendy Cloud, and the constrained C6 Wendy Net profile turns Wendy
+  # Cloud off (see its sdkconfig block).
+  - if: board == "esp32c6_devkit_c_1_n8" && app_type == "wasm" && wendy_net
+    set:
+      cloud_tunnel: false
 
   # define the sdkconfig
 
@@ -194,6 +216,15 @@ rules:
       CONFIG_BT_NIMBLE_EXT_ADV_MAX_SIZE=31
       CONFIG_BT_NIMBLE_ENABLE_PERIODIC_ADV=n
 
+  # Wendy Cloud tunnel. Off: Wendy Cloud stays enabled (time, identity
+  # renewal), but the device cannot be controlled through the cloud.
+  - if: cloud_tunnel
+    sdkconfig: |
+      CONFIG_WENDY_CLOUD_TUNNEL=y
+  - else:
+    sdkconfig: |
+      CONFIG_WENDY_CLOUD_TUNNEL=n
+
   # raw board-specific sdkconfig setting
   # boards/esp32c5_net_psram.defaults
   - if: board == "esp32c5_devkit_c_1_n8r8" && app_type == "wasm" && wendy_net
@@ -258,7 +289,7 @@ rules:
       CONFIG_WENDY_NET_BUFFERS_IN_PSRAM=y
 
   # boards/esp32c6_net.defaults
-  - if: board == "esp32c6_devkit_c_1" && app_type == "wasm" && wendy_net
+  - if: board == "esp32c6_devkit_c_1_n8" && app_type == "wasm" && wendy_net
     sdkconfig: |
       # Append after the C6 board, optional WASM, and boards/wendy_net.defaults.
       # Both carriers compile into one image; WendyCom chooses BLE OR Wi-Fi at runtime.
@@ -328,12 +359,6 @@ rules:
       CONFIG_BT_NIMBLE_L2CAP_COC_MAX_NUM=4
       CONFIG_BT_NIMBLE_MSYS_1_BLOCK_SIZE=256
 
-      # Bundle the Sense expansion board's camera and PDM microphone over SensorLink.
-      CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3=y
-
-      # Keep JPEG frames in PSRAM without direct PSRAM DMA capture stalls.
-      CONFIG_CAMERA_PSRAM_DMA=n
-
       # Reserve internal memory for sensor DMA and networking/PKI task stacks.
       CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
       CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
@@ -342,13 +367,20 @@ rules:
       CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
       CONFIG_ESP_WIFI_RX_BA_WIN=4
 
-      # Continuous video: reserve a full TLS flight and run the S3 at its rated peak.
-      CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
-      CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
-
       CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS=2
       CONFIG_FREERTOS_TLSP_DELETION_CALLBACKS=y
       CONFIG_MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH=y
+  - if: board == "seeed_xiao" && sensor_link_av
+    sdkconfig: |
+      # Bundle the Sense expansion board's camera and PDM microphone over SensorLink.
+      CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3=y
+
+      # Keep JPEG frames in PSRAM without direct PSRAM DMA capture stalls.
+      CONFIG_CAMERA_PSRAM_DMA=n
+
+      # Continuous video: reserve a full TLS flight and run the S3 at its rated peak.
+      CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
+      CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 
   # boards/esp32s31_korvo_1_native.defaults
   - if: board == "esp32s31_korvo_1" && app_type == "native"
@@ -400,6 +432,14 @@ rules:
       CONFIG_LWIP_TCP_WND_DEFAULT=17280
       CONFIG_LWIP_TCP_RECVMBOX_SIZE=14
 
+      # Show a native status page on the optional 800x480 SUB3 RGB display.
+      CONFIG_WENDY_DISPLAY_ESP32S31_KORVO_1=y
+
+      CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS=2
+      CONFIG_FREERTOS_TLSP_DELETION_CALLBACKS=y
+      CONFIG_MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH=y
+  - if: board == "esp32s31_korvo_1" && sensor_link_av
+    sdkconfig: |
       # Bundle the onboard DVP camera and ES8389 dual-microphone input.
       CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1=y
       CONFIG_ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE=y
@@ -410,13 +450,6 @@ rules:
       CONFIG_CAMERA_SC101IOT=y
       CONFIG_CAMERA_SC101IOT_DVP_YUV422_640X480_15FPS=y
       CONFIG_CAMERA_SC101IOT_DVP_DEFAULT_FMT_YUV422_640X480_15FPS=y
-
-      # Show a native status page on the optional 800x480 SUB3 RGB display.
-      CONFIG_WENDY_DISPLAY_ESP32S31_KORVO_1=y
-
-      CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS=2
-      CONFIG_FREERTOS_TLSP_DELETION_CALLBACKS=y
-      CONFIG_MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH=y
 
   # boards/dfr1172_firebeetle.defaults
   - if: board == "dfr1172_firebeetle_2" && app_type == "wasm"
@@ -466,7 +499,7 @@ display:
       seeed_xiao: Seeed Studio XIAO ESP32S3
       m5_stamp_s3: M5Stack StampS3
       esp32c5_devkit_c_1_n8r8: Espressif ESP32-C5-DevKitC-1 N8R8
-      esp32c6_devkit_c_1: Espressif ESP32-C6-DevKitC-1
+      esp32c6_devkit_c_1_n8: Espressif ESP32-C6-DevKitC-1 N8
       esp32c6_devkit_m_1: Espressif ESP32-C6-DevKitM-1
       esp32c61_devkit_c_1: Espressif ESP32-C61-DevKitC-1
       esp32s3_devkit_c_1_n8: Espressif ESP32-S3-DevKitC-1 N8
@@ -487,16 +520,32 @@ display:
     title: Flash size
     priority: 3
     default: 4MiB
-  app_type:
-    title: Application type
+  sensor_link_av:
+    title: SensorLink camera and microphone
+    help: Stream the board camera and microphone through SensorLink.
     priority: 4
     values:
+      true: Enabled
+      false: Disabled
+    default: false
+  app_type:
+    title: Application type
+    priority: 5
+    values:
       native: Native app
-      wasm: WebAssembly app
+      wasm: WebAssembly app (experimental)
     default: native
   wendy_net:
     title: Wendy Net mesh networking
     priority: 6
+    values:
+      true: Enabled
+      false: Disabled
+    default: true
+  cloud_tunnel:
+    title: Wendy Cloud tunnel
+    help: Allow control of the device through Wendy Cloud.
+    priority: 7
     values:
       true: Enabled
       false: Disabled

@@ -130,7 +130,7 @@ a type (`string`, `size` or `boolean`) and can have a list of allowed values
 attributes:
   board:
     type: string
-    enum: [custom, seeed_xiao, esp32c6_devkit_c_1, ...]
+    enum: [custom, seeed_xiao, esp32c6_devkit_c_1_n8, ...]
   chip:
     type: string
     enum: [esp32c6, esp32c61, esp32c5, esp32p4, esp32s3, esp32s31]
@@ -146,6 +146,10 @@ attributes:
     type: string
     enum: [native, wasm]
   wendy_net:
+    type: boolean
+  sensor_link_av:
+    type: boolean
+  cloud_tunnel:
     type: boolean
 ```
 
@@ -165,10 +169,10 @@ programming language.
 For example, this rule sets the hardware of a board:
 
 ```yaml
-  - if: board == "esp32c6_devkit_c_1"
+  - if: board == "esp32c6_devkit_c_1_n8"
     set:
       chip: esp32c6
-      flash_size: 4MiB
+      flash_size: 8MiB
       spram_size: 0
 ```
 

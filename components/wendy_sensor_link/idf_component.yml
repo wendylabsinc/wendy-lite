@@ -1,10 +1,11 @@
 dependencies:
   # ESP-IDF omits the XIAO symbol when WASM app support is on. Short-circuit
-  # those profiles before reading the symbol.
+  # those profiles before reading the symbol. Keep the parentheses: the
+  # component manager reads only the first two terms of "A && B && C".
   espressif/esp32-camera:
     version: "^2.0.0"
     rules:
-      - if: "target == esp32s3 && $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == False && $CONFIG{WENDY_SENSOR_LINK_XIAO_ESP32S3} == True"
+      - if: "target == esp32s3 && ($CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == False && $CONFIG{WENDY_SENSOR_LINK_XIAO_ESP32S3} == True)"
   espressif/esp_video:
     version: "2.5.0"
     rules:
