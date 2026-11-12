@@ -12,8 +12,9 @@ extern "C" {
 #define WCOM_SENSOR_MAX_STREAMS 4
 
 // Streams sensor data to a client as sensor_data messages. Each frame is cut
-// into chunks of about 10 KiB, queued one at a time as the previous one goes
-// out: frames have no size limit, and other traffic on the link never waits
+// into messages of at most 10 KiB on direct sockets/serial, or 1 KiB on BLE
+// and routed mesh paths. Messages are queued one at a time as the previous one
+// goes out: frames have no size limit, and other traffic on the link never waits
 // for more than one sensor chunk per link. Up to WCOM_SENSOR_MAX_STREAMS
 // client/channel streams each retain one frame; ready streams take turns. All
 // functions must be called from the com task; wendy_core offers the same

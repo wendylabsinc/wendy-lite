@@ -857,6 +857,16 @@ enum wcom_link_permission wcom_link_get_permission(int link_id)
         ? link->permission : WCOM_LINK_PERMISSION_NONE;
 }
 
+size_t wcom_link_sensor_message_limit(int link_id)
+{
+    struct wcom_link *link = _get_link(link_id);
+    if (!link || link->state != WCOM_LINK_STATE_CONNECTED)
+        return 0;
+    // Physical stream providers are BLE. Routed sockets/streams do not expose
+    // the complete path, and a working LAN route can switch to a BLE backup.
+    return link->type == LINK_TYPE_STREAM || link->routed ? 1024 : 10 * 1024;
+}
+
 bool wcom_link_is_local(int link_id)
 {
     struct wcom_link *link = _get_link(link_id);
