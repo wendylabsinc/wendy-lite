@@ -21,6 +21,9 @@ docker run --rm -v "$PWD:/project" -w /project espressif/idf:v6.0.3 \
 
 Use a fresh build directory and configuration when upgrading from ESP-IDF 5.
 
+For an opt-in C5/S3 PSRAM networking experiment, see the
+[network throughput qualification profile](docs/network-throughput-profile.md).
+
 [Wendy Net](docs/wendy-net.md) connects enrolled Lite devices to other devices
 and services in the same tenant over Wi-Fi or BLE. It is off by default.
 C5 devices with PSRAM can route traffic between several peers; smaller C6 devices

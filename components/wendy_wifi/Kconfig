@@ -15,6 +15,18 @@ menu "Wendy WiFi Communication"
             sleep policy. This may increase radio power consumption; no power
             saving claim is implied. Saved credentials are unchanged.
 
+    config WENDY_WIFI_TEST_PSRAM_THROUGHPUT
+        bool "Qualify larger TCP windows on a PSRAM networking board"
+        default n
+        help
+            Opt-in lab profile for ESP32-C5 and ESP32-S3 with required PSRAM.
+            Append boards/network_throughput_psram.defaults to the board's
+            defaults. The build rejects unsupported targets, missing PSRAM,
+            stale window/buffer settings and insufficient internal reserve.
+            Defaults alone do not update an existing sdkconfig. This profile
+            uses more network memory and needs hardware latency/heap testing
+            before being selected for release firmware.
+
     config WENDY_WIFI_TEST_MAX_11N
         bool "Investigate station ACK loss with an 802.11n protocol limit"
         depends on WENDY_WIFI_ENABLED
