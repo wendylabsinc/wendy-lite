@@ -29,6 +29,8 @@ endif()
 # not pull their runtime into native firmware builds.
 idf_build_set_property(MINIMAL_BUILD ON)
 project(wendy_mcu)
+include(cmake/network_profile.cmake)
+wendy_check_network_profile()
 
 # wendy_pki's project_include.cmake patches the bundled esp-pqc Mbed TLS.
 include(cmake/dependency_patches.cmake)

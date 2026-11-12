@@ -30,3 +30,7 @@ target_compile_options(camera_services_test PRIVATE -Wall -Wextra -Wno-unused-pa
 target_compile_definitions(camera_services_test PRIVATE CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3=1)
 add_test(NAME wifi_camera_services_and_reconnection COMMAND camera_services_test)
 set_tests_properties(wifi_camera_services_and_reconnection PROPERTIES TIMEOUT 10)
+
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME wifi_network_profile_guards COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_LIST_DIR}/network_profile_test.py")
