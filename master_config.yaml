@@ -2,8 +2,8 @@ format_version: "1.0"
 attributes:
   board:
     type: string
-    enum: [custom, dfr1172_firebeetle_2, seeed_xiao, m5_stamp_s3, esp32c5_devkit_c_1_n8r8, esp32c6_devkit_c_1, esp32c61_devkit_c_1,
-           esp32s3_devkit_c_1_n8, esp32s31_korvo_1, waveshare_esp32p4_lcd_4b]
+    enum: [custom, dfr1172_firebeetle_2, seeed_xiao, m5_stamp_s3, esp32c5_devkit_c_1_n8r8, esp32c6_devkit_c_1, esp32c6_devkit_m_1,
+           esp32c61_devkit_c_1, esp32s3_devkit_c_1_n8, esp32s31_korvo_1, waveshare_esp32p4_lcd_4b]
   chip:
     type: string
     enum: [esp32c6, esp32c61, esp32c5, esp32p4, esp32s3, esp32s31]
@@ -37,6 +37,13 @@ rules:
       chip: esp32c6
       flash_size: 4MiB
       spram_size: 0
+      wendy_net: false
+  - if: board == "esp32c6_devkit_m_1"
+    set:
+      chip: esp32c6
+      flash_size: 4MiB
+      spram_size: 0
+      wendy_net: false
   - if: board == "esp32c61_devkit_c_1"
     set:
       chip: esp32c61
@@ -60,7 +67,6 @@ rules:
       chip: esp32s3
       flash_size: 8MiB
       spram_size: 8MiB
-      wendy_net: false
   - if: board == "esp32s3_devkit_c_1_n8"
     set:
       chip: esp32s3
@@ -72,7 +78,6 @@ rules:
       chip: esp32s31
       flash_size: 16MiB
       spram_size: 16MiB
-      wendy_net: false
   - if: board == "waveshare_esp32p4_lcd_4b"
     set:
       chip: esp32p4
@@ -462,6 +467,7 @@ display:
       m5_stamp_s3: M5Stack StampS3
       esp32c5_devkit_c_1_n8r8: Espressif ESP32-C5-DevKitC-1 N8R8
       esp32c6_devkit_c_1: Espressif ESP32-C6-DevKitC-1
+      esp32c6_devkit_m_1: Espressif ESP32-C6-DevKitM-1
       esp32c61_devkit_c_1: Espressif ESP32-C61-DevKitC-1
       esp32s3_devkit_c_1_n8: Espressif ESP32-S3-DevKitC-1 N8
       esp32s31_korvo_1: Espressif ESP32-S31-Korvo-1 V1.1 (preview)
