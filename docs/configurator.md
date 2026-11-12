@@ -274,7 +274,9 @@ an attribute, with these keys. All the keys are optional.
 - `help`: a line under the question.
 - `priority`: the order of the questions, smaller first. See
   [Order of the questions](#order-of-the-questions).
-- `default`: the preselected answer. The CLI uses it only when it is allowed.
+- `default`: the preselected answer. The CLI uses it only when it is allowed,
+  and when the user has no allowed answer from the last run. See
+  [Previous answers](#previous-answers).
 - `values`: the label of each enum value, or of `true` and `false`.
 
 ```yaml
@@ -311,8 +313,9 @@ Then:
 
 - If a rule set the attribute, the CLI shows the value of a visible attribute.
   There is no question.
-- If the `sdkconfig` lines and the chip do not need the attribute, directly or
-  through the rules, the CLI skips it. The attribute stays undefined.
+- If the `sdkconfig` lines, the chip, `idf_version` and `idf_preview` do not
+  need the attribute, directly or through the rules, the CLI skips it. The
+  attribute stays undefined. These are the values that `configure.py` needs.
 - Else the CLI finds the allowed answers. If only one answer is allowed, the
   CLI takes it, shows it for a visible attribute and asks no question. If more
   answers are allowed, the CLI asks the question and shows only the allowed
@@ -334,3 +337,12 @@ the user answers the `wendy_net` question.
 The answers and the only allowed values are the input values. They go to
 `CONFIG_WENDY_BUILD_PROFILE`. `solve.py` with the same values as `NAME=VALUE`
 arguments gives the same `sdkconfig.wendy`.
+
+### Previous answers
+
+The CLI keeps the input values of the last run in its cache
+(`wendy-lite-build/answers.json`). The next run preselects the previous answer
+of each question when it is allowed, else `display.default`. An input value of
+an older run stays in the file until a run answers the same question again.
+When `master_conf.yaml` changes, the CLI ignores the attributes and the values
+that are no longer valid.

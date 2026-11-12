@@ -462,6 +462,7 @@ display:
       esp32s3_devkit_c_1_n8: Espressif ESP32-S3-DevKitC-1 N8
       esp32s31_korvo_1: Espressif ESP32-S31-Korvo-1 V1.1 (preview)
       waveshare_esp32p4_lcd_4b: Waveshare ESP32-P4-WIFI6-Touch-LCD-4B
+    default: custom
   chip:
     title: Chip
     priority: 2
@@ -475,15 +476,18 @@ display:
   flash_size:
     title: Flash size
     priority: 3
+    default: 4MiB
   app_type:
     title: Application type
     priority: 4
     values:
       native: Native app
       wasm: WebAssembly app
+    default: native
   wendy_net:
     title: Wendy Net mesh networking
     priority: 6
     values:
       true: Enabled
       false: Disabled
+    default: true
