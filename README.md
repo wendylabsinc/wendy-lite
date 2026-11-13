@@ -52,6 +52,11 @@ The `esp32c5_net_psram` and `esp32c6_net` catalog variants include Wendy Net
 and WASM support. Other legacy WASM-layout images, including ESP32-P4 images,
 are available only as manual builds.
 
+Each `boards` entry in `catalog.json` has `cloud_enrollment`: `true` when the image
+supports Wendy Cloud enrollment (`CONFIG_WENDY_PKI`, `CONFIG_WENDY_CLOUD` and
+`CONFIG_WENDY_WIFI_ENABLED` all on), `false` when it does not. The build checks the
+value against the built configuration.
+
 ## Optional Bluetooth support
 
 Bluetooth is enabled by default. PKI-enrolled boards advertise their identity
