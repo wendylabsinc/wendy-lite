@@ -1,0 +1,272 @@
+#!/usr/bin/env python3
+"""Solve the configurator master configuration, write sdkconfig.defaults.wendy.
+
+Read master_config.yaml (repository root) and the user selections. The selections
+come from NAME=VALUE arguments and from an optional values file (--values).
+A command-line value replaces the same value from the file; NAME= makes the
+attribute undefined. Print the attributes, the rules, the dependency
+graph and the solved values. Then write the sdkconfig lines to
+sdkconfig.defaults.wendy at the repository root.
+
+The first line of sdkconfig.defaults.wendy is CONFIG_WENDY_BUILD_PROFILE: the
+input values (values file and NAME=VALUE arguments, after the merge) as flat
+YAML. Kconfig cannot store a newline, so the 2 characters \\n separate the
+lines. The rule lines come after it. tools/configure.py adds
+CONFIG_WENDY_VERSION between the two (extra_lines of solve()); solve.py does
+not write it.
+
+If an attribute that the sdkconfig lines need is undefined, list the missing
+values, do not write the file and exit with code 1. Other attributes can stay
+undefined: when flash_size is given, board is not needed.
+
+If the condition of a "valid: false" rule is true for the solved values,
+the combination is not allowed: list the rule and the values in its
+condition, do not write the file and exit with code 1.
+
+tools/configure.py uses the same code (add_arguments, solve, run_cli).
+
+Examples:
+
+    tools/configurator/solve.py board=seeed_xiao app_type=native
+    tools/configurator/solve.py --values my_board.yaml app_type=wasm
+
+Values file example:
+
+    board: seeed_xiao
+    app_type: native
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from typing import Any, Callable
+
+import conf_model
+from conf_model import SDKCONFIG, ConfError, Missing, Model, Solution
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(os.path.dirname(_HERE))  # tools/configurator/ -> root
+
+
+def relative(path: str, base: str) -> str:
+    """Return path relative to base when it is inside base, else absolute."""
+    path = os.path.abspath(path)
+    rel = os.path.relpath(path, base)
+    return path if rel.startswith("..") else rel
+
+
+def _section(title: str) -> None:
+    print(f"\n== {title}")
+
+
+def print_model(model: Model, width: int) -> None:
+    _section("Attributes")
+    for attr in model.attributes.values():
+        line = f"  {attr.name:<{width}}  {attr.type}"
+        if attr.enum is not None:
+            line += "  enum: " + ", ".join(attr.format(v) for v in attr.enum)
+        print(line)
+    print(f"  {SDKCONFIG:<{width}}  intrinsic (lines, append only)")
+
+    _section("Rules")
+    for rule in model.rules:
+        if rule.keyword == "else":
+            head = f"else (if {rule.condition})"
+        elif rule.keyword == "else-if":
+            head = f"else-if {rule.if_text} (if {rule.condition})"
+        elif rule.condition is not None:
+            head = f"if {rule.condition}"
+        else:
+            head = "always"
+        print(f"  [{rule.index}] {head}")
+        if rule.forbidden:
+            print("        not allowed")
+        for name, value in rule.sets.items():
+            print(f"        {name} = {model.attributes[name].format(value)}")
+        for line in rule.sdkconfig:
+            print(f"        {SDKCONFIG} += {line}")
+
+
+def print_graph(graph: dict[str, list[str]], width: int) -> None:
+    _section("Dependency graph (node <- attributes it depends on)")
+    for node, deps in graph.items():
+        print(f"  {node:<{width}}  <- {', '.join(deps) if deps else '(nothing)'}")
+
+
+def print_solution(model: Model, solution: Solution, missing: dict[str, Missing], width: int) -> None:
+    _section("Values")
+    texts = {name: attr.format(solution.values[name]) for name, attr in model.attributes.items()}
+    text_width = max(len(t) for t in texts.values())
+    for name, text in texts.items():
+        source = solution.sources.get(name, "")
+        print(f"  {name:<{width}}  {text:<{text_width}}  {source}".rstrip())
+
+    _section(SDKCONFIG)
+    for line in solution.sdkconfig:
+        print(f"  {line}")
+    if not solution.sdkconfig:
+        print("  (empty)")
+
+    _section("Not allowed")
+    for rule in solution.forbidden:
+        print(f"  {rule.name}")
+        for name in (n for n in model.attributes if n in rule.reads()):
+            source = solution.sources.get(name, "")
+            print(f"      {name:<{width}}  {texts[name]:<{text_width}}  {source}".rstrip())
+    if solution.allowed:
+        print("  (none)")
+
+    _section("Missing values")
+    for name, m in missing.items():
+        line = f"  {name:<{width}}  needed by {', '.join(m.needed_by)}"
+        if m.set_by:
+            line += f", can be set by {', '.join(m.set_by)}"
+        print(line)
+    if not missing:
+        print("  (none)")
+
+
+def print_build_profile(text: str) -> None:
+    _section(f"Build profile ({conf_model.BUILD_PROFILE})")
+    for line in text.splitlines():
+        print(f"  {line}")
+    if not text:
+        print("  (empty)")
+
+
+def write_sdkconfig(
+    path: str, lines: list[str], conf_path: str, values_path: str | None, assignments: list[str]
+) -> None:
+    header = [f"# Generated by the configurator from {relative(conf_path, REPO_ROOT)}. Do not edit."]
+    if values_path:
+        header.append(f"# Values file: {relative(values_path, REPO_ROOT)}")
+    if assignments:
+        header.append(f"# Command line: {' '.join(assignments)}")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(header + lines) + "\n")
+
+
+def add_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add the arguments that solve.py and configure.py share."""
+    parser.add_argument(
+        "assignments",
+        nargs="*",
+        metavar="NAME=VALUE",
+        help="attribute value, for example board=seeed_xiao or flash_size=4MiB; "
+        "it replaces the value from --values; NAME= makes the attribute undefined",
+    )
+    parser.add_argument(
+        "--values",
+        metavar="FILE",
+        help="YAML file with attribute values (name: value)",
+    )
+    parser.add_argument(
+        "--conf",
+        default=relative(os.path.join(REPO_ROOT, "master_config.yaml"), os.getcwd()),
+        help="master configuration (default: %(default)s)",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        default=relative(os.path.join(REPO_ROOT, "sdkconfig.defaults.wendy"), os.getcwd()),
+        help="sdkconfig file to write (default: %(default)s)",
+    )
+
+
+def solve(
+    args: argparse.Namespace,
+    extra_required: dict[str, list[str]] | None = None,
+    extra_lines: list[str] | None = None,
+) -> Solution:
+    """Solve, print each step and write the sdkconfig file.
+
+    The attributes that the sdkconfig lines need must be defined after the
+    solve. extra_required adds more attributes, mapped to what needs them.
+    The combination must be allowed (no "valid: false" rule matches).
+    Raise ConfError when one is missing or when the combination is not
+    allowed; the file is then not written.
+
+    extra_lines are sdkconfig lines that do not come from the master
+    configuration (configure.py: CONFIG_WENDY_VERSION). They go after the
+    CONFIG_WENDY_BUILD_PROFILE line, before the rule lines.
+    """
+    model = conf_model.load(args.conf)
+    width = max(len(name) for name in [*model.attributes, SDKCONFIG])
+    print_model(model, width)
+
+    graph = conf_model.build_graph(model)
+    print_graph(graph, width)
+    _section("Evaluation order")
+    print("  " + ", ".join(conf_model.topo_order(graph)))
+
+    required = conf_model.sdkconfig_requirements(graph)
+    for name, needed_by in (extra_required or {}).items():
+        if name not in model.attributes:
+            raise ConfError(f'{", ".join(needed_by)} needs attribute "{name}", but {args.conf} does not declare it')
+        required.setdefault(name, []).extend(needed_by)
+
+    inputs: dict[str, Any] = {}
+    sources: dict[str, str] = {}
+    if args.values:
+        inputs = conf_model.load_values(model, args.values)
+        sources = {name: conf_model.VALUES_FILE for name in inputs}
+    for name, value in conf_model.parse_assignments(model, args.assignments).items():
+        if value is None:
+            inputs.pop(name, None)
+            sources.pop(name, None)
+        else:
+            inputs[name] = value
+            sources[name] = conf_model.COMMAND_LINE
+
+    profile = conf_model.build_profile(model, inputs)
+    solution = conf_model.evaluate(model, graph, inputs, sources)
+    missing = conf_model.find_missing(graph, solution.values, required)
+    print_solution(model, solution, missing, width)
+    print_build_profile(profile)
+    print()
+
+    problems = []
+    if not solution.allowed:
+        problems.append(conf_model.not_allowed_text(solution.forbidden))
+    if missing:
+        problems.append(f"{len(missing)} missing value(s)")
+    if problems:
+        raise ConfError(f"{', '.join(problems)}, {args.output} not written")
+    lines = [conf_model.build_profile_line(profile), *(extra_lines or []), *solution.sdkconfig]
+    write_sdkconfig(args.output, lines, args.conf, args.values, args.assignments)
+    print(f"wrote {args.output} ({len(lines)} {SDKCONFIG} lines)")
+    return solution
+
+
+def run_cli(body: Callable[[], int]) -> int:
+    """Run body(). Print a ConfError or OSError as "error: ..." and return 1."""
+    try:
+        return body()
+    except ConfError as e:
+        message = str(e)
+    except OSError as e:
+        message = f"{e.filename}: {e.strerror}" if e.filename else str(e)
+    sys.stdout.flush()
+    print(f"error: {message}", file=sys.stderr)
+    return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Solve the configurator master configuration and write "
+        "sdkconfig.defaults.wendy."
+    )
+    add_arguments(parser)
+    args = parser.parse_args(argv)
+
+    def body() -> int:
+        solve(args)
+        return 0
+
+    return run_cli(body)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

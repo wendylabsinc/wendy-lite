@@ -1,0 +1,109 @@
+# Firmware variants that CI compiles (.github/workflows/build-variants.yml).
+#
+# This file is written by hand. Each variant is a combination of input values
+# of master_config.yaml, as NAME=VALUE arguments of tools/configure.py.
+#
+#   combination  CI compiles this combination
+#   chip         the target that the combination gives
+#   idf_version  the ESP-IDF version that the combination gives (CI container)
+#   idf_preview  true: idf.py --preview
+#   tested       false: CI does not compile the variant
+#   aliases      other combinations that must give the same firmware. CI does
+#                not compile them.
+#
+# Before the builds, CI runs tests/build-variants/check_variants.py (no
+# compile): each combination and alias is allowed, each alias gives the same
+# chip, ESP-IDF version and sdkconfig lines as its combination, and chip,
+# idf_version and idf_preview are correct. To see all the combinations and
+# their aliases: tools/configurator/all_combinations.py --all
+format_version: "1.0"
+variants:
+
+  # One variant for each chip: the most capable one, without the SensorLink
+  # camera and microphone (sensor_link_av off). A native app, each other
+  # feature on (Wendy Net, Wendy Cloud tunnel) when the chip has a board that
+  # allows it, then the largest flash and PSRAM. Exception: the Korvo-1
+  # always has the SensorLink camera and microphone (board rule).
+
+  - combination: board=esp32c6_devkit_c_1_n8 app_type=native wendy_net=true cloud_tunnel=true
+    chip: esp32c6
+    idf_version: "6.0.3"
+    idf_preview: false
+    tested: true
+    aliases: []
+
+  - combination: board=custom chip=esp32c61 flash_size=32MiB cloud_tunnel=true
+    chip: esp32c61
+    idf_version: "6.0.3"
+    idf_preview: false
+    tested: true
+    aliases: []
+
+  - combination: board=esp32c5_devkit_c_1_n8r8 app_type=native wendy_net=true cloud_tunnel=true
+    chip: esp32c5
+    idf_version: "6.0.3"
+    idf_preview: false
+    tested: true
+    aliases: []
+
+  - combination: board=waveshare_esp32p4_lcd_4b app_type=native cloud_tunnel=true
+    chip: esp32p4
+    idf_version: "6.0.3"
+    idf_preview: false
+    tested: true
+    aliases:
+      - board=custom chip=esp32p4 flash_size=32MiB app_type=native cloud_tunnel=true
+
+  - combination: board=seeed_xiao app_type=native wendy_net=true sensor_link_av=false cloud_tunnel=true
+    chip: esp32s3
+    idf_version: "6.0.3"
+    idf_preview: false
+    tested: true
+    aliases: []
+
+  - combination: board=esp32s31_korvo_1 wendy_net=true cloud_tunnel=true
+    chip: esp32s31
+    idf_version: "6.1"
+    idf_preview: true
+    tested: true
+    aliases: []
+
+  # SensorLink camera and microphone (sensor_link_av on). The XIAO variant
+  # above, with sensor_link_av=true (a rule then sets app_type=native). The
+  # Korvo-1 variant above also has them.
+
+  - combination: board=seeed_xiao wendy_net=true sensor_link_av=true cloud_tunnel=true
+    chip: esp32s3
+    idf_version: "6.0.3"
+    idf_preview: false
+    tested: true
+    aliases: []
+
+  # Wendy Cloud tunnel off. The ESP32-C6 variant above, with cloud_tunnel=false.
+
+  - combination: board=esp32c6_devkit_c_1_n8 app_type=native wendy_net=true cloud_tunnel=false
+    chip: esp32c6
+    idf_version: "6.0.3"
+    idf_preview: false
+    tested: true
+    aliases: []
+
+  # Wendy Net off. The ESP32-C6 variant above, with wendy_net=false.
+
+  - combination: board=esp32c6_devkit_c_1_n8 app_type=native wendy_net=false cloud_tunnel=true
+    chip: esp32c6
+    idf_version: "6.0.3"
+    idf_preview: false
+    tested: true
+    aliases:
+      - board=custom chip=esp32c6 flash_size=8MiB app_type=native cloud_tunnel=true
+
+  # WASM app. The ESP32-C6 variant above, with app_type=wasm. With Wendy Net,
+  # a rule turns the Wendy Cloud tunnel off (constrained C6 Wendy Net profile).
+
+  - combination: board=esp32c6_devkit_c_1_n8 app_type=wasm wendy_net=true
+    chip: esp32c6
+    idf_version: "6.0.3"
+    idf_preview: false
+    tested: true
+    aliases: []
