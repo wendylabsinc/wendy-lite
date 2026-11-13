@@ -1,0 +1,107 @@
+name: Build Variants
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+# A run has one build job for each variant. A new push to a pull request
+# cancels the older run of that pull request.
+concurrency:
+  group: build-variants-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # tests/build-variants/variants.yaml (written by hand) lists the variants
+  # to compile. Before the builds, two checks run with Python only (no
+  # ESP-IDF, no set-target):
+  # - all_combinations.py: each combination of master_config.yaml gives
+  #   sdkconfig lines (no conflict, no missing value);
+  # - check_variants.py: each combination and alias of variants.yaml is
+  #   allowed, each alias gives the same sdkconfig as its variant, and chip,
+  #   idf_version and idf_preview are correct.
+  # Aliases are not compiled: only the combination of each variant with
+  # tested: true.
+  variants:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      count: ${{ steps.matrix.outputs.count }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: python -m pip install pyyaml
+
+      - name: Check all the combinations of master_config.yaml
+        run: python tools/configurator/all_combinations.py
+
+      - name: Check the variants and their aliases
+        run: python tests/build-variants/check_variants.py
+
+      - name: Make the build matrix
+        id: matrix
+        shell: python
+        run: |
+          import json
+          import os
+
+          import yaml
+
+          with open("tests/build-variants/variants.yaml", encoding="utf-8") as f:
+              variants = yaml.safe_load(f)["variants"]
+          include = [
+              {
+                  "combination": v["combination"],
+                  "idf_version": v["idf_version"],
+                  "idf_preview": v["idf_preview"],
+              }
+              for v in variants
+              if v["tested"]
+          ]
+          if len(include) > 256:
+              print(f"::error::{len(include)} variants to compile, a GitHub matrix has at most 256 jobs")
+              raise SystemExit(1)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"matrix={json.dumps({'include': include})}\n")
+              f.write(f"count={len(include)}\n")
+          print(f"{len(include)} of {len(variants)} variants to compile")
+
+  build:
+    needs: variants
+    if: needs.variants.outputs.count != '0'
+    name: ${{ matrix.combination }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.variants.outputs.matrix) }}
+    container:
+      image: espressif/idf:v${{ matrix.idf_version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # configure.py reads the Wendy version from git.
+      - name: Trust the checkout in the build container
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      # configure.py solves the combination, writes sdkconfig.defaults.wendy,
+      # checks the ESP-IDF version of the container and runs idf.py set-target.
+      - name: Configure and compile
+        shell: bash
+        env:
+          COMBINATION: ${{ matrix.combination }}
+          PREVIEW: ${{ matrix.idf_preview }}
+        run: |
+          . "$IDF_PATH/export.sh"
+          read -ra args <<< "$COMBINATION"
+          python tools/configure.py "${args[@]}"
+          idf_args=()
+          if [ "$PREVIEW" = true ]; then
+            idf_args+=(--preview)
+          fi
+          idf.py "${idf_args[@]}" build

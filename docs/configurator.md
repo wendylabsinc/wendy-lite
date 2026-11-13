@@ -385,3 +385,103 @@ of each question when it is allowed, else `display.default`. An input value of
 an older run stays in the file until a run answers the same question again.
 When `master_config.yaml` changes, the CLI ignores the attributes and the values
 that are no longer valid.
+
+## Check all the combinations
+
+[tools/configurator/all_combinations.py](../tools/configurator/all_combinations.py)
+tries all the combinations of input values of `master_config.yaml`. Run it
+after each change to the attributes or the rules:
+
+```sh
+tools/configurator/all_combinations.py
+```
+
+The script goes through the attributes as the Wendy CLI does (see
+[Order of the questions](#order-of-the-questions)). Each needed attribute that
+no rule sets gets each of its values in turn: the enum, or `true` and `false`
+for a boolean. Thus the combinations are the ones that a user can enter. For an
+attribute without enum, the script uses one value of each set of values that the
+conditions cannot tell apart.
+
+Each combination gets the checks of `solve.py`. There are three results:
+
+- **OK**: the configuration is allowed.
+- **Not allowed**: a `valid: false` rule matches. The combination is skipped.
+- **Error**: a conflict or a missing value. This is a problem in
+  `master_config.yaml`, and it must be corrected.
+
+It is also an error when the Wendy CLI must ask an internal attribute: 2 or more
+of its values give an allowed configuration. When there is an error, the exit
+code is 1.
+
+Each combination is written as `NAME=VALUE` arguments, which `solve.py` and
+`configure.py` accept.
+
+### Variants
+
+The OK combinations that give the same firmware make one **variant**. The same
+firmware is the same chip, `idf_version`, `idf_preview` and the same `sdkconfig`
+lines, in the same order. `CONFIG_WENDY_BUILD_PROFILE` and
+`CONFIG_WENDY_VERSION` are not part of the comparison. The same `sdkconfig`
+lines, chip and ESP-IDF version give the same `sdkconfig` after
+`idf.py set-target`.
+
+The **main combination** of a variant is the one with the fewest input values.
+On a tie, it is the first one. The other combinations are its **aliases**. For
+example, `board=esp32c6_devkit_m_1` gives the same firmware as
+`board=custom chip=esp32c6 flash_size=4MiB`.
+
+The script prints the variants with aliases. `--all` prints all the variants.
+
+## Build variants in CI
+
+CI does not compile all the variants. The variants that CI compiles are in
+[tests/build-variants/variants.yaml](../tests/build-variants/variants.yaml).
+This file is written by hand. It has five sections:
+
+1. One variant for each chip: the most capable one, without the SensorLink
+   camera and microphone (`sensor_link_av` off). A native app, each other
+   feature on, then the largest flash and PSRAM. Exception: the Korvo-1
+   always has the SensorLink camera and microphone.
+2. The XIAO variant of section 1, with the SensorLink camera and microphone
+   (`sensor_link_av` on).
+3. The ESP32-C6 variant of section 1, with the Wendy Cloud tunnel off.
+4. The ESP32-C6 variant of section 1, with Wendy Net off.
+5. The ESP32-C6 variant of section 1, with a WASM app.
+
+Each variant has these keys:
+
+```yaml
+  - combination: board=esp32c6_devkit_c_1_n8 app_type=native wendy_net=false cloud_tunnel=true
+    chip: esp32c6
+    idf_version: "6.0.3"
+    idf_preview: false
+    tested: true
+    aliases:
+      - board=custom chip=esp32c6 flash_size=8MiB app_type=native cloud_tunnel=true
+```
+
+- `combination`: the combination that CI compiles.
+- `chip`, `idf_version`, `idf_preview`: the values that the combination gives.
+  CI uses them for the `espressif/idf` container and for `--preview`.
+- `tested`: `false` and CI does not compile the variant.
+- `aliases`: other combinations that must give the same firmware. CI does not
+  compile them. Use `all_combinations.py --all` to find the aliases of a
+  combination.
+
+The workflow
+[.github/workflows/build-variants.yml](../.github/workflows/build-variants.yml)
+runs on each pull request, on each push to `main`, and manually:
+
+1. The first job does two checks with Python only, without ESP-IDF and without
+   a compile:
+   - `tools/configurator/all_combinations.py`: each combination of
+     `master_config.yaml` gives `sdkconfig` lines (no error).
+   - [tests/build-variants/check_variants.py](../tests/build-variants/check_variants.py):
+     in `variants.yaml`, each combination and each alias is allowed and gives
+     no error, each alias gives the same firmware as its combination, and
+     `chip`, `idf_version` and `idf_preview` are the values of the combination.
+2. Then there is one build job for each variant with `tested: true`. The jobs
+   run in parallel. A job compiles the combination in the `espressif/idf`
+   container of its `idf_version`: `tools/configure.py <combination>`, then
+   `idf.py build` (with `--preview` when `idf_preview` is true).
