@@ -1,3 +1,17 @@
+# WARNING (for developers and AI agents): native apps do NOT use this file.
+#
+# A native app is its own ESP-IDF project with its own top-level CMakeLists.txt
+# (example: native_apps/blink-rgb). It gets the wendy-lite components through
+# the component manager. Nothing set in this file reaches a native app.
+#
+# Before you add or change anything here (build properties, EXCLUDE_COMPONENTS,
+# dependency patches, target checks, ...), do one of these:
+#   - Make sure that no native app needs the change.
+#   - Put the change where native apps also get it: a component's
+#     CMakeLists.txt, project_include.cmake, Kconfig or idf_component.yml.
+# If you cannot do either, stop and report the gap. Do not fix only the
+# wendy-lite firmware build.
+
 cmake_minimum_required(VERSION 3.29)
 
 # WAMR component declares cmake_minimum_required(VERSION 3.5) which
