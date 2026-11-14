@@ -192,6 +192,10 @@ bool wnen_start(void (*wake)(void))
     struct wnes_config k;
     wnes_defaults(&k);
     k.frame_bytes = CONFIG_WENDY_NET_ESPNOW_FRAME_BYTES;
+    /* A handshake may sit silent while the serialized crypto worker is busy;
+     * allow as long as the TLS setup budget. Routing hellos keep a live link
+     * far inside this, and unanswered data fails within seconds regardless. */
+    k.idle_us = 60000000;
     k.alloc = wendy_net_malloc;
     k.free = wendy_net_free;
     k.send = radio_send;

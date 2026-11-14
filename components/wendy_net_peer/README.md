@@ -8,7 +8,9 @@ heavy cryptographic work runs on the separate serialized worker.
 
 For configuration, firmware profiles and device limits, see
 [Wendy Net on Wendy Lite](../../docs/wendy-net.md). For protocol state and cache
-ownership, see [signed routing sessions](SIGNED_SESSIONS.md).
+ownership, see [signed routing sessions](SIGNED_SESSIONS.md). The optional
+ESP-NOW carrier and its stream layer are described in
+[Wendy Net over ESP-NOW](../../docs/wendy-net-espnow.md).
 
 A complete device manifest carries services with one inherited lease. The
 service helpers validate and project those fields; they do not create separate
@@ -55,13 +57,13 @@ component manifest. Resolve the managed cJSON component first:
 cmake -S components/wendy_net_peer/tests -B build/peer-formats \
   -DIDF_COMPONENTS=/path/to/esp-idf/components \
   -DCJSON_ROOT=/path/to/espressif__cjson/cJSON
-cmake --build build/peer-formats --target \
+cmake --build build/peer-formats --target driver_espnow_stream \
   format_device_dns format_directory format_key_fifo format_endpoint_cache \
   format_certificate_fetch format_certificate_store format_service_schema \
   format_certificate_fetch_budget format_service_schema_budget \
   format_manifest_interop
-GOTOOLCHAIN=go1.27.3 ctest --test-dir build/peer-formats -R '^format_' \
-  --output-on-failure
+GOTOOLCHAIN=go1.27.3 ctest --test-dir build/peer-formats \
+  -R '^(format_|driver_espnow_stream)' --output-on-failure
 ```
 
 To use an existing esp-pqc checkout instead of fetching it, add

@@ -110,6 +110,10 @@ device. WendyCom does not add another TLS connection inside that connection.
 the device's SensorLink manifest and depend on its firmware and sensor providers.
 Publishing a guest service does not automatically create a SensorLink channel.
 
+PSRAM routers can also link to radio neighbours without any Wi-Fi network; see
+[Wendy Net over ESP-NOW](wendy-net-espnow.md). That carrier is experimental and
+compiled out of the catalog profiles.
+
 Wi-Fi mesh connections use TCP with TLS; BLE uses TLS over L2CAP. WendyOS peers
 also support Lite's TCP transport alongside their normal QUIC connections.
 Authentication and destination encryption apply across intermediate routers.
