@@ -5,6 +5,7 @@
 #include <string.h>
 
 /* Frame: magic[4] version type flags window dst[4] src[4] seq[4] ack[4] data.
+ * "flags" is the requested service in SYN and FIN_ACK in FIN, otherwise zero.
  * Sequence numbers count segments, starting at zero in each direction.
  * "ack" is cumulative: the next segment expected from the peer. "window" is
  * how many segments from "ack" on the sender of the frame can still buffer. */
@@ -16,7 +17,7 @@ struct segment {
 };
 struct wnes_conn {
     struct wnes *owner;
-    uint8_t mac[6], state;
+    uint8_t mac[6], state, service;
     bool incoming, taken, released, peer_fin, fin_acked, ack_due, ack_now, resend, armed;
     uint32_t local_id, peer_id;
     uint32_t snd_una, snd_sent, snd_nxt; /* acknowledged <= transmitted <= queued */
@@ -28,7 +29,8 @@ struct wnes_conn {
 };
 struct wnes {
     struct wnes_config config;
-    bool accepting, busy;
+    bool busy;
+    uint8_t accepting;
     unsigned capacity, segments, peak;
     uint8_t *frame;
     struct wnes_conn *conns[];
@@ -232,28 +234,30 @@ void wnes_close(struct wnes *m)
     m->config.free(m->frame);
     m->config.free(m);
 }
-void wnes_accepting(struct wnes *m, bool accepting)
+void wnes_accepting(struct wnes *m, uint8_t services)
 {
     if (m)
-        m->accepting = accepting;
+        m->accepting = services;
 }
-struct wnes_conn *wnes_connect(struct wnes *m, const uint8_t mac[6], int64_t now)
+struct wnes_conn *wnes_connect(struct wnes *m, const uint8_t mac[6], uint8_t service, int64_t now)
 {
-    struct wnes_conn *c = m && mac ? conn_new(m, mac, now) : NULL;
+    struct wnes_conn *c = m && mac && service < 8 ? conn_new(m, mac, now) : NULL;
     if (c) {
+        c->service = service;
         c->taken = true;
         c->state = SYN_SENT;
         c->resend = true; /* The first SYN leaves on the next tick. */
     }
     return c;
 }
-struct wnes_conn *wnes_accept(struct wnes *m, uint8_t mac[6])
+struct wnes_conn *wnes_accept(struct wnes *m, uint8_t mac[6], uint8_t *service)
 {
     for (unsigned i = 0; m && i < m->capacity; i++) {
         struct wnes_conn *c = m->conns[i];
         if (c && c->incoming && !c->taken && c->state == OPEN) {
             c->taken = true;
             memcpy(mac, c->mac, 6);
+            *service = c->service;
             return c;
         }
     }
@@ -342,10 +346,12 @@ void wnes_input(struct wnes *m, const uint8_t mac[6], const void *frame, size_t 
                 waiting++;
         }
         if (!c) {
-            if (!m->accepting || waiting >= m->config.backlog || !(c = conn_new(m, mac, now))) {
+            if (f[6] >= 8 || !(m->accepting & (1u << f[6])) || waiting >= m->config.backlog ||
+                !(c = conn_new(m, mac, now))) {
                 reset(m, mac, src, 0);
                 return;
             }
+            c->service = f[6];
             c->incoming = true;
             c->state = SYN_RECEIVED;
             c->peer_id = src;
@@ -448,7 +454,7 @@ static int64_t service(struct wnes_conn *c, int64_t now)
     if (c->resend) {
         c->resend = false;
         if (c->state == SYN_SENT)
-            (void)emit(c, WNES_SYN, 0, 0, NULL);
+            (void)emit(c, WNES_SYN, c->service, 0, NULL);
         else if (c->state == SYN_RECEIVED)
             (void)emit(c, WNES_SYNACK, 0, 0, NULL);
         else if (c->snd_una != c->snd_nxt) {

@@ -10,7 +10,10 @@
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <limits.h>
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
@@ -22,6 +25,8 @@
 #define RADIO_US INT64_C(1000000)
 static const char *TAG = "wendy_net_espnow";
 static const uint8_t everyone[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+/* Guards the stream layer. Held for one nonblocking call at a time. */
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 struct received {
     uint8_t mac[6];
     uint16_t size;
@@ -36,7 +41,8 @@ static struct {
     unsigned peer_count, reported;
     uint8_t tenant[16], device[16], mesh[8];
     char tenant_text[37], device_text[37];
-    bool scoped, accepting;
+    bool scoped;
+    uint8_t flags; /* What this node currently advertises. */
     int64_t radio_at, advert_at;
     /* Radio effect: the actor sets the wish and lends; the worker answers. */
     atomic_bool up, done;
@@ -152,12 +158,29 @@ static int radio_send(void *context, const uint8_t mac[6], const void *frame, si
     /* Only a full transmit queue is worth an early retry. */
     return esp_now_send(mac, frame, size) == ESP_ERR_ESPNOW_NO_MEM;
 }
-static int no_wait(void *context, bool writing, int64_t deadline)
+static ssize_t stream_read(void *conn, void *data, size_t size)
 {
-    (void)context;
+    pthread_mutex_lock(&lock);
+    ssize_t n = wnes_read(conn, data, size);
+    pthread_mutex_unlock(&lock);
+    return n;
+}
+static ssize_t stream_write(void *conn, const void *data, size_t size)
+{
+    pthread_mutex_lock(&lock);
+    ssize_t n = wnes_write(conn, data, size);
+    pthread_mutex_unlock(&lock);
+    return n;
+}
+/* Only blocking users call this (the signed-time exchange on the I/O worker).
+ * A hint, like the BLE stream's: sleep one tick, the caller rechecks. */
+static int stream_wait(void *conn, bool writing, int64_t deadline)
+{
+    (void)conn;
     (void)writing;
     (void)deadline;
-    return -1;
+    vTaskDelay(1);
+    return 0;
 }
 
 bool wnen_start(void (*wake)(void))
@@ -195,9 +218,11 @@ bool wnen_stop(void)
         return false;
     s.lent = false;
     if (s.streams) {
+        pthread_mutex_lock(&lock);
         (void)wnes_tick(s.streams, esp_timer_get_time()); /* Closing notices, best effort. */
         wnes_close(s.streams);
         s.streams = NULL;
+        pthread_mutex_unlock(&lock);
     }
     if (atomic_load(&s.up) || s.paused || s.sleep_saved) {
         s.want_up = false;
@@ -247,14 +272,17 @@ bool wnen_poll(const struct wnen_intent *intent, wnen_seen seen, void *context)
         s.lent = wendy_pki_io_work_submit(radio_effect, NULL);
         /* Brisk until the radio is up, then an occasional check that it stayed. */
         s.radio_at = now + (atomic_load(&s.up) ? 5 * RADIO_US : RADIO_US);
+        pthread_mutex_lock(&lock);
         if (atomic_load(&s.up))
             prune_peers();
+        pthread_mutex_unlock(&lock);
         unsigned dropped = atomic_load(&s.dropped);
         if (dropped != s.reported)
             ESP_LOGW(TAG, "receive ring overflowed: frames dropped=%u", dropped);
         s.reported = dropped;
     }
     scope(intent);
+    pthread_mutex_lock(&lock);
     for (unsigned n = 0; n < RING; n++) {
         unsigned tail = atomic_load(&s.tail);
         if (tail == atomic_load(&s.head))
@@ -270,12 +298,16 @@ bool wnen_poll(const struct wnen_intent *intent, wnen_seen seen, void *context)
         atomic_store(&s.tail, tail + 1);
         progress = true;
     }
-    s.accepting = intent->accepting && s.scoped && atomic_load(&s.up);
-    wnes_accepting(s.streams, s.accepting);
+    s.flags = !s.scoped || !atomic_load(&s.up) ? 0
+                                               : (intent->accepting ? WNES_ACCEPTING : 0) |
+                                                     (intent->time_relay ? WNES_TIME_RELAY : 0);
+    wnes_accepting(s.streams, (uint8_t)((s.flags & WNES_ACCEPTING ? 1 << WNES_MESH : 0) |
+                                        (s.flags & WNES_TIME_RELAY ? 1 << WNES_TIME : 0)));
     (void)wnes_tick(s.streams, now);
-    if (s.accepting && now >= s.advert_at) {
+    pthread_mutex_unlock(&lock);
+    if (s.flags && now >= s.advert_at) {
         uint8_t advert[WNES_ADVERT_SIZE];
-        if (wnes_advert_write(s.tenant, s.device, s.mesh, WNES_ACCEPTING, advert) > 0)
+        if (wnes_advert_write(s.tenant, s.device, s.mesh, s.flags, advert) > 0)
             (void)esp_now_send(everyone, advert, sizeof advert);
         /* Sparse and jittered: 75-125% of the interval, four times rarer
          * once this node has an ESP-NOW link. Newcomers advertise at the
@@ -290,30 +322,48 @@ int64_t wnen_deadline(void)
 {
     if (!s.streams)
         return INT64_MAX;
+    pthread_mutex_lock(&lock);
     int64_t next = wnes_tick(s.streams, esp_timer_get_time());
+    pthread_mutex_unlock(&lock);
     if (s.radio_at < next)
         next = s.radio_at;
-    if (s.accepting && s.advert_at < next)
+    if (s.flags && s.advert_at < next)
         next = s.advert_at;
     if (atomic_load(&s.tail) != atomic_load(&s.head))
         next = 0;
     return next;
 }
-struct wnes_conn *wnen_dial(const uint8_t mac[6])
+struct wnes_conn *wnen_dial(const uint8_t mac[6], uint8_t service)
 {
-    return s.streams && atomic_load(&s.up) ? wnes_connect(s.streams, mac, esp_timer_get_time())
-                                           : NULL;
+    if (!s.streams || !atomic_load(&s.up))
+        return NULL;
+    pthread_mutex_lock(&lock);
+    struct wnes_conn *conn = wnes_connect(s.streams, mac, service, esp_timer_get_time());
+    pthread_mutex_unlock(&lock);
+    return conn;
 }
-struct wnes_conn *wnen_take(uint8_t mac[6])
+struct wnes_conn *wnen_take(uint8_t mac[6], uint8_t *service)
 {
-    return wnes_accept(s.streams, mac);
+    pthread_mutex_lock(&lock);
+    struct wnes_conn *conn = wnes_accept(s.streams, mac, service);
+    pthread_mutex_unlock(&lock);
+    return conn;
 }
 struct wendy_pki_stream wnen_stream(struct wnes_conn *conn)
 {
     return (struct wendy_pki_stream){
-        .context = conn, .read = wnes_read, .write = wnes_write, .wait = no_wait};
+        .context = conn, .read = stream_read, .write = stream_write, .wait = stream_wait};
+}
+bool wnen_drained(struct wnes_conn *conn)
+{
+    pthread_mutex_lock(&lock);
+    bool drained = wnes_drained(conn);
+    pthread_mutex_unlock(&lock);
+    return drained;
 }
 void wnen_release(struct wnes_conn *conn)
 {
+    pthread_mutex_lock(&lock);
     wnes_release(conn, esp_timer_get_time());
+    pthread_mutex_unlock(&lock);
 }

@@ -115,7 +115,7 @@ static void open_nodes(uint16_t frame0, uint8_t window0, uint16_t frame1, uint8_
         nodes[n].m = wnes_open(&k, 4);
         assert(nodes[n].m);
     }
-    wnes_accepting(nodes[1].m, true);
+    wnes_accepting(nodes[1].m, 1 << WNES_MESH);
 }
 static void close_nodes(void)
 {
@@ -125,15 +125,16 @@ static void close_nodes(void)
 }
 static void establish(struct wnes_conn **a, struct wnes_conn **b)
 {
-    uint8_t mac[6];
-    *a = wnes_connect(nodes[0].m, nodes[1].mac, now);
+    uint8_t mac[6], service = 9;
+    *a = wnes_connect(nodes[0].m, nodes[1].mac, WNES_MESH, now);
     assert(*a);
     *b = NULL;
     for (int64_t start = now; !*b; step(500)) {
         assert(now - start < 5000000);
-        *b = wnes_accept(nodes[1].m, mac);
+        *b = wnes_accept(nodes[1].m, mac, &service);
     }
-    assert(!memcmp(mac, nodes[0].mac, 6) && !wnes_accept(nodes[1].m, mac));
+    assert(!memcmp(mac, nodes[0].mac, 6) && service == WNES_MESH);
+    assert(!wnes_accept(nodes[1].m, mac, &service));
 }
 static uint8_t pattern(unsigned stream, size_t offset)
 {
@@ -284,7 +285,7 @@ static void test_connect(void)
     radio(0, 0, 0, 1000);
     /* Nobody there. */
     nodes[0].cut = true;
-    struct wnes_conn *a = wnes_connect(nodes[0].m, nodes[1].mac, now);
+    struct wnes_conn *a = wnes_connect(nodes[0].m, nodes[1].mac, WNES_MESH, now);
     int64_t start = now;
     frames = 0;
     assert(a && wnes_write(a, "x", 1) == -3 && wnes_read(a, &byte, 1) == -2);
@@ -295,16 +296,33 @@ static void test_connect(void)
     wnes_release(a, now);
     /* Refused: answered at once instead of timing out. */
     nodes[0].cut = false;
-    wnes_accepting(nodes[1].m, false);
-    a = wnes_connect(nodes[0].m, nodes[1].mac, now);
+    wnes_accepting(nodes[1].m, 0);
+    a = wnes_connect(nodes[0].m, nodes[1].mac, WNES_MESH, now);
     start = now;
     while (wnes_write(a, "x", 1) == -3)
         wait_step(start);
     assert(wnes_write(a, "x", 1) == -1 && now - start < 100000);
     wnes_release(a, now);
-    assert(!wnes_accept(nodes[1].m, mac));
+    assert(!wnes_accept(nodes[1].m, mac, &byte));
+    /* Each kind of stream has its own admission: a node can relay signed
+     * time while it has no room for another mesh link. */
+    wnes_accepting(nodes[1].m, 1 << WNES_TIME);
+    a = wnes_connect(nodes[0].m, nodes[1].mac, WNES_MESH, now);
+    for (start = now; wnes_write(a, "x", 1) == -3;)
+        wait_step(start);
+    assert(wnes_write(a, "x", 1) == -1 && now - start < 100000);
+    wnes_release(a, now);
+    a = wnes_connect(nodes[0].m, nodes[1].mac, WNES_TIME, now);
+    struct wnes_conn *b = NULL;
+    for (start = now; !b; wait_step(start))
+        b = wnes_accept(nodes[1].m, mac, &byte);
+    assert(byte == WNES_TIME && wnes_write(a, "t", 1) == 1);
+    wnes_release(a, now);
+    wnes_release(b, now);
+    for (int i = 0; i < 3000; i++)
+        step(1000);
     /* A flood of connection requests cannot take more than the backlog. */
-    wnes_accepting(nodes[1].m, true);
+    wnes_accepting(nodes[1].m, 1 << WNES_MESH);
     for (unsigned i = 0; i < 200; i++) {
         uint8_t syn[WNES_HEADER] = {'W', 'N', 'E', 'N', WNES_VERSION, WNES_SYN, 0, WINDOW,
                                     0,   0,   0,   0,   1,            2,        3, (uint8_t)i};

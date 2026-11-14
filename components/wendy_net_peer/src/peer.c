@@ -74,6 +74,7 @@
 #endif
 struct time_bootstrap_job {
     struct wble_mesh_pipe *pipe;
+    struct wnes_conn *espnow; /* Exactly one of pipe/espnow, or neither for direct HTTPS. */
     struct wendy_pki_stream stream;
     atomic_bool done;
     bool server, submitted;
@@ -184,6 +185,8 @@ struct peer_state {
 #if CONFIG_WENDY_NET_ESPNOW
     struct wnes_conn *espnow; /* This link's stream; the root's is its own link too. */
     bool espnow_started;      /* Root only. */
+    unsigned espnow_time_cursor;
+    int64_t espnow_since;
 #endif
     bool clock_ready;
     int64_t clock_check_at, time_bootstrap_at;
@@ -553,13 +556,18 @@ static void release_time_job(struct time_bootstrap_job *job)
 #if CONFIG_WENDY_NET_BLE
     wble_mesh_release(job->pipe);
 #endif
+#if CONFIG_WENDY_NET_ESPNOW
+    if (job->espnow)
+        wnen_release(job->espnow);
+#endif
     wendy_net_free(job);
 }
 static void bootstrap_time_work(void *context)
 {
     struct time_bootstrap_job *job = context;
     job->result = job->server ? wendy_pki_net_time_tunnel(&job->stream)
-                              : wendy_pki_net_bootstrap_time(job->pipe ? &job->stream : NULL);
+                              : wendy_pki_net_bootstrap_time(job->pipe || job->espnow ? &job->stream
+                                                                                       : NULL);
     atomic_store(&job->done, true);
 }
 #if CONFIG_WENDY_NET_BLE
@@ -583,6 +591,58 @@ static void ble_time_take(struct peer_state *s, struct wble_mesh_pipe *pipe, boo
     s->bootstrap_time = job;
 }
 #endif
+#if CONFIG_WENDY_NET_ESPNOW
+static bool espnow_admission_available(struct peer_state *root);
+static void espnow_address(char out[64], const uint8_t mac[6])
+{
+    snprintf(out, 64, "espnow:%02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3],
+             mac[4], mac[5]);
+}
+static bool espnow_parse(const char *address, uint8_t mac[6])
+{
+    unsigned bytes[6];
+    int end = 0;
+    if (sscanf(address, "espnow:%2x:%2x:%2x:%2x:%2x:%2x%n", bytes, bytes + 1, bytes + 2, bytes + 3,
+               bytes + 4, bytes + 5, &end) != 6 ||
+        address[end])
+        return false;
+    for (unsigned i = 0; i < 6; i++)
+        mac[i] = (uint8_t)bytes[i];
+    return true;
+}
+/* Signed-time relay over ESP-NOW, the same exchange as the BLE time channel:
+ * the actor owns the stream, the I/O worker runs the blocking exchange, and
+ * the neighbour only forwards ciphertext to the enrolled timestamp authority. */
+static void espnow_time_take(struct peer_state *s, struct wnes_conn *stream, bool server)
+{
+    struct time_bootstrap_job *job =
+        s->bootstrap_time ? NULL : wendy_net_calloc(1, sizeof *job);
+    if (!job) {
+        wnen_release(stream);
+        return;
+    }
+    job->espnow = stream;
+    job->stream = wnen_stream(stream);
+    job->server = server;
+    job->started = esp_timer_get_time();
+    s->bootstrap_time = job;
+}
+static struct wnes_conn *espnow_time_dial(struct peer_state *s, int64_t now_ms)
+{
+    uint8_t mac[6];
+    for (unsigned step = 0; s->espnow_started && step < WN_CANDIDATES; step++) {
+        unsigned i = (s->espnow_time_cursor + step) % WN_CANDIDATES;
+        const struct wn_candidate *c = &s->selection->candidates[i];
+        if (c->medium == WN_ESPNOW && (c->ble_capabilities & WN_BLE_TIME_RELAY) &&
+            now_ms >= c->seen_ms && now_ms - c->seen_ms < 30000 && espnow_parse(c->address, mac)) {
+            s->espnow_time_cursor = (i + 1) % WN_CANDIDATES;
+            ESP_LOGI(TAG, "dialing ESP-NOW encrypted time bootstrap: %s", c->address);
+            return wnen_dial(mac, WNES_TIME);
+        }
+    }
+    return NULL;
+}
+#endif
 /* Direct HTTPS time bootstrapping belongs to the mesh actor, independently of
  * which carrier is enabled. BLE is an optional fallback when LAN is absent. */
 static void bootstrap_time_tick(struct peer_state *s, bool allow_dial)
@@ -598,7 +658,7 @@ static void bootstrap_time_tick(struct peer_state *s, bool allow_dial)
     if (job) {
         if (atomic_load(&job->done)) {
             ESP_LOGI(TAG, "%s time %s finished: result=%s ms=%u heap=%u",
-                     job->pipe ? "BLE encrypted" : "direct HTTPS",
+                     job->pipe ? "BLE encrypted" : job->espnow ? "ESP-NOW encrypted" : "direct HTTPS",
                      job->server ? "relay" : "bootstrap", esp_err_to_name(job->result),
                      (unsigned)((now - job->started) / 1000),
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT));
@@ -626,6 +686,14 @@ static void bootstrap_time_tick(struct peer_state *s, bool allow_dial)
         }
         return;
     }
+#if CONFIG_WENDY_NET_ESPNOW
+    struct wnes_conn *relay = espnow_time_dial(s, now / 1000);
+    if (relay) {
+        espnow_time_take(s, relay, false);
+        s->time_bootstrap_at = now + INT64_C(10000000);
+        return;
+    }
+#endif
 #if CONFIG_WENDY_NET_BLE
     if (!s->config.ble || !s->ble_initialized)
         return;
@@ -705,24 +773,8 @@ static void update_ble(struct peer_state *s, const char *tenant, const char *dev
 }
 #endif
 #if CONFIG_WENDY_NET_ESPNOW
-static bool espnow_admission_available(struct peer_state *root);
-static void espnow_address(char out[64], const uint8_t mac[6])
-{
-    snprintf(out, 64, "espnow:%02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3],
-             mac[4], mac[5]);
-}
-static bool espnow_parse(const char *address, uint8_t mac[6])
-{
-    unsigned bytes[6];
-    int end = 0;
-    if (sscanf(address, "espnow:%2x:%2x:%2x:%2x:%2x:%2x%n", bytes, bytes + 1, bytes + 2, bytes + 3,
-               bytes + 4, bytes + 5, &end) != 6 ||
-        address[end])
-        return false;
-    for (unsigned i = 0; i < 6; i++)
-        mac[i] = (uint8_t)bytes[i];
-    return true;
-}
+_Static_assert(WNES_ACCEPTING == WN_BLE_NATIVE_ACCEPTING && WNES_TIME_RELAY == WN_BLE_TIME_RELAY,
+               "advert flags are stored in the candidate's capability hint");
 struct espnow_scan {
     struct peer_state *root;
     const char *self;
@@ -739,19 +791,31 @@ static void espnow_seen(void *context, const uint8_t mac[6], const uint8_t devic
     espnow_address(hint.address, mac);
     wn_uuid_format(device, hint.device);
     hint.passive = !(flags & WNES_ACCEPTING) || strcmp(scan->self, hint.device) > 0;
+    /* The advert's two flag bits have the BLE hint's meanings and values. */
+    hint.ble_capabilities = flags & (WN_BLE_NATIVE_ACCEPTING | WN_BLE_TIME_RELAY);
     (void)wn_candidate_seen(scan->root->selection, &hint, esp_timer_get_time() / 1000);
 }
 static bool update_espnow(struct peer_state *root, const char *tenant, const char *device)
 {
-    if (!root->espnow_started && !(root->espnow_started = wnen_start(wnad_wake)))
-        return false;
+    int64_t now = esp_timer_get_time();
+    if (!root->espnow_started) {
+        if (!(root->espnow_started = wnen_start(wnad_wake)))
+            return false;
+        root->espnow_since = now;
+    }
     struct espnow_scan scan = {root, device};
-    struct wnen_intent intent = {.tenant = tenant,
-                                 .device = device,
-                                 /* A board that keeps infrastructure Wi-Fi as a carrier stays
-                                  * on its network and its channel. */
-                                 .fixed_channel = !root->config.infrastructure_wifi,
-                                 .accepting = espnow_admission_available(root)};
+    bool current = wendy_conf_is_current() && !wendy_pki_reset_in_progress();
+    struct wnen_intent intent = {
+        .tenant = tenant,
+        .device = device,
+        /* A board that keeps infrastructure Wi-Fi as a carrier stays on its
+         * network and its channel. Any other board leaves for the mesh
+         * channel once it has signed time, or after 20 s without it: a
+         * network it can join at boot is its quickest source of time. */
+        .fixed_channel = !root->config.infrastructure_wifi &&
+                         (root->clock_ready || now - root->espnow_since > INT64_C(20000000)),
+        .accepting = current && espnow_admission_available(root),
+        .time_relay = current && !root->bootstrap_time && wendy_wifi_is_connected()};
     for (struct peer_state *link = root; link; link = link->next)
         if (atomic_load(&link->active) && link->candidate.medium == WN_ESPNOW)
             intent.linked = true;
@@ -2159,8 +2223,7 @@ static bool ble_admission_available(struct peer_state *root)
 #if CONFIG_WENDY_NET_ESPNOW
 static bool espnow_admission_available(struct peer_state *root)
 {
-    return !WENDY_NET_NON_TRANSIT && root->clock_ready && wendy_conf_is_current() &&
-           !wendy_pki_reset_in_progress() && setup_capacity_available(root) &&
+    return !WENDY_NET_NON_TRANSIT && root->clock_ready && setup_capacity_available(root) &&
            medium_available(root, WN_ESPNOW) && setup_room(root);
 }
 #endif
@@ -2347,8 +2410,17 @@ static void router_run(struct peer_state *root)
         }
 #endif
 #if CONFIG_WENDY_NET_ESPNOW
-        uint8_t radio[6];
-        struct wnes_conn *stream = accepted || !root->espnow_started ? NULL : wnen_take(radio);
+        uint8_t radio[6], service = WNES_MESH;
+        struct wnes_conn *stream =
+            accepted || !root->espnow_started ? NULL : wnen_take(radio, &service);
+        if (stream && service != WNES_MESH) {
+            accepted = true;
+            if (service == WNES_TIME)
+                espnow_time_take(root, stream, true);
+            else
+                wnen_release(stream);
+            stream = NULL;
+        }
         if (stream) {
             accepted = true;
             struct peer_state *link = root->clock_ready && setup_capacity_available(root) &&
@@ -2405,7 +2477,7 @@ static void router_run(struct peer_state *root)
                 if (hint.medium == WN_ESPNOW) {
                     /* Connecting is part of the stream: setup starts at once
                      * and its first write waits until the peer answers. */
-                    stream = espnow_parse(hint.address, radio) ? wnen_dial(radio) : NULL;
+                    stream = espnow_parse(hint.address, radio) ? wnen_dial(radio, WNES_MESH) : NULL;
                     struct peer_state *link = stream ? reserve_slot(root) : NULL;
                     if (link) {
                         link->espnow = stream;
@@ -2456,7 +2528,7 @@ static void router_run(struct peer_state *root)
                 output_drained = false;
 #endif
 #if CONFIG_WENDY_NET_ESPNOW
-            if (link->espnow && !wnes_drained(link->espnow))
+            if (link->espnow && !wnen_drained(link->espnow))
                 output_drained = false;
 #endif
         }
@@ -2645,7 +2717,7 @@ static bool shutdown_step(struct peer_state *root)
 #endif
 #if CONFIG_WENDY_NET_ESPNOW
     /* Every link has to return its stream before their owner goes. */
-    bool streams = false;
+    bool streams = root->bootstrap_time && root->bootstrap_time->espnow;
     for (struct peer_state *link = root; link; link = link->next)
         streams |= link->espnow != NULL;
     waiting |= streams || !wnen_stop();

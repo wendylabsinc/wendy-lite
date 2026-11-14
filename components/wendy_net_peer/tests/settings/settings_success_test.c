@@ -132,6 +132,13 @@ int main(void)
                WendyComResult_WENDY_COM_RESULT_NET_BLE_PROFILE_UNSUPPORTED &&
            !token && !writes);
 #endif
+    /* Only a build that carries ESP-NOW may enable the mesh with neither
+     * flagged carrier; these profiles do not. */
+    WendyComNetConfig none = status.desired;
+    none.enabled = true;
+    none.ble = none.infrastructure_wifi = false;
+    assert(delegate->set(&none, &status, &token) == WendyComResult_WENDY_COM_RESULT_BAD_STATE &&
+           !token && !writes);
     WendyComNetConfig config = status.desired;
     config.enabled = true;
     if (!config.ble && !config.infrastructure_wifi) {
