@@ -24,6 +24,16 @@ menu "Wendy WiFi Communication"
             Compare ordinary connection stability against the default HE mode
             on the same lab AP. Saved credentials and TLS are unchanged.
 
+    config WENDY_ESPNOW
+        bool "Share the ESP-NOW receive callback between users"
+        depends on WENDY_WIFI_ENABLED && SOC_WIFI_SUPPORTED
+        default n
+        help
+            ESP-NOW delivers every received frame to one callback per device.
+            This small dispatcher (wendy_espnow.h) lets a native application
+            and Wendy Net's ESP-NOW carrier each receive their own frames,
+            told apart by their leading bytes. It adds no task or queue.
+
     config WENDY_WIFI_SSID
         string "WiFi SSID"
         depends on WENDY_WIFI_ENABLED
