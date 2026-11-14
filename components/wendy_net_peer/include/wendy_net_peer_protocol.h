@@ -97,7 +97,7 @@ int wn_manifest_capabilities_write(const uint8_t self[16], const struct wn_origi
                                    bool sensors, char *out, size_t cap);
 bool wn_ip_admits(const uint8_t self[16], const void *packet, size_t size, bool incoming);
 
-enum wn_medium { WN_LAN = 1, WN_BLE = 2, WN_NAN = 3 };
+enum wn_medium { WN_LAN = 1, WN_BLE = 2, WN_NAN = 3, WN_ESPNOW = 4 };
 struct wn_candidate {
     char address[64], device[37];
     enum wn_medium medium;

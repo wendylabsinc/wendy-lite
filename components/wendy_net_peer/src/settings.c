@@ -29,6 +29,9 @@
 #else
 #define CODED_PROFILES_SUPPORTED 0
 #endif
+#ifndef CONFIG_WENDY_NET_ESPNOW
+#define CONFIG_WENDY_NET_ESPNOW 0
+#endif
 #ifndef CONFIG_WENDY_NET_BLE_CHANNELS
 #define CONFIG_WENDY_NET_BLE_CHANNELS 1
 #endif
@@ -80,7 +83,9 @@ static esp_err_t normalize(WendyComNetConfig *c)
     if ((c->ble && !CONFIG_WENDY_NET_BLE) || c->nan ||
         (c->infrastructure_wifi && !CONFIG_WENDY_WIFI_ENABLED))
         return ESP_ERR_NOT_SUPPORTED;
-    if (c->enabled && !c->ble && !c->infrastructure_wifi)
+    /* A compiled-in ESP-NOW carrier runs whenever the mesh is enabled; it has
+     * no flag of its own in the management protocol. */
+    if (c->enabled && !c->ble && !c->infrastructure_wifi && !CONFIG_WENDY_NET_ESPNOW)
         return ESP_ERR_INVALID_ARG;
     return ESP_OK;
 }

@@ -11,6 +11,8 @@
 #define WNR_JOURNAL_MAX (WNR_JOURNAL_HEADER + WB_HISTORY_MAX + WND_RECEIPTS_MAX + 32)
 #define WNR_LAN_COST 128
 #define WNR_BLE_COST 8192
+/* One radio hop at ESP-NOW's 1 Mbit/s: dearer than a LAN hop, far cheaper than BLE. */
+#define WNR_ESPNOW_COST 1024
 
 struct wnr_config {
     const char *tenant, *device;

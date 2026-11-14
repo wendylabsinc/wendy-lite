@@ -1,0 +1,4 @@
+# Append after a PSRAM board profile that already compiles Wendy Net, e.g.
+#   -DSDKCONFIG_DEFAULTS=sdkconfig.defaults;boards/seeed_xiao_esp32s3_native.defaults;boards/wendy_net_espnow.defaults
+# Compiles the ESP-NOW mesh carrier. It runs whenever the mesh is enabled.
+CONFIG_WENDY_NET_ESPNOW=y

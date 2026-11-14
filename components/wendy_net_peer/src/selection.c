@@ -39,7 +39,8 @@ int wn_candidate_seen(struct wn_selection *s, const struct wn_candidate *hint, i
         !memchr(hint->address, 0, sizeof hint->address) ||
         !memchr(hint->device, 0, sizeof hint->device) || !hint->port || !hint->cost ||
         hint->cost == UINT16_MAX ||
-        (hint->medium != WN_LAN && hint->medium != WN_BLE && hint->medium != WN_NAN))
+        (hint->medium != WN_LAN && hint->medium != WN_BLE && hint->medium != WN_NAN &&
+         hint->medium != WN_ESPNOW))
         return -1;
     uint8_t uuid[16];
     if (hint->device[0] && wn_uuid_parse(hint->device, uuid))

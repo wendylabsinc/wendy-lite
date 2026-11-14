@@ -259,6 +259,63 @@ menu "Wendy Net native peer"
         bool
         depends on n
         default n
+    config WENDY_NET_ESPNOW
+        bool "Native mesh links over ESP-NOW"
+        default n
+        depends on WENDY_NET_ROUTER && !WENDY_NET_CONSTRAINED_PROFILE && SPIRAM
+        select WENDY_ESPNOW
+        help
+            Carries the ordinary mutually authenticated TLS mesh link between
+            neighbouring PSRAM routers over ESP-NOW, with no access point,
+            IP network or mDNS involved in the hop. A small reliable stream
+            layer supplies ordering and retransmission under TLS; broadcast
+            adverts are dial hints only. See docs/wendy-net-espnow.md.
+            The management protocol has no flag for this carrier: when it is
+            compiled in, it runs whenever the mesh is enabled. With the
+            infrastructure Wi-Fi carrier switched off the station is paused
+            and the radio stays on the channel below; with it on, ESP-NOW
+            follows the Wi-Fi network's channel. ESP-NOW reception keeps the
+            radio awake (no modem sleep) while the mesh is enabled.
+    config WENDY_NET_ESPNOW_CHANNEL
+        int "ESP-NOW mesh channel"
+        depends on WENDY_NET_ESPNOW
+        range 1 13
+        default 1
+        help
+            Every board must be on the same channel to hear the others. A
+            board that stays joined to a Wi-Fi network is on that network's
+            channel instead, so choose that channel here for the others.
+    config WENDY_NET_ESPNOW_LINKS
+        int "Maximum ESP-NOW mesh links"
+        depends on WENDY_NET_ESPNOW
+        range 1 8
+        default 4
+        help
+            Counted inside the total carrier limit. Each link buffers at most
+            sixteen frames, allocated on demand from the mesh memory ledger
+            and released when idle. The ESP-NOW peer table holds 20 entries
+            for the whole device, shared with any application.
+    config WENDY_NET_ESPNOW_ADVERT_MS
+        int "ESP-NOW discovery advert interval (ms)"
+        depends on WENDY_NET_ESPNOW
+        range 1000 60000
+        default 5000
+        help
+            One 53-byte broadcast per interval, jittered by a quarter either
+            way, only while this node can accept a link. A node that already
+            has an ESP-NOW link advertises four times less often. Discovery
+            hints expire after 30 seconds, so keep the base interval well
+            below that.
+    config WENDY_NET_ESPNOW_FRAME_BYTES
+        int "Largest ESP-NOW mesh frame (bytes)"
+        depends on WENDY_NET_ESPNOW
+        range 250 1470
+        default 1024
+        help
+            Stream data is cut into frames of at most this size, including a
+            24-byte header. Larger frames mean fewer of them; smaller ones
+            are lost less often on a noisy channel and cost less to resend.
+            Both ends may use different values. 1470 is the ESP-NOW v2 limit.
     config WENDY_NET_PREFER_RTC_PACKET_QUEUE
         bool "Prefer unused RTC heap for queued packet bytes"
         depends on WENDY_NET_PEER && ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP
