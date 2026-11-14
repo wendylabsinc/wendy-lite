@@ -176,6 +176,8 @@ endforeach()
 driver_test(ble_advertisement ble_protocol_test.c)
 driver_test(ble_discovery ble_discovery_success_test.c)
 driver_test(nan_presence nan_presence_success_test.c)
+# Reliable stream under the ESP-NOW carrier, through a simulated lossy radio.
+driver_test(espnow_stream espnow_stream_success_test.c ../src/espnow_stream.c)
 driver_test(carrier carrier_test.c)
 driver_test(carrier_extensions carrier_extensions_success_test.c)
 add_test(NAME driver_operator_carrier COMMAND driver_carrier --operator)
