@@ -440,6 +440,8 @@ target_link_libraries(app_actor_success_test PRIVATE Threads::Threads)
 add_test(NAME native_app_actor_success COMMAND app_actor_success_test)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME pki_time_refresh_concurrency COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_LIST_DIR}/time_refresh_concurrency_success.py")
 set(carrier_loan_callbacks "${CMAKE_CURRENT_BINARY_DIR}/carrier_loan_callbacks.inc")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_LIST_DIR}/../../wendy_net_peer/src/peer.c"
