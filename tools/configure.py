@@ -14,14 +14,16 @@ contains CONFIG_WENDY_BUILD_PROFILE, the input values as single-line JSON
 tools/configurator/wendy_version.py). solve.py does not write
 CONFIG_WENDY_VERSION. Then configure.py runs, in the repository root:
 
-    idf.py [--preview] -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.wendy" \\
+    idf.py [--preview] -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults.wendy" \\
         set-target <chip>
 
 --preview is added only when idf_preview is true (master_config.yaml: the
 esp32s31, a preview target of ESP-IDF 6.1).
 
-sdkconfig.defaults.wendy comes last, so its lines win over sdkconfig.defaults
-and sdkconfig.defaults.<chip> (ESP-IDF adds that file itself).
+sdkconfig.defaults.wendy is the only defaults file: master_config.yaml has all
+the settings, also those of sdkconfig.defaults and sdkconfig.defaults.<chip>,
+which only the old boards/*.cfg builds read. ESP-IDF also reads
+sdkconfig.defaults.wendy.<chip>, but this file does not exist.
 
 The chip, the ESP-IDF version (idf_version) and the attributes that the
 sdkconfig lines need must be defined, and the combination must be allowed
@@ -80,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
             *idf,
             *preview_option(preview),
             "-D",
-            f"SDKCONFIG_DEFAULTS=sdkconfig.defaults;{wendy_defaults}",
+            f"SDKCONFIG_DEFAULTS={wendy_defaults}",
             "set-target",
             chip,
         ]

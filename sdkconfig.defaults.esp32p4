@@ -1,3 +1,6 @@
+# tools/configure.py does not read this file: master_config.yaml has a copy
+# of these settings. Change both.
+
 # Target: ESP32-P4 - knobs common to every supported P4 board.
 # The on-board ESP32-C6 provides Wi-Fi and Bluetooth via ESP-Hosted over SDIO;
 # its slave firmware is pre-flashed at the factory.

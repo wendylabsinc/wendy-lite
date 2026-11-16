@@ -240,11 +240,22 @@ It is the version of the wendy-lite source, from git (see
 [Wendy version](#wendy-version)). `solve.py` does not write it.
 
 `configure.py` then runs `idf.py set-target <chip>` with
-`sdkconfig.defaults.wendy` as the last `SDKCONFIG_DEFAULTS` file. Thus its lines
-win over `sdkconfig.defaults` and `sdkconfig.defaults.<chip>`. It is a defaults
-file, but the configurator makes it from the attributes. This solves the
-problem of
+`sdkconfig.defaults.wendy` as the only `SDKCONFIG_DEFAULTS` file. It is a
+defaults file, but the configurator makes it from the attributes. This solves
+the problem of
 [the settings that cannot depend on other settings](#some-settings-cannot-depend-on-other-settings).
+
+`sdkconfig.defaults.wendy` contains all the settings of the build. The first
+`sdkconfig` rules of `master_config.yaml` give the base settings (a rule with
+no condition) and the settings of each chip (`if: chip == ...`). The other
+rules come after them, so their lines win. ESP-IDF also reads
+`sdkconfig.defaults.wendy.<chip>`, but this file does not exist.
+
+The base and chip rules are copies of `sdkconfig.defaults` and
+`sdkconfig.defaults.<chip>`. `configure.py` does not read these files, but the
+old board builds (`idf.py @boards/<board>.cfg set-target <chip>`, the CI board
+builds) still do. Until the old builds are removed, make a change to these
+settings in both places.
 
 ### Wendy version
 
