@@ -34,41 +34,153 @@
 #define CONFIG_WENDY_SERVER_PORT 5054
 #endif
 #define AGENT_PORT CONFIG_WENDY_SERVER_PORT
-#ifndef CONFIG_WENDY_NET_TCP_RELAY_BUFFER_SIZE
-#if ESP_PLATFORM && !CONFIG_SPIRAM
-#define CONFIG_WENDY_NET_TCP_RELAY_BUFFER_SIZE 256
-#else
-#define CONFIG_WENDY_NET_TCP_RELAY_BUFFER_SIZE 1024
-#endif
-#endif
+#include "app_relay.h"
+#include "app_direct.h"
+#include "wendy_net_direct_records.h"
+#include "wendy_net_direct_guest_packet.h"
+#include "wendy_net_direct_binding.h"
+#include "wendy_net_direct_pki.h"
+#include "mbedtls/platform_util.h"
 #ifndef CONFIG_WENDY_NET_APP_MAX_FLOWS
 #define CONFIG_WENDY_NET_APP_MAX_FLOWS 1
 #endif
 static atomic_bool starting, ready;
-static atomic_uint inbound_flows, outbound_flows;
+static atomic_uint inbound_flows, outbound_flows, inbound_regular;
 /* Handshakes still use the single certificate worker. A resident relay owns
  * one admission slot, not the whole incoming/outgoing direction. */
-static bool claim_flow(atomic_uint *counter)
+static bool claim_flow_limit(atomic_uint *counter, unsigned limit)
 {
     unsigned count = atomic_load(counter);
     do {
-        if (count >= CONFIG_WENDY_NET_APP_MAX_FLOWS)
+        if (count >= limit)
             return false;
     } while (!atomic_compare_exchange_weak(counter, &count, count + 1));
     return true;
 }
+static bool claim_flow(atomic_uint *counter)
+{
+    return claim_flow_limit(counter, CONFIG_WENDY_NET_APP_MAX_FLOWS);
+}
+static unsigned incoming_capacity(void)
+{
+    return CONFIG_WENDY_NET_APP_MAX_FLOWS + wn_app_direct_incoming_capacity();
+}
 static atomic_int listener = -1;
 static const char *TAG = "wendy_net_app";
 
+int wendy_net_app_direct_complete(int handle, int fd)
+{
+    atomic_fetch_sub(&outbound_flows, 1);
+#if CONFIG_WENDY_NET
+    return wendy_net_mesh_connected(handle, fd);
+#else
+    (void)handle;
+    if (fd >= 0)
+        close(fd);
+    return -1;
+#endif
+}
+
+/* The dial owner invokes this only after successful remote UDP admission.
+ * Complete the guest and release its admission slot exactly once. */
+int wendy_net_app_direct_datagram_complete(int handle, struct wn_direct_flows *flows, uint32_t id)
+{
+    atomic_fetch_sub(&outbound_flows, 1);
+#if CONFIG_WENDY_NET
+    struct wn_direct_flow *flow = wn_direct_flows_find(flows, id);
+    struct wn_direct_packet_io io = {0};
+    if (!flow || !flow->packet ||
+        wn_direct_guest_packet_outgoing(handle, flow->request.datagram_size, &io)) {
+        (void)wendy_net_mesh_connected(handle, -1);
+        return -1;
+    }
+    if (wn_direct_flows_packet_io(flows, id, &io)) {
+        io.close(io.context);
+        return -1;
+    }
+    return 0;
+#else
+    (void)handle;
+    (void)flows;
+    (void)id;
+    return -1;
+#endif
+}
+
 /* Native WendyCom mTLS uses its signed agent endpoint directly. App TLS is
  * for guest services, not another wrapper around the agent's own TLS. */
-struct buffer {
-    uint8_t data[CONFIG_WENDY_NET_TCP_RELAY_BUFFER_SIZE];
-    size_t size, offset;
-    bool eof;
+struct app_control {
+    struct wn_direct_peer *peer;
+    uint64_t token, expected_serial;
+    uint8_t address[16];
+    uint16_t port;
+    int64_t next_raw_attempt;
+    bool (*eligible)(uint64_t serial, const uint8_t address[16], uint16_t port);
+    struct wn_direct_records records;
 };
+/* Control records retain only their current partial read/write. This avoids
+ * speculative maximum-size buffers at the post-TLS allocation peak. */
+static void free_control(struct app_control *control)
+{
+    if (!control)
+        return;
+    wendy_net_free(control->records.tx);
+    wendy_net_free(control->records.rx);
+    wendy_net_free(control);
+}
+static void *control_resize(void *bytes, size_t size)
+{
+    if (!size) {
+        wendy_net_free(bytes);
+        return NULL;
+    }
+    void *next = wendy_net_realloc(bytes, size);
+    return next;
+}
+static struct app_control *new_control(void)
+{
+    struct app_control *control = wendy_net_calloc(1, sizeof *control);
+    if (control)
+        control->records.resize = control_resize;
+    return control;
+}
+struct app_raw {
+    struct wn_direct_peer *peer;
+    struct wn_direct_promoted_binding *binding;
+    struct wn_direct_pki adapter;
+    uint32_t id;
+    uint64_t expected_serial, control_token;
+    bool bound, retiring, drain;
+    int64_t drain_deadline;
+};
+static struct app_raw *new_raw(void)
+{
+    struct app_raw *raw = wendy_net_calloc(1, sizeof *raw);
+    if (raw)
+        raw->binding = wendy_net_calloc(1, sizeof *raw->binding);
+    if (!raw || !raw->binding) {
+        wendy_net_free(raw);
+        return NULL;
+    }
+    return raw;
+}
+static void free_raw(struct app_raw *raw)
+{
+    if (!raw)
+        return;
+    if (raw->binding) {
+        mbedtls_platform_zeroize(raw->binding, sizeof *raw->binding);
+        wendy_net_free(raw->binding);
+    }
+    mbedtls_platform_zeroize(raw, sizeof *raw);
+    wendy_net_free(raw);
+}
 struct app_flow {
     wendy_pki_connection *connection;
+    struct wendy_pki_mesh_identity identity;
+    struct app_control *direct_control;
+    struct app_raw *direct_raw;
+    bool regular_claimed;
     int backend;
     bool outbound, native_agent, disposing;
     uint64_t config_generation;
@@ -85,9 +197,10 @@ struct app_flow {
     struct wendy_pki_net_issuers issuers;
     atomic_bool job_done;
     int job_result, fd, pair_listener, pair_guest;
-    bool connecting, backend_connecting, negotiated, local_half;
+    bool connecting, backend_connecting, negotiated, local_half, tls_half;
+    bool local_progress;
     unsigned phase;
-    uint8_t request[8], response[8];
+    uint8_t request[64], response[8];
     size_t received, sent, wanted;
     char expected[37];
     struct buffer *buffers;
@@ -269,6 +382,8 @@ static void close_flow(struct app_flow *flow)
     wnad_handshake_release(flow);
     wendy_net_free(flow->buffers);
     bool outbound = flow->outbound;
+    if (flow->regular_claimed)
+        atomic_fetch_sub(&inbound_regular, 1);
     wendy_net_free(flow->datagram_in);
     free(flow->datagram_out);
     wendy_net_memory_release(&flow->datagram_out_charge);
@@ -288,7 +403,7 @@ struct guest_connect {
     int handle;
     char peer[37];
     uint16_t port;
-    bool datagram;
+    bool datagram, upper_only;
     int64_t deadline;
 };
 
@@ -296,6 +411,43 @@ struct guest_connect {
  * readiness notifications and cleanup. Only the native relay owns TLS. */
 static struct guest_connect *pending_guest;
 static pthread_mutex_t request_lock = PTHREAD_MUTEX_INITIALIZER;
+
+bool wendy_net_app_peer_outgoing_busy_now(const char *peer)
+{
+    if (!peer)
+        return true;
+    for (struct datagram_flow *d = datagram_flows; d; d = d->next)
+        if (d->flow.outbound && !strcmp(d->flow.expected, peer))
+            return true;
+    /* pending_guest has not selected or opened a transport. The actor can
+     * assign that request to the new epoch; the admission gate below prevents
+     * it from starting an upper connection while a proposal is reserved. */
+    return false;
+}
+
+/* Requeue an unadmitted direct UDP request without claiming or releasing its
+ * existing outbound slot. Queue pressure leaves ownership with the dial job. */
+int wendy_net_app_direct_datagram_fallback(int handle, const char *peer, uint16_t port,
+                                           int64_t deadline)
+{
+    struct guest_connect *q = wendy_net_calloc(1, sizeof *q);
+    if (!q)
+        return -1;
+    *q = (struct guest_connect){
+        .handle = handle, .port = port, .datagram = true, .upper_only = true, .deadline = deadline};
+    memcpy(q->peer, peer, sizeof q->peer);
+    pthread_mutex_lock(&request_lock);
+    bool accepted = atomic_load(&ready) && !pending_guest;
+    if (accepted)
+        pending_guest = q;
+    pthread_mutex_unlock(&request_lock);
+    if (!accepted) {
+        wendy_net_free(q);
+        return -1;
+    }
+    wnad_wake();
+    return 0;
+}
 static int guest_mesh_resolve(const char *host, uint8_t address[16])
 {
     uint8_t uuid[16];
@@ -380,9 +532,141 @@ static void app_actor_add(struct app_flow *flow)
     d->next = datagram_flows;
     datagram_flows = d;
 }
+int wn_app_direct_promote(uint64_t serial, const char peer[37], const uint8_t address[16],
+                          uint16_t port,
+                          bool (*eligible)(uint64_t serial, const uint8_t address[16],
+                                           uint16_t port))
+{
+    uint8_t uuid[16];
+    if (!serial || !peer || !address || !port || !eligible || !eligible(serial, address, port) ||
+        wn_uuid_parse(peer, uuid) || !atomic_load(&ready) || !wendy_conf_is_current())
+        return -1;
+    for (struct datagram_flow *d = datagram_flows; d; d = d->next) {
+        struct app_control *c = d->flow.direct_control;
+        if (c && c->expected_serial == serial && !d->flow.disposing)
+            return 1;
+    }
+    if (!claim_flow_limit(&outbound_flows, incoming_capacity()))
+        return -1;
+    struct app_flow *f = new_flow(-1, true);
+    if (!f) {
+        atomic_fetch_sub(&outbound_flows, 1);
+        return -1;
+    }
+    f->direct_control = new_control();
+    if (!f->direct_control) {
+        close_flow(f);
+        return -1;
+    }
+    f->direct_control->expected_serial = serial;
+    f->direct_control->eligible = eligible;
+    memcpy(f->direct_control->address, address, 16);
+    f->direct_control->port = port;
+    memcpy(f->expected, peer, 37);
+    char host[INET6_ADDRSTRLEN];
+    if (inet_ntop(AF_INET6, address, host, sizeof host))
+        f->fd = wnad_connect(host, port, &f->connecting);
+    if (f->fd < 0) {
+        free_control(f->direct_control);
+        f->direct_control = NULL;
+        close_flow(f);
+        return -1;
+    }
+    app_actor_add(f);
+    return 0;
+}
+/* The physical control dialer opens every raw stream; the accepting peer
+ * waits for WDP1, matching WendyOS's dispatcher election. */
+static struct app_control *raw_control(const struct app_raw *r)
+{
+    for (struct datagram_flow *d = datagram_flows; d; d = d->next) {
+        struct app_flow *f = &d->flow;
+        struct app_control *c = f->direct_control;
+        if (!f->disposing && f->outbound && f->negotiated && c && c->peer &&
+            c->expected_serial == r->expected_serial && c->token == r->control_token &&
+            !c->peer->session.closed && c->peer->session.active &&
+            c->peer->session.token == c->token)
+            return c;
+    }
+    return NULL;
+}
+static int schedule_promoted_raw(void)
+{
+    int64_t now = esp_timer_get_time();
+    for (struct datagram_flow *d = datagram_flows; d; d = d->next) {
+        struct app_flow *owner = &d->flow;
+        struct app_control *c = owner->direct_control;
+        if (!owner->outbound || !owner->negotiated || owner->disposing || !c || !c->peer ||
+            c->peer->session.closed || !c->peer->session.active ||
+            c->peer->session.token != c->token)
+            continue;
+        struct wn_direct_flows *flows = &c->peer->flows;
+        for (unsigned i = 0; i < 2u * flows->slots; i++) {
+            struct wn_direct_flow *flow = &flows->flows[i];
+            struct wn_direct_open_entry entry;
+            if (!flow->id || flow->reset || flow->promoted || flow->binding ||
+                (!flow->has_lane && !flow->packet) ||
+                wn_direct_flows_open(flows, flow->id, &entry) ||
+                !entry.complete || entry.result || entry.local_closed || entry.remote_closed)
+                continue;
+            bool exists = false;
+            for (struct datagram_flow *at = datagram_flows; at; at = at->next) {
+                struct app_raw *r = at->flow.direct_raw;
+                if (r && r->expected_serial == c->expected_serial && r->id == flow->id) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (exists)
+                continue;
+            if (now >= (int64_t)owner->state.deadline) {
+                (void)wn_direct_flows_reset(flows, flow->id, WN_DIRECT_IO);
+                return 1;
+            }
+            if (now < c->next_raw_attempt)
+                return 0;
+            c->next_raw_attempt = now + 50000;
+            if (!claim_flow_limit(&outbound_flows, incoming_capacity()))
+                return 0;
+            struct app_flow *f = new_flow(-1, true);
+            if (!f) {
+                atomic_fetch_sub(&outbound_flows, 1);
+                return 0;
+            }
+            f->direct_raw = new_raw();
+            if (!f->direct_raw) {
+                close_flow(f);
+                return 0;
+            }
+            f->direct_raw->id = flow->id;
+            f->direct_raw->expected_serial = c->expected_serial;
+            f->direct_raw->control_token = c->token;
+            f->state.deadline = owner->state.deadline;
+            memcpy(f->expected, owner->expected, 37);
+            memcpy(f->request, "WDP1", 4);
+            memcpy(f->request + 4, c->peer->session.binding.session_id, 32);
+            uint64_t generation = c->peer->session.exchange.attachment.generation;
+            for (unsigned j = 0; j < 8; j++)
+                f->request[36 + j] = (uint8_t)(generation >> (56 - 8 * j));
+            wn_put32(f->request + 44, flow->id);
+            char host[INET6_ADDRSTRLEN];
+            if (inet_ntop(AF_INET6, c->address, host, sizeof host))
+                f->fd = wnad_connect(host, c->port, &f->connecting);
+            if (f->fd < 0) {
+                free_raw(f->direct_raw);
+                f->direct_raw = NULL;
+                close_flow(f);
+                return 0;
+            }
+            app_actor_add(f);
+            return 1; /* Mutate the list only outside its poll traversal. */
+        }
+    }
+    return 0;
+}
 void wendy_net_app_accept(int fd)
 {
-    if (!wendy_conf_is_current() || !claim_flow(&inbound_flows)) {
+    if (!wendy_conf_is_current() || !claim_flow_limit(&inbound_flows, incoming_capacity())) {
         close(fd);
         return;
     }
@@ -439,6 +723,22 @@ static void app_setup_work(void *context)
         f->job_result = wendy_pki_net_step(f->setup);
     atomic_store(&f->job_done, true);
 }
+/* Before a binding can commit, only this candidate owns the claim. Releasing
+ * it permits another authenticated candidate without losing retained bytes.
+ * After possible commit the peer may already use raw bytes: fail closed. */
+static void release_raw_binding(struct app_raw *r)
+{
+    if (!r->peer)
+        return;
+    struct wn_direct_flow *flow = wn_direct_flows_find(&r->peer->flows, r->id);
+    if (!flow)
+        return;
+    if (flow->upper.context == &r->adapter ||
+        (flow->binding == r->binding && r->binding->commit_possible))
+        (void)wn_direct_flows_reset(&r->peer->flows, r->id, WN_DIRECT_IO);
+    else if (flow->binding == r->binding)
+        flow->binding = NULL;
+}
 /* TLS destruction may touch the same crypto allocator/key tables as setup.
  * Lend cleanup to the single worker too, after collecting any earlier loan. */
 static bool dispose_flow(struct app_flow *f)
@@ -449,6 +749,20 @@ static bool dispose_flow(struct app_flow *f)
         f->state.lent = false;
     }
     if (!f->disposing) {
+        if (f->direct_raw) {
+            struct app_raw *r = f->direct_raw;
+            if (r->peer) {
+                release_raw_binding(r);
+                wn_app_direct_flow_release(r->peer);
+            }
+            free_raw(r);
+            f->direct_raw = NULL;
+        }
+        if (f->direct_control) {
+            wn_app_direct_control_close(f->direct_control->peer, f->direct_control->token);
+            free_control(f->direct_control);
+            f->direct_control = NULL;
+        }
         f->disposing = true;
         f->state.cancel = true;
         if (f->fd >= 0) {
@@ -470,8 +784,9 @@ static bool dispose_flow(struct app_flow *f)
     }
     if (f->setup || f->connection) {
         atomic_store(&f->job_done, false);
-        if (wendy_pki_work_submit(app_setup_work, f))
+        if (wendy_pki_work_submit(app_setup_work, f)) {
             f->state.lent = true;
+        }
         return false;
     }
     wendy_pki_net_release_issuers(&f->issuers);
@@ -508,8 +823,114 @@ static int begin_pair(struct app_flow *f)
     f->pair_guest = wnad_connect("127.0.0.1", ntohs(address.sin_port), &connecting);
     return f->pair_guest < 0 ? -1 : 0;
 }
+static int raw_export(void *arg, const char *label, const uint8_t context[32], uint8_t out[32])
+{
+    if (strcmp(label, WN_DIRECT_PROMOTED_EXPORT_LABEL))
+        return -1;
+    return wendy_pki_promoted_flow_binding(arg, context, out);
+}
+static bool raw_pending(void *arg)
+{
+    struct app_flow *f = arg;
+    return f->channel.input.size || f->channel.eof;
+}
+static void raw_retire(void *arg, bool drain)
+{
+    struct app_flow *f = arg;
+    struct app_raw *r = f->direct_raw;
+    r->retiring = true;
+    r->drain = drain;
+    r->drain_deadline = esp_timer_get_time() + INT64_C(30000000);
+}
+static int control_read(void *, uint8_t *, size_t);
+static int control_write(void *, const uint8_t *, size_t);
+static int raw_negotiate(struct app_flow *f)
+{
+    struct app_raw *r = f->direct_raw;
+    int64_t now = esp_timer_get_time();
+    if (!r->peer) {
+        int result = wn_app_direct_flow_pin(f->connection, &f->identity, f->request, &r->peer);
+        if (result) {
+            if (result < 0)
+                ESP_LOGW(TAG, "promoted stream rejected: stage=pin result=%d", result);
+            return result;
+        }
+        if (f->outbound &&
+            (r->peer->serial != r->expected_serial || r->peer->session.token != r->control_token)) {
+            wn_app_direct_flow_release(r->peer);
+            r->peer = NULL;
+            return -1;
+        }
+        r->id = wn_get32(f->request + 44);
+        result = wn_direct_session_start_binding(&r->peer->session, r->id, r->binding, f->outbound,
+                                                 raw_export, f->connection, now);
+        if (result) {
+            if (result != WN_DIRECT_CAPACITY)
+                ESP_LOGW(TAG, "promoted stream rejected: stage=start flow=%u result=%d",
+                         (unsigned)r->id, result);
+            wn_app_direct_flow_release(r->peer);
+            r->peer = NULL;
+            return result == WN_DIRECT_CAPACITY ? 1 : -1;
+        }
+        size_t used = 0;
+        if (!f->outbound &&
+            (wn_direct_promoted_input(r->binding, f->request, 64, &used) || used != 64)) {
+            ESP_LOGW(TAG, "promoted stream rejected: stage=hello flow=%u", (unsigned)r->id);
+            return -1;
+        }
+    }
+    struct wn_direct_flow *flow = wn_direct_flows_find(&r->peer->flows, r->id);
+    if (r->peer->session.closed || !flow || flow->binding != r->binding) {
+        ESP_LOGW(TAG, "promoted stream rejected: stage=owner flow=%u", (unsigned)r->id);
+        return -1;
+    }
+    struct wn_direct_upper io = {
+        .context = f->connection, .read = control_read, .write = control_write};
+    int binding_progress = wn_direct_promoted_poll(r->binding, &io);
+    if (binding_progress < 0) {
+        ESP_LOGW(TAG, "promoted stream rejected: stage=binding flow=%u state=%u failed=%u",
+                 (unsigned)r->id, r->binding->state, r->binding->failed);
+        return -1;
+    }
+    f->local_progress = binding_progress > 0;
+    if (!r->binding->done)
+        return 1;
+    r->adapter = (struct wn_direct_pki){
+        .connection = f->connection, .owner = f, .retire = raw_retire, .pending = raw_pending};
+    struct wn_direct_upper upper = wn_direct_pki_upper(&r->adapter);
+    int result = wn_direct_session_commit_flow(&r->peer->session, r->id, r->binding, &upper, now);
+    if (result) {
+        ESP_LOGW(TAG, "promoted stream rejected: stage=commit flow=%u result=%d", (unsigned)r->id,
+                 result);
+        return -1;
+    }
+    r->bound = true;
+    f->negotiated = true;
+    return 0;
+}
 static int negotiate(struct app_flow *f)
 {
+    if (f->outbound && f->direct_raw)
+        return raw_negotiate(f);
+    if (f->outbound && f->direct_control) {
+        struct app_control *c = f->direct_control;
+        if (!c->peer) {
+            int result = wn_app_direct_control_begin(f->connection, &f->identity, NULL, true,
+                                                     c->expected_serial, &c->peer, &c->token);
+            if (result)
+                return result;
+            memcpy(f->request, "WDC1", 4);
+            if (wn_uuid_parse(f->identity.device, f->request + 4))
+                return -1;
+        }
+        if (c->peer->session.closed || c->peer->session.token != c->token)
+            return -1;
+        int result = tls_transfer(f, f->request, 20, &f->sent, true);
+        if (result)
+            return result;
+        f->negotiated = true;
+        return 0;
+    }
     if (f->outbound) {
         int r = tls_transfer(f, f->request, f->datagram_max ? 8 : 6, &f->sent, true);
         if (r)
@@ -552,7 +973,40 @@ static int negotiate(struct app_flow *f)
         int r = tls_transfer(f, f->request, f->wanted, &f->received, false);
         if (r)
             return r;
+        if (!f->phase && !memcmp(f->request, "WDP1", 4)) {
+            f->wanted = 64;
+            if (f->received < f->wanted)
+                return 1;
+            if (!f->direct_raw) {
+                f->direct_raw = new_raw();
+                if (!f->direct_raw)
+                    return -1;
+            }
+            return raw_negotiate(f);
+        }
+        if (!f->phase && !memcmp(f->request, "WDC1", 4)) {
+            f->wanted = 20;
+            if (f->received < f->wanted)
+                return 1;
+            if (!f->direct_control) {
+                f->direct_control = new_control();
+                if (!f->direct_control)
+                    return -1;
+            }
+            int result =
+                wn_app_direct_control_begin(f->connection, &f->identity, f->request + 4, false, 0,
+                                            &f->direct_control->peer, &f->direct_control->token);
+            if (result)
+                return result;
+            f->negotiated = true;
+            return 0;
+        }
         if (!f->phase) {
+            if (!f->regular_claimed) {
+                if (!claim_flow(&inbound_regular))
+                    return -1;
+                f->regular_claimed = true;
+            }
             f->service_port = wn_get16(f->request + 4);
             if (!memcmp(f->request, "WAU3", 4)) {
                 f->wanted = 8;
@@ -617,58 +1071,24 @@ static int negotiate(struct app_flow *f)
 }
 static int relay_step(struct app_flow *f)
 {
-    struct buffer *remote = &f->buffers[0], *local = &f->buffers[1];
-    bool progress = false;
-    if (remote->offset == remote->size && !remote->eof) {
-        ssize_t n = wendy_pki_read(f->connection, remote->data, sizeof remote->data);
-        if (n > 0) {
-            remote->offset = 0;
-            remote->size = n;
-            progress = true;
-        } else if (!n)
-            remote->eof = true;
-        else if (n != -2 && n != -3)
-            return -1;
-    }
-    if (remote->offset < remote->size) {
-        ssize_t n = send(f->backend, remote->data + remote->offset, remote->size - remote->offset,
-                         MSG_DONTWAIT);
-        if (n > 0) {
-            remote->offset += n;
-            progress = true;
-        } else if (!n || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
-            return -1;
-    }
-    if (remote->eof && remote->offset == remote->size && !f->local_half) {
-        shutdown(f->backend, SHUT_WR);
-        f->local_half = true;
-    }
-    if (local->offset == local->size && !local->eof) {
-        ssize_t n = recv(f->backend, local->data, sizeof local->data, MSG_DONTWAIT);
-        if (n > 0) {
-            local->offset = 0;
-            local->size = n;
-            progress = true;
-        } else if (!n)
-            local->eof = true;
-        else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
-            return -1;
-    }
-    if (local->offset < local->size) {
-        ssize_t n = wendy_pki_write(f->connection, local->data + local->offset,
-                                    local->size - local->offset);
-        if (n > 0) {
-            local->offset += n;
-            progress = true;
-        } else if (n != -2 && n != -3)
-            return -1;
-    }
-    if (local->eof && local->offset == local->size && !f->channel.output.size)
-        return -1;
-    return progress;
+    return wn_app_relay_step(f->connection, f->backend, f->buffers, &f->local_half, &f->tls_half,
+                             f->channel.output.size != 0);
+}
+static int control_read(void *arg, uint8_t *bytes, size_t size)
+{
+    return (int)wendy_pki_read(arg, bytes, size);
+}
+static int control_write(void *arg, const uint8_t *bytes, size_t size)
+{
+    return (int)wendy_pki_write(arg, bytes, size);
+}
+static int control_open(void *arg, uint32_t id)
+{
+    return wn_app_direct_open(arg, id);
 }
 static int app_step(struct app_flow *f, int64_t now)
 {
+    f->local_progress = false;
     if (f->state.lent) {
         if (!atomic_load(&f->job_done))
             return 0;
@@ -682,6 +1102,12 @@ static int app_step(struct app_flow *f, int64_t now)
         (f->connection && !wendy_conf_snapshot_current(f->config_generation)))
         return -1;
     if (!f->negotiated && now >= (int64_t)f->state.deadline)
+        return -1;
+    if (f->outbound && f->direct_control && !f->negotiated &&
+        !f->direct_control->eligible(f->direct_control->expected_serial, f->direct_control->address,
+                                     f->direct_control->port))
+        return -1;
+    if (f->outbound && f->direct_raw && !f->negotiated && !raw_control(f->direct_raw))
         return -1;
     if (f->connecting) {
         int r = wnad_connected(f->fd);
@@ -714,18 +1140,18 @@ static int app_step(struct app_flow *f, int64_t now)
             if (e == WNA_CRYPTO_PREPARE && !f->issuers.release)
                 wendy_net_peer_issuer_snapshot(&f->issuers);
             atomic_store(&f->job_done, false);
-            if (wendy_pki_work_submit(app_setup_work, f))
+            if (wendy_pki_work_submit(app_setup_work, f)) {
                 wna_lend(&f->state);
+            }
         }
         return progress;
     }
     if (!f->connection) {
-        struct wendy_pki_mesh_identity identity;
-        f->connection = wendy_pki_net_take(f->setup, &identity);
+        f->connection = wendy_pki_net_take(f->setup, &f->identity);
         if (!f->connection)
             return -1; /* failed take retains setup ownership */
         f->setup = NULL;
-        f->config_generation = identity.config_generation;
+        f->config_generation = f->identity.config_generation;
         wnad_handshake_release(f);
         if (!wendy_conf_snapshot_current(f->config_generation))
             return -1;
@@ -733,7 +1159,35 @@ static int app_step(struct app_flow *f, int64_t now)
     if (!f->negotiated) {
         if (now >= (int64_t)f->state.deadline)
             return -1;
-        return negotiate(f) < 0 ? -1 : progress;
+        if (negotiate(f) < 0)
+            return -1;
+        /* A completed binding flight can leave the next flight runnable with
+         * no bytes in either BIO. A new control also needs its first poll.
+         * negotiate's positive return means waiting, not actual progress. */
+        f->local_progress |= f->negotiated;
+        return progress || f->local_progress;
+    }
+    if (f->direct_raw) {
+        struct app_raw *r = f->direct_raw;
+        if (r->retiring) {
+            if (!r->drain || !f->channel.output.size || now >= r->drain_deadline)
+                return -1;
+            return progress;
+        }
+        if (r->peer->session.closed)
+            return -1;
+        return progress; /* retained actor owns the plaintext pump */
+    }
+    if (f->direct_control) {
+        struct app_control *c = f->direct_control;
+        if (!c->records.queued && !c->records.received && !f->channel.output.size &&
+            wn_direct_session_retire(&c->peer->session))
+            return -1;
+        struct wn_direct_upper io = {
+            .context = f->connection, .read = control_read, .write = control_write};
+        int result = wn_direct_records_poll(&c->records, &c->peer->session, c->token, &io, now,
+                                            control_open, c->peer);
+        return result < 0 ? -1 : progress || result;
     }
     int r = f->datagram_max ? datagram_step((struct datagram_flow *)f) : relay_step(f);
     return r < 0 ? -1 : progress || r;
@@ -754,10 +1208,33 @@ bool wendy_net_app_yield_setup(void)
     }
     return changed;
 }
+bool wendy_net_app_yield_incoming_setup(void)
+{
+    bool changed = false;
+    for (struct datagram_flow *d = datagram_flows; d; d = d->next) {
+        struct app_flow *f = &d->flow;
+        /* No destination socket has been opened at this point. Reuse deferred
+         * actor cancellation: a crypto loan must finish before TLS is freed. */
+        if (!f->outbound && wna_yield_guest_setup(&f->state, WENDY_NET_NON_TRANSIT, true,
+                                                  f->connection || f->negotiated || f->native_agent,
+                                                  wendy_pki_handshake_owned(f))) {
+            ESP_LOGI(TAG, "yielding incoming VIP TLS setup for carrier recovery: lent=%u",
+                     (unsigned)f->state.lent);
+            changed = true;
+        }
+    }
+    return changed;
+}
+static bool incoming_admission_ready(void)
+{
+    if (atomic_load(&inbound_flows) >= incoming_capacity())
+        return false;
+    return true;
+}
 int wendy_net_app_poll(void)
 {
     int fd = atomic_load(&listener), progress = 0;
-    if (fd >= 0 && atomic_load(&inbound_flows) < CONFIG_WENDY_NET_APP_MAX_FLOWS) {
+    if (fd >= 0 && incoming_admission_ready()) {
         int incoming = accept(fd, NULL, NULL);
         if (incoming >= 0) {
             wendy_net_app_accept(incoming);
@@ -765,10 +1242,22 @@ int wendy_net_app_poll(void)
         }
     }
 #if CONFIG_WENDY_NET
-            pthread_mutex_lock(&request_lock);
+    pthread_mutex_lock(&request_lock);
     struct guest_connect *q = pending_guest;
-    pending_guest = NULL;
+    /* Keep ownership of the bounded request slot while a reuse proposal is
+     * reserved. Taking then requeueing it could let a concurrent caller steal
+     * the slot and turn a harmless epoch transition into an app failure. */
+    if (q && wendy_net_peer_upper_blocked_now(q->peer) && esp_timer_get_time() < q->deadline)
+        q = NULL;
+    else
+        pending_guest = NULL;
     pthread_mutex_unlock(&request_lock);
+    if (q && !q->upper_only &&
+        wendy_net_peer_direct_connect_now(q->peer, q->port, q->datagram, q->handle, q->deadline)) {
+        wendy_net_free(q);
+        q = NULL;
+        progress = 1;
+    }
     if (q) {
         uint8_t address[16];
         uint16_t port = 0;
@@ -815,10 +1304,12 @@ int wendy_net_app_poll(void)
         }
     }
 #endif
-    int64_t now = esp_timer_get_time();
     for (struct datagram_flow **at = &datagram_flows; *at;) {
         struct datagram_flow *d = *at;
-        int r = d->flow.disposing ? -1 : app_step(&d->flow, now);
+        /* Raw binding and upper control share a retained session. A preceding
+         * flow may advance its clock during negotiation; never pass an older
+         * loop-wide snapshot to the next owner's monotonic session check. */
+        int r = d->flow.disposing ? -1 : app_step(&d->flow, esp_timer_get_time());
         struct datagram_flow *next = d->next;
         if (r < 0 && dispose_flow(&d->flow)) {
             *at = next;
@@ -828,6 +1319,7 @@ int wendy_net_app_poll(void)
             at = &d->next;
         }
     }
+    progress |= schedule_promoted_raw();
     return progress;
 }
 bool wendy_net_app_stop(void)
@@ -837,6 +1329,7 @@ bool wendy_net_app_stop(void)
     if (fd >= 0)
         close(fd);
 #if CONFIG_WENDY_NET
+    wendy_net_set_mesh_waker(NULL);
     wendy_net_set_mesh_connector(NULL);
     wendy_net_set_mesh_resolver(NULL);
     wendy_net_set_service_catalog(NULL);
@@ -882,7 +1375,7 @@ void wendy_net_app_watch(fd_set *rd, fd_set *wr, int *maximum, int64_t *deadline
     pthread_mutex_unlock(&request_lock);
 #endif
     int fd = atomic_load(&listener);
-    if (fd >= 0 && atomic_load(&inbound_flows) < CONFIG_WENDY_NET_APP_MAX_FLOWS) {
+    if (fd >= 0 && incoming_admission_ready()) {
         FD_SET(fd, rd);
         if (fd > *maximum)
             *maximum = fd;
@@ -891,13 +1384,24 @@ void wendy_net_app_watch(fd_set *rd, fd_set *wr, int *maximum, int64_t *deadline
         struct app_flow *f = &d->flow;
         if (f->state.lent || f->disposing)
             continue;
+        /* Preserve one immediate retry across the outer actor's work quota.
+         * app_step clears this before polling, so WANT_READ/WRITE cannot spin. */
+        if (f->local_progress)
+            *deadline = esp_timer_get_time();
+        if (f->outbound && f->negotiated && f->direct_control && f->direct_control->peer) {
+            struct app_control *c = f->direct_control;
+            if (c->next_raw_attempt > esp_timer_get_time() && c->next_raw_attempt < *deadline)
+                *deadline = c->next_raw_attempt;
+        }
+        if (f->direct_raw && f->direct_raw->retiring && f->direct_raw->drain_deadline < *deadline)
+            *deadline = f->direct_raw->drain_deadline;
         if (!f->negotiated && (int64_t)f->state.deadline < *deadline)
             *deadline = (int64_t)f->state.deadline;
         if (f->state.retry_at && f->state.retry_at > (uint64_t)esp_timer_get_time() &&
             f->state.retry_at < (uint64_t)*deadline)
             *deadline = (int64_t)f->state.retry_at;
         bool can_read =
-            !f->negotiated || f->datagram_max ||
+            !f->negotiated || f->direct_control || f->datagram_max ||
             (f->buffers && f->buffers[0].offset == f->buffers[0].size && !f->buffers[0].eof);
         if (can_read && f->state.phase == WNA_READY &&
            (f->channel.input.size || (f->connection && wendy_pki_pending(f->connection))))
@@ -947,6 +1451,7 @@ esp_err_t wendy_net_app_start(void)
     atomic_store(&listener, fd);
     atomic_store(&ready, true);
 #if CONFIG_WENDY_NET
+    wendy_net_set_mesh_waker(wnad_wake);
     wendy_net_set_mesh_connector(guest_mesh_begin);
     wendy_net_set_mesh_resolver(guest_mesh_resolve);
     wendy_net_set_service_catalog(wendy_net_peer_service_catalog);

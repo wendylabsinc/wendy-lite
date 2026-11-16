@@ -9,6 +9,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include "../src/app.c"
+#include "app_direct_absent.h"
 
 struct wendy_pki_connection {
     struct wendy_pki_stream bio;
@@ -517,3 +518,7 @@ int main(void)
         "actor TCP/UDP exact payloads, retained TLS writes, setup pressure/cancellation and OFF drainage PASS");
     return 0;
 }
+
+int wendy_pki_shutdown_write(wendy_pki_connection *c) { (void)c; return 0; }
+int wendy_pki_promoted_flow_binding(wendy_pki_connection *c, const uint8_t context[32], uint8_t out[32])
+{ (void)c; (void)context; (void)out; assert(!"unexpected promotion"); return -1; }

@@ -24,5 +24,7 @@ void wnad_handshake_release(void *owner);
 /* Native management asks the actor to yield only a guest's unestablished
  * outgoing TLS setup when it owns the sole constrained-memory workspace. */
 bool wendy_net_app_yield_setup(void);
+/* Yield only an uncompleted incoming VIP handshake blocking carrier restoration. */
+bool wendy_net_app_yield_incoming_setup(void);
 
 uint64_t wnad_io_during_crypto(void);

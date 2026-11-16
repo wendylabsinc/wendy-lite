@@ -35,6 +35,19 @@ void wendy_net_peer_prepare_handshake(void);
 #include <sys/select.h>
 /* Only the mesh actor calls these nonblocking drivers. */
 int wendy_net_app_poll(void);
+/* Actor-only retained direct dial. true means this epoch owns completion,
+ * including failures/outages; false alone permits ordinary VIP fallback. */
+bool wendy_net_peer_direct_connect_now(const char *,uint16_t,bool,int,int64_t);
+/* Actor-only reuse admission: every upper connection has one initiator. Both
+ * peers reserve their outgoing setup/open owners before a new logical epoch. */
+bool wendy_net_app_peer_outgoing_busy_now(const char *);
+bool wendy_net_peer_upper_blocked_now(const char *);
+
+int wendy_net_app_direct_complete(int handle,int fd);
+/* Transfers an existing outbound admission only on success. */
+int wendy_net_app_direct_datagram_fallback(int,const char *,uint16_t,int64_t);
+struct wn_direct_flows;
+int wendy_net_app_direct_datagram_complete(int handle,struct wn_direct_flows *,uint32_t id);
 bool wendy_net_app_stop(void);
 void wendy_net_app_watch(fd_set *, fd_set *, int *, int64_t *deadline);
 esp_err_t wendy_net_peer_app_endpoint_now(const char *, uint8_t[16], uint16_t *);

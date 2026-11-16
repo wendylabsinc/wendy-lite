@@ -543,3 +543,17 @@ target_include_directories(clock_observation_unavailable_test PRIVATE ../src)
 target_compile_options(clock_observation_unavailable_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 target_link_libraries(clock_observation_unavailable_test PRIVATE pki)
 add_test(NAME pki_clock_observation_unavailable COMMAND clock_observation_unavailable_test)
+
+# Keep ordinary application fixtures linked to the real retained transport;
+# only the absent root registry is represented by their admission facade.
+foreach(part app_relay direct_session direct_flows direct_packet direct_datagram direct_guest_packet direct_open direct_lane direct_socket
+ direct_wire direct_ack direct_exchange direct_control direct_transaction direct_generation
+ direct_binding direct_binding_io direct_recovery_plan direct_recovery_wire direct_reconcile
+ direct_buffer direct_records direct_pki)
+    list(APPEND app_retained_sources ../../wendy_net_peer/src/${part}.c)
+endforeach()
+foreach(target operator_app_composed_test app_halfclose_composed_test app_actor_success_test)
+    target_sources(${target} PRIVATE ${app_retained_sources})
+endforeach()
+
+target_link_libraries(app_actor_success_test PRIVATE tfpsacrypto)
