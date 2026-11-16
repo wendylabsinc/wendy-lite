@@ -175,6 +175,17 @@ int main(int argc, char **argv)
                                          tls->authenticated_operator));
         pki_tls_net_operator_verified(tls);
         assert(wendy_pki_mesh_authenticated_operator(tls));
+        uint8_t local_key[32], peer_key[32], expected_key[32], context[32] = {0}, binding[32];
+        int64_t binding_deadline = 0;
+        assert(!wendy_pki_mesh_key_bindings(tls, local_key, peer_key));
+        assert(!wendy_pki_mesh_binding_deadline(tls, &binding_deadline));
+        assert(binding_deadline == tls->session_deadline_us);
+        assert(!wendy_pki_mesh_channel_binding(tls, context, binding));
+        assert(!wendy_pki_sha256(source.chain.pk_raw.p, source.chain.pk_raw.len, expected_key));
+        assert(!memcmp(local_key, expected_key, 32));
+        assert(!wendy_pki_sha256(tls->authenticated_operator->spki,
+                               tls->authenticated_operator->spki_size, expected_key));
+        assert(!memcmp(peer_key, expected_key, 32));
         uint8_t ack = 'A';
         transfer(tls, &ack, 1, true);
         uint8_t hello[133];
