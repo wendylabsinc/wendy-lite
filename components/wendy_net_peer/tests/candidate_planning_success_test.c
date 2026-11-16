@@ -41,14 +41,17 @@ int main(void)
     /* Passive discovery never prevents an ordinarily authenticated accept. */
     assert(!wn_candidate_commit(&passive, (unsigned)incoming, lower));
     assert(!strcmp(passive.candidates[incoming].device, lower));
-    /* Both ends choose the same physical connection when ordinary discovery
-     * crosses. Neither side replaces its same-direction incumbent. */
-    assert(wn_link_replaces(lower, higher, true, false));
-    assert(wn_link_replaces(higher, lower, false, true));
-    assert(!wn_link_replaces(lower, higher, false, true));
-    assert(!wn_link_replaces(higher, lower, true, false));
-    assert(!wn_link_replaces(lower, higher, false, false));
-    assert(!wn_link_replaces(higher, lower, true, true));
+    /* Production WendyOS BLE routers keep the higher UUID's outgoing
+     * connection. Check both arrival orders: the lower endpoint must keep
+     * incoming while the higher endpoint keeps outgoing. */
+    assert(wn_link_replaces(lower, higher, false, true));
+    assert(wn_link_replaces(higher, lower, true, false));
+    assert(!wn_link_replaces(lower, higher, true, false));
+    assert(!wn_link_replaces(higher, lower, false, true));
+    for (unsigned incoming = 0; incoming < 2; incoming++) {
+        assert(!wn_link_replaces(lower, higher, incoming, incoming));
+        assert(!wn_link_replaces(higher, lower, incoming, incoming));
+    }
     /* Full-router mode clears the single-active selector while retaining
      * several links. Repeated normal BLE reports still retain the learned
      * expected peer, including after an ordinary carrier close/cooldown. */

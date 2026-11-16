@@ -143,7 +143,7 @@ void wn_candidate_release(struct wn_selection *selection, unsigned slot);
 int wn_candidate_authenticated(struct wn_selection *, unsigned, const char *verified_device);
 int wn_candidate_commit(struct wn_selection *selection, unsigned slot, const char *verified_device);
 /* After mTLS and the bidirectional hello, converge crossed connections to the
- * lower UUID's dial, as WendyOS does. Same-direction duplicates keep the incumbent. */
+ * higher UUID's dial, matching WendyOS BLE routers. Same-direction duplicates keep the incumbent. */
 bool wn_link_replaces(const char *self, const char *verified_peer, bool incumbent_incoming,
                       bool replacement_incoming);
 

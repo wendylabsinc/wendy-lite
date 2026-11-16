@@ -10,7 +10,7 @@ bool wn_link_replaces(const char *self, const char *peer, bool incumbent_incomin
                       bool replacement_incoming)
 {
     return incumbent_incoming != replacement_incoming &&
-           replacement_incoming == (strcmp(self, peer) > 0);
+           replacement_incoming == (strcmp(self, peer) < 0);
 }
 
 void wn_selection_init(struct wn_selection *s)
