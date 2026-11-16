@@ -7,6 +7,7 @@
 #include "wendy_pki_work.h"
 #include "wendy_net_alloc.h"
 #include "../../wendy_net_peer/src/app.c"
+#include "../../wendy_net_peer/tests/app_direct_absent.h"
 static struct pki_tls_owned_identity prepared;
 static struct wendy_conf_span prepared_roots;
 static int guest_fd = -1;

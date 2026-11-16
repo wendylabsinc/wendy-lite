@@ -5,6 +5,7 @@
 #include "tls_test.c"
 #undef main
 #include "../../wendy_net_peer/src/app.c"
+#include "../../wendy_net_peer/tests/app_direct_absent.h"
 #include "native_tls_fixture.h"
 #include "wendy_net_alloc.h"
 #include "wendy_operator_auth.h"

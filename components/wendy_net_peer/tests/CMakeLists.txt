@@ -386,3 +386,16 @@ add_test(NAME direct_pki_owner_lifetime COMMAND direct_pki_test)
 add_library(direct_auth STATIC ../src/direct_auth.c)
 target_link_libraries(direct_auth PUBLIC direct_registry peer_format)
 target_compile_options(direct_auth PRIVATE -Wall -Wextra -Werror)
+
+add_executable(app_relay_test app_relay_test.c ../src/app_relay.c)
+target_include_directories(app_relay_test PRIVATE ../src)
+target_link_libraries(app_relay_test PRIVATE pki)
+target_compile_options(app_relay_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME app_relay_half_close COMMAND app_relay_test)
+
+add_executable(direct_guest_packet_test direct_guest_packet_test.c ../src/direct_guest_packet.c
+ ../../wendy_net_common/src/memory.c ../../wendy_net_common/src/runtime_memory.c)
+target_compile_definitions(direct_guest_packet_test PRIVATE CONFIG_WENDY_NET=1 WENDY_NET_MEMORY_HOST_BUDGET_TEST=1)
+target_include_directories(direct_guest_packet_test PRIVATE ../include ../../wendy_net/include ../../wendy_net_common/include ../../wendy_pki/tests/stubs)
+target_compile_options(direct_guest_packet_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME direct_guest_datagram_endpoint COMMAND direct_guest_packet_test)
