@@ -20,6 +20,15 @@
 #include "wendy_net_peer_protocol.h"
 #include "wendy_net_control.h"
 #include "wendy_net_carrier.h"
+#include "wendy_net_direct_registry.h"
+#include "wendy_net_direct_carrier.h"
+#include "app_direct.h"
+#include "wendy_net_direct_auth.h"
+#include "wendy_net_direct_backend.h"
+#include "wendy_net_direct_guest_packet.h"
+#include "direct_native.h"
+#include "wendy_net_direct_poll.h"
+#include "wendy_net_direct_dial.h"
 #include "wendy_net_packet_queue.h"
 #include "actor_driver.h"
 #include "wendy_net_agent.h"
@@ -111,6 +120,23 @@ struct peer_state {
     struct wendy_pki_mesh_identity identity;
     wendy_pki_connection *connection;
     struct peer_state *owner, *next;
+    /* Only node_root owns this registry. Per-carrier pins keep the logical
+     * owner alive until queued writes and crypto loans have been fenced. */
+    struct wn_direct_registry direct_peers;
+    struct wn_direct_backends direct_backends;
+    struct wn_direct_dials direct_dials;
+    struct wn_direct_natives direct_natives;
+    struct wn_direct_peer *direct_peer;
+    struct wn_direct_peer *direct_retiring; /* Separate pin while BLE lane is parked. */
+    bool direct_rearm_pending;
+    bool direct_reuse_reserved;
+    bool direct_rearm_terminal;
+    struct wn_direct_carrier direct_carrier;
+    uint64_t direct_token;
+    int64_t direct_promotion_poll;
+    uint32_t direct_local, direct_selected, direct_deferred;
+    bool direct_deferred_selected;
+    struct wn_direct_peer_key direct_key;
     atomic_bool node_active, setup_pending, setup_complete;
     atomic_uint carrier_count; /* Root-owned; independent of packet readiness. */
     struct wendy_pki_mesh_identity node_identity;
@@ -1272,6 +1298,25 @@ static void close_session(struct peer_state *s, int candidate)
     s->lease_us = 0;
     pthread_mutex_unlock(&state_lock);
     wnc_deinit(&s->carrier);
+    bool had_direct_adapter = s->direct_carrier.carrier != NULL;
+    if (had_direct_adapter)
+        (void)wn_direct_carrier_unbind(&s->direct_carrier, esp_timer_get_time());
+    if (s->direct_peer) {
+        /* retire_link/shutdown joined any lent crypto work before reaching
+         * here. Deinit first discards all copied carrier queue records. */
+        if (!had_direct_adapter && s->direct_token)
+            wn_direct_session_lost(&s->direct_peer->session, s->direct_token, esp_timer_get_time());
+        wn_direct_registry_release(&node_root(s)->direct_peers, s->direct_peer);
+        s->direct_peer = NULL;
+        s->direct_token = 0;
+    }
+    if (s->direct_retiring) {
+        wn_direct_registry_release(&node_root(s)->direct_peers, s->direct_retiring);
+        s->direct_retiring = NULL;
+    }
+    s->direct_rearm_pending = false;
+    s->direct_reuse_reserved = false;
+    s->direct_rearm_terminal = false;
     s->framed = false;
     wnrs_close(s->router);
     s->router = NULL;
@@ -1309,7 +1354,7 @@ static bool clock_idle(struct peer_state *link)
 }
 static bool slot_free(struct peer_state *link)
 {
-    return !link->candidate_held && !atomic_load(&link->active) &&
+    return !link->direct_peer && !link->candidate_held && !atomic_load(&link->active) &&
            !atomic_load(&link->setup_pending) && !link->setup_waiting && !link->connection &&
            clock_idle(link);
 }
@@ -1489,7 +1534,9 @@ static void update_node_status(struct peer_state *root)
     bool address_up =
         wnnl_update(&root->address_lifetime, up, snapshot_live(&root->node_identity, now), now);
 #if CONFIG_WENDY_NET_RETAIN_TLS_INPUT
-    bool workspace_wanted = address_up;
+    /* Logical app recovery can outlive the mesh address grace. Do not
+     * invalidate its TLS reservation generation while those flows survive. */
+    bool workspace_wanted = address_up || wn_direct_registry_has_flows(&root->direct_peers);
     for (struct peer_state *link = root; link; link = link->next)
         if (link->setup_waiting || atomic_load(&link->setup_pending))
             workspace_wanted = true;
@@ -1545,6 +1592,69 @@ static void setup_work(void *context)
         link->setup_result = wendy_pki_net_step(link->tls_setup);
     atomic_store(&link->setup_complete, true);
 }
+#if CONFIG_WENDY_NET_DIRECT_BLE
+/* Root-actor hello policy: an upper-owned application epoch must not reject
+ * a replacement physical routing carrier merely because BLE cannot resume its
+ * old application lane. Changed authenticated key bindings still go through
+ * ordinary registry admission, which invalidates the stale epoch. */
+static bool direct_device_hello_eligible(struct peer_state *link)
+{
+    struct peer_state *root = node_root(link);
+    if (link->operator_peer) {
+        uint8_t nonzero = 0;
+        for (unsigned i = 0; i < 16; i++)
+            nonzero |= link->operator_instance[i];
+        if (!nonzero)
+            return true; /* Recheck after its hello names the installation. */
+        struct wn_direct_auth auth;
+        if (wn_direct_auth_capture(link->connection, &link->identity, link->operator_instance,
+                                   esp_timer_get_time(), &auth))
+            return false;
+        for (struct wn_direct_peer *p = root->direct_peers.peers; p; p = p->next)
+            if (!p->session.closed &&
+                !memcmp(p->key.principal, auth.identities.peer.principal, 32) &&
+                !memcmp(p->key.instance, auth.identities.peer.instance, 16))
+                return p->session.mode != WN_DIRECT_PROMOTED ||
+                       memcmp(p->session.cfg.identity_digest, auth.identities.digest, 32) != 0;
+    }
+    for (struct wn_direct_peer *p = root->direct_peers.peers; p; p = p->next) {
+        const struct wn_direct_session *session = &p->session;
+        if (session->closed || session->cfg.check != wn_direct_policy_check ||
+            !session->cfg.check_arg)
+            continue;
+        const struct wn_direct_policy *policy = session->cfg.check_arg;
+        if (policy->operator_peer || strcmp(policy->identity.tenant, link->identity.tenant) ||
+            strcmp(policy->identity.device, link->identity.device) ||
+            strcmp(policy->identity.peer, link->identity.peer))
+            continue;
+        /* Existing direct epochs recover without allocating another slot. */
+        if (session->mode != WN_DIRECT_PROMOTED)
+            return true;
+        struct wn_direct_auth auth;
+        if (wn_direct_auth_capture(link->connection, &link->identity, NULL, esp_timer_get_time(),
+                                   &auth))
+            return false;
+        bool changed = memcmp(auth.identities.digest, session->cfg.identity_digest, 32) != 0;
+        return changed;
+    }
+    /* Retention is independent of physical-neighbour capacity. A suspended
+     * destination may occupy the last epoch while this new neighbour is the
+     * only route back to it. Negotiate an ordinary carrier rather than fail
+     * its admission trying to allocate an optional direct application lane. */
+    if (root->direct_peers.count >= root->direct_peers.limit)
+        return false;
+    if (wendy_net_app_peer_outgoing_busy_now(link->authenticated_peer))
+        return false;
+    unsigned available = root->direct_peers.limit - root->direct_peers.count;
+    for (struct peer_state *other = root; other; other = other->next)
+        if (other != link && !other->direct_peer &&
+            (other->direct_reuse_reserved ||
+             (other->setup_waiting && other->hello_started && other->direct_local)) &&
+            !--available)
+            return false;
+    return true;
+}
+#endif
 /* Header and hello are ordinary resumable application bytes. A blocked peer
  * retains only this link's offsets, never the actor call stack. */
 static int setup_hello(struct peer_state *link)
@@ -1580,9 +1690,19 @@ static int setup_hello(struct peer_state *link)
             wn_candidate_authenticated(node_root(link)->selection, (unsigned)link->candidate_index,
                                        link->authenticated_peer))
             return -1;
+#if CONFIG_WENDY_NET_DIRECT_BLE
+        if (link->candidate.medium == WN_BLE && link->setup_have_stream) {
+            uint32_t supported = WN_DIRECT_CAP_VERSION | WN_DIRECT_CAP_TLS;
+            if (direct_device_hello_eligible(link))
+                link->direct_local = supported;
+            else
+                link->direct_deferred = supported;
+        }
+#endif
         if (!link->operator_peer) {
-            int n = wn_router_hello_write(link->identity.device, link->authenticated_peer,
-                                          link->control + 4, PEER_CONTROL_BYTES - 4);
+            int n = wn_router_hello_write_deferred(link->identity.device, link->authenticated_peer,
+                                                   link->control + 4, PEER_CONTROL_BYTES - 4,
+                                                   link->direct_local, link->direct_deferred);
             if (n < 0)
                 return -1;
             wn_put32((uint8_t *)link->control, (uint32_t)n);
@@ -1607,9 +1727,25 @@ static int setup_hello(struct peer_state *link)
                 return 1;
             }
             if (wanted == 5 || link->control[0] != 1 ||
-                wn_operator_hello_read(link->control + 5, wanted - 5, link->operator_instance))
+                wn_operator_hello_read_deferred(
+                    link->control + 5, wanted - 5, link->operator_instance, link->direct_local,
+                    link->direct_deferred, &link->direct_selected, &link->direct_deferred_selected))
                 return -1;
-            int n = wn_operator_ready_write(link->control + 5, PEER_CONTROL_BYTES - 5);
+#if CONFIG_WENDY_NET_DIRECT_BLE
+            /* The operator installation becomes known only in its hello. */
+            if (link->direct_local && !direct_device_hello_eligible(link)) {
+                link->direct_deferred = link->direct_local;
+                link->direct_local = 0;
+                if (wn_operator_hello_read_deferred(link->control + 5, wanted - 5,
+                                                    link->operator_instance, 0,
+                                                    link->direct_deferred, &link->direct_selected,
+                                                    &link->direct_deferred_selected))
+                    return -1;
+            }
+#endif
+            int n = wn_operator_ready_write_deferred(link->control + 5, PEER_CONTROL_BYTES - 5,
+                                                     link->direct_selected,
+                                                     link->direct_deferred_selected);
             if (n < 0)
                 return -1;
             link->control[0] = 1;
@@ -1647,8 +1783,10 @@ static int setup_hello(struct peer_state *link)
                 return -1;
             return 1;
         }
-        if (wanted == 4 || wn_router_hello_check(link->control + 4, wanted - 4,
-                                                 link->identity.device, link->authenticated_peer))
+        if (wanted == 4 || wn_router_hello_check_deferred(
+                               link->control + 4, wanted - 4, link->identity.device,
+                               link->authenticated_peer, link->direct_local, link->direct_deferred,
+                               &link->direct_selected, &link->direct_deferred_selected))
             return -1;
     }
     struct wnc_io io = {.context = link, .read = carrier_read, .write = carrier_write};
@@ -1701,8 +1839,14 @@ static int advance_setup(struct peer_state *link, int64_t now)
                                       wna_buffer_space(&link->tls_channel->output) != 0);
     if (effect == WNA_CLOSE)
         return -1;
-    if (effect == WNA_CRYPTO_PREPARE && !wnad_handshake_claim(link))
+    if (effect == WNA_CRYPTO_PREPARE && !wnad_handshake_claim(link)) {
+        /* A constrained incoming VIP handshake can hold the sole workspace
+         * while waiting for packets over the carrier we are restoring. Do not
+         * wait for address recovery expiry to break that dependency cycle. */
+        if (!atomic_load(&node_root(link)->carrier_count))
+            (void)wendy_net_app_yield_incoming_setup();
         return 1;
+    }
     if (effect == WNA_CRYPTO_PREPARE || effect == WNA_CRYPTO_STEP) {
         if (effect == WNA_CRYPTO_PREPARE && !link->tls_issuers.release)
             wendy_net_peer_issuer_snapshot(&link->tls_issuers);
@@ -1760,6 +1904,8 @@ static void begin_setup(struct peer_state *link, const struct wn_candidate *cand
     link->tls_state = (struct wna_session){.phase = WNA_PREPARE,
                                            .deadline = (uint64_t)esp_timer_get_time() + budget};
     link->hello_started = false;
+    link->direct_local = link->direct_selected = link->direct_deferred = 0;
+    link->direct_deferred_selected = false;
     link->hello_in = link->hello_out = link->hello_size = 0;
     link->setup_connecting = false;
     if (index >= 0 && !link->setup_have_stream && fd < 0)
@@ -1911,6 +2057,493 @@ static void prune_redundant_ble(struct peer_state *root)
 #endif
 }
 #endif
+static int direct_datagram_fallback(int handle, struct wn_direct_peer *peer,
+                                    struct wn_direct_request request, int64_t deadline)
+{
+#if CONFIG_WENDY_NET
+    if (peer->session.cfg.check != wn_direct_policy_check)
+        return -1;
+    const struct wn_direct_policy *policy = peer->session.cfg.check_arg;
+    if (!policy || policy->operator_peer)
+        return -1;
+    return wendy_net_app_direct_datagram_fallback(handle, policy->identity.peer, request.port,
+                                                  deadline);
+#else
+    (void)handle;
+    (void)peer;
+    (void)request;
+    (void)deadline;
+    return -1;
+#endif
+}
+bool wendy_net_peer_direct_connect_now(const char *device, uint16_t port, bool datagram, int handle,
+                                       int64_t deadline)
+{
+    struct peer_state *root = atomic_load(&state);
+    if (!root || !device)
+        return false;
+    if (datagram && (!root->direct_peers.datagram_slots || !root->direct_peers.datagram_max))
+        return false;
+    for (struct wn_direct_peer *p = root->direct_peers.peers; p; p = p->next) {
+        if (p->session.cfg.check != wn_direct_policy_check)
+            continue;
+        const struct wn_direct_policy *policy = p->session.cfg.check_arg;
+        if (!policy || policy->operator_peer || strcmp(policy->identity.peer, device))
+            continue;
+        /* This is a new, unadmitted guest connect. Once cutover starts it must
+         * use ordinary upper transport; previously admitted OPENs remain owned
+         * by their retained dial jobs and are never retried as fresh services. */
+        if (p->session.mode == WN_DIRECT_PROMOTED || p->flows.upper_control)
+            return false;
+        struct wn_direct_request request = {.service = datagram ? WN_DIRECT_UDP : WN_DIRECT_TCP,
+                                            .port = port,
+                                            .datagram_size =
+                                                datagram ? root->direct_peers.datagram_max : 0};
+        /* Match the authenticated advertised agent endpoint, exactly as the
+         * upper TLS path does. A guest port number alone grants no native role. */
+        uint8_t address[16];
+        uint16_t agent_port = 0;
+        if (!datagram &&
+            wendy_net_peer_agent_endpoint_now(device, address, &agent_port) == ESP_OK &&
+            agent_port == port)
+            request = (struct wn_direct_request){.service = WN_DIRECT_WENDYCOM};
+        if (p->session.closed ||
+            wn_direct_dial_start(&root->direct_dials, p->serial, handle, request, deadline))
+            (void)wendy_net_app_direct_complete(handle, -1);
+        return true;
+    }
+    return false;
+}
+static int direct_entropy(void *arg, uint8_t *out, size_t size)
+{
+    (void)arg;
+    esp_fill_random(out, size);
+    return 0;
+}
+static int64_t direct_now(void *arg)
+{
+    (void)arg;
+    return esp_timer_get_time();
+}
+static int direct_export(void *arg, const uint8_t context[32], uint8_t out[32])
+{
+    return wendy_pki_mesh_channel_binding(arg, context, out);
+}
+#ifndef CONFIG_WENDY_SERVER_PORT
+#define CONFIG_WENDY_SERVER_PORT 5054
+#endif
+static int direct_guest_begin(void *arg, struct wn_direct_request request)
+{
+    (void)arg;
+#if CONFIG_WENDY_NET
+    if (request.service == WN_DIRECT_TCP && request.port &&
+        request.port != CONFIG_WENDY_SERVER_PORT && !request.datagram_size)
+        return wendy_net_guest_service_begin(request.port);
+#else
+    (void)request;
+#endif
+    return -1;
+}
+static uint16_t direct_open_peer(struct peer_state *root, struct wn_direct_peer *peer, uint32_t id,
+                                 struct wn_direct_request request)
+{
+#if CONFIG_WENDY_NET
+    if (request.service == WN_DIRECT_UDP) {
+        struct wn_direct_packet_io io;
+        uint16_t result = wn_direct_guest_packet_incoming(request.port, request.datagram_size, &io);
+        if (result)
+            return result;
+        if (wn_direct_flows_complete(&peer->flows, id, 0) ||
+            wn_direct_flows_packet_io(&peer->flows, id, &io)) {
+            io.close(io.context);
+            (void)wn_direct_flows_reset(&peer->flows, id, WN_DIRECT_IO);
+        }
+        return 0;
+    }
+#endif
+    if (request.service == WN_DIRECT_WENDYCOM) {
+        if (request.port || request.datagram_size || !peer ||
+            peer->session.cfg.check != wn_direct_policy_check)
+            return WN_DIRECT_DENIED;
+        const struct wn_direct_policy *policy = peer->session.cfg.check_arg;
+        return wn_direct_native_open(&root->direct_natives, peer, id, policy->operator_peer,
+                                     CONFIG_WENDY_NET_TCP_RELAY_BUFFER_SIZE);
+    }
+    return wn_direct_backend_start(&root->direct_backends, peer, id, request, direct_guest_begin,
+                                   NULL, esp_timer_get_time());
+}
+static uint16_t direct_open(void *arg, uint32_t id, struct wn_direct_request request)
+{
+    struct peer_state *link = arg;
+    return direct_open_peer(node_root(link), link->direct_peer, id, request);
+}
+int wn_app_direct_open(struct wn_direct_peer *peer, uint32_t id)
+{
+    struct peer_state *root = atomic_load(&state);
+    if (!root || !peer)
+        return -1;
+    struct wn_direct_flow *f = wn_direct_flows_find(&peer->flows, id);
+    if (!f)
+        return -1;
+    uint16_t refusal = direct_open_peer(root, peer, id, f->request);
+    return refusal ? wn_direct_session_complete(&peer->session, id, refusal, -1) : 0;
+}
+int wn_app_direct_control_begin(wendy_pki_connection *connection,
+                                const struct wendy_pki_mesh_identity *identity,
+                                const uint8_t instance[16], bool initiator,
+                                uint64_t expected_serial, struct wn_direct_peer **out,
+                                uint64_t *token)
+{
+    if (!out || !token)
+        return -1;
+    *out = NULL;
+    *token = 0;
+    struct peer_state *root = atomic_load(&state);
+    int64_t now = esp_timer_get_time();
+    struct wn_direct_auth auth;
+    /* This callback is reachable only from completed app-mesh TLS setup. */
+    if (!root || (!initiator && !instance) || (initiator && !expected_serial) ||
+        wn_direct_auth_capture(connection, identity, instance, now, &auth) ||
+        (instance && memcmp(instance, auth.identities.peer.instance, 16))) {
+        ESP_LOGW(TAG, "direct promotion control rejected: authenticated identity unavailable");
+        return -1;
+    }
+    struct wn_direct_peer_key key;
+    memcpy(key.principal, auth.identities.peer.principal, 32);
+    memcpy(key.instance, auth.identities.peer.instance, 16);
+    struct wn_direct_session_config cfg = {.role = auth.identities.local_role,
+                                           .selected = WN_DIRECT_CAP_VERSION | WN_DIRECT_CAP_TLS,
+                                           .deadline = auth.policy.deadline};
+    /* Select only from the retained authenticated peer key. The following pin
+     * still checks role, identity digest, serial and security lifetime. */
+    for (struct wn_direct_peer *p = root->direct_peers.peers; p; p = p->next)
+        if (!memcmp(p->key.principal, key.principal, 32) &&
+            !memcmp(p->key.instance, key.instance, 16) &&
+            wn_direct_selected_transport(p->session.cfg.selected) ==
+                (WN_DIRECT_CAP_VERSION | WN_DIRECT_CAP_TLS)) {
+            cfg.selected = p->session.cfg.selected;
+            break;
+        }
+    memcpy(cfg.identity_digest, auth.identities.digest, 32);
+    struct wn_direct_peer *peer = NULL;
+    int pinned = wn_direct_registry_pin_promoted(&root->direct_peers, &key, &cfg, expected_serial,
+                                                 now, &peer);
+    if (pinned) {
+        ESP_LOGW(TAG, "direct promotion control rejected: retained epoch result=%d", pinned);
+        return -1;
+    }
+    struct wn_direct_session *session = &peer->session;
+    if (session->last_token == UINT64_MAX)
+        goto reject;
+    if (session->carrier_owner) {
+        struct peer_state *link;
+        for (link = root; link; link = link->next)
+            if (link->direct_peer == peer && session->carrier_owner == &link->direct_carrier)
+                break;
+        if (!link)
+            goto reject;
+        if (link->tls_state.lent || wncrypto_borrowed(link->connection)) {
+            wn_direct_registry_release(&root->direct_peers, peer);
+            return 1;
+        }
+        bool reuse = link->direct_carrier.alias != UINT32_MAX;
+        if (reuse) {
+            if (wn_direct_carrier_park(&link->direct_carrier, now))
+                goto reject;
+            link->direct_retiring = peer; /* Transfer old carrier pin to parked owner. */
+        } else {
+            if (wn_direct_carrier_retire(&link->direct_carrier, now))
+                goto reject;
+            wn_direct_registry_release(&root->direct_peers, peer);
+        }
+        link->direct_peer = NULL;
+        link->direct_token = 0;
+    }
+    if (wn_direct_session_promote(session, session->last_token + 1, 1, cfg.identity_digest,
+                                  cfg.selected, cfg.deadline, direct_export, connection, initiator,
+                                  now))
+        goto reject;
+    *out = peer;
+    *token = session->token;
+    return 0;
+reject:
+    wn_direct_registry_release(&root->direct_peers, peer);
+    return -1;
+}
+void wn_app_direct_control_close(struct wn_direct_peer *peer, uint64_t token)
+{
+    struct peer_state *root = atomic_load(&state);
+    if (!root || !peer)
+        return;
+    wn_direct_session_lost(&peer->session, token, esp_timer_get_time());
+    wn_direct_registry_release(&root->direct_peers, peer);
+}
+int wn_app_direct_flow_pin(wendy_pki_connection *connection,
+                           const struct wendy_pki_mesh_identity *identity, const uint8_t hello[64],
+                           struct wn_direct_peer **out)
+{
+    if (!out)
+        return -1;
+    *out = NULL;
+    struct peer_state *root = atomic_load(&state);
+    if (!root || !hello || memcmp(hello, "WDP1", 4))
+        return -1;
+    for (struct wn_direct_peer *p = root->direct_peers.peers; p; p = p->next) {
+        struct wn_direct_session *s = &p->session;
+        if (s->closed || memcmp(s->binding.session_id, hello + 4, 32))
+            continue;
+        struct wn_direct_auth auth;
+        int64_t now = esp_timer_get_time();
+        if (wn_direct_auth_capture(connection, identity, p->key.instance, now, &auth))
+            return -1;
+        struct wn_direct_peer_key key;
+        memcpy(key.principal, auth.identities.peer.principal, 32);
+        memcpy(key.instance, auth.identities.peer.instance, 16);
+        struct wn_direct_session_config cfg = {.role = auth.identities.local_role,
+                                               .selected = s->cfg.selected,
+                                               .deadline = auth.policy.deadline};
+        if (wn_direct_selected_transport(cfg.selected) !=
+            (WN_DIRECT_CAP_VERSION | WN_DIRECT_CAP_TLS))
+            return -1;
+        memcpy(cfg.identity_digest, auth.identities.digest, 32);
+        struct wn_direct_peer *pinned;
+        if (wn_direct_registry_pin_promoted(&root->direct_peers, &key, &cfg, p->serial, now,
+                                            &pinned))
+            return -1;
+        if (s->mode != WN_DIRECT_PROMOTED) {
+            wn_direct_registry_release(&root->direct_peers, pinned);
+            return -1;
+        }
+        if (!s->active) {
+            wn_direct_registry_release(&root->direct_peers, pinned);
+            return 1;
+        }
+        uint64_t generation = 0;
+        for (unsigned i = 0; i < 8; i++)
+            generation = (generation << 8) | hello[36 + i];
+        if (generation != s->exchange.attachment.generation) {
+            wn_direct_registry_release(&root->direct_peers, pinned);
+            return -1;
+        }
+        *out = pinned;
+        return 0;
+    }
+    return -1;
+}
+void wn_app_direct_flow_release(struct wn_direct_peer *peer)
+{
+    struct peer_state *root = atomic_load(&state);
+    if (root && peer)
+        wn_direct_registry_release(&root->direct_peers, peer);
+}
+unsigned wn_app_direct_incoming_capacity(void)
+{
+    struct peer_state *root = atomic_load(&state);
+    unsigned slots = 0;
+    if (root)
+        for (struct wn_direct_peer *p = root->direct_peers.peers; p; p = p->next)
+            if (!p->session.closed)
+                slots += 2u * p->flows.slots + 1;
+    return slots;
+}
+static bool direct_promotion_target(uint64_t serial, uint8_t address[16], uint16_t *port)
+{
+    struct peer_state *root = atomic_load(&state);
+    if (!root)
+        return false;
+    int64_t now = esp_timer_get_time();
+    struct wn_direct_peer *p = wn_direct_registry_lookup(&root->direct_peers, serial);
+    /* A committed incoming control makes any still-unnegotiated outgoing
+     * control redundant. Its actor rechecks this predicate between TLS jobs.
+     * Keep precommit competitors eligible until normal arbitration decides. */
+    if (!p || !p->flows.count || (p->session.mode == WN_DIRECT_PROMOTED && p->session.active) ||
+        p->session.cfg.check != wn_direct_policy_check ||
+        wn_direct_selected_transport(p->session.cfg.selected) !=
+            (WN_DIRECT_CAP_VERSION | WN_DIRECT_CAP_TLS))
+        return false;
+    const struct wn_direct_policy *policy = p->session.cfg.check_arg;
+    int64_t deadline = p->session.security_deadline;
+    if (!policy || policy->operator_peer || wn_direct_policy_check((void *)policy, now, &deadline))
+        return false;
+    struct wnrs *router = any_router(root);
+    struct wb_route route;
+    bool direct = false;
+    if (!router || !wnrs_app_route(router, p->key.instance, &route, port, &direct))
+        return false;
+    struct peer_state *egress = route_link(root, route.link);
+    if (!egress || !egress->connection || egress->failed || egress->tls_state.cancel ||
+        !identity_live(egress, now))
+        return false;
+    bool neighbor = false;
+    uint16_t ble_cost = WNR_BLE_COST;
+    for (struct peer_state *link = root; link; link = link->next) {
+        if (!atomic_load(&link->active) || !link->connection || link->failed ||
+            link->tls_state.cancel || link->operator_peer ||
+            strcmp(link->authenticated_peer, policy->identity.peer) || !identity_live(link, now))
+            continue;
+        neighbor = true;
+        if (link->candidate.medium == WN_BLE && link->candidate.cost < ble_cost)
+            ble_cost = link->candidate.cost;
+    }
+    if (direct) {
+        if (egress->candidate.medium == WN_BLE || egress->candidate.cost >= ble_cost)
+            return false;
+    } else if (neighbor)
+        return false;
+    wn_address(p->key.instance, address);
+    return true;
+}
+static bool direct_promotion_eligible(uint64_t serial, const uint8_t address[16], uint16_t port)
+{
+    uint8_t current[16];
+    uint16_t current_port;
+    return direct_promotion_target(serial, current, &current_port) && current_port == port &&
+           !memcmp(current, address, 16);
+}
+static int poll_direct_promotions(struct peer_state *root, int64_t now)
+{
+    if (!root->direct_peers.count || now < root->direct_promotion_poll)
+        return 0;
+    root->direct_promotion_poll = now + 250000;
+    for (struct wn_direct_peer *p = root->direct_peers.peers; p; p = p->next) {
+        if (p->session.closed || (p->session.mode == WN_DIRECT_PROMOTED && p->session.attached))
+            continue;
+        uint8_t address[16];
+        uint16_t port;
+        if (!direct_promotion_target(p->serial, address, &port))
+            continue;
+        const struct wn_direct_policy *policy = p->session.cfg.check_arg;
+        int result = wn_app_direct_promote(p->serial, policy->identity.peer, address, port,
+                                           direct_promotion_eligible);
+        if (!result)
+            return 1;
+    }
+    return 0;
+}
+bool wendy_net_peer_upper_blocked_now(const char *peer)
+{
+    struct peer_state *root = atomic_load(&state);
+    if (!root || !peer)
+        return false;
+    for (struct peer_state *link = root; link; link = link->next)
+        if (link->direct_reuse_reserved && !strcmp(link->authenticated_peer, peer))
+            return true;
+    return false;
+}
+
+static bool direct_reserve_reuse(void *arg)
+{
+    struct peer_state *link = arg, *root = node_root(link);
+    if (wendy_net_peer_upper_blocked_now(link->authenticated_peer) ||
+        wendy_net_app_peer_outgoing_busy_now(link->authenticated_peer))
+        return false;
+    unsigned live = 0;
+    for (struct wn_direct_peer *p = root->direct_peers.peers; p; p = p->next)
+        if (!p->session.closed) {
+            if (!memcmp(&p->key, &link->direct_key, sizeof p->key))
+                return false;
+            live++;
+        }
+    for (struct peer_state *other = root; other; other = other->next)
+        if (other != link && !other->direct_peer &&
+            (other->direct_reuse_reserved ||
+             (other->setup_waiting && other->hello_started && other->direct_local)))
+            live++;
+    if (live >= root->direct_peers.limit)
+        return false;
+    int64_t now = esp_timer_get_time();
+    for (struct peer_state *other = root; other; other = other->next)
+        if (other != link && atomic_load(&other->active) && !other->failed &&
+            !other->tls_state.cancel && identity_live(other, now) &&
+            other->candidate.medium != WN_BLE && other->candidate.cost < link->candidate.cost &&
+            !strcmp(other->authenticated_peer, link->authenticated_peer) &&
+            wnrs_peer_forwarding_ready(other->router, now))
+            return false;
+    link->direct_reuse_reserved = true;
+    return true;
+}
+static void direct_release_reuse(void *arg)
+{
+    ((struct peer_state *)arg)->direct_reuse_reserved = false;
+}
+
+static int admit_direct(struct peer_state *root, struct peer_state *link)
+{
+    if (!link->direct_selected || link->direct_peer)
+        return 0;
+    if (link->candidate.medium != WN_BLE || !link->setup_have_stream ||
+        wncrypto_borrowed(link->connection))
+        return -1;
+    /* Tie-break already selected this candidate. Fence the previous owner's
+     * queues/TLS loan before snapshotting or attaching the retained session. */
+    for (struct peer_state *old = root; old; old = old->next)
+        if (old != link && old->direct_peer && same_peer(old, link)) {
+            retire_link(old);
+            return 1;
+        }
+    int64_t now = esp_timer_get_time();
+    struct wn_direct_auth auth;
+    if (wn_direct_auth_capture(link->connection, &link->identity,
+                               link->operator_peer ? link->operator_instance : NULL, now, &auth))
+        return -1;
+    struct wn_direct_peer_key key;
+    memcpy(key.principal, auth.identities.peer.principal, sizeof key.principal);
+    memcpy(key.instance, auth.identities.peer.instance, sizeof key.instance);
+    link->direct_key = key;
+    if (link->direct_deferred_selected && !link->direct_carrier.carrier) {
+        if (wn_direct_carrier_defer(&link->direct_carrier, &link->carrier,
+                                    auth.identities.local_role, direct_now, NULL, direct_open,
+                                    link))
+            return -1;
+        link->direct_rearm_pending = true;
+        return 0;
+    }
+    struct wn_direct_session_config cfg = {
+        .role = auth.identities.local_role,
+        .selected = link->direct_selected,
+        .deadline = auth.policy.deadline,
+        .random = direct_entropy,
+        .check = wn_direct_policy_check,
+        .check_arg = &auth.policy,
+    };
+    memcpy(cfg.identity_digest, auth.identities.digest, sizeof cfg.identity_digest);
+    /* Honor slots already promised by a successful reuse proposal. Existing
+     * matching sessions recover in place and consume no additional slot. */
+    bool retained = false;
+    unsigned occupied = 0;
+    for (struct wn_direct_peer *p = root->direct_peers.peers; p; p = p->next) {
+        if (!p->session.closed || p->pins)
+            occupied++;
+        if (!p->session.closed && !memcmp(&p->key, &key, sizeof key))
+            retained = true;
+    }
+    for (struct peer_state *other = root; other; other = other->next)
+        if (other != link && other->direct_reuse_reserved && !other->direct_peer)
+            occupied++;
+    if (!retained && occupied >= root->direct_peers.limit)
+        return 1;
+    int acquired = wn_direct_registry_acquire(&root->direct_peers, &key, &cfg, sizeof auth.policy,
+                                              now, &link->direct_peer);
+    if (acquired) {
+        if (link->direct_rearm_pending &&
+            (acquired == WN_DIRECT_RETIRED || acquired == WN_DIRECT_CAPACITY))
+            return 1; /* Upper cleanup may still hold the closed registry entry. */
+        return -1;
+    }
+    struct wn_direct_session *session = &link->direct_peer->session;
+    if (session->last_token == UINT64_MAX)
+        return -1;
+    link->direct_token = session->last_token + 1;
+    uint32_t alias = link->direct_carrier.carrier ? link->direct_carrier.alias + 1 : 1;
+    if (wn_direct_session_attach(session, link->direct_token, alias, cfg.identity_digest,
+                                 cfg.selected, cfg.deadline, direct_export, link->connection,
+                                 now) ||
+        wn_direct_carrier_bind(&link->direct_carrier, session, &link->carrier, direct_now, NULL,
+                               direct_open, link))
+        return -1;
+    link->direct_rearm_pending = false;
+    return 0;
+}
 static int admit_link(struct peer_state *root, struct peer_state *link)
 {
     if (wnrs_node_busy(root->router_node))
@@ -1957,6 +2590,9 @@ static int admit_link(struct peer_state *root, struct peer_state *link)
             return -1;
         }
     }
+    int direct = admit_direct(root, link);
+    if (direct)
+        return direct;
     if (commit_carrier(root, link, index))
         return -1;
     root->selection->active = -1;
@@ -2379,7 +3015,7 @@ static void router_run(struct peer_state *root)
             return;
 
         int64_t now = esp_timer_get_time();
-        bool progress = false;
+        bool progress = wn_direct_registry_tick(&root->direct_peers, now) > 0;
 #if !WENDY_NET_NON_TRANSIT && CONFIG_WENDY_NET_BLE
         maintain_incoming_demand(root, now);
 #endif
@@ -2467,6 +3103,46 @@ static void router_run(struct peer_state *root)
             if (now >= link->refresh_at && wendy_wifi_is_connected())
                 queue_clock(link);
 
+            if (link->direct_retiring && link->direct_retiring->session.closed) {
+                bool orderly = link->direct_retiring->session.retired;
+                wn_direct_registry_release(&root->direct_peers, link->direct_retiring);
+                link->direct_retiring = NULL;
+                if (link->direct_carrier.carrier) {
+                    link->direct_rearm_pending = orderly;
+                    link->direct_rearm_terminal = !orderly;
+                }
+            }
+            if (link->direct_carrier.carrier && !link->direct_carrier.session) {
+                int reuse = wn_direct_carrier_propose(
+                    &link->direct_carrier,
+                    link->direct_rearm_pending || link->direct_rearm_terminal,
+                    !link->direct_rearm_terminal, direct_reserve_reuse, direct_release_reuse, link,
+                    now);
+                if (reuse == 2) {
+                    (void)wn_direct_carrier_retire(&link->direct_carrier, now);
+                    link->direct_rearm_pending = link->direct_rearm_terminal = false;
+                    direct_release_reuse(link);
+                } else if (reuse < 0 || (reuse == 1 && admit_direct(root, link) < 0)) {
+                    retire_link(link);
+                    continue;
+                }
+            }
+            if (link->direct_reuse_reserved && link->direct_peer &&
+                link->direct_peer->session.active)
+                direct_release_reuse(link);
+            if (link->direct_peer &&
+                (link->direct_peer->session.closed || link->direct_peer->carrier_expired)) {
+                retire_link(link);
+                continue;
+            }
+            if (link->direct_carrier.session) {
+                int queued = wn_direct_carrier_flush(&link->direct_carrier, 4);
+                if (queued < 0) {
+                    retire_link(link);
+                    continue;
+                }
+                progress |= queued > 0;
+            }
             int pumped = wnc_pump(&link->carrier, esp_timer_get_time(), receive_frame, link);
             if (pumped < 0) {
                 struct wnc_timeout timeout;
@@ -2623,7 +3299,13 @@ static void router_run(struct peer_state *root)
         }
         }
         progress |= wendy_net_agent_poll() != 0;
+        progress |= poll_direct_promotions(root, esp_timer_get_time());
         progress |= wendy_net_app_poll() != 0;
+        progress |= wn_direct_dials_poll(&root->direct_dials, &root->direct_peers,
+                                         wendy_net_app_direct_complete, esp_timer_get_time()) != 0;
+        progress |= wn_direct_backends_poll(&root->direct_backends, &root->direct_peers,
+                                            wnad_connected, esp_timer_get_time()) != 0;
+        progress |= wn_direct_natives_poll(&root->direct_natives, &root->direct_peers) != 0;
         progress |= wnrs_poll_effects(root->router_node) != 0;
         collect_slots(root);
         bool output_drained = true;
@@ -2680,6 +3362,13 @@ static void router_run(struct peer_state *root)
                     maximum = root->listener;
             }
             int64_t deadline = esp_timer_get_time() + INT64_C(1000000);
+            if (root->direct_peers.count && root->direct_promotion_poll < deadline)
+                deadline = root->direct_promotion_poll;
+            deadline =
+                wn_direct_registry_pollfds(&root->direct_peers, &rd, &wr, &maximum, deadline);
+            deadline = wn_direct_backends_pollfds(&root->direct_backends, &wr, &maximum, deadline);
+            deadline = wn_direct_dials_pollfds(&root->direct_dials, &rd, &wr, &maximum,
+                                               esp_timer_get_time(), deadline);
             int64_t announcement_deadline = wnrs_node_deadline(root->router_node);
             if (announcement_deadline < deadline)
                 deadline = announcement_deadline;
@@ -2758,7 +3447,13 @@ static void shutdown_crypto_cleanup(void *context)
 }
 static bool shutdown_step(struct peer_state *root)
 {
-    bool waiting = !wendy_net_app_stop();
+    /* Close logical authority immediately; pins keep storage until carrier
+     * workers below finish and close_session releases their references. */
+    (void)wn_direct_registry_close(&root->direct_peers);
+    wn_direct_backends_close(&root->direct_backends);
+    wn_direct_dials_close(&root->direct_dials, wendy_net_app_direct_complete);
+    bool waiting = !wn_direct_natives_stop(&root->direct_natives);
+    waiting |= !wendy_net_app_stop();
     waiting |= !wendy_net_agent_stop();
     wnne_desire(&root->netif_effect, WNNE_REMOVED);
     poll_netif_effect(root);
@@ -2793,8 +3488,8 @@ static bool shutdown_step(struct peer_state *root)
             waiting = true;
             continue;
         }
-        if (link->candidate_held || link->connection || link->tls_setup || link->tls_channel ||
-            link->setup_waiting || atomic_load(&link->active))
+        if (link->direct_peer || link->candidate_held || link->connection || link->tls_setup ||
+            link->tls_channel || link->setup_waiting || atomic_load(&link->active))
             retire_link(link);
         pthread_mutex_lock(&state_lock);
         if (link->clock.phase == CLOCK_QUEUED || link->clock.phase == CLOCK_DONE)
@@ -2827,6 +3522,7 @@ static bool shutdown_step(struct peer_state *root)
         waiting |= !wendy_ble_mesh_advertisement_idle();
     }
 #endif
+    waiting |= !wn_direct_registry_close(&root->direct_peers);
     /* Join all protocol/context loans before trimming empty shared PSA tables.
      * This mutex-taking SDK operation stays on the existing crypto worker. */
     if (!waiting && !root->crypto_cleanup_submitted) {
@@ -2924,6 +3620,25 @@ static esp_err_t start_enrolled(void)
     pthread_mutex_lock(&state_lock);
     s->config = applied_config;
     pthread_mutex_unlock(&state_lock);
+    bool small_direct = heap_caps_get_total_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == 0;
+    if (wn_direct_registry_init(&s->direct_peers, s->config.max_links, small_direct)) {
+        wendy_net_free(s);
+        return ESP_ERR_INVALID_ARG;
+    }
+#if CONFIG_WENDY_NET_DIRECT_BLE && CONFIG_WENDY_NET
+    /* Three message buffers per association, separate from reliable replay.
+     * Clamp to the guest implementation before advertising a local maximum. */
+    size_t packet_max = small_direct ? 4096 : 16384;
+    size_t guest_max = wendy_net_guest_datagram_capacity();
+    if (packet_max > guest_max)
+        packet_max = guest_max;
+    if (packet_max) {
+        s->direct_peers.datagram_slots = small_direct ? 1 : 4;
+        s->direct_peers.datagram_max = (uint16_t)packet_max;
+    }
+#endif
+    s->direct_dials.complete_datagram = wendy_net_app_direct_datagram_complete;
+    s->direct_dials.fallback_datagram = direct_datagram_fallback;
     s->selection = wendy_net_calloc(1, sizeof *s->selection);
     if (!s->selection) {
         wendy_net_free(s);

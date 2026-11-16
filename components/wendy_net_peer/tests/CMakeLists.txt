@@ -411,3 +411,5 @@ target_link_libraries(direct_reuse_capability_test PRIVATE peer_format session_g
 target_include_directories(direct_reuse_capability_test PRIVATE ../../wendy_net_gossip/include)
 target_compile_options(direct_reuse_capability_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 add_test(NAME direct_reuse_capability COMMAND direct_reuse_capability_test)
+
+add_test(NAME direct_automatic_promotion_policy COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/direct_promotion_policy_test.py)
