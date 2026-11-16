@@ -1689,8 +1689,7 @@ static void bound_alias_promotion_boundaries(void) {
     assert_no_allocations();
 }
 #endif
-int main(int argc, char **argv) {
-    bool setup_wait_only = argc == 2 && !strcmp(argv[1], "--incoming-setup-wait");
+int main(void) {
     assert(wendy_net_runtime_memory_open());
     /* Keep both profile builds strict about declarations and boundary stubs. */
     (void)heap_caps_get_free_size;
@@ -1722,15 +1721,8 @@ int main(int argc, char **argv) {
     (void)peer_b;
     (void)peer_c;
     (void)full_redundant;
-    if (WENDY_NET_NON_TRANSIT) { if (!setup_wait_only) constrained(); }
+    if (WENDY_NET_NON_TRANSIT) constrained();
 #if !WENDY_NET_NON_TRANSIT
-    else if (setup_wait_only) {
-        incoming_setup_wait();
-        incoming_retry_fairness();
-        recover_during_release();
-        outgoing_probe_keeps_reclaimed_opportunity();
-        reserve_last_opportunity();
-    }
     else {
         incoming_setup_wait();
         priority_and_aliases();
@@ -1807,5 +1799,4 @@ with tempfile.TemporaryDirectory() as tmp:
                         str(root.parent / 'wendy_net_common/src/memory.c'),
                         str(root.parent / 'wendy_net_common/src/runtime_memory.c'),
                         '-o', str(p / 'test')], check=True)
-        args = ['--incoming-setup-wait'] if os.environ.get('WENDY_CARRIER_POLICY_SCENARIO') == 'incoming-setup-wait' else []
-        subprocess.run([str(p / 'test')] + args, check=True)
+        subprocess.run([str(p / 'test')], check=True)
