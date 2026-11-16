@@ -10,22 +10,23 @@ int main(void)
     /* Losing the last physical carrier preserves the logical address. Repeated
      * actor ticks cannot extend that deadline; normal reconnection cancels it. */
     assert(wnnl_update(&s, false, true, 2000000));
-    assert(s.until == 32000000);
+    assert(s.until == 2000000 + WNNL_RECOVERY_US);
     assert(wnnl_update(&s, false, true, 12000000));
-    assert(s.until == 32000000);
+    assert(s.until == 2000000 + WNNL_RECOVERY_US);
     assert(wnnl_update(&s, true, true, 31000000));
     assert(!s.until);
     assert(wnnl_update(&s, false, true, 40000000));
-    assert(wnnl_current(&s, true, 69999999));
-    assert(!wnnl_current(&s, true, 70000000));
-    assert(!wnnl_update(&s, false, true, 70000000));
-    assert(!wnnl_update(&s, false, true, 80000000));
+    int64_t expires = 40000000 + WNNL_RECOVERY_US;
+    assert(wnnl_current(&s, true, expires - 1));
+    assert(!wnnl_current(&s, true, expires));
+    assert(!wnnl_update(&s, false, true, expires));
+    assert(!wnnl_update(&s, false, true, expires + 10000000));
     /* Normal identity/time renewal restores service; ordinary expiration ends
      * the grace immediately instead of retaining an expired local address. */
-    assert(wnnl_update(&s, true, true, 90000000));
-    assert(wnnl_update(&s, false, true, 91000000));
-    assert(!wnnl_update(&s, false, false, 92000000));
-    assert(wnnl_update(&s, true, true, 93000000));
+    assert(wnnl_update(&s, true, true, expires + 20000000));
+    assert(wnnl_update(&s, false, true, expires + 21000000));
+    assert(!wnnl_update(&s, false, false, expires + 22000000));
+    assert(wnnl_update(&s, true, true, expires + 23000000));
     printf("Logical address recovery/return/expiry pass; state=%zu bytes\n", sizeof s);
     return 0;
 }

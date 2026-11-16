@@ -1,4 +1,17 @@
 menu "Wendy Net native peer"
+    config WENDY_NET_DIRECT_BLE
+        bool "Direct application streams over BLE carrier TLS"
+        depends on WENDY_NET_PEER && WENDY_NET_BLE
+        default y if IDF_TARGET_ESP32C5
+        default n
+        help
+            Negotiate direct application streams on BLE carriers, with bounded
+            retention across carrier loss and transparent promotion when a faster
+            direct carrier or a usable multihop route becomes available. Peers
+            without this capability continue to use the routed upper transport.
+            Enabled by default on ESP32-C5; other targets remain opt-in pending
+            device-specific resource and interoperability qualification.
+
     config WENDY_NET_PEER
         bool "Build native Wendy Net peer support"
         default n

@@ -2424,6 +2424,33 @@ bool wnrs_app_endpoint(struct wnrs *s, const uint8_t device[16], uint16_t *port)
     }
     return found;
 }
+bool wnrs_app_route(struct wnrs *s, const uint8_t device[16], struct wb_route *route,
+                    uint16_t *port, bool *direct)
+{
+    if (!s || !s->node || !device || !route || !port || !direct)
+        return false;
+    *port = 0;
+    *direct = false;
+    uint8_t address[16];
+    wn_address(device, address);
+    if (!wnrs_app_endpoint(s, device, port))
+        return false;
+    int64_t now = esp_timer_get_time();
+    if (!wnr_lookup(&s->node->core, address, now, route) || route->local || route->unreachable ||
+        route->metric == WB_INFINITY || route->prefix.family != 6 || route->prefix.bits != 128 ||
+        memcmp(route->prefix.bytes, address, 16))
+        return false;
+    for (struct wnrs *egress = s->node->sessions; egress; egress = egress->next) {
+        if (egress->link != route->link || !egress->attached ||
+            !wendy_pki_mesh_identity_current(&egress->identity, now))
+            continue;
+        *direct = !memcmp(egress->peer_address, address, 16);
+        /* An endpoint gateway has no remote Babel path proof. Never mistake
+         * its synthetic default for evidence that a relay reaches a target. */
+        return !s->node->core.config.endpoint_gateway || *direct;
+    }
+    return false;
+}
 bool wnrs_agent_endpoint(struct wnrs *s, const uint8_t device[16], uint16_t *port)
 {
 #if WN_ROUTE_HANDOFF_ENABLED

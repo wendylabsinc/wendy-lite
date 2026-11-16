@@ -1,11 +1,12 @@
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
+#include "recovery_lifetime.h"
 
 /* A carrier is a route to the mesh, not the lifetime of our IPv6 address.
  * Keep established TCP sockets during a short ordinary reconnection. No
  * packets are queued without a carrier; TCP retains its own bounded retry. */
-#define WNNL_RECOVERY_US INT64_C(30000000)
+#define WNNL_RECOVERY_US WN_RECOVERY_GRACE_US
 struct wnnl {
     int64_t until;
     bool carrier, up;

@@ -107,6 +107,9 @@ struct peer_state {
     struct connection *connection;
     struct wnrs *router;
     struct wnrs_node *router_node;
+    void *direct_peer;
+    uint32_t direct_local, direct_selected, direct_deferred;
+    bool direct_reuse_reserved, direct_deferred_selected;
     const struct operator_peer *operator_peer;
     uint8_t operator_instance[16];
     char authenticated_peer[37];
@@ -154,6 +157,13 @@ static size_t heap_caps_get_free_size(unsigned caps) { assert(caps == MALLOC_CAP
 static unsigned wendy_pki_handshake_mesh_limit(void) { return mesh_limit; }
 static bool identity_live(struct peer_state *s, int64_t now) { return now < s->identity_until; }
 static bool wncrypto_borrowed(const struct connection *c) { return c && c->borrowed; }
+/* This carrier-policy fixture exercises ordinary links; direct admission is
+ * covered by the composed direct-runtime fixtures. */
+#if !WENDY_NET_NON_TRANSIT
+static int admit_direct(struct peer_state *root, struct peer_state *link) {
+    (void)root; assert(!link->direct_selected); return 0;
+}
+#endif
 static bool wnrs_peer_forwarding_ready(const struct wnrs *s, int64_t now) {
     return s && now < s->forwarding_until;
 }
@@ -284,7 +294,9 @@ static const struct operator_peer *wendy_pki_mesh_authenticated_operator(struct 
     assert(c); return verified_operator;
 }
 static void wnad_handshake_release(struct peer_state *link) { assert(link); }
-int wn_router_hello_write(const char *self, const char *peer, char *out, size_t capacity) {
+int wn_router_hello_write_deferred(const char *self, const char *peer, char *out, size_t capacity,
+                                    uint32_t local, uint32_t deferred) {
+    assert(!local && !deferred);
     assert(self && peer && capacity); *out = 1; return 1;
 }
 void wn_put32(uint8_t *out, uint32_t value) {

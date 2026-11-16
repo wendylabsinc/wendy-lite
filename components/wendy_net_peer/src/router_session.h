@@ -29,6 +29,10 @@ int wnrs_control(struct wnrs *, const void *, size_t);
 int wnrs_routing(struct wnrs *, const void *, size_t);
 int wnrs_packet(struct wnrs *, void *, size_t, bool incoming);
 bool wnrs_app_endpoint(struct wnrs *, const uint8_t device[16], uint16_t *port);
+/* Installed authorized app route plus a currently authenticated egress. A
+ * constrained synthetic gateway proves only its own directly attached peer. */
+bool wnrs_app_route(struct wnrs *, const uint8_t device[16], struct wb_route *, uint16_t *port,
+                    bool *direct);
 bool wnrs_agent_endpoint(struct wnrs *, const uint8_t device[16], uint16_t *port);
 
 /* Actor-only failover preference proof: this admitted attachment currently
