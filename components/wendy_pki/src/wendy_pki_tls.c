@@ -1,5 +1,4 @@
 #define MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS
-#include <mbedtls/private/sha256.h>
 #include "artifact_crypto.h"
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -709,8 +708,7 @@ static int configure_failed(const char *stage, int error)
 static void capture_local_key_binding(wendy_pki_connection *c)
 {
     if (c->certificate.pk_raw.p && c->certificate.pk_raw.len &&
-        mbedtls_sha256(c->certificate.pk_raw.p, c->certificate.pk_raw.len, c->mesh_local_key_hash,
-                       0))
+        wendy_pki_sha256(c->certificate.pk_raw.p, c->certificate.pk_raw.len, c->mesh_local_key_hash))
         memset(c->mesh_local_key_hash, 0, 32);
 }
 static void release_session_certificates(wendy_pki_connection *c)
@@ -1567,7 +1565,7 @@ static void capture_mesh_key_bindings(wendy_pki_connection *c)
     for (unsigned i = 0; i < 32; i++)
         local |= c->mesh_local_key_hash[i];
     if (!local || !remote || !remote_size ||
-        mbedtls_sha256(remote, remote_size, c->mesh_peer_key_hash, 0)) {
+        wendy_pki_sha256(remote, remote_size, c->mesh_peer_key_hash)) {
         memset(c->mesh_local_key_hash, 0, 32);
         memset(c->mesh_peer_key_hash, 0, 32);
     }
@@ -2267,7 +2265,7 @@ int wendy_pki_mesh_key_bindings(wendy_pki_connection *c, uint8_t local[32], uint
         wendy_pki_reset_in_progress() || mesh_certificate_expired(c))
         return -1;
     const char *alpn = mbedtls_ssl_get_alpn_protocol(&c->ssl);
-    if (c->ssl.MBEDTLS_PRIVATE(tls_version) != MBEDTLS_SSL_VERSION_TLS1_3 || !alpn ||
+    if (mbedtls_ssl_get_version_number(&c->ssl) != MBEDTLS_SSL_VERSION_TLS1_3 || !alpn ||
         (strcmp(alpn, "wendy-local-mesh-ble/2") && strcmp(alpn, "wendy-net-operator-router/1") &&
          strcmp(alpn, "wendy-app-mesh-tls/1")))
         return -1;
@@ -2306,7 +2304,7 @@ static int direct_channel_binding(wendy_pki_connection *c, const uint8_t context
     memset(out, 0, 32);
 #if defined(MBEDTLS_SSL_KEYING_MATERIAL_EXPORT)
     if (!c || !context || !mbedtls_ssl_is_handshake_over(&c->ssl) ||
-        c->ssl.MBEDTLS_PRIVATE(tls_version) != MBEDTLS_SSL_VERSION_TLS1_3 || !c->mesh_tenant[0] ||
+        mbedtls_ssl_get_version_number(&c->ssl) != MBEDTLS_SSL_VERSION_TLS1_3 || !c->mesh_tenant[0] ||
         !c->mesh_device[0] ||
         (c->peer_role != WENDY_PEER_ROLE_DEVICE && c->peer_role != WENDY_PEER_ROLE_OPERATOR) ||
         (c->peer_role == WENDY_PEER_ROLE_OPERATOR && !c->authenticated_operator) ||
@@ -2401,7 +2399,7 @@ ssize_t wendy_pki_write(void *v, const void *b, size_t n)
 int wendy_pki_shutdown_write(wendy_pki_connection *c)
 {
     if (!c || !mbedtls_ssl_is_handshake_over(&c->ssl) ||
-        c->ssl.MBEDTLS_PRIVATE(tls_version) != MBEDTLS_SSL_VERSION_TLS1_3 ||
+        mbedtls_ssl_get_version_number(&c->ssl) != MBEDTLS_SSL_VERSION_TLS1_3 ||
         wendy_pki_reset_in_progress() || mesh_certificate_expired(c) || !c->session_deadline_us ||
         esp_timer_get_time() >= c->session_deadline_us ||
         (c->relay_expires_us && esp_timer_get_time() >= c->relay_expires_us))
