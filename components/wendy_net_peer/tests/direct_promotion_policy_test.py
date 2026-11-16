@@ -59,12 +59,11 @@ int main(void){
  uint8_t target[16]={42};
  struct wn_direct_policy policy={.identity={.peer="target"}};
  struct wn_direct_peer p={.serial=3,.key={.instance={42}},.flows={.count=1},
-  .session={.security_deadline=10000000,.cfg={.selected=257,.check=wn_direct_policy_check,.check_arg=&policy}}};
+  .session={.security_deadline=10000000,.cfg={.selected=WN_DIRECT_CAP_VERSION|WN_DIRECT_CAP_TLS,.check=wn_direct_policy_check,.check_arg=&policy}}};
  struct peer_state ble={.active=true,.connection=&p,.authenticated_peer="target",.candidate={WN_BLE,1024}};
  struct peer_state fast={.active=true,.connection=&p,.authenticated_peer="target",.candidate={2,128},.next=&ble};
  fast.direct_peers=(struct registry){.peers=&p,.count=1};state=&fast;selected=&fast;
  assert(direct_promotion_eligible(3,target,43022));assert(!direct_promotion_eligible(4,target,43022));
- p.session.cfg.selected|=WN_DIRECT_CAP_DATAGRAM_LIMIT;assert(direct_promotion_eligible(3,target,43022));
  assert(!direct_promotion_eligible(3,target,43023));target[1]=1;assert(!direct_promotion_eligible(3,target,43022));target[1]=0;
  assert(poll_direct_promotions(&fast,clock_us)==1&&calls==1);
  clock_us+=249999;assert(!poll_direct_promotions(&fast,clock_us)&&calls==1);
