@@ -510,8 +510,8 @@ int wnr_operator_manifest_verified(struct wnr_core *c, const struct wno_manifest
         return WB_STOPPED;
     return settle_route_handoffs(c) ? WB_STOPPED : r;
 }
-static int attach(struct wnr_core *c, bool first, uint16_t cost, int64_t unix_ms, int64_t now,
-                  uint64_t *id)
+static int attach(struct wnr_core *c, bool first, uint16_t cost, uint32_t hello_ms,
+                  int64_t unix_ms, int64_t now, uint64_t *id)
 {
     if (!c || !id || !cost || cost == WB_INFINITY)
         return WB_INVALID;
@@ -531,6 +531,7 @@ static int attach(struct wnr_core *c, bool first, uint16_t cost, int64_t unix_ms
                            .local = {0xfe, 0x80},
                            .peer = {0xfe, 0x80},
                            .cost = cost,
+                           .hello_ms = hello_ms,
                            .max_packet = WB_PACKET_MAX};
     link.local[15] = first ? 1 : 2;
     link.peer[15] = first ? 2 : 1;
@@ -539,21 +540,29 @@ static int attach(struct wnr_core *c, bool first, uint16_t cost, int64_t unix_ms
         *id = link.id;
     return r;
 }
-int wnr_attach(struct wnr_core *c, const char *peer, uint16_t cost, int64_t unix_ms, int64_t now,
-               uint64_t *id)
+int wnr_attach_timed(struct wnr_core *c, const char *peer, uint16_t cost, uint32_t hello_ms,
+                     int64_t unix_ms, int64_t now, uint64_t *id)
 {
     uint8_t uuid[16];
     if (!c || wn_uuid_parse(peer, uuid) || !memcmp(uuid, c->directory.self, 16))
         return WB_INVALID;
-    return attach(c, memcmp(c->directory.self, uuid, 16) < 0, cost, unix_ms, now, id);
+    return attach(c, memcmp(c->directory.self, uuid, 16) < 0, cost, hello_ms, unix_ms, now, id);
 }
-int wnr_attach_operator(struct wnr_core *c, uint16_t cost, int64_t unix_ms, int64_t now,
-                        uint64_t *id)
+int wnr_attach_operator_timed(struct wnr_core *c, uint16_t cost, uint32_t hello_ms,
+                              int64_t unix_ms, int64_t now, uint64_t *id)
 {
     if (!c || c->config.non_transit || c->config.endpoint_gateway)
         return WB_INVALID;
     /* meshid.Compare orders the same-tenant device principal before operator. */
-    return attach(c, true, cost, unix_ms, now, id);
+    return attach(c, true, cost, hello_ms, unix_ms, now, id);
+}
+int wnr_attach(struct wnr_core *c, const char *peer, uint16_t cost, int64_t wall, int64_t now, uint64_t *id)
+{
+    return wnr_attach_timed(c, peer, cost, 0, wall, now, id);
+}
+int wnr_attach_operator(struct wnr_core *c, uint16_t cost, int64_t wall, int64_t now, uint64_t *id)
+{
+    return wnr_attach_operator_timed(c, cost, 0, wall, now, id);
 }
 int wnr_detach(struct wnr_core *c, uint64_t link, int64_t unix_ms, int64_t now)
 {

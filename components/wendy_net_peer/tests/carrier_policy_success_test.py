@@ -172,19 +172,21 @@ static const struct operator_peer *verified_operator;
 static unsigned opens;
 static unsigned operator_opens;
 static bool open_succeeds;
-static int wnrs_open(struct wnrs **out, void *owner, struct connection *connection,
-                     const void *identity, const void *peer, unsigned cost,
+static int wnrs_open_timed(struct wnrs **out, void *owner, struct connection *connection,
+                     const void *identity, const void *peer, unsigned cost, uint32_t hello_ms,
                      int (*send)(void *, const void *, size_t, bool), void *context) {
     (void)owner; (void)identity; (void)peer; (void)cost;
     assert(connection && send == router_send && context);
+    enum wn_medium medium = ((struct peer_state *)context)->candidate.medium;
+    assert(hello_ms == ((medium == WN_LAN || medium == WN_NAN) ? 1000u : 4000u));
     if (!open_succeeds) return -1;
     *out = &opened_route; opens++; return 0;
 }
-static int wnrs_open_operator(struct wnrs **out, void *owner, struct connection *connection,
-                              const void *identity, const void *peer, unsigned cost,
+static int wnrs_open_operator_timed(struct wnrs **out, void *owner, struct connection *connection,
+                              const void *identity, const void *peer, unsigned cost, uint32_t hello_ms,
                               int (*send)(void *, const void *, size_t, bool), void *context) {
     operator_opens++;
-    return wnrs_open(out, owner, connection, identity, peer, cost, send, context);
+    return wnrs_open_timed(out, owner, connection, identity, peer, cost, hello_ms, send, context);
 }
 static int reserve_candidate(struct peer_state *s, const struct wn_candidate *c) {
     int index = wn_candidate_seen(s->selection, c, clock_us / 1000);
@@ -1670,8 +1672,8 @@ int main(void) {
     (void)wnrs_link_id;
     (void)fixture_log;
     (void)TAG;
-    (void)wnrs_open;
-    (void)wnrs_open_operator;
+    (void)wnrs_open_timed;
+    (void)wnrs_open_operator_timed;
     (void)reserve_candidate;
     (void)wble_mesh_profile;
     (void)wnad_connect;
