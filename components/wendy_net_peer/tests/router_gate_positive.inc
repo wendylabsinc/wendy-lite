@@ -49,6 +49,15 @@ static void gate_owned_route_test(struct endpoint *peer,const uint8_t source[16]
     wendy_pki_handshake_release(&tls_owner);
     assert(!wg_resume(&session->gossip,complete,session));
     assert(session->record_verification && session->verification_blocked && wnrs_receive_paused(session));
+    /* A following ordinary Hello is independent of the retained signed body.
+     * The real Babel engine still owns its own pending-message backpressure. */
+    struct wb_message hello={.type=WB_HELLO,.seqno=1,.interval=400};
+    uint8_t hello_packet[WB_PACKET_MAX]={42,2};
+    size_t hello_size=wb_encode(&hello,hello_packet+4,sizeof hello_packet-4);
+    assert(hello_size);
+    hello_packet[2]=(uint8_t)(hello_size>>8);hello_packet[3]=(uint8_t)hello_size;
+    assert(!wnrs_routing(session,hello_packet,hello_size+4));
+    assert(session->record_verification && session->verification_blocked && wnrs_receive_paused(session));
     assert(wendy_pki_work_poll());
 #if defined(WENDY_NET_MEMORY_HOST_BUDGET_TEST)
     /* Ordinary overlap consumes the remaining ledger budget. There is less
