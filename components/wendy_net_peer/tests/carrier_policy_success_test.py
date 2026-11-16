@@ -689,6 +689,42 @@ static void planner_release_and_gates(void) {
     assert_no_allocations();
 }
 
+/* An ordinary incoming retry can arrive during another carrier handshake.
+ * Preserve that demand until the existing setup finishes, without requiring
+ * the radio to send a second capacity notification at precisely that instant. */
+static void incoming_setup_wait(void) {
+    struct fixture f;
+    full_redundant(&f);
+    struct peer_state *root = &f.links[0];
+    f.links[7].active = false;
+    f.links[7].setup_waiting = true;
+    capacity_refused = true;
+    assert(!reclaim_for_incoming_probe(root) && !retired);
+    assert(!capacity_refused && incoming_demand_active(root, clock_us));
+    /* The ordinary existing setup completes; capacity remains full. */
+    f.links[7].setup_waiting = false;
+    f.links[7].active = true;
+    clock_us += 1000000;
+    assert(reclaim_for_incoming_probe(root));
+    assert(retired == 1 && last_retired == &f.links[1]);
+    assert(root->incoming_probe_waiting);
+    assert_no_allocations();
+
+    /* A caller that has gone away only gets the existing finite retry window. */
+    full_redundant(&f); root = &f.links[0];
+    f.links[7].active = false;
+    f.links[7].setup_waiting = true;
+    capacity_refused = true;
+    assert(!reclaim_for_incoming_probe(root));
+    clock_us += INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS;
+    maintain_incoming_demand(root, clock_us);
+    f.links[7].setup_waiting = false;
+    f.links[7].active = true;
+    assert(!reclaim_for_incoming_probe(root) && !retired);
+    assert(!incoming_demand_active(root, clock_us));
+    assert_no_allocations();
+}
+
 static void incoming_probe(void) {
     struct fixture f;
     full_redundant(&f);
@@ -1653,7 +1689,8 @@ static void bound_alias_promotion_boundaries(void) {
     assert_no_allocations();
 }
 #endif
-int main(void) {
+int main(int argc, char **argv) {
+    bool setup_wait_only = argc == 2 && !strcmp(argv[1], "--incoming-setup-wait");
     assert(wendy_net_runtime_memory_open());
     /* Keep both profile builds strict about declarations and boundary stubs. */
     (void)heap_caps_get_free_size;
@@ -1685,9 +1722,17 @@ int main(void) {
     (void)peer_b;
     (void)peer_c;
     (void)full_redundant;
-    if (WENDY_NET_NON_TRANSIT) constrained();
+    if (WENDY_NET_NON_TRANSIT) { if (!setup_wait_only) constrained(); }
 #if !WENDY_NET_NON_TRANSIT
+    else if (setup_wait_only) {
+        incoming_setup_wait();
+        incoming_retry_fairness();
+        recover_during_release();
+        outgoing_probe_keeps_reclaimed_opportunity();
+        reserve_last_opportunity();
+    }
     else {
+        incoming_setup_wait();
         priority_and_aliases();
         authenticated_admission();
         reclaim_boundaries();
@@ -1762,4 +1807,5 @@ with tempfile.TemporaryDirectory() as tmp:
                         str(root.parent / 'wendy_net_common/src/memory.c'),
                         str(root.parent / 'wendy_net_common/src/runtime_memory.c'),
                         '-o', str(p / 'test')], check=True)
-        subprocess.run([str(p / 'test')], check=True)
+        args = ['--incoming-setup-wait'] if os.environ.get('WENDY_CARRIER_POLICY_SCENARIO') == 'incoming-setup-wait' else []
+        subprocess.run([str(p / 'test')] + args, check=True)

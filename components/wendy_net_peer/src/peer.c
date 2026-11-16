@@ -2314,36 +2314,35 @@ static void maintain_incoming_demand(struct peer_state *root, int64_t now)
 static bool reclaim_for_incoming_probe(struct peer_state *root)
 {
     struct wble_mesh_peer refused;
-    if (!wble_mesh_take_capacity_refusal(&refused) || !root->config.ble || !root->clock_ready)
+    bool received = wble_mesh_take_capacity_refusal(&refused);
+    if (!root->config.ble || !root->clock_ready)
         return false;
-    if (refused.psm) {
+    if (received && refused.psm) {
         struct wn_candidate hint = {.medium = WN_BLE, .port = refused.psm};
         ble_address(hint.address, refused.address, refused.address_type);
         if (incoming_standby_hint(root, &hint))
             return false;
     }
+    /* A refusal can arrive while an unrelated TLS setup owns the last slot.
+     * Remember the ordinary retry demand before checking those transient
+     * gates. Revisit it as they clear; only a new radio receipt extends its
+     * finite window, not actor polling. This also prevents a known standby
+     * reconnect from immediately consuming the newly available opportunity. */
+    if (received && !root->incoming_probe_waiting)
+        root->incoming_probe_until_us = esp_timer_get_time() +
+                                        INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS;
     bool held = incoming_demand_active(root, esp_timer_get_time());
-    if (held && candidate_room(root, WN_BLE)) {
-        if (!root->incoming_probe_waiting)
-            root->incoming_probe_until_us = esp_timer_get_time() +
-                                            INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS;
+    if (!held || candidate_room(root, WN_BLE))
         return false;
-    }
-    if (!setup_capacity_available(root) || !setup_room(root)) {
-        if (held && !root->incoming_probe_waiting)
-            root->incoming_probe_until_us = esp_timer_get_time() +
-                                            INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS;
+    if (!setup_capacity_available(root) || !setup_room(root))
         return false;
-    }
     struct peer_state *victim = reclaim_victim(root, WN_BLE);
     if (!victim) {
         struct carrier_occupancy used;
         if (held && carrier_occupancy(root, &used) && used.releasing) {
             root->incoming_probe_waiting = true;
             root->incoming_probe_until_us = 0;
-        } else if (held && !root->incoming_probe_waiting)
-            root->incoming_probe_until_us = esp_timer_get_time() +
-                                            INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS;
+        }
         return false;
     }
     retire_link(victim);
