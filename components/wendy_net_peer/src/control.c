@@ -8,6 +8,24 @@
 
 int wn_operator_hello_read(const void *data, size_t size, uint8_t instance[16])
 {
+    uint32_t selected;
+    return wn_operator_hello_read_direct(data, size, instance, 0, &selected);
+}
+int wn_operator_hello_read_direct(const void *data, size_t size, uint8_t instance[16],
+                                  uint32_t local, uint32_t *selected)
+{
+    bool parked;
+    return wn_operator_hello_read_deferred(data, size, instance, local, 0, selected, &parked);
+}
+int wn_operator_hello_read_deferred(const void *data, size_t size, uint8_t instance[16],
+                                    uint32_t local, uint32_t deferred, uint32_t *selected,
+                                    bool *parked)
+{
+    if (!selected || !parked || !wn_direct_capability_valid(local) ||
+        !wn_direct_capability_valid(deferred))
+        return -1;
+    *selected = 0;
+    *parked = false;
     struct wn_doc d;
     size_t n = 0;
     uint8_t id[16], nonzero = 0;
@@ -19,31 +37,107 @@ int wn_operator_hello_read(const void *data, size_t size, uint8_t instance[16])
         nonzero |= id[i];
     if (!nonzero)
         return -1;
+    int direct = wn_doc_member(&d, 0, "direct");
+    uint64_t remote = 0;
+    if (direct >= 0 && (wn_doc_u64(&d, direct, &remote) || remote > UINT32_MAX))
+        return -1;
+    int field = wn_doc_member(&d, 0, "directDeferred");
+    uint64_t remote_deferred = 0;
+    if (field >= 0 && (wn_doc_u64(&d, field, &remote_deferred) || remote_deferred > UINT32_MAX))
+        return -1;
+    *selected = wn_direct_carrier_negotiate(local, deferred, (uint32_t)remote,
+                                            (uint32_t)remote_deferred, parked);
     memcpy(instance, id, 16);
     return 0;
 }
 int wn_operator_ready_write(void *out, size_t cap)
 {
-    if (!out)
+    return wn_operator_ready_write_direct(out, cap, 0);
+}
+int wn_operator_ready_write_direct(void *out, size_t cap, uint32_t selected)
+{
+    return wn_operator_ready_write_deferred(out, cap, selected, false);
+}
+int wn_operator_ready_write_deferred(void *out, size_t cap, uint32_t selected, bool parked)
+{
+    if (!out || !wn_direct_capability_valid(selected) ||
+        ((selected & WN_DIRECT_CAP_TLS) && (selected & WN_DIRECT_CAP_QUIC)))
         return -1;
     struct wn_writer w = {.data = out, .capacity = cap, .maximum = WN_OPERATOR_HELLO_MAX};
-    wn_map(&w, 1);
+    wn_map(&w, selected ? 2 : 1);
+    if (selected) {
+        wn_key(&w, parked ? "directDeferred" : "direct");
+        wn_uint(&w, selected);
+    }
     wn_key(&w, "k");
     wn_text(&w, "operator-router-ready");
     return wn_finish(&w);
 }
 
+bool wn_direct_capability_valid(uint32_t c)
+{
+    return !c || ((c & 255) == WN_DIRECT_CAP_VERSION &&
+                  !(c & ~(UINT32_C(255) | WN_DIRECT_CAP_TLS | WN_DIRECT_CAP_QUIC)) &&
+                  (c & (WN_DIRECT_CAP_TLS | WN_DIRECT_CAP_QUIC)));
+}
+uint32_t wn_direct_capability_negotiate(uint32_t local, uint32_t remote)
+{
+    if (!local || !wn_direct_capability_valid(local) || !remote || !wn_direct_capability_valid(remote))
+        return 0;
+    uint32_t common = local & remote;
+    if (common & WN_DIRECT_CAP_QUIC)
+        return WN_DIRECT_CAP_VERSION | WN_DIRECT_CAP_QUIC;
+    if (common & WN_DIRECT_CAP_TLS)
+        return WN_DIRECT_CAP_VERSION | WN_DIRECT_CAP_TLS;
+    return 0;
+}
+uint32_t wn_direct_carrier_negotiate(uint32_t local, uint32_t local_deferred, uint32_t remote,
+                                     uint32_t remote_deferred, bool *deferred)
+{
+    *deferred = false;
+    uint32_t selected = wn_direct_capability_negotiate(local, remote);
+    if (selected)
+        return selected;
+    if (!local)
+        local = local_deferred;
+    if (!remote)
+        remote = remote_deferred;
+    selected = wn_direct_capability_negotiate(local, remote);
+    if (!selected)
+        return 0;
+    *deferred = true;
+    return selected;
+}
 int wn_router_hello_write(const char *self, const char *peer, char *out, size_t cap)
 {
+    return wn_router_hello_write_direct(self, peer, out, cap, 0);
+}
+int wn_router_hello_write_direct(const char *self, const char *peer, char *out, size_t cap,
+                                 uint32_t direct)
+{
+    return wn_router_hello_write_deferred(self, peer, out, cap, direct, 0);
+}
+int wn_router_hello_write_deferred(const char *self, const char *peer, char *out, size_t cap,
+                                   uint32_t direct, uint32_t deferred)
+{
     uint8_t uuid[16];
-    if (!out || wn_uuid_parse(self, uuid) || wn_uuid_parse(peer, uuid) || !strcmp(self, peer))
+    if (!out || !wn_direct_capability_valid(direct) || !wn_direct_capability_valid(deferred) ||
+        wn_uuid_parse(self, uuid) || wn_uuid_parse(peer, uuid) || !strcmp(self, peer))
         return -1;
     struct wn_writer w = {.data = (uint8_t *)out, .capacity = cap, .maximum = WN_CONTROL_MAX};
     wn_map(&w, 2);
     wn_key(&w, "kind");
     wn_text(&w, "hello");
     wn_key(&w, "hello");
-    wn_map(&w, 5);
+    wn_map(&w, 5 + (direct != 0) + (deferred != 0));
+    if (deferred) {
+        wn_key(&w, "directDeferred");
+        wn_uint(&w, deferred);
+    }
+    if (direct) {
+        wn_key(&w, "direct");
+        wn_uint(&w, direct);
+    }
     wn_key(&w, "mtu");
     wn_uint(&w, WN_MTU);
     wn_key(&w, "peer");
@@ -62,6 +156,24 @@ static int number(const struct wn_doc *d, unsigned object, const char *name, uin
 }
 int wn_router_hello_check(const void *data, size_t size, const char *self, const char *peer)
 {
+    uint32_t selected;
+    return wn_router_hello_check_direct(data, size, self, peer, 0, &selected);
+}
+int wn_router_hello_check_direct(const void *data, size_t size, const char *self, const char *peer,
+                                 uint32_t local, uint32_t *selected)
+{
+    bool parked;
+    return wn_router_hello_check_deferred(data, size, self, peer, local, 0, selected, &parked);
+}
+int wn_router_hello_check_deferred(const void *data, size_t size, const char *self,
+                                   const char *peer, uint32_t local, uint32_t deferred,
+                                   uint32_t *selected, bool *parked)
+{
+    if (!selected || !parked || !wn_direct_capability_valid(local) ||
+        !wn_direct_capability_valid(deferred))
+        return -1;
+    *selected = 0;
+    *parked = false;
     struct wn_doc d;
     uint8_t uuid[16];
     uint64_t version, mtu, datagram;
@@ -77,7 +189,19 @@ int wn_router_hello_check(const void *data, size_t size, const char *self, const
         !wn_doc_equal(&d, wn_doc_member(&d, h, "peer"), self))
         return -1;
     int role = wn_doc_member(&d, h, "role");
-    return role < 0 || wn_doc_equal(&d, role, "") || wn_doc_equal(&d, role, "router") ? 0 : -1;
+    if (!(role < 0 || wn_doc_equal(&d, role, "") || wn_doc_equal(&d, role, "router")))
+        return -1;
+    int direct = wn_doc_member(&d, h, "direct");
+    uint64_t remote = 0;
+    if (direct >= 0 && (wn_doc_u64(&d, direct, &remote) || remote > UINT32_MAX))
+        return -1;
+    int field = wn_doc_member(&d, h, "directDeferred");
+    uint64_t remote_deferred = 0;
+    if (field >= 0 && (wn_doc_u64(&d, field, &remote_deferred) || remote_deferred > UINT32_MAX))
+        return -1;
+    *selected = wn_direct_carrier_negotiate(local, deferred, (uint32_t)remote,
+                                            (uint32_t)remote_deferred, parked);
+    return 0;
 }
 int wn_gossip_write(const struct wg_message *m, char *out, size_t cap)
 {
@@ -117,7 +241,7 @@ static int binary(const struct wn_doc *d, int token, uint8_t *out, size_t cap, s
     return wn_doc_copy_bytes(d, token, out, cap, size);
 }
 static int gossip_read(const void *data, size_t size, struct wg_message *out,
-                   uint8_t bytes[WG_CHUNK])
+                       uint8_t bytes[WG_CHUNK])
 {
     static const char *ops[] = {"have", "want", "unavailable", "data", "gone"};
     struct wn_doc d;
@@ -198,13 +322,13 @@ int wn_gossip_identify(void *context, uint8_t type, const void *data, size_t siz
     psa_hash_operation_t op = PSA_HASH_OPERATION_INIT;
     size_t written = 0;
     int result = psa_hash_setup(&op, PSA_ALG_SHA_256) == PSA_SUCCESS &&
-                psa_hash_update(&op, domain, sizeof domain) == PSA_SUCCESS &&
-                psa_hash_update(&op, &type, 1) == PSA_SUCCESS &&
-                psa_hash_update(&op, length, sizeof length) == PSA_SUCCESS &&
-                psa_hash_update(&op, data, size) == PSA_SUCCESS &&
+                         psa_hash_update(&op, domain, sizeof domain) == PSA_SUCCESS &&
+                         psa_hash_update(&op, &type, 1) == PSA_SUCCESS &&
+                         psa_hash_update(&op, length, sizeof length) == PSA_SUCCESS &&
+                         psa_hash_update(&op, data, size) == PSA_SUCCESS &&
                          psa_hash_finish(&op, hash, 32, &written) == PSA_SUCCESS && written == 32
-            ? 0
-            : -1;
+                     ? 0
+                     : -1;
     psa_hash_abort(&op);
     return result;
 }
