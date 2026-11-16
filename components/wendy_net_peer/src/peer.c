@@ -1069,8 +1069,7 @@ static ssize_t carrier_read(void *ctx, void *data, size_t size)
      * pass, including while another link is being processed. */
     if (wncrypto_borrowed(s->connection))
         return -2;
-    if (wnrs_receive_paused(s->router))
-        return -2;
+    /* Verification owns its pending control message, not TLS input. */
     return wendy_pki_read(s->connection, data, size);
 }
 static ssize_t carrier_write(void *ctx, const void *data, size_t size)
@@ -1107,6 +1106,10 @@ static int enqueue_ip(struct peer_state *root, struct peer_state *link, const vo
 static int receive_frame(void *ctx, const void *data, size_t size, bool is_control)
 {
     struct peer_state *s = ctx;
+    /* Defer the next control message while its predecessor is verified.
+     * Babel/IP can still make progress under their own routing checks. */
+    if (is_control && wnrs_receive_paused(s->router))
+        return 1;
     if (is_control) {
         return wnrs_control(s->router, data, size);
     }
@@ -2715,8 +2718,7 @@ static void router_run(struct peer_state *root)
                 if (link->tls_state.retry_at > (uint64_t)esp_timer_get_time() &&
                     link->tls_state.retry_at < (uint64_t)deadline)
                     deadline = (int64_t)link->tls_state.retry_at;
-                bool can_read = link->setup_waiting || (link->router && !link->carrier.rx_paused &&
-                                                        !wnrs_receive_paused(link->router));
+                bool can_read = link->setup_waiting || (link->router && !link->carrier.rx_paused);
                 if (can_read && link->tls_state.phase == WNA_READY &&
                    ((link->tls_channel && link->tls_channel->input.size) ||
                      (link->connection && wendy_pki_pending(link->connection)))) {
