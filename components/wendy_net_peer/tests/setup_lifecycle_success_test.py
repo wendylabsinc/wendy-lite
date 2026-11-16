@@ -24,12 +24,15 @@ head = r'''
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-struct wn_candidate { int port; char address[64]; };
+enum { WN_BLE = 2 };
+struct wn_candidate { int port, medium; char address[64], device[37]; };
+struct wn_selection { struct wn_candidate candidates[1]; };
 struct wendy_pki_stream { int unused; };
 struct wendy_pki_net_issuers { void (*release)(void *); };
 struct wendy_pki_operator_peer;
 struct peer_state {
  struct wn_candidate candidate;
+ struct wn_selection *selection;
  char authenticated_peer[37];
  struct wna_channel *tls_channel;
  struct wna_session tls_state;
@@ -43,6 +46,7 @@ struct peer_state {
  struct wendy_pki_operator_peer *operator_peer;
  uint8_t operator_instance[16];
 };
+static struct peer_state *node_root(struct peer_state *s) { return s; }
 /* This setup fixture has no issuer inventory or outstanding snapshot loans. */
 void wendy_net_peer_issuer_snapshot(struct wendy_pki_net_issuers *snapshot) {
  memset(snapshot, 0, sizeof *snapshot);
@@ -81,10 +85,21 @@ static void reset(void) {
 }
 int main(int argc, char **argv) {
  assert(argc == 2);
- struct peer_state link = {0};
+ struct wn_selection selection = {0};
+ struct peer_state link = {.selection = &selection};
  struct wn_candidate candidate = {.port = 43024, .address = "127.0.0.1"};
  reset();
- if (!strcmp(argv[1], "allocation")) {
+ if (!strcmp(argv[1], "peer_pin")) {
+  candidate.medium = WN_BLE;
+  const char *peer = "00000000-0000-4000-8000-000000000005";
+  strcpy(selection.candidates[0].device, peer);
+  begin_setup(&link, &candidate, -1);
+  assert(!strcmp(link.candidate.device, peer));
+  free(link.tls_channel); link.tls_channel = NULL;
+  link.setup_server = true;
+  begin_setup(&link, &candidate, 7);
+  assert(!link.candidate.device[0]);
+ } else if (!strcmp(argv[1], "allocation")) {
   allocation_ok = false;
   begin_setup(&link, &candidate, 7);
   assert(link.tls_state.phase == WNA_FAILED && !link.tls_channel);
@@ -131,7 +146,7 @@ with tempfile.TemporaryDirectory() as tmp:
                     '-fsanitize=address,undefined', '-I' + str(root / 'include'),
                     str(p / 'test.c'), str(root / 'src/actor.c'), '-o', str(p / 'test')], check=True)
     failures = []
-    for case in ('allocation', 'admission', 'deadline', 'cancel', 'loan', 'ready'):
+    for case in ('peer_pin', 'allocation', 'admission', 'deadline', 'cancel', 'loan', 'ready'):
         result = subprocess.run([str(p / 'test'), case])
         print(case + ': ' + ('PASS' if result.returncode == 0 else 'FAIL'), flush=True)
         if result.returncode:

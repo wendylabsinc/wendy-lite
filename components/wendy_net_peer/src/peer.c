@@ -1529,7 +1529,8 @@ static void setup_work(void *context)
         struct wendy_pki_stream bio = {.context = link->tls_channel,
                                        .read = wna_read,
                                        .write = wna_write,
-                                       .wait = wnad_no_wait};
+                                       .wait = wnad_no_wait,
+                                       .ble_carrier = link->candidate.medium == WN_BLE};
         esp_err_t result = wendy_pki_net_begin(
             &bio, link->setup_server, link->candidate.device[0] ? link->candidate.device : NULL,
             false, &link->tls_setup);
@@ -1728,6 +1729,13 @@ static void begin_setup(struct peer_state *link, const struct wn_candidate *cand
     link->operator_peer = NULL;
     memset(link->operator_instance, 0, 16);
     int index = reserve_candidate(link, candidate);
+    /* Reconnect radio hints lack a UUID. Preserve the peer pin learned by the
+     * selection owner so client tickets can be scoped to that exact peer. */
+    if (index >= 0 && !link->setup_server && candidate->medium == WN_BLE &&
+        !link->candidate.device[0]) {
+        const struct wn_candidate *known = &node_root(link)->selection->candidates[index];
+        memcpy(link->candidate.device, known->device, sizeof link->candidate.device);
+    }
 #if !WENDY_NET_NON_TRANSIT && CONFIG_WENDY_NET_BLE
     /* Until TLS replaces authenticated_peer, this inactive setup keeps only
      * the endpoint's previously verified name, not a new identity assertion.
@@ -2849,6 +2857,7 @@ static void finish_shutdown(struct peer_state *root)
     (void)wnm_close(root->mdns);
     root->mdns = NULL;
     wnad_stop();
+    wendy_pki_net_forget_sessions();
     pthread_mutex_lock(&state_lock);
     state = NULL;
     pthread_mutex_unlock(&state_lock);

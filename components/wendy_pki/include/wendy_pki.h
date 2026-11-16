@@ -48,6 +48,8 @@ struct wendy_pki_stream {
     ssize_t (*read)(void *context, void *data, size_t size);
     ssize_t (*write)(void *context, const void *data, size_t size);
     int (*wait)(void *context, bool writing, int64_t deadline_us);
+    /* Only the physical BLE carrier owner sets this; ALPN alone is insufficient. */
+    bool ble_carrier;
 };
 /* Authenticates a same-tenant operator using the enrolled identity. No legacy
  * or anonymous fallback. Closing the connection never closes the transport. */

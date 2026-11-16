@@ -6,7 +6,7 @@
      const char *const *MBEDTLS_PRIVATE(alpn_list); /*!< ordered list of protocols */
 +    /* Opt-in TLS1.3-only opaque protocol names. Parallel lengths permit NUL
 +     * bytes; the caller owns and bounds both arrays for the full connection.
-+     * This mode is used only with session resumption disabled. */
++     * Resumption callers must bind the exact bytes; early data is disabled. */
 +    const size_t *MBEDTLS_PRIVATE(wendy_alpn_lengths);
  #endif
  

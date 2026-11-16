@@ -266,3 +266,6 @@ void wendy_pki_agent_dispose(struct wendy_pki_agent_setup *);
  * an entire immutable origin inventory alongside its retained snapshot. */
 int wendy_pki_mesh_sign_digest(wendy_pki_connection *, const char *, const uint8_t[32], uint8_t[80],
                                size_t *);
+
+/* Clear RAM-only carrier tickets before the mesh memory owner shuts down. */
+void wendy_pki_net_forget_sessions(void);
