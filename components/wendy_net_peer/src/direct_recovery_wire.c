@@ -1,6 +1,5 @@
-#define MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS
 #include "wendy_net_direct_recovery_wire.h"
-#include <mbedtls/private/sha256.h>
+#include <psa/crypto.h>
 #include <string.h>
 static void put(uint8_t *p, uint64_t v, size_t n)
 {
@@ -109,12 +108,12 @@ int wn_direct_recovery_digest(const struct wn_direct_recovery_view *c,
     if (!wn_direct_recovery_view_valid(c) || !wn_direct_recovery_view_valid(p))
         return -1;
     const char domain[] = "wendy/direct/recovery-view/1";
-    mbedtls_sha256_context hash;
-    mbedtls_sha256_init(&hash);
+    psa_hash_operation_t hash = PSA_HASH_OPERATION_INIT;
+    size_t written = 0;
     int result = -1;
     uint8_t header[42], record[WN_DIRECT_RECOVERY_RECORD_BYTES];
-    if (mbedtls_sha256_starts(&hash, 0) ||
-        mbedtls_sha256_update(&hash, (const uint8_t *)domain, sizeof domain))
+    if (psa_hash_setup(&hash, PSA_ALG_SHA_256) ||
+        psa_hash_update(&hash, (const uint8_t *)domain, sizeof domain))
         goto done;
     const struct wn_direct_recovery_view *views[2] = {c, p};
     for (size_t side = 0; side < 2; side++) {
@@ -126,17 +125,17 @@ int wn_direct_recovery_digest(const struct wn_direct_recovery_view *c,
             put(header + 20 * i + 12, s->grant, 8);
         }
         put(header + 40, v->count, 2);
-        if (mbedtls_sha256_update(&hash, header, sizeof header))
+        if (psa_hash_update(&hash, header, sizeof header))
             goto done;
         for (size_t i = 0; i < v->count; i++)
             if (wn_direct_recovery_encode(&v->records[i], record, sizeof record) ||
-                mbedtls_sha256_update(&hash, record, sizeof record))
+                psa_hash_update(&hash, record, sizeof record))
                 goto done;
     }
-    if (!mbedtls_sha256_finish(&hash, out))
+    if (psa_hash_finish(&hash, out, 32, &written) == PSA_SUCCESS && written == 32)
         result = 0;
 done:
-    mbedtls_sha256_free(&hash);
+    psa_hash_abort(&hash);
     if (result)
         memset(out, 0, 32);
     return result;
