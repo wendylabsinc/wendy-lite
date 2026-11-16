@@ -48,9 +48,9 @@ int main(void)
     assert(wn_link_replaces(higher, lower, true, false));
     assert(!wn_link_replaces(lower, higher, true, false));
     assert(!wn_link_replaces(higher, lower, false, true));
-    for (unsigned incoming = 0; incoming < 2; incoming++) {
-        assert(!wn_link_replaces(lower, higher, incoming, incoming));
-        assert(!wn_link_replaces(higher, lower, incoming, incoming));
+    for (unsigned direction = 0; direction < 2; direction++) {
+        assert(!wn_link_replaces(lower, higher, direction, direction));
+        assert(!wn_link_replaces(higher, lower, direction, direction));
     }
     /* Full-router mode clears the single-active selector while retaining
      * several links. Repeated normal BLE reports still retain the learned
