@@ -41,16 +41,42 @@ def idf_path() -> str:
     return path
 
 
+def idf_python() -> str:
+    """Return the Python that the idf.py command of the shell uses.
+
+    idf.py writes its interpreter path (sys.executable) to PYTHON in
+    CMakeCache.txt. A later idf.py run with a different path text stops with
+    "... is currently active in the environment while the project was
+    configured with ...". ESP-IDF compares the text, not the file, so
+    venv/bin/python3 and venv/bin/python do not match.
+
+    The eim activation script defines idf.py as
+    "$IDF_PYTHON_ENV_PATH/bin/python idf.py", and export.sh runs idf.py with
+    "#!/usr/bin/env python" from that venv. Use the same path. Use
+    sys.executable when IDF_PYTHON_ENV_PATH is not set.
+    """
+    env = os.environ.get("IDF_PYTHON_ENV_PATH")
+    if env:
+        if os.name == "nt":
+            python = os.path.join(env, "Scripts", "python.exe")
+        else:
+            python = os.path.join(env, "bin", "python")
+        if os.path.isfile(python):
+            return python
+    return sys.executable
+
+
 def idf_command() -> list[str]:
     """Return the command that runs idf.py: [python, $IDF_PATH/tools/idf.py].
 
-    After ESP-IDF activation, idf.py is often not on PATH, but python is the
-    ESP-IDF Python. Raise ConfError when IDF_PATH is not usable.
+    After ESP-IDF activation, idf.py is often not on PATH. The interpreter is
+    idf_python(), so that a later "idf.py build" accepts the build directory.
+    Raise ConfError when IDF_PATH is not usable.
     """
     idf_py = os.path.join(idf_path(), "tools", "idf.py")
     if not os.path.isfile(idf_py):
         raise ConfError(f"{idf_py} not found, check IDF_PATH")
-    return [sys.executable, idf_py]
+    return [idf_python(), idf_py]
 
 
 def active_idf_version() -> str:
