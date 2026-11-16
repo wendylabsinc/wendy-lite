@@ -1,6 +1,5 @@
-#define MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS
 #include "wendy_net_direct_identity.h"
-#include <mbedtls/private/sha256.h>
+#include <psa/crypto.h>
 #include <string.h>
 static int nonzero(const uint8_t *p, size_t n)
 {
@@ -24,9 +23,10 @@ static int endpoint(const struct wn_direct_authenticated_endpoint *in,
     out->role = in->role;
     memcpy(out->key, in->key, 32);
     memcpy(out->instance, in->instance, 16);
-    return mbedtls_sha256((const uint8_t *)in->principal, in->principal_size, out->principal, 0)
-               ? -1
-               : 0;
+    size_t written = 0;
+    return psa_hash_compute(PSA_ALG_SHA_256, (const uint8_t *)in->principal,
+                            in->principal_size, out->principal, 32, &written) == PSA_SUCCESS &&
+                   written == 32 ? 0 : -1;
 }
 int wn_direct_identity_pair(const struct wn_direct_authenticated_endpoint *local,
                             const struct wn_direct_authenticated_endpoint *peer,
@@ -67,26 +67,28 @@ int wn_direct_identity_digest(const struct wn_direct_endpoint_identity *c,
     if (!valid(c) || !valid(p) ||
         (!memcmp(c->principal, p->principal, 32) && !memcmp(c->instance, p->instance, 16)))
         return -1;
-    mbedtls_sha256_context h;
-    mbedtls_sha256_init(&h);
+    psa_hash_operation_t h = PSA_HASH_OPERATION_INIT;
     static const uint8_t domain[] = "wendy/direct/identities/1";
-    int r = mbedtls_sha256_starts(&h, 0);
+    psa_status_t r = psa_hash_setup(&h, PSA_ALG_SHA_256);
     if (!r)
-        r = mbedtls_sha256_update(&h, domain, sizeof domain);
+        r = psa_hash_update(&h, domain, sizeof domain);
     const struct wn_direct_endpoint_identity *ids[2] = {c, p};
     for (unsigned n = 0; n < 2 && !r; n++) {
         const struct wn_direct_endpoint_identity *i = ids[n];
-        r = mbedtls_sha256_update(&h, &i->role, 1);
+        r = psa_hash_update(&h, &i->role, 1);
         if (!r)
-            r = mbedtls_sha256_update(&h, i->principal, 32);
+            r = psa_hash_update(&h, i->principal, 32);
         if (!r)
-            r = mbedtls_sha256_update(&h, i->instance, 16);
+            r = psa_hash_update(&h, i->instance, 16);
         if (!r)
-            r = mbedtls_sha256_update(&h, i->key, 32);
+            r = psa_hash_update(&h, i->key, 32);
     }
+    size_t written = 0;
     if (!r)
-        r = mbedtls_sha256_finish(&h, out);
-    mbedtls_sha256_free(&h);
+        r = psa_hash_finish(&h, out, 32, &written);
+    psa_hash_abort(&h);
+    if (written != 32)
+        r = PSA_ERROR_GENERIC_ERROR;
     if (r)
         memset(out, 0, 32);
     return r ? -1 : 0;
