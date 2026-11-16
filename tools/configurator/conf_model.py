@@ -37,6 +37,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 import graphlib
+import json
 import operator
 import re
 from typing import Any, Iterator, Union
@@ -655,17 +656,17 @@ def parse_assignments(model: Model, items: list[str]) -> dict[str, Any]:
 
 
 def build_profile(model: Model, inputs: dict[str, Any]) -> str:
-    """Return the input values as flat YAML, one "name: value" per line.
+    """Return the input values as a JSON object on one line.
 
-    The lines follow the declaration order, so the order of the arguments
-    does not change the text. The text is a valid values file. No inputs
-    give "".
+    For example {"board":"m5_stamp_s3","app_type":"native"}. The names follow
+    the declaration order, so the order of the arguments does not change the
+    text. JSON is YAML, so the text is a valid values file. No inputs give "".
+    The Wendy CLI (WendyOS litebuild BuildProfile) writes the same text.
     """
     data = {name: attr.to_yaml(inputs[name]) for name, attr in model.attributes.items() if name in inputs}
     if not data:
         return ""
-    text = yaml.safe_dump(data, sort_keys=False, default_flow_style=False, width=1_000_000)
-    return text.rstrip("\n")
+    return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
 
 
 def kconfig_string_line(option: str, value: str) -> str:
@@ -679,12 +680,11 @@ def kconfig_string_line(option: str, value: str) -> str:
 
 
 def build_profile_line(text: str) -> str:
-    r"""Return the sdkconfig line that gives text to BUILD_PROFILE.
+    """Return the sdkconfig line that gives text to BUILD_PROFILE.
 
-    Kconfig cannot store a newline, so each newline becomes the 2 characters
-    \n (backslash, n). Then kconfig_string_line() escapes the value.
+    The text is one line (build_profile()); kconfig_string_line() escapes it.
     """
-    return kconfig_string_line(BUILD_PROFILE, text.replace("\n", "\\n"))
+    return kconfig_string_line(BUILD_PROFILE, text)
 
 
 # --- Graph and solver ------------------------------------------------------

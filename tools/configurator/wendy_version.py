@@ -6,8 +6,8 @@ configure.py writes it to sdkconfig.defaults.wendy as CONFIG_WENDY_VERSION
 - X.Y.Z when HEAD has the tag vX.Y.Z (the release tag format of
   .github/workflows/build.yml). When HEAD has several of these tags, the
   highest version is used.
-- else the short hash of HEAD (git rev-parse --short HEAD), also when HEAD has
-  another tag, for example v1.0.0-rc1.
+- else the full hash of HEAD (git rev-parse HEAD, 40 hexadecimal digits), also
+  when HEAD has another tag, for example v1.0.0-rc1.
 - "-dirty" is added when tracked files have uncommitted changes, as
   git describe --dirty does. Untracked files are ignored.
 - "" when git is not available or the folder is not a git checkout.
@@ -51,7 +51,7 @@ def wendy_version(repo: str) -> str:
     tags = _git(repo, "tag", "--points-at", "HEAD")
     version = version_from_tags(tags.splitlines()) if tags else None
     if version is None:
-        version = _git(repo, "rev-parse", "--short", "HEAD")
+        version = _git(repo, "rev-parse", "HEAD")
     if not version:
         print(f"warning: no git commit in {repo}, {WENDY_VERSION} is empty", file=sys.stderr)
         return ""

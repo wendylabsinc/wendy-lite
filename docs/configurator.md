@@ -222,18 +222,18 @@ choice `ESPTOOLPY_FLASHSIZE`:
 
 The first line of `sdkconfig.defaults.wendy` is `CONFIG_WENDY_BUILD_PROFILE`.
 It contains the input values (the values file and the `NAME=VALUE` arguments)
-as flat YAML, in the order of the attributes in `master_config.yaml`. The
-values that the rules set are not in it. Kconfig cannot store a newline, so the
-2 characters `\n` (backslash, n) separate the lines. In
-`sdkconfig.defaults.wendy`, Kconfig escapes the backslash:
+as a JSON object on one line, in the order of the attributes in
+`master_config.yaml`. The values that the rules set are not in it. In
+`sdkconfig.defaults.wendy`, Kconfig escapes the quotes:
 
 ```text
-CONFIG_WENDY_BUILD_PROFILE="board: m5_stamp_s3\\napp_type: native"
+CONFIG_WENDY_BUILD_PROFILE="{\"board\":\"m5_stamp_s3\",\"app_type\":\"native\"}"
 ```
 
-The firmware gets the string `board: m5_stamp_s3\napp_type: native`, with the
-2 characters `\n` between the lines. When `\n` is changed into a newline, the
-text is a valid values file.
+The firmware gets the string `{"board":"m5_stamp_s3","app_type":"native"}`.
+JSON is YAML, so the text is a valid values file. The Wendy CLI writes the same
+text. The device reports it, with `CONFIG_WENDY_VERSION` and the ESP-IDF
+version, in the reply to the WendyCom command `get_build_info`.
 
 `configure.py` adds `CONFIG_WENDY_VERSION` after `CONFIG_WENDY_BUILD_PROFILE`.
 It is the version of the wendy-lite source, from git (see
@@ -253,18 +253,22 @@ wendy-lite source. It does not come from `master_config.yaml`: `configure.py`
 gets it from git in the repository root
 ([tools/configurator/wendy_version.py](../tools/configurator/wendy_version.py)).
 
-| Source                                      | `CONFIG_WENDY_VERSION`            |
-| ------------------------------------------- | --------------------------------- |
-| HEAD has the tag `v0.15.0`                  | `0.15.0`                          |
-| HEAD has another tag (`v1.0.0-rc1`) or none | `6e2ae72` (short hash)            |
-| tracked files with uncommitted changes      | `0.15.0-dirty` or `6e2ae72-dirty` |
-| no git, or not a git checkout               | empty, with a warning             |
+| Source                                      | `CONFIG_WENDY_VERSION`                                         |
+| ------------------------------------------- | -------------------------------------------------------------- |
+| HEAD has the tag `v0.15.0`                  | `0.15.0`                                                       |
+| HEAD has another tag (`v1.0.0-rc1`) or none | `1d93ece2f307d9722325a6f2eebe52fdcd475740` (full commit hash) |
+| tracked files with uncommitted changes      | `0.15.0-dirty` or `1d93ece2f307d9722325a6f2eebe52fdcd475740-dirty` |
+| no git, or not a git checkout               | empty, with a warning                                          |
 
 Only tags `vX.Y.Z` give a version, as in the release CI
 (`.github/workflows/build.yml`). If HEAD has more than one, the highest version
 is used. Untracked files do not add `-dirty`, as with `git describe --dirty`.
 `idf.py set-target` can change `dependencies.lock`, which is tracked. Then the
 next `configure.py` run gives `-dirty`.
+
+The device reports `CONFIG_WENDY_VERSION` as `os_version` in the replies to the
+WendyCom commands `get_device_info` and `get_build_info`. Both give the same
+value, also when it is empty.
 
 `solve.py`, the Wendy CLI and the CI board builds do not write
 `CONFIG_WENDY_VERSION`. In these builds it is empty.

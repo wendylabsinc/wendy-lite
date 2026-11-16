@@ -385,6 +385,8 @@ typedef struct _WendyComConsoleEnd {
 
 typedef struct _WendyComDeviceInfo {
     pb_callback_t os; /* typically "wendy-lite" */
+    /* Wendy Lite version, the same value as WendyComBuildInfo.os_version.
+ Empty when not known. */
     pb_callback_t os_version;
     pb_callback_t cpu_architecture;
     /* SoC name, e.g. "esp32c6" or "esp32s3". */
@@ -396,6 +398,26 @@ typedef struct _WendyComDeviceInfo {
  wendy-lite is compiled and flashed manually. */
     pb_callback_t board;
 } WendyComDeviceInfo;
+
+typedef struct _WendyComGetBuildInfoParams {
+    char dummy_field;
+} WendyComGetBuildInfoParams;
+
+/* How the firmware was built. Each field is empty when the build does not
+ know it, typically when wendy-lite was not configured with
+ tools/configure.py. */
+typedef struct _WendyComBuildInfo {
+    /* Version of the wendy-lite source (CONFIG_WENDY_VERSION): "X.Y.Z" when
+ the commit has the tag vX.Y.Z, else the full commit hash, with
+ "-dirty" when tracked files had uncommitted changes. The same value as
+ WendyComDeviceInfo.os_version. */
+    pb_callback_t os_version;
+    /* Configurator input values (CONFIG_WENDY_BUILD_PROFILE) as a JSON object
+ on one line, e.g. {"board":"m5_stamp_s3","app_type":"native"}. */
+    pb_callback_t build_profile;
+    /* "idf-" followed by the ESP-IDF version, e.g. "idf-v6.0.3". */
+    pb_callback_t build_tool;
+} WendyComBuildInfo;
 
 /* Command sent host -> device — the oneof variant identifies the command. */
 typedef struct _WendyComCommand {
@@ -427,6 +449,7 @@ typedef struct _WendyComCommand {
         WendyComNetTopologyParams net_topology;
         WendyComBluetoothPowerGetParams bluetooth_power_get;
         WendyComBluetoothPowerSetParams bluetooth_power_set;
+        WendyComGetBuildInfoParams get_build_info;
     } params;
 } WendyComCommand;
 
@@ -444,6 +467,7 @@ typedef struct _WendyComResponse {
         WendyComNetStatus net_status;
         WendyComNetTopologyPage net_topology;
         WendyComBluetoothPowerStatus bluetooth_power;
+        WendyComBuildInfo build_info;
     } data;
 } WendyComResponse;
 
@@ -602,6 +626,8 @@ extern "C" {
 
 
 
+
+
 #define WendyComResponse_result_ENUMTYPE WendyComResult
 
 
@@ -655,6 +681,8 @@ extern "C" {
 #define WendyComConsoleData_init_default         {_WendyComConsoleIo_MIN, 0, {{NULL}, NULL}}
 #define WendyComConsoleEnd_init_default          {0}
 #define WendyComDeviceInfo_init_default          {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, 0, 0, {{NULL}, NULL}}
+#define WendyComGetBuildInfoParams_init_default  {0}
+#define WendyComBuildInfo_init_default           {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define WendyComCommand_init_default             {0, 0, {WendyComPingParams_init_default}}
 #define WendyComResponse_init_default            {0, _WendyComResult_MIN, 0, {WendyComDeviceIdentity_init_default}}
 #define WendyComEvent_init_default               {0, 0, {WendyComConsoleBegin_init_default}}
@@ -705,6 +733,8 @@ extern "C" {
 #define WendyComConsoleData_init_zero            {_WendyComConsoleIo_MIN, 0, {{NULL}, NULL}}
 #define WendyComConsoleEnd_init_zero             {0}
 #define WendyComDeviceInfo_init_zero             {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, 0, 0, {{NULL}, NULL}}
+#define WendyComGetBuildInfoParams_init_zero     {0}
+#define WendyComBuildInfo_init_zero              {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define WendyComCommand_init_zero                {0, 0, {WendyComPingParams_init_zero}}
 #define WendyComResponse_init_zero               {0, _WendyComResult_MIN, 0, {WendyComDeviceIdentity_init_zero}}
 #define WendyComEvent_init_zero                  {0, 0, {WendyComConsoleBegin_init_zero}}
@@ -846,6 +876,9 @@ extern "C" {
 #define WendyComDeviceInfo_wasm_app_support_tag  5
 #define WendyComDeviceInfo_native_app_support_tag 6
 #define WendyComDeviceInfo_board_tag             7
+#define WendyComBuildInfo_os_version_tag         1
+#define WendyComBuildInfo_build_profile_tag      2
+#define WendyComBuildInfo_build_tool_tag         3
 #define WendyComCommand_request_id_tag           1
 #define WendyComCommand_ping_tag                 2
 #define WendyComCommand_reboot_tag               3
@@ -872,6 +905,7 @@ extern "C" {
 #define WendyComCommand_net_topology_tag         24
 #define WendyComCommand_bluetooth_power_get_tag  25
 #define WendyComCommand_bluetooth_power_set_tag  26
+#define WendyComCommand_get_build_info_tag       27
 #define WendyComResponse_request_id_tag          1
 #define WendyComResponse_result_tag              2
 #define WendyComResponse_device_identity_tag     3
@@ -882,6 +916,7 @@ extern "C" {
 #define WendyComResponse_net_status_tag          8
 #define WendyComResponse_net_topology_tag        9
 #define WendyComResponse_bluetooth_power_tag     10
+#define WendyComResponse_build_info_tag          11
 #define WendyComEvent_event_id_tag               1
 #define WendyComEvent_console_begin_tag          2
 #define WendyComEvent_console_data_tag           3
@@ -1208,6 +1243,18 @@ X(a, CALLBACK, SINGULAR, STRING,   board,             7)
 #define WendyComDeviceInfo_CALLBACK pb_default_field_callback
 #define WendyComDeviceInfo_DEFAULT NULL
 
+#define WendyComGetBuildInfoParams_FIELDLIST(X, a) \
+
+#define WendyComGetBuildInfoParams_CALLBACK NULL
+#define WendyComGetBuildInfoParams_DEFAULT NULL
+
+#define WendyComBuildInfo_FIELDLIST(X, a) \
+X(a, CALLBACK, SINGULAR, STRING,   os_version,        1) \
+X(a, CALLBACK, SINGULAR, STRING,   build_profile,     2) \
+X(a, CALLBACK, SINGULAR, STRING,   build_tool,        3)
+#define WendyComBuildInfo_CALLBACK pb_default_field_callback
+#define WendyComBuildInfo_DEFAULT NULL
+
 #define WendyComCommand_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   request_id,        1) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,ping,params.ping),   2) \
@@ -1234,7 +1281,8 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (params,net_get,params.net_get),  22) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,net_set,params.net_set),  23) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,net_topology,params.net_topology),  24) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,bluetooth_power_get,params.bluetooth_power_get),  25) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (params,bluetooth_power_set,params.bluetooth_power_set),  26)
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,bluetooth_power_set,params.bluetooth_power_set),  26) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,get_build_info,params.get_build_info),  27)
 #define WendyComCommand_CALLBACK NULL
 #define WendyComCommand_DEFAULT NULL
 #define WendyComCommand_params_ping_MSGTYPE WendyComPingParams
@@ -1262,6 +1310,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (params,bluetooth_power_set,params.bluetooth_
 #define WendyComCommand_params_net_topology_MSGTYPE WendyComNetTopologyParams
 #define WendyComCommand_params_bluetooth_power_get_MSGTYPE WendyComBluetoothPowerGetParams
 #define WendyComCommand_params_bluetooth_power_set_MSGTYPE WendyComBluetoothPowerSetParams
+#define WendyComCommand_params_get_build_info_MSGTYPE WendyComGetBuildInfoParams
 
 #define WendyComResponse_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   request_id,        1) \
@@ -1273,7 +1322,8 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (data,enrollment_challenge,data.enrollment_ch
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,sync_time,data.sync_time),   7) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,net_status,data.net_status),   8) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,net_topology,data.net_topology),   9) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (data,bluetooth_power,data.bluetooth_power),  10)
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,bluetooth_power,data.bluetooth_power),  10) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,build_info,data.build_info),  11)
 #define WendyComResponse_CALLBACK NULL
 #define WendyComResponse_DEFAULT NULL
 #define WendyComResponse_data_device_identity_MSGTYPE WendyComDeviceIdentity
@@ -1284,6 +1334,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (data,bluetooth_power,data.bluetooth_power), 
 #define WendyComResponse_data_net_status_MSGTYPE WendyComNetStatus
 #define WendyComResponse_data_net_topology_MSGTYPE WendyComNetTopologyPage
 #define WendyComResponse_data_bluetooth_power_MSGTYPE WendyComBluetoothPowerStatus
+#define WendyComResponse_data_build_info_MSGTYPE WendyComBuildInfo
 
 #define WendyComEvent_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   event_id,          1) \
@@ -1396,6 +1447,8 @@ extern const pb_msgdesc_t WendyComConsoleBegin_msg;
 extern const pb_msgdesc_t WendyComConsoleData_msg;
 extern const pb_msgdesc_t WendyComConsoleEnd_msg;
 extern const pb_msgdesc_t WendyComDeviceInfo_msg;
+extern const pb_msgdesc_t WendyComGetBuildInfoParams_msg;
+extern const pb_msgdesc_t WendyComBuildInfo_msg;
 extern const pb_msgdesc_t WendyComCommand_msg;
 extern const pb_msgdesc_t WendyComResponse_msg;
 extern const pb_msgdesc_t WendyComEvent_msg;
@@ -1448,6 +1501,8 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComConsoleData_fields &WendyComConsoleData_msg
 #define WendyComConsoleEnd_fields &WendyComConsoleEnd_msg
 #define WendyComDeviceInfo_fields &WendyComDeviceInfo_msg
+#define WendyComGetBuildInfoParams_fields &WendyComGetBuildInfoParams_msg
+#define WendyComBuildInfo_fields &WendyComBuildInfo_msg
 #define WendyComCommand_fields &WendyComCommand_msg
 #define WendyComResponse_fields &WendyComResponse_msg
 #define WendyComEvent_fields &WendyComEvent_msg
@@ -1469,6 +1524,7 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 /* WendyComSyncTimeParams_size depends on runtime parameters */
 /* WendyComConsoleData_size depends on runtime parameters */
 /* WendyComDeviceInfo_size depends on runtime parameters */
+/* WendyComBuildInfo_size depends on runtime parameters */
 /* WendyComCommand_size depends on runtime parameters */
 /* WendyComResponse_size depends on runtime parameters */
 /* WendyComEvent_size depends on runtime parameters */
@@ -1498,6 +1554,7 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComEnrollmentChallengeParams_size   2
 #define WendyComEnrollmentChallenge_size         188
 #define WendyComEnrollmentResetParams_size       80
+#define WendyComGetBuildInfoParams_size          0
 #define WendyComGetDeviceIdentityParams_size     0
 #define WendyComGetDeviceInfoParams_size         0
 #define WendyComHandshake_size                   20

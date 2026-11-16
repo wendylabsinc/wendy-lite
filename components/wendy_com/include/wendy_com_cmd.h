@@ -22,6 +22,7 @@ WendyComResult wcom_cmd_app_start(int client_id);
 WendyComResult wcom_cmd_app_stop(int client_id);
 WendyComResult wcom_cmd_get_device_identity(WendyComDeviceIdentity *out);
 WendyComResult wcom_cmd_get_device_info(WendyComDeviceInfo *out);
+WendyComResult wcom_cmd_get_build_info(WendyComBuildInfo *out);
 WendyComResult wcom_cmd_console_attach(int client_id, uint32_t event_id, uint32_t duration_ms, bool blocking);
 WendyComResult wcom_cmd_console_detach(int client_id, uint32_t event_id);
 void wcom_cmd_console_stdin_data(int client_id, const uint8_t *data, size_t size);

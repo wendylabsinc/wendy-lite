@@ -9,8 +9,8 @@ example:
 
 It solves the master configuration (master_config.yaml) and writes
 sdkconfig.defaults.wendy with the same code as solve.py. The file also
-contains CONFIG_WENDY_BUILD_PROFILE, the input values as flat YAML (see
-solve.py), and CONFIG_WENDY_VERSION, the version of the source from git (see
+contains CONFIG_WENDY_BUILD_PROFILE, the input values as single-line JSON
+(see solve.py), and CONFIG_WENDY_VERSION, the version of the source from git (see
 tools/configurator/wendy_version.py). solve.py does not write
 CONFIG_WENDY_VERSION. Then configure.py runs, in the repository root:
 

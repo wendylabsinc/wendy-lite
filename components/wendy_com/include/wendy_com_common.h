@@ -46,13 +46,16 @@ struct wcom_app_delegate {
     void (*on_get_device_info)(const char **os, const char **os_version,
                                const char **cpu_architecture, const char **target,
                                bool *wasm_app_support, bool *native_app_support);
+    void (*on_get_build_info)(const char **os_version, const char **build_profile,
+                              const char **build_tool);
 };
 
 // A single sensor/camera/microphone channel, as reported to the delegate.
 // Mirrors wendy.lite.sensorlink.SensorDescriptor without exposing pb_callback_t
 // or the oneof union machinery: strings are plain `const char *`, kept alive
 // by the caller for at least the duration of the wcom_cmd_sensor_link_get_manifest()
-// call (same lifetime contract as on_get_device_identity/on_get_device_info).
+// call (same lifetime contract as on_get_device_identity/on_get_device_info/
+// on_get_build_info).
 enum wcom_sensor_format_kind {
     WCOM_SENSOR_FORMAT_NONE = 0,
     WCOM_SENSOR_FORMAT_VIDEO,

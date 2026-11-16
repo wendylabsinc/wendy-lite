@@ -123,6 +123,12 @@ PB_BIND(WendyComConsoleEnd, WendyComConsoleEnd, AUTO)
 PB_BIND(WendyComDeviceInfo, WendyComDeviceInfo, AUTO)
 
 
+PB_BIND(WendyComGetBuildInfoParams, WendyComGetBuildInfoParams, AUTO)
+
+
+PB_BIND(WendyComBuildInfo, WendyComBuildInfo, AUTO)
+
+
 PB_BIND(WendyComCommand, WendyComCommand, AUTO)
 
 

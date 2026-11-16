@@ -68,21 +68,22 @@ menu "Wendy Core"
         default ""
         help
             The attribute values that tools/configure.py was given
-            (values file and NAME=VALUE arguments), as flat YAML, for example
-            "board: m5_stamp_s3\napp_type: native". The 2 characters \n
-            (backslash, n) separate the lines, because Kconfig cannot store
-            a newline. configure.py writes this option to
-            sdkconfig.defaults.wendy. Empty when the build was not configured
-            with configure.py.
+            (values file and NAME=VALUE arguments), as a JSON object on one
+            line, for example {"board":"m5_stamp_s3","app_type":"native"}.
+            configure.py writes this option to sdkconfig.defaults.wendy.
+            The WendyCom command get_build_info reports it. Empty when the
+            build was not configured with configure.py.
 
     config WENDY_VERSION
         string "Wendy version (from git)"
         default ""
         help
             The version of the wendy-lite source: X.Y.Z when the commit has
-            the tag vX.Y.Z, else the short commit hash, for example "6e2ae72".
-            "-dirty" is added when tracked files have uncommitted changes.
-            tools/configure.py gets it from git and writes this option to
-            sdkconfig.defaults.wendy. Empty when the build was not configured
-            with configure.py.
+            the tag vX.Y.Z, else the full commit hash, for example
+            "1d93ece2f307d9722325a6f2eebe52fdcd475740". "-dirty" is added
+            when tracked files have uncommitted changes. tools/configure.py
+            gets it from git and writes this option to
+            sdkconfig.defaults.wendy. The WendyCom commands get_device_info
+            and get_build_info report it. Empty when the build was not
+            configured with configure.py.
 endmenu

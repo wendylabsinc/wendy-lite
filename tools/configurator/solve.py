@@ -9,9 +9,8 @@ graph and the solved values. Then write the sdkconfig lines to
 sdkconfig.defaults.wendy at the repository root.
 
 The first line of sdkconfig.defaults.wendy is CONFIG_WENDY_BUILD_PROFILE: the
-input values (values file and NAME=VALUE arguments, after the merge) as flat
-YAML. Kconfig cannot store a newline, so the 2 characters \\n separate the
-lines. The rule lines come after it. tools/configure.py adds
+input values (values file and NAME=VALUE arguments, after the merge) as a
+JSON object on one line. The rule lines come after it. tools/configure.py adds
 CONFIG_WENDY_VERSION between the two (extra_lines of solve()); solve.py does
 not write it.
 
