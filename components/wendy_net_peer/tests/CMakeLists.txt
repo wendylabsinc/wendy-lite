@@ -334,3 +334,16 @@ add_executable(direct_flows_test direct_flows_test.c)
 target_link_libraries(direct_flows_test PRIVATE direct_flows)
 target_compile_options(direct_flows_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 add_test(NAME direct_flow_recovery_promotion COMMAND direct_flows_test)
+
+add_library(direct_session STATIC ../src/direct_exchange.c ../src/direct_session.c)
+target_link_libraries(direct_session PUBLIC direct_flows)
+target_compile_options(direct_session PRIVATE -Wall -Wextra -Werror)
+add_executable(direct_session_test direct_session_test.c)
+target_link_libraries(direct_session_test PRIVATE direct_session)
+target_compile_options(direct_session_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME direct_session_recovery COMMAND direct_session_test)
+
+# Paired with WendyOS TestAttachmentExchangeLiteInterop through framed stdio.
+add_executable(direct_exchange_peer direct_exchange_peer.c)
+target_link_libraries(direct_exchange_peer PRIVATE direct_session)
+target_compile_options(direct_exchange_peer PRIVATE -Wall -Wextra -Werror -UNDEBUG)
