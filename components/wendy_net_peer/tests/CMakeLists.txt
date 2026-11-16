@@ -297,3 +297,27 @@ set_tests_properties(driver_carrier_policy PROPERTIES TIMEOUT 30)
 
 session_test(atomic_route_handoff atomic_route_handoff_success_test.c "${session_key}")
 session_budget_test(atomic_route_handoff_pressure atomic_route_handoff_success_test.c "${session_key}")
+
+add_library(direct_wire STATIC
+    ../src/direct_buffer.c
+    ../src/direct_ack.c
+    ../src/direct_wire.c
+    ../src/direct_open.c
+    ../src/direct_identity.c
+    ../src/direct_binding.c
+    ../src/direct_generation.c
+    ../src/direct_reconcile.c
+    ../src/direct_recovery_wire.c
+    ../src/direct_recovery_plan.c
+    ../src/direct_control.c
+    ../src/direct_transaction.c)
+target_include_directories(direct_wire PUBLIC ../include)
+target_link_libraries(direct_wire PUBLIC tfpsacrypto)
+target_compile_options(direct_wire PRIVATE -Wall -Wextra -Werror -Wno-misleading-indentation)
+
+foreach(kind wire buffer)
+    add_executable(direct_${kind}_test direct_${kind}_test.c)
+    target_link_libraries(direct_${kind}_test PRIVATE direct_wire)
+    target_compile_options(direct_${kind}_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+    add_test(NAME direct_${kind}_ownership COMMAND direct_${kind}_test)
+endforeach()
