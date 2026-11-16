@@ -142,6 +142,7 @@ static bool s_wendynet_event_queued;
 static bool s_wendynet_post_pending;
 static int s_wendynet_next_handle = 1;
 static wendy_net_mesh_begin_fn s_wendynet_mesh_begin;
+static void (*s_wendynet_mesh_wake)(void);
 static wendy_net_mesh_resolve_fn s_wendynet_mesh_resolve;
 static wendy_net_service_fn s_service_catalog;
 /* Incarnation only: no guest intent, task, or heap allocation survives OFF. */
@@ -161,6 +162,8 @@ static int s_wakeup_fd = -1;
 /* Write a one-shot wake signal to the task's select(). */
 static void wendynet_wake_locked(void)
 {
+    if (s_wendynet_mesh_wake)
+        s_wendynet_mesh_wake();
     if (s_wakeup_fd < 0) {
         return;
     }
@@ -1238,6 +1241,14 @@ static int wendynet_connect_common(const char *host, int host_len, int port,
     return handle;
 }
 
+void wendy_net_set_mesh_waker(void (*wake)(void))
+{
+    wendynet_lock();
+    s_wendynet_mesh_wake = wake;
+    if (wake)
+        wake(); /* Observe any queue changes preceding installation. */
+    wendynet_unlock();
+}
 void wendy_net_set_mesh_connector(wendy_net_mesh_begin_fn begin)
 {
     wendynet_lock();
@@ -1435,9 +1446,9 @@ int wendy_net_guest_datagram_deliver(int owner, int *association, uint8_t **pack
     return wendy_net_guest_datagram_deliver_owned(owner, association, packet, size, maximum, NULL);
 }
 
-int wendy_net_guest_datagram_deliver_owned(int owner, int *association, uint8_t **packet,
-                                           size_t size, unsigned maximum,
-                                           wendy_net_packet_release_fn release)
+static int guest_datagram_deliver(int owner, int *association, uint8_t **packet,
+                                  size_t size, unsigned maximum,
+                                  wendy_net_packet_release_fn release, bool retained)
 {
     if (!association || !packet || !*packet || !maximum || maximum > WENDYNET_DATAGRAM_MAX ||
         size > maximum)
@@ -1450,6 +1461,11 @@ int wendy_net_guest_datagram_deliver_owned(int owner, int *association, uint8_t 
     }
     wendynet_socket_t *sock = wendynet_find_socket_locked(*association);
     if (sock && (!sock->native_datagram || sock->listener_handle != owner)) {
+        wendynet_unlock();
+        return -1;
+    }
+    if (retained && *association > 0 &&
+        (!sock || sock->closing || sock->closed || sock->error)) {
         wendynet_unlock();
         return -1;
     }
@@ -1491,6 +1507,19 @@ int wendy_net_guest_datagram_deliver_owned(int owner, int *association, uint8_t 
     wendynet_notify_locked(WENDYNET_EVENT_READ_READY);
     wendynet_unlock();
     return 1;
+}
+
+int wendy_net_guest_datagram_deliver_owned(int owner, int *association, uint8_t **packet,
+                                           size_t size, unsigned maximum,
+                                           wendy_net_packet_release_fn release)
+{
+    return guest_datagram_deliver(owner, association, packet, size, maximum, release, false);
+}
+int wendy_net_guest_datagram_deliver_retained(int owner, int *association, uint8_t **packet,
+                                              size_t size, unsigned maximum,
+                                              wendy_net_packet_release_fn release)
+{
+    return guest_datagram_deliver(owner, association, packet, size, maximum, release, true);
 }
 
 int wendy_net_guest_datagram_take(int association, uint8_t **packet, size_t *size)
@@ -1799,9 +1828,9 @@ static int wendynet_socket_recv_wrapper(wasm_exec_env_t exec_env, int socket_han
          * buffer was smaller. Truncates the message (POSIX MSG_TRUNC). */
         wendynet_release_rx_locked(sock);
         /* A standalone UDP socket is only selected for read while its slot is
-         * empty, so wake the task to re-arm its fd. A UDP_PEER has no own fd
-         * (the listener fd is always selected), so no wake is needed. */
-        need_wake = (sock->sock_type == WENDYNET_SOCK_UDP);
+         * empty, so wake the task to re-arm its fd. Native UDP_PEER queues
+         * also wake their mesh owner to release RX backpressure. */
+        need_wake = sock->native_datagram || (sock->sock_type == WENDYNET_SOCK_UDP);
     } else {
         /* TCP: if the rx slot was full the task dropped the fd from readfds;
          * wake it to resume reading now that there's space. */
