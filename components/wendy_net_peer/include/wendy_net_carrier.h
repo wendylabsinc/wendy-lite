@@ -22,6 +22,10 @@ enum {
     WNC_NOMEM = -6
 };
 struct wnc_frame;
+#define WNC_DIRECT_KIND 6
+#define WNC_DIRECT_MAX 533
+/* Complete record: zero consumed, positive retain/retry, negative error. */
+typedef int (*wnc_direct_receive)(void *,const void *,size_t);
 struct wnc_io {
     void *context;
     /* Positive progress,0 EOF,-2 WANT_READ,-3 WANT_WRITE,other error. */
@@ -30,11 +34,13 @@ struct wnc_io {
 };
 struct wnc_carrier {
     struct wnc_io io;
+    wnc_direct_receive direct_receive;
+    void *direct_context;
     struct wnc_frame *head, *tail;
     struct wnc_frame *class_head[WNC_CLASSES], *class_tail[WNC_CLASSES];
     size_t class_bytes[WNC_CLASSES];
     unsigned class_frames[WNC_CLASSES], routing_limit;
-    bool fair, last_routing, last_metadata, operator_router;
+    bool fair, last_routing, last_metadata, operator_router, direct_retired;
     uint8_t *small, *body;
     size_t small_size, limit, control_limit, priority_reserve, queued, body_size, body_have;
     uint8_t header[5];
@@ -84,3 +90,16 @@ typedef int (*wnc_receive)(void *, const void *, size_t, bool control);
  * Partial frames default to5s without progress or30s total. Owners may raise
  * the two timeout fields for a constrained carrier; routing timers are separate. */
 int wnc_pump(struct wnc_carrier *, int64_t monotonic_us, wnc_receive, void *);
+
+/* Enable before I/O, only after mutual direct/1 negotiation and installation of
+ * the session actor. Default carriers retain legacy unknown-kind behaviour. */
+int wnc_enable_direct(struct wnc_carrier *,wnc_direct_receive,void *);
+/* Copies to the ordered writer without I/O. WNC_LIMIT is backpressure, never
+ * success/drop. The actor must keep draining ingress while the queue is full. */
+int wnc_enqueue_direct(struct wnc_carrier *,const void *,size_t);
+
+/* Actor-only, with no TLS worker borrowing the carrier: permanently retire the
+ * negotiated direct lane on this incarnation, discarding late ingress records.
+ * Already copied writes (including a pinned TLS retry) drain unchanged; normal
+ * routing/IP continues. No direct callback/context remains borrowed afterward. */
+int wnc_retire_direct(struct wnc_carrier *);

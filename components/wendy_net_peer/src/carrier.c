@@ -115,13 +115,14 @@ void wnc_deinit(struct wnc_carrier *c)
     memset(c, 0, sizeof *c);
 }
 static int enqueue(struct wnc_carrier *c, const void *data, size_t size, bool control,
-                   bool priority)
+                   bool priority, bool direct)
 {
     if (!c || !c->io.write || !data || !size ||
-        size > (control ? c->control_limit : WN_DATAGRAM_MAX))
+        size > (direct ? WNC_DIRECT_MAX : control ? c->control_limit : WN_DATAGRAM_MAX) ||
+        (direct && (!c->direct_receive || c->direct_retired)))
         return WNC_INVALID;
     size_t prefix = control ? 9 : 5, allocation = sizeof(struct wnc_frame) + prefix + size;
-    unsigned category = control ? WNC_METADATA : priority ? WNC_ROUTE : WNC_IP;
+    unsigned category = (control || direct) ? WNC_METADATA : priority ? WNC_ROUTE : WNC_IP;
     size_t bound = c->limit;
     if (c->fair) {
         if (category == WNC_ROUTE && c->class_frames[WNC_ROUTE] >= c->routing_limit)
@@ -146,7 +147,7 @@ static int enqueue(struct wnc_carrier *c, const void *data, size_t size, bool co
     f->size = prefix + size;
     f->priority = priority;
     f->category = (uint8_t)category;
-    f->data[0] = c->operator_router ? (control ? 5 : 4) : (control ? 1 : 2);
+    f->data[0] = direct ? WNC_DIRECT_KIND : c->operator_router ? (control ? 5 : 4) : (control ? 1 : 2);
     wn_put32(f->data + 1, (uint32_t)(size + (control ? 4 : 0)));
     if (control)
         wn_put32(f->data + 5, (uint32_t)size);
@@ -188,11 +189,11 @@ static int enqueue(struct wnc_carrier *c, const void *data, size_t size, bool co
 }
 int wnc_enqueue(struct wnc_carrier *c, const void *data, size_t size, bool control)
 {
-    return enqueue(c, data, size, control, false);
+    return enqueue(c, data, size, control, false, false);
 }
 int wnc_enqueue_priority(struct wnc_carrier *c, const void *data, size_t size, bool control)
 {
-    return enqueue(c, data, size, control, true);
+    return enqueue(c, data, size, control, true, false);
 }
 int wnc_enqueue_packet(struct wnc_carrier *c, const void *packet, size_t size, uint32_t id)
 {
@@ -305,7 +306,9 @@ static int deliver_frame(struct wnc_carrier *c, wnc_receive receive, void *ctx)
     bool control = c->header[0] == (c->operator_router ? 5 : 1);
     if (control && wn_get32(c->body) != c->body_size - 4)
         return WNC_INVALID;
-    int r = receive(ctx, c->body + (control ? 4 : 0), c->body_size - (control ? 4 : 0), control);
+    int r = c->header[0] == WNC_DIRECT_KIND && c->direct_receive ?
+        c->direct_receive(c->direct_context, c->body, c->body_size) :
+        receive(ctx, c->body + (control ? 4 : 0), c->body_size - (control ? 4 : 0), control);
     if (r > 0) {
         c->rx_paused = true;
         return 0;
@@ -347,7 +350,9 @@ static int pump_read(struct wnc_carrier *c, int64_t now, wnc_receive receive, vo
             if ((c->header[0] == control && (size < 5 || size > c->control_limit + 4)) ||
                 (c->header[0] == packet && (!size || size > WN_DATAGRAM_MAX)))
                 return WNC_INVALID;
-            c->rx_discard = c->header[0] != control && c->header[0] != packet;
+            bool direct = c->header[0] == WNC_DIRECT_KIND && c->direct_receive;
+            if (direct && (!size || size > WNC_DIRECT_MAX)) return WNC_INVALID;
+            c->rx_discard = c->header[0] != control && c->header[0] != packet && !direct;
             /* A future frame has its own body schema. Consume its bounded
              * envelope without allocating or passing it to today's decoder. */
             if (c->rx_discard && size > c->control_limit + 4)
@@ -382,4 +387,21 @@ int wnc_pump(struct wnc_carrier *c, int64_t now, wnc_receive receive, void *ctx)
         return written;
     int read = pump_read(c, now, receive, ctx);
     return read < 0 ? read : (read || written);
+}
+
+int wnc_enable_direct(struct wnc_carrier *c,wnc_direct_receive receive,void *context)
+{
+ if(!c||!receive||!c->io.write||c->head||c->header_have||c->body||c->direct_receive)return WNC_INVALID;
+ c->direct_receive=receive;c->direct_context=context;return 0;
+}
+int wnc_enqueue_direct(struct wnc_carrier *c,const void *data,size_t size)
+{return enqueue(c,data,size,false,true,true);}
+
+static int retired_direct(void *context,const void *bytes,size_t size){
+ (void)context;(void)bytes;(void)size;return 0;
+}
+int wnc_retire_direct(struct wnc_carrier *c){
+ if(!c||!c->io.write||!c->direct_receive)return WNC_INVALID;
+ c->direct_retired=true;c->direct_receive=retired_direct;c->direct_context=NULL;
+ return 0;
 }
