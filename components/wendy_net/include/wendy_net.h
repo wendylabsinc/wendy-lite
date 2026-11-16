@@ -45,6 +45,11 @@ typedef void (*wendy_net_packet_release_fn)(void *);
 int wendy_net_guest_datagram_deliver_owned(int owner, int *association, uint8_t **packet,
                                            size_t size, unsigned maximum,
                                            wendy_net_packet_release_fn release);
+/* Retained direct association variant: once association is nonzero, closing
+ * it is terminal. It never creates a replacement socket for the same OPEN. */
+int wendy_net_guest_datagram_deliver_retained(int owner, int *association, uint8_t **packet,
+                                              size_t size, unsigned maximum,
+                                              wendy_net_packet_release_fn release);
 /* Take a queued guest reply without copying it. Caller owns/frees the packet;
  * completion releases write backpressure only after the TLS frame is sent.
  * Handles are checked again on completion, including after guest reset. */
@@ -68,6 +73,10 @@ void wendy_net_mesh_discard_pending_datagrams(void);
  * complete consumes fd (or -1 on failure), including after guest reset. */
 typedef int (*wendy_net_mesh_begin_fn)(int handle, const char *host, uint16_t port, bool datagram);
 void wendy_net_set_mesh_connector(wendy_net_mesh_begin_fn begin);
+/* Nonblocking eventfd-style wake for the native mesh owner. Invoked under the
+ * guest networking lock: must not reenter networking or wait. Install/remove
+ * with the mesh application lifecycle; removal fences all earlier callbacks. */
+void wendy_net_set_mesh_waker(void (*wake)(void));
 /* Same recognized-name convention as begin; fills IPv6 bytes on success. */
 typedef int (*wendy_net_mesh_resolve_fn)(const char *, uint8_t address[16]);
 void wendy_net_set_mesh_resolver(wendy_net_mesh_resolve_fn);
