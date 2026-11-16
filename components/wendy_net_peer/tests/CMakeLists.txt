@@ -368,3 +368,21 @@ add_executable(direct_records_test direct_records_test.c)
 target_link_libraries(direct_records_test PRIVATE direct_registry)
 target_compile_options(direct_records_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 add_test(NAME direct_upper_record_session COMMAND direct_records_test)
+
+add_executable(direct_native_test direct_native_test.c ../src/direct_native.c ../src/agent_pipe.c ../src/direct_buffer.c
+ ../../wendy_net_common/src/memory.c ../../wendy_net_common/src/runtime_memory.c)
+target_compile_definitions(direct_native_test PRIVATE WENDY_NET_MEMORY_HOST_BUDGET_TEST=1)
+target_include_directories(direct_native_test PRIVATE ../include ../../wendy_net_common/include ../../wendy_com/include ../../nanopb)
+target_compile_options(direct_native_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME direct_native_bridge COMMAND direct_native_test)
+
+add_executable(direct_pki_test direct_pki_test.c ../src/direct_pki.c)
+target_include_directories(direct_pki_test PRIVATE ../include)
+target_link_libraries(direct_pki_test PRIVATE pki)
+target_compile_options(direct_pki_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME direct_pki_owner_lifetime COMMAND direct_pki_test)
+
+
+add_library(direct_auth STATIC ../src/direct_auth.c)
+target_link_libraries(direct_auth PUBLIC direct_registry peer_format)
+target_compile_options(direct_auth PRIVATE -Wall -Wextra -Werror)
