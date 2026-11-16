@@ -88,6 +88,8 @@ struct wendy_pki_connection
     uint8_t *mesh_roots;
     size_t mesh_roots_size;
     bool compact_records, allow_operator_router;
+    bool write_shutdown, write_shutdown_done;
+    uint8_t mesh_local_key_hash[32], mesh_peer_key_hash[32];
     /* Temporary native-DER setup guard. Cleanup owns it until ssl_setup. */
     unsigned char *setup_input_reservation;
     size_t setup_input_capacity;

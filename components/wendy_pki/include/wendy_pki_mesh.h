@@ -266,3 +266,27 @@ void wendy_pki_agent_dispose(struct wendy_pki_agent_setup *);
  * an entire immutable origin inventory alongside its retained snapshot. */
 int wendy_pki_mesh_sign_digest(wendy_pki_connection *, const char *, const uint8_t[32], uint8_t[80],
                                size_t *);
+
+/* Bind a retained-flow attachment transcript to this newly authenticated TLS
+ * connection. Context is a SHA-256 digest of the canonical attachment inputs.
+ * TLS tickets are deliberately not an attachment capability. Returns 0/-1;
+ * caller owns/serializes access to the live connection. Never log the result. */
+/* Worker-owned read of authenticated local/peer SPKI hashes. Valid for device
+ * carriers, operator-router and promoted app TLS, including resumed carriers.
+ * No certificate object retention or key re-export is needed. Rejects expired,
+ * unauthenticated and reset connections; clears outputs on error. */
+int wendy_pki_mesh_key_bindings(wendy_pki_connection *, uint8_t local[32], uint8_t peer[32]);
+/* Exact authenticated monotonic bound for a new retained logical session.
+ * Copy it before carrier disposal; reconnects may shorten but never extend it.
+ * Same serialization/authentication requirements as key_bindings; zero on error. */
+int wendy_pki_mesh_binding_deadline(wendy_pki_connection *, int64_t *deadline_us);
+int wendy_pki_mesh_channel_binding(wendy_pki_connection *, const uint8_t context[32],
+                                   uint8_t out[32]);
+
+/* Per-flow promotion exporter, restricted to authenticated app-mesh TLS/1.
+ * Rejects BLE/operator-router carrier TLS, even if resumed. Uses the distinct
+ * EXPORTER-wendy-direct-promoted-flow/1 label. Same lifetime/serialization and
+ * output-clearing contract as mesh_channel_binding. Does not authorize a flow:
+ * caller must also verify retained capability, transcript and endpoint policy. */
+int wendy_pki_promoted_flow_binding(wendy_pki_connection *, const uint8_t context[32],
+                                    uint8_t out[32]);
