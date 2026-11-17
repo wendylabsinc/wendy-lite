@@ -6,7 +6,6 @@
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "esp_random.h"
-#include "esp_mac.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -2198,10 +2197,11 @@ static void discover_async(struct peer_state *root, bool lan, const char *tenant
             ad->operator_router = memory.accepting && memory.external_enabled;
 #endif
 #if CONFIG_WENDY_NET_BLE
-            uint8_t address[6];
-            if (root->config.ble && esp_read_mac(address, ESP_MAC_BT) == ESP_OK) {
-                snprintf(ad->radio, sizeof ad->radio, "ble:0:%02x:%02x:%02x:%02x:%02x:%02x",
-                         address[0], address[1], address[2], address[3], address[4], address[5]);
+            uint8_t address[6], address_type;
+            if (root->config.ble && wble_mesh_local_address(address, &address_type)) {
+                snprintf(ad->radio, sizeof ad->radio, "ble:%u:%02x:%02x:%02x:%02x:%02x:%02x",
+                         address_type, address[5], address[4], address[3], address[2],
+                         address[1], address[0]);
                 snprintf(ad->psm, sizeof ad->psm, "%u", CONFIG_WENDY_NET_BLE_PSM);
             }
 #endif

@@ -46,6 +46,20 @@ For C6, use `boards/esp32c6_net.cfg`, target `esp32c6`, and a separate build
 and sdkconfig path. The argument files select the mesh, WASM and 8 MiB partition
 defaults together. Flash and PSRAM settings must match the physical module.
 
+ESP32-P4 board profiles also compile both carriers, using the onboard
+ESP32-C6 through ESP-Hosted. Their 32 MiB PSRAM enables the multi-carrier router
+with a 2 MiB mesh allocation ceiling, up to eight total links and three BLE
+links. The FireBeetle native OTA profile can be built with:
+
+```sh
+idf.py -B build/p4-net -D SDKCONFIG=build/p4-net/sdkconfig \
+  @boards/dfr1172_firebeetle_native.cfg set-target esp32p4
+idf.py -B build/p4-net build
+```
+
+This profile supports native apps; it does not enable WASM. Use the same
+enrollment and runtime carrier commands below as for a PSRAM-equipped C5.
+
 ## Enable and configure
 
 [Enroll the device over USB](cloud-enrollment.md) and, for a Wi-Fi carrier,
