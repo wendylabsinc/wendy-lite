@@ -231,8 +231,11 @@ static uint8_t test_identity_address[6], test_identity_type;
 static int test_identity_error;
 static inline int ble_hs_id_infer_auto(int privacy, uint8_t *type) { *type = test_identity_type; return 0; }
 static inline int ble_hs_id_copy_addr(uint8_t type, uint8_t *address, int *nrpa) {
+    assert(type == test_identity_type);
+    if (test_identity_error)
+        return test_identity_error;
     memcpy(address, test_identity_address, 6);
-    return test_identity_error;
+    return 0;
 }
 static inline int ble_hs_synced(void) { return 1; }
 extern bool test_nimble_initialized;

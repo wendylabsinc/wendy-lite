@@ -9,6 +9,8 @@ static bool busy, worker, advertised, delete_busy;
 static unsigned adds, removes, queries, frees, deletes, polls;
 static mdns_search_once_t *active;
 static char published[106];
+static char published_radio[40], published_psm[6];
+static size_t published_txt_count;
 bool wendy_pki_io_work_submit(void (*callback)(void *), void *context)
 {
     if (busy || queued)
@@ -31,10 +33,22 @@ int mdns_service_add(const char *instance, const char *service, const char *prot
                      mdns_txt_item_t *txt, size_t count)
 {
     assert(worker && instance && !strcmp(service, "_wendy-net") && !strcmp(protocol, "_tcp") &&
-           port == 43024 && count == 7);
+           port == 43024 && (count == 7 || count == 9));
     assert(!advertised);
     advertised = true;
     strcpy(published, txt[2].value);
+    published_txt_count = count;
+    published_radio[0] = published_psm[0] = '\0';
+    for (size_t i = 0; i < count; i++) {
+        if (!strcmp(txt[i].key, "ble")) {
+            assert(strlen(txt[i].value) < sizeof published_radio);
+            strcpy(published_radio, txt[i].value);
+        }
+        if (!strcmp(txt[i].key, "ble_psm")) {
+            assert(strlen(txt[i].value) < sizeof published_psm);
+            strcpy(published_psm, txt[i].value);
+        }
+    }
     adds++;
     return ESP_OK;
 }
@@ -97,6 +111,33 @@ static void step(struct wnm_owner *owner, const struct wnm_intent *intent, int64
         wnm_collect(owner);
     }
 }
+
+static void test_ble_txt_records(void)
+{
+    struct wnm_owner *o = wnm_open(NULL);
+    assert(o);
+    struct wnm_intent want = {.advertisement = {.enabled = true,
+                                               .ble_address = {0x01, 0x23, 0x45, 0x67, 0x89, 0xab},
+                                               .ble_psm = 129}};
+    step(o, &want, 0);
+    assert(!strcmp(published_radio, "ble:0:ab:89:67:45:23:01"));
+    assert(!strcmp(published_psm, "129"));
+
+    want.advertisement.ble_address_type = 1;
+    want.advertisement.ble_address[5] = 0xcd;
+    want.advertisement.ble_psm = 255;
+    step(o, &want, 100000);
+    assert(!strcmp(published_radio, "ble:1:cd:89:67:45:23:01"));
+    assert(!strcmp(published_psm, "255"));
+
+    want.advertisement.ble_psm = 0;
+    step(o, &want, 200000);
+    assert(advertised && published_txt_count == 7 && !published_radio[0] && !published_psm[0]);
+    want.advertisement.enabled = false;
+    step(o, &want, 300000);
+    assert(wnm_close(o));
+}
+
 int main(void)
 {
     struct wnm_owner *o = wnm_open(NULL);
@@ -170,6 +211,7 @@ int main(void)
     step(o, &off, 200000);
     assert(!active && wnm_close(o));
     assert(polls && !queued);
+    test_ble_txt_records();
     puts(
         "mDNS SDK calls stay outer; snapshot coalescing, finite retry, result loans and active-query OFF cleanup succeed");
     return 0;
