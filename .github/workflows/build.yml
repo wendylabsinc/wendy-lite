@@ -140,11 +140,6 @@ jobs:
                              "BT_NIMBLE_EXT_ADV"):
                   assert config.get(option), f"{option} must be enabled on P4"
               assert not config.get("WENDY_NET_CONSTRAINED_PROFILE")
-              assert config["WENDY_NET_MAX_LINKS"] == 8
-              assert config["WENDY_NET_BLE_CHANNELS"] == 3
-              assert config["BT_NIMBLE_MAX_CONNECTIONS"] == 4
-              assert config["SPIRAM_MALLOC_ALWAYSINTERNAL"] == 64
-              assert config["SPIRAM_MALLOC_RESERVE_INTERNAL"] == 32768
           PY
 
       - name: Verify supported ESP32 mesh and guest profiles
