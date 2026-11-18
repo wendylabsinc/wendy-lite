@@ -42,7 +42,7 @@ def copy_patched_host(project, idf, work):
                 'idf-nimble-coc-credit-refill-idf61.patch')
     for refill in variants:
         check = subprocess.run(['git', 'apply', '--check', '--no-index',
-                                str(project / 'patches' / refill)],
+                                str(project / 'components/wendy_ble/patches' / refill)],
                                cwd=host, env=env, capture_output=True, timeout=30)
         if check.returncode == 0:
             break
@@ -54,7 +54,7 @@ def copy_patched_host(project, idf, work):
                   'idf-nimble-coc-backed-credit-window.patch',
                   'idf-nimble-coc-initial-backed-credits.patch',
                   'idf-nimble-acl-queued-retry.patch'):
-        subprocess.run(['git', 'apply', '--no-index', str(project / 'patches' / patch)],
+        subprocess.run(['git', 'apply', '--no-index', str(project / 'components/wendy_ble/patches' / patch)],
                        cwd=host, env=env, check=True, timeout=30)
     return host
 

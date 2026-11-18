@@ -14,10 +14,6 @@
 
 cmake_minimum_required(VERSION 3.29)
 
-# WAMR component declares cmake_minimum_required(VERSION 3.5) which
-# CMake 4.x rejects. Allow it via the compatibility policy.
-set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
-
 set(EXTRA_COMPONENT_DIRS
     "${CMAKE_CURRENT_LIST_DIR}/components"
 )
@@ -33,21 +29,17 @@ if(IDF_TARGET STREQUAL "esp32c61" OR IDF_TARGET STREQUAL "esp32s31")
 endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-if(IDF_TARGET STREQUAL "esp32s31")
-    include($ENV{IDF_PATH}/tools/cmake/version.cmake)
-    if("${IDF_VERSION_MAJOR}.${IDF_VERSION_MINOR}" VERSION_LESS "6.1")
-        message(FATAL_ERROR "ESP32-S31 requires ESP-IDF 6.1 or newer. Use idf.py --preview with ESP-IDF 6.1.")
-    endif()
-endif()
 # Follow the enabled main-component dependencies. Optional WASM adapters must
 # not pull their runtime into native firmware builds.
 idf_build_set_property(MINIMAL_BUILD ON)
 project(wendy_mcu)
 
-# wendy_pki's project_include.cmake patches the bundled esp-pqc Mbed TLS.
-include(cmake/dependency_patches.cmake)
-wendy_patch_wamr()
-wendy_patch_nimble()
+# Dependency patches are applied by the components that need them, through
+# their project_include.cmake, so native apps get them too:
+#   wendy_pki  -> esp-pqc Mbed TLS and liboqs
+#   wendy_ble  -> ESP-IDF NimBLE host (L2CAP CoC)
+#   wendy_wasm -> WAMR
+# The ESP32-S31 ESP-IDF version check is in wendy_core's CMakeLists.txt.
 
 # ESP32-P4 ships in several board layouts that differ in flash size and
 # partition table, so a board overlay must be selected explicitly:

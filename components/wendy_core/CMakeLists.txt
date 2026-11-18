@@ -17,3 +17,10 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
 # CMakeLists.txt, so that native apps (which use wendy_core) also run it.
 include("${CMAKE_CURRENT_LIST_DIR}/network_profile.cmake")
 wendy_check_network_profile()
+
+# ESP32-S31 support starts with ESP-IDF 6.1. This check is here, not in the
+# wendy-lite top-level CMakeLists.txt, so that native apps also run it.
+if(IDF_TARGET STREQUAL "esp32s31"
+        AND "${IDF_VERSION_MAJOR}.${IDF_VERSION_MINOR}" VERSION_LESS "6.1")
+    message(FATAL_ERROR "ESP32-S31 requires ESP-IDF 6.1 or newer. Use idf.py --preview with ESP-IDF 6.1.")
+endif()

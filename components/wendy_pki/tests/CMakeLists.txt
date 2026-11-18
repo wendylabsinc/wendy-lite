@@ -31,7 +31,7 @@ set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
 set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
 set(GEN_FILES OFF CACHE BOOL "Use the bundled generated Mbed TLS sources" FORCE)
 add_subdirectory("${MBEDTLS_ROOT}" mbedtls)
-include("${CMAKE_CURRENT_LIST_DIR}/../../../cmake/dependency_patches.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/../cmake/pqc_patches.cmake")
 wendy_patch_mbedtls("${MBEDTLS_ROOT}")
 # TF-PSA object libraries read crypto_config.h, not mbedtls_config.h. Match
 # the TLS/X.509 key layout and enable the real OQS adapter in every library.

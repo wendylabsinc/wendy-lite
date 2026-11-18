@@ -18,13 +18,26 @@ is the only esp-pqc pin. The firmware, the samples and these apps get esp-pqc
 through the component manager. The PKI host tests read the revision from the same
 file. Update the table above when the revision changes.
 
-`components/wendy_pki/cmake/pqc_patches.cmake` copies dependencies into the build
-directory and applies these patches there. wendy_pki's `project_include.cmake`
-runs it for every project that builds Wendy PKI. `cmake/dependency_patches.cmake`
-reuses it for WAMR. The downloaded components stay unchanged. Configuration fails
-if a patch no longer applies. Mbed TLS, its PSA libraries and the IDF adapter all
-use the copied headers and sources so their private structures agree. Review and
-retest each patch when updating a dependency.
+Each dependency patch lives in the component that needs it, so native apps that
+fetch that component over git get it too:
+
+| Patches | Applied by |
+| --- | --- |
+| `components/wendy_pki/patches/esp-pqc-*.patch` | wendy_pki, when `CONFIG_MBEDTLS_USE_BUNDLED_PQC` is set |
+| `components/wendy_ble/patches/idf-nimble-*.patch` | wendy_ble, when `CONFIG_BT_NIMBLE_ENABLED` is set |
+| `components/wendy_wasm/patches/wamr-*.patch` | wendy_wasm, when WAMR is in the build |
+
+The `mosaico-*.patch` files in this directory are used only by
+`samples/mosaico_dashboard`.
+
+`components/wendy_pki/cmake/pqc_patches.cmake` holds the shared helpers. They
+copy a dependency into the build directory and apply the patches there. Each
+component's `project_include.cmake` defers its patch step to the end of the
+project's top-level CMakeLists.txt, so no project needs to call anything. The
+downloaded components and the ESP-IDF checkout stay unchanged. Configuration
+fails if a patch no longer applies. Mbed TLS, its PSA libraries and the IDF
+adapter all use the copied headers and sources so their private structures
+agree. Review and retest each patch when updating a dependency.
 
 Patch application ignores inherited `GIT_DIR` and `GIT_WORK_TREE` and stops Git
 repository discovery at the copied tree's parent. Without this isolation, an
@@ -103,13 +116,21 @@ protection or substitute writable memory for executable memory.
 
 Native builds exclude the optional WAMR runtime. Its registry dependencies are
 enabled only with `CONFIG_WENDY_CORE_WASM_APP_SUPPORT`, through
-`boards/wasm.defaults`.
+`boards/wasm.defaults`. That option and the manifest rules exclude ESP32-C61 and
+ESP32-S31, which the pinned WAMR release does not support.
+
+The WAMR patches live in `components/wendy_wasm/patches/`.
+`wendy_patch_wamr()` in `components/wendy_wasm/cmake/wamr_patches.cmake` builds
+a copy under `wendy_patched/wamr`.
 
 ## NimBLE CoC ownership and finite resource pressure
 
-The four `idf-nimble-*.patch` files apply in the order listed by
-`wendy_patch_nimble()` to ESP-IDF **6.0.3**'s NimBLE host. The firmware builds a
-copy under `wendy_patched/nimble_host`; the installed SDK stays unchanged.
+The `idf-nimble-*.patch` files in `components/wendy_ble/patches/` apply in the
+order listed by `wendy_patch_nimble()` (`components/wendy_ble/cmake/nimble_patches.cmake`)
+to ESP-IDF **6.0.3**'s NimBLE host; the `-idf61` variant replaces the credit
+refill patch on 6.1. Every project that builds wendy_ble with NimBLE, the
+firmware and native apps alike, compiles a copy under `wendy_patched/nimble_host`;
+the installed SDK stays unchanged.
 
 - Crossed disconnect retires a matching local close procedure before freeing
   its channel. Timeout completion checks live connection membership.

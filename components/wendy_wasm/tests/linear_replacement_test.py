@@ -49,7 +49,7 @@ def main():
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text((original / 'core/shared/platform/esp-idf' / name).read_text())
         for patch in ['wamr-idf6-platform.patch', 'wamr-linear-mapping-replacement.patch']:
-            subprocess.run(['git', 'apply', '--no-index', str(project / 'patches' / patch)],
+            subprocess.run(['git', 'apply', '--no-index', str(project / 'components/wendy_wasm/patches' / patch)],
                            cwd=work, env=env, check=True)
         memory = target.read_text()
         sources = [

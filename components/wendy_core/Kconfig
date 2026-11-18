@@ -58,8 +58,11 @@ menu "Wendy Core"
 
     config WENDY_CORE_WASM_APP_SUPPORT
         bool "Enable WASM app support"
-        depends on !IDF_TARGET_ESP32S31
+        depends on !IDF_TARGET_ESP32S31 && !IDF_TARGET_ESP32C61
         default n
         help
             Enable the ability to run WASM applications on the device.
+            Not available on ESP32-C61 and ESP32-S31: the pinned WAMR release
+            supports neither target. The rules in the idf_component.yml files
+            that pull WAMR and the WASM adapters exclude the same targets.
 endmenu
