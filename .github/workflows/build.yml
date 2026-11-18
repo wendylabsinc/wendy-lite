@@ -111,6 +111,27 @@ jobs:
             set-target "$TARGET"
           idf.py "${idf_args[@]}" build
 
+      # The Wendy CLI reads cloud_enrollment from catalog.json to warn before
+      # flashing an image that cannot enroll, so it must match the real build.
+      - name: Verify catalog cloud_enrollment
+        shell: bash
+        env:
+          BINARY: ${{ matrix.name }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          config = json.loads(Path("build/config/sdkconfig.json").read_text())
+          expected = all(config.get(o) for o in ("WENDY_PKI", "WENDY_CLOUD", "WENDY_WIFI_ENABLED"))
+          boards = [b for b in json.loads(Path("catalog.json").read_text())["boards"]
+                    if b["binary"] == os.environ["BINARY"]]
+          assert len(boards) == 1, f"expected one catalog board for {os.environ['BINARY']}"
+          assert boards[0]["cloud_enrollment"] == expected, (
+              f"catalog cloud_enrollment is {boards[0]['cloud_enrollment']} but the build gives {expected}")
+          PY
+
       - name: Verify mesh defaults
         shell: bash
         env:
