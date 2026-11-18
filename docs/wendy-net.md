@@ -114,6 +114,13 @@ the same command. Its one-connection total still applies. On PSRAM profiles,
 Incoming and outgoing links share the existing `--max-links` budget with BLE
 and infrastructure Wi-Fi. Use `--espnow=false` to disable the carrier.
 
+Set `--espnow-rate` to `1`, `2`, `6`, `12`, or `24` Mbit/s to cap the preferred
+unicast PHY rate. The default is `12`. Discovery and initial connection setup
+use 1 Mbit/s on every device. Once the direct peers authenticate, they use the
+lower of their two preferences. An older peer or a P4 companion that lacks rate
+configuration keeps the link at 1 Mbit/s. Changing the preference reconnects
+ESP-NOW links so they can negotiate again.
+
 ESP-NOW discovery broadcasts about once per second. Devices listening on the
 channel can see the tenant and device identifiers in those advertisements.
 Peers establish the same Wendy mutual TLS used by other carriers over a private TCP interface. An

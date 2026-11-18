@@ -62,7 +62,7 @@ def setup_authentication_stage():
     stage = source[start:end]
     assert stage.index('previously_authenticated_peer(') < stage.index('memcpy(link->authenticated_peer')
     assert stage.index('memcpy(link->authenticated_peer') < stage.index('wn_candidate_authenticated(')
-    return 'static int setup_authenticated_stage(struct peer_state *link) {\n' + stage + '\nreturn 0;\n}\n'
+    return 'static int setup_authenticated_stage(struct peer_state *link) {\nunsigned local_rate = 0;\n' + stage + '\nreturn 0;\n}\n'
 
 
 head = r'''
@@ -284,8 +284,8 @@ static const struct operator_peer *wendy_pki_mesh_authenticated_operator(struct 
     assert(c); return verified_operator;
 }
 static void wnad_handshake_release(struct peer_state *link) { assert(link); }
-int wn_router_hello_write(const char *self, const char *peer, char *out, size_t capacity) {
-    assert(self && peer && capacity); *out = 1; return 1;
+int wn_router_hello_write(const char *self, const char *peer, unsigned rate, char *out, size_t capacity) {
+    (void)rate; assert(self && peer && capacity); *out = 1; return 1;
 }
 void wn_put32(uint8_t *out, uint32_t value) {
     for (unsigned i = 0; i < 4; i++) out[i] = (uint8_t)(value >> (24 - 8 * i));

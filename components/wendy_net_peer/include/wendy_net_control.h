@@ -7,8 +7,9 @@
 int wn_operator_hello_read(const void *, size_t, uint8_t instance[16]);
 int wn_operator_ready_write(void *, size_t);
 
-int wn_router_hello_write(const char *self, const char *peer, char *, size_t);
-int wn_router_hello_check(const void *, size_t, const char *self, const char *peer);
+int wn_router_hello_write(const char *self, const char *peer, unsigned espnow_rate, char *, size_t);
+int wn_router_hello_check(const void *, size_t, const char *self, const char *peer,
+                          unsigned *espnow_rate);
 /* Exact WendyOS ControlMessage/netgossip.Message JSON envelope. DATA borrows
  * the caller's 1024-byte buffer; no parser or payload allocations.
  * Read returns 1 for an unsupported future operation/type/version, 0 for a

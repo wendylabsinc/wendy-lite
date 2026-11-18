@@ -1259,6 +1259,8 @@ static int update_listener(struct peer_state *s, const char *tenant, const char 
 }
 static void close_session(struct peer_state *s, int candidate)
 {
+    if (s->candidate.medium == WN_ESPNOW)
+        wn_espnow_clear_link_rate(s);
     candidate = s->candidate_held ? s->candidate_index : -1;
     /* Candidate failure history belongs to failed connection attempts. A
      * ready carrier retirement, duplicate skip, cancellation or net-off is not
@@ -1558,6 +1560,10 @@ static int setup_hello(struct peer_state *link)
 {
     if (link->framed)
         return 0;
+    unsigned local_rate = link->candidate.medium == WN_ESPNOW
+                              ? wn_espnow_rate_limit(node_root(link)->config.espnow_rate)
+                              : 0;
+    unsigned remote_rate = 1;
     if (!link->hello_started) {
         link->connection = wendy_pki_net_take(link->tls_setup, &link->identity);
         link->tls_setup = NULL;
@@ -1588,7 +1594,7 @@ static int setup_hello(struct peer_state *link)
                                        link->authenticated_peer))
             return -1;
         if (!link->operator_peer) {
-            int n = wn_router_hello_write(link->identity.device, link->authenticated_peer,
+            int n = wn_router_hello_write(link->identity.device, link->authenticated_peer, local_rate,
                                           link->control + 4, PEER_CONTROL_BYTES - 4);
             if (n < 0)
                 return -1;
@@ -1654,8 +1660,8 @@ static int setup_hello(struct peer_state *link)
                 return -1;
             return 1;
         }
-        if (wanted == 4 || wn_router_hello_check(link->control + 4, wanted - 4,
-                                                 link->identity.device, link->authenticated_peer))
+        if (wanted == 4 || wn_router_hello_check(link->control + 4, wanted - 4, link->identity.device,
+                                                link->authenticated_peer, &remote_rate))
             return -1;
     }
     struct wnc_io io = {.context = link, .read = carrier_read, .write = carrier_write};
@@ -1667,6 +1673,12 @@ static int setup_hello(struct peer_state *link)
     link->carrier.frame_timeout_us = INT64_C(90000000);
     link->carrier.priority_reserve = 2048;
     link->framed = true;
+    if (local_rate) {
+        unsigned rate = local_rate < remote_rate ? local_rate : remote_rate;
+        wn_espnow_set_link_rate(link, link->candidate.address, rate);
+        ESP_LOGI(TAG, "ESP-NOW authenticated peer rate: %u Mbit/s (local %u, remote %u)",
+                 rate, local_rate, remote_rate);
+    }
     return 0;
 }
 static int advance_setup(struct peer_state *link, int64_t now)
@@ -2290,6 +2302,7 @@ static void stop_espnow(struct peer_state *root)
 static void update_espnow(struct peer_state *root, const char *tenant,
                           const char *device, int64_t now)
 {
+    unsigned previous_rate = root->config.espnow_rate;
     bool changed = wn_settings_try_espnow(&root->config);
     bool check_channel = now >= espnow_channel_at;
     if (check_channel)
@@ -2297,6 +2310,7 @@ static void update_espnow(struct peer_state *root, const char *tenant,
     unsigned channel = root->config.espnow_channel;
     if (espnow_effective_channel &&
         (!root->config.espnow || espnow_effective_channel != channel ||
+         previous_rate != root->config.espnow_rate ||
          (check_channel && !wn_espnow_channel_live(channel)))) {
         stop_espnow(root);
         espnow_retry_at = now;
@@ -2327,6 +2341,7 @@ static void update_espnow(struct peer_state *root, const char *tenant,
         applied_config.espnow = root->config.espnow && espnow_effective_channel != 0;
         applied_config.espnow_channel = channel;
         applied_config.espnow_links = root->config.espnow_links;
+        applied_config.espnow_rate = root->config.espnow_rate;
         pthread_mutex_unlock(&state_lock);
     }
 }

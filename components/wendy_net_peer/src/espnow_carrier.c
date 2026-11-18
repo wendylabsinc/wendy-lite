@@ -1,5 +1,6 @@
 #include "espnow_carrier.h"
 #include "actor_driver.h"
+#include "wendy_net_espnow_hosted.h"
 #include "wendy_net_ble_protocol.h"
 #include "wendy_wifi.h"
 
@@ -26,7 +27,6 @@
                                  (CONFIG_IDF_TARGET_ESP32P4 && CONFIG_ESP_HOSTED_ENABLE_PEER_DATA_TRANSFER))
 #if CONFIG_IDF_TARGET_ESP32P4
 #include "esp_hosted_misc.h"
-#include "wendy_net_espnow_hosted.h"
 #else
 #include "wendy_net_espnow_peers.h"
 #endif
@@ -44,6 +44,10 @@ struct frame {
 };
 static struct netif interface;
 static uint8_t station[6];
+static struct {
+    const void *link;
+    uint8_t mac[6], rate;
+} link_rates[CONFIG_WENDY_NET_MAX_LINKS];
 static QueueHandle_t rx, tx;
 static atomic_uint generation, receiving;
 static atomic_bool transmitting;
@@ -68,6 +72,39 @@ static bool mac_from_address(uint8_t mac[6], const uint8_t address[16])
     uint8_t expected[16];
     address_from_mac(expected, mac);
     return !(mac[0] & 1) && !memcmp(expected, address, sizeof expected);
+}
+
+void wn_espnow_set_link_rate(const void *link, const char *address, unsigned rate)
+{
+    uint8_t ip[16], mac[6];
+    if (!wn_espnow_rate_valid(rate) || inet_pton(AF_INET6, address, ip) != 1 ||
+        !mac_from_address(mac, ip))
+        return;
+    for (unsigned i = 0; i < CONFIG_WENDY_NET_MAX_LINKS; i++) {
+        if (!link_rates[i].link || link_rates[i].link == link) {
+            link_rates[i].link = link;
+            memcpy(link_rates[i].mac, mac, sizeof mac);
+            link_rates[i].rate = (uint8_t)rate;
+            return;
+        }
+    }
+}
+
+void wn_espnow_clear_link_rate(const void *link)
+{
+    for (unsigned i = 0; i < CONFIG_WENDY_NET_MAX_LINKS; i++)
+        if (link_rates[i].link == link)
+            link_rates[i].link = NULL;
+}
+
+static unsigned rate_for(const uint8_t mac[6])
+{
+    unsigned rate = 0;
+    for (unsigned i = 0; i < CONFIG_WENDY_NET_MAX_LINKS; i++)
+        if (link_rates[i].link && !memcmp(link_rates[i].mac, mac, 6) &&
+            (!rate || link_rates[i].rate < rate))
+            rate = link_rates[i].rate;
+    return rate ? rate : 1;
 }
 
 static void enqueue_received(const uint8_t source[6], const uint8_t destination[6],
@@ -110,7 +147,7 @@ static void completed_send(void)
 }
 
 #if CONFIG_IDF_TARGET_ESP32P4
-static atomic_bool hosted_capability, hosted_started, hosted_wants_start;
+static atomic_bool hosted_capability, hosted_rate_capable, hosted_started, hosted_wants_start;
 static bool hosted_registered;
 
 static void hosted_event(uint32_t id, const uint8_t *bytes, size_t size, void *context)
@@ -121,6 +158,8 @@ static void hosted_event(uint32_t id, const uint8_t *bytes, size_t size, void *c
         return;
     switch (bytes[1]) {
     case WNE_CAPABILITY:
+        atomic_store(&hosted_rate_capable, size >= 3 &&
+                                          (bytes[2] & WN_ESPNOW_HOSTED_RATE_CAPABILITY));
         atomic_store(&hosted_capability, true);
         break;
     case WNE_STARTED:
@@ -175,10 +214,14 @@ static void radio_stop(void)
 
 static esp_err_t radio_send(const struct frame *packet)
 {
-    uint8_t data[8 + WN_ESPNOW_HOSTED_PAYLOAD] = {WN_ESPNOW_HOSTED_VERSION, WNE_SEND};
+    unsigned rate = rate_for(packet->mac);
+    size_t header = rate > 1 ? 9 : 8;
+    uint8_t data[9 + WN_ESPNOW_HOSTED_PAYLOAD] = {WN_ESPNOW_HOSTED_VERSION,
+                                                rate > 1 ? WNE_SEND_AT_RATE : WNE_SEND};
     memcpy(data + 2, packet->mac, 6);
-    memcpy(data + 8, packet->bytes, packet->size);
-    return esp_hosted_send_custom_data(WN_ESPNOW_HOSTED_MESSAGE, data, packet->size + 8);
+    data[8] = (uint8_t)rate;
+    memcpy(data + header, packet->bytes, packet->size);
+    return esp_hosted_send_custom_data(WN_ESPNOW_HOSTED_MESSAGE, data, packet->size + header);
 }
 #else
 static struct wn_espnow_peers radio_peers;
@@ -217,7 +260,7 @@ static void radio_stop(void)
 
 static esp_err_t radio_send(const struct frame *packet)
 {
-    esp_err_t err = wn_espnow_prepare_peer(&radio_peers, packet->mac);
+    esp_err_t err = wn_espnow_prepare_peer(&radio_peers, packet->mac, rate_for(packet->mac));
     return err == ESP_OK ? esp_now_send(packet->mac, packet->bytes, packet->size) : err;
 }
 #endif
@@ -305,6 +348,15 @@ bool wn_espnow_supported(void)
     return true;
 }
 
+unsigned wn_espnow_rate_limit(unsigned configured)
+{
+#if CONFIG_IDF_TARGET_ESP32P4
+    if (!atomic_load(&hosted_rate_capable))
+        return 1;
+#endif
+    return wn_espnow_rate_valid(configured) ? configured : 1;
+}
+
 esp_err_t wn_espnow_start(unsigned channel)
 {
     if (listener >= 0)
@@ -361,6 +413,7 @@ fail:
 
 void wn_espnow_stop(void)
 {
+    memset(link_rates, 0, sizeof link_rates);
     if (running_generation) {
         atomic_fetch_add(&generation, 1);
         running_generation = 0;
@@ -531,6 +584,10 @@ void wn_espnow_poll(const char *tenant, const char *device, bool accepting,
 }
 #else
 bool wn_espnow_supported(void) { return false; }
+unsigned wn_espnow_rate_limit(unsigned configured) { (void)configured; return 1; }
+void wn_espnow_set_link_rate(const void *link, const char *address, unsigned rate)
+{ (void)link; (void)address; (void)rate; }
+void wn_espnow_clear_link_rate(const void *link) { (void)link; }
 esp_err_t wn_espnow_start(unsigned channel) { (void)channel; return ESP_ERR_NOT_SUPPORTED; }
 void wn_espnow_stop(void) {}
 bool wn_espnow_channel_live(unsigned channel) { (void)channel; return false; }

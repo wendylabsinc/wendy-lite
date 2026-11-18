@@ -73,12 +73,13 @@ static void host_request(uint32_t id, const uint8_t *bytes, size_t size, void *c
 {
     (void)id;
     (void)context;
-    if (size < 2 || size > WN_ESPNOW_HOSTED_PAYLOAD + 8 ||
+    if (size < 2 || size > WN_ESPNOW_HOSTED_PAYLOAD + 9 ||
         bytes[0] != WN_ESPNOW_HOSTED_VERSION)
         return;
     struct event event = {.size = (uint16_t)size};
     memcpy(event.bytes, bytes, size);
-    if (xQueueSend(events, &event, 0) != pdTRUE && bytes[1] == WNE_SEND)
+    if (xQueueSend(events, &event, 0) != pdTRUE &&
+        (bytes[1] == WNE_SEND || bytes[1] == WNE_SEND_AT_RATE))
         atomic_store(&sent, true);
 }
 
@@ -94,7 +95,7 @@ static void bridge_task(void *unused)
         uint8_t *bytes = event.bytes;
         switch (bytes[1]) {
         case WNE_PROBE:
-            send_event(WNE_CAPABILITY, 0);
+            send_event(WNE_CAPABILITY, WN_ESPNOW_HOSTED_RATE_CAPABILITY);
             break;
         case WNE_START:
             if (event.size == 3)
@@ -106,16 +107,22 @@ static void bridge_task(void *unused)
             atomic_store(&sending, false);
             break;
         case WNE_SEND:
-            if (event.size <= 8 || !atomic_load(&active) || atomic_exchange(&sending, true)) {
+        case WNE_SEND_AT_RATE: {
+            size_t header = bytes[1] == WNE_SEND_AT_RATE ? 9 : 8;
+            if (event.size <= header || event.size > header + WN_ESPNOW_HOSTED_PAYLOAD ||
+                !atomic_load(&active) || atomic_exchange(&sending, true)) {
                 send_event(WNE_SENT, 1);
                 break;
             }
-            if (wn_espnow_prepare_peer(&radio_peers, bytes + 2) != ESP_OK ||
-                esp_now_send(bytes + 2, bytes + 8, event.size - 8) != ESP_OK) {
+            unsigned rate = header == 9 ? bytes[8] : 1;
+            if (!wn_espnow_rate_valid(rate) ||
+                wn_espnow_prepare_peer(&radio_peers, bytes + 2, rate) != ESP_OK ||
+                esp_now_send(bytes + 2, bytes + header, event.size - header) != ESP_OK) {
                 atomic_store(&sending, false);
                 send_event(WNE_SENT, 1);
             }
             break;
+        }
         case WNE_RECEIVED:
             if (event.size >= 19 && atomic_load(&active))
                 (void)esp_hosted_send_custom_data(WN_ESPNOW_HOSTED_MESSAGE, bytes, event.size);
