@@ -23,10 +23,13 @@ function(wendy_prepare_patched_tree source destination)
 endfunction()
 
 # Select a supported dependency source layout without changing its source.
+#   wendy_select_dependency_patch(<output> <source> [HINT <text>] <patch>...)
+# HINT is added to the error when no patch matches.
 function(wendy_select_dependency_patch output source)
+    cmake_parse_arguments(PARSE_ARGV 2 arg "" "HINT" "")
     find_package(Git REQUIRED)
     get_filename_component(patch_parent "${source}" DIRECTORY)
-    foreach(patch IN LISTS ARGN)
+    foreach(patch IN LISTS arg_UNPARSED_ARGUMENTS)
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${patch}")
         execute_process(COMMAND "${CMAKE_COMMAND}" -E env
             --unset=GIT_DIR --unset=GIT_WORK_TREE
@@ -39,7 +42,7 @@ function(wendy_select_dependency_patch output source)
             return()
         endif()
     endforeach()
-    message(FATAL_ERROR "No supported dependency patch matches ${source}: ${error}")
+    message(FATAL_ERROR "No supported dependency patch matches ${source}: ${error}${arg_HINT}")
 endfunction()
 
 # Keep IDF's target configuration and hardware ports, but compile the patched

@@ -132,6 +132,11 @@ refill patch on 6.1. Every project that builds wendy_ble with NimBLE, the
 firmware and native apps alike, compiles a copy under `wendy_patched/nimble_host`;
 the installed SDK stays unchanged.
 
+Configuration fails when the patches do not match the NimBLE host, for example
+with ESP-IDF 6.2 development code. A project that must use such an ESP-IDF sets
+`CONFIG_WENDY_BLE_PATCH_NIMBLE=n` and builds the unpatched host, without these
+fixes. `samples/mosaico_dashboard` does this today.
+
 - Crossed disconnect retires a matching local close procedure before freeing
   its channel. Timeout completion checks live connection membership.
 - Credit retry retains intent when ordinary signaling mbufs are busy and counts

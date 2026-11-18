@@ -50,6 +50,10 @@ The sample gets esp-pqc and the reviewed TLS patches through `wendy_pki`.
 It enables ML-DSA-65 with fixed 16 KiB TLS receive buffers, as the main firmware
 does. Generic ESP32-S31 firmware continues to use ESP-IDF 6.1.
 
+The `wendy_ble` NimBLE L2CAP CoC patches support ESP-IDF 6.0.3 and 6.1 only.
+The sample sets `CONFIG_WENDY_BLE_PATCH_NIMBLE=n`, so it builds the ESP-IDF 6.2
+development NimBLE host without these fixes.
+
 ## Build
 
 From the repository root:

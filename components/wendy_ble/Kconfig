@@ -97,4 +97,18 @@ menu "Wendy BLE (WendyCom transport)"
         default 0x0 if WENDY_BLE_TASK_CORE_AFFINITY_CPU0
         default 0x1 if WENDY_BLE_TASK_CORE_AFFINITY_CPU1
         default FREERTOS_NO_AFFINITY if WENDY_BLE_TASK_CORE_AFFINITY_NO_AFFINITY
+
+    config WENDY_BLE_PATCH_NIMBLE
+        bool "Apply the Wendy fixes to the ESP-IDF NimBLE host"
+        default y
+        depends on BT_NIMBLE_ENABLED
+        help
+            Build a patched copy of the ESP-IDF NimBLE host with the L2CAP CoC
+            and ACL fixes in components/wendy_ble/patches (see patches/README.md
+            at the wendy-lite root). The ESP-IDF checkout stays unchanged.
+
+            The patches support the NimBLE host of ESP-IDF 6.0.3 and 6.1. If
+            they do not apply, configuration fails. Disable this option only
+            for an ESP-IDF whose NimBLE host the patches do not support yet:
+            the build then uses the unpatched NimBLE host, without these fixes.
 endmenu
