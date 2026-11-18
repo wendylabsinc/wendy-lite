@@ -118,6 +118,9 @@ ESP-NOW discovery broadcasts about once per second. Peers establish the same
 Wendy mutual TLS used by other carriers over a private TCP interface. An
 associated Wi-Fi station and ESP-NOW share the radio channel. If the AP uses
 a different channel, status shows ESP-NOW suspended until the channel matches.
+If the configured AP is unreachable, ESP-NOW can start during Wi-Fi retry
+backoff. Later retry scans can pause radio traffic while the TCP session stays
+open.
 
 For the P4, build the C6 companion application from the same ESP-Hosted 2.x
 release used on the host. With ESP-IDF activated, run:

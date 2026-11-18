@@ -29,6 +29,8 @@ static unsigned power_save_disables;
 static const char *access_point_ssid, *conf_ssid, *conf_password;
 static bool cancel_retry_with_ip, cancel_retry_with_deinit;
 static unsigned connect_calls, connect_failures, reconnect_waits, restore_after_waits;
+static unsigned channel_changes;
+static uint8_t station_channel, access_point_channel;
 static wifi_config_t last_config;
 static char log_output[16384];
 static const char *resolved_device_name = "test-board";
@@ -251,6 +253,33 @@ esp_err_t esp_wifi_set_ps(int mode)
     power_save_disables++;
     return ESP_OK;
 }
+esp_err_t esp_wifi_sta_get_ap_info(wifi_ap_record_t *ap)
+{
+    if (!driver_connected)
+        return ESP_ERR_WIFI_NOT_CONNECT;
+    ap->primary = access_point_channel;
+    return ESP_OK;
+}
+esp_err_t esp_wifi_get_country(wifi_country_t *country)
+{
+    *country = (wifi_country_t){.schan = 1, .nchan = 11};
+    return ESP_OK;
+}
+esp_err_t esp_wifi_get_channel(uint8_t *primary, wifi_second_chan_t *secondary)
+{
+    assert(driver_started);
+    *primary = station_channel;
+    *secondary = WIFI_SECOND_CHAN_NONE;
+    return ESP_OK;
+}
+esp_err_t esp_wifi_set_channel(uint8_t primary, int secondary)
+{
+    assert(driver_started && !driver_event_pending && !driver_connected);
+    assert(secondary == WIFI_SECOND_CHAN_NONE);
+    station_channel = primary;
+    channel_changes++;
+    return ESP_OK;
+}
 esp_err_t esp_wifi_deinit(void) { return ESP_OK; }
 esp_err_t nvs_open(const char *name, int mode, nvs_handle_t *handle) { credential_opens++; *handle = 1; return ESP_OK; }
 esp_err_t nvs_get_str(nvs_handle_t handle, const char *name, char *out, size_t *size)
@@ -319,6 +348,7 @@ static void reset_test(void)
     enrolled = true;
     driver_model = driver_event_pending = access_point_up = false;
     driver_started = driver_start_pending = false;
+    s_station_started = s_espnow_started_station = false;
     driver_connected = driver_disconnect_pending = timeout_with_connect_pending = false;
     drop_control_marker = false;
     control_posts = control_post_failures = control_ack_timeouts = control_waits = 0;
@@ -333,6 +363,7 @@ static void reset_test(void)
     conf_ssid = conf_password = "";
     cancel_retry_with_ip = cancel_retry_with_deinit = false;
     connect_calls = connect_failures = reconnect_waits = restore_after_waits = 0;
+    channel_changes = station_channel = access_point_channel = 0;
     memset(&last_config, 0, sizeof(last_config));
     log_output[0] = 0;
 }
@@ -431,6 +462,41 @@ static void test_access_point_returns_after_outage(void)
     assert(s_connected && connect_calls == 36 && reconnect_waits == 30);
     assert(server_starts == 1 && cloud_starts == 1);
     assert(strstr(log_output, "reason=201 rssi=-60"));
+}
+
+static void test_espnow_during_reconnect_backoff(void)
+{
+    reset_test();
+    assert(wifi_infra_init() == ESP_OK);
+    driver_model = true;
+    assert(wifi_connect("test-network", "") != ESP_OK);
+    assert(s_connect_requested && s_reconnect_pending && !driver_event_pending);
+    assert(wendy_wifi_espnow_channel(11) == ESP_OK);
+    assert(station_channel == 11 && channel_changes == 1 && driver_starts == 1);
+
+    connect_station();
+    station_channel = 6;
+    assert(wendy_wifi_espnow_state(11) == WENDY_WIFI_ESPNOW_SCANNING);
+    assert(station_channel == 6 && channel_changes == 1);
+    deliver_driver_event();
+    assert(s_reconnect_pending);
+    assert(wendy_wifi_espnow_state(11) == WENDY_WIFI_ESPNOW_READY);
+    assert(station_channel == 11 && channel_changes == 2);
+
+    access_point_up = true;
+    access_point_channel = 6;
+    assert(wendy_wifi_set_station_enabled(true) == ESP_OK);
+    assert(driver_event_pending && !s_reconnect_pending);
+    assert(wendy_wifi_espnow_channel(11) == ESP_ERR_WIFI_NOT_CONNECT);
+
+    deliver_driver_event();
+    assert(wendy_wifi_is_connected());
+    assert(wendy_wifi_espnow_channel(11) == ESP_ERR_WIFI_NOT_CONNECT);
+    assert(wendy_wifi_espnow_state(11) == WENDY_WIFI_ESPNOW_UNAVAILABLE);
+    assert(wendy_wifi_espnow_state(6) == WENDY_WIFI_ESPNOW_READY);
+    assert(wendy_wifi_espnow_channel(6) == ESP_OK && channel_changes == 2);
+    wendy_wifi_espnow_release();
+    assert(driver_started && driver_connected);
 }
 
 static void test_lost_access_point_does_not_restart_services(void)
@@ -707,6 +773,7 @@ int main(void)
     test_disconnect_during_retry();
     test_unconfigured_and_worker_failure();
     test_access_point_returns_after_outage();
+    test_espnow_during_reconnect_backoff();
     test_lost_access_point_does_not_restart_services();
     test_refused_connect_request_retries();
     test_credential_fallback_connects_on_started_station();

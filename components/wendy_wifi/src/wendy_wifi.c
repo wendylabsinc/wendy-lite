@@ -77,6 +77,7 @@ static void connect_station(void)
         pthread_mutex_unlock(&s_station_lock);
         return;
     }
+    s_reconnect_pending = false;
     esp_err_t err = esp_wifi_connect();
     if (err != ESP_OK && s_connect_requested && !s_connected) {
         ESP_LOGW(TAG, "WiFi connect request failed: %s; retrying in %d ms",
@@ -605,9 +606,12 @@ bool wendy_wifi_is_connected(void)
 esp_err_t wendy_wifi_set_station_enabled(bool enabled)
 {
     if(!wendy_wifi_radio_available())return enabled ? ESP_ERR_NOT_SUPPORTED:ESP_OK;
+    pthread_mutex_lock(&s_station_lock);
     s_connect_requested=enabled;
+    s_reconnect_pending=false;
     s_retry_count=0;
     esp_err_t result=enabled ? esp_wifi_connect() : esp_wifi_disconnect();
+    pthread_mutex_unlock(&s_station_lock);
     if(!enabled && result==ESP_ERR_WIFI_NOT_CONNECT)return ESP_OK;
     return result;
 }
@@ -645,7 +649,9 @@ esp_err_t wendy_wifi_espnow_channel(unsigned channel)
     esp_err_t result = esp_wifi_sta_get_ap_info(&ap);
     if (result == ESP_OK) {
         result = ap.primary == channel ? ESP_OK : ESP_ERR_WIFI_NOT_CONNECT;
-    } else if (s_connect_requested) {
+    } else if (s_connect_requested && !s_reconnect_pending) {
+        /* A connection attempt can scan channels. During retry backoff the
+         * station is idle and ESP-NOW can select its configured channel. */
         result = ESP_ERR_WIFI_NOT_CONNECT;
     } else {
         wifi_country_t country;
@@ -662,6 +668,27 @@ esp_err_t wendy_wifi_espnow_channel(unsigned channel)
     }
     pthread_mutex_unlock(&s_station_lock);
     return result;
+}
+
+enum wendy_wifi_espnow_state wendy_wifi_espnow_state(unsigned channel)
+{
+    enum wendy_wifi_espnow_state state = WENDY_WIFI_ESPNOW_UNAVAILABLE;
+    pthread_mutex_lock(&s_station_lock);
+    wifi_ap_record_t ap;
+    if (s_station_started && esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+        if (ap.primary == channel)
+            state = WENDY_WIFI_ESPNOW_READY;
+    } else if (s_station_started && s_connect_requested && !s_reconnect_pending) {
+        state = WENDY_WIFI_ESPNOW_SCANNING;
+    } else if (s_station_started) {
+        uint8_t primary;
+        wifi_second_chan_t secondary;
+        if (esp_wifi_get_channel(&primary, &secondary) == ESP_OK &&
+            (primary == channel || esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE) == ESP_OK))
+            state = WENDY_WIFI_ESPNOW_READY;
+    }
+    pthread_mutex_unlock(&s_station_lock);
+    return state;
 }
 
 void wendy_wifi_espnow_release(void)

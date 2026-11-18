@@ -67,6 +67,13 @@ void wendy_wifi_deinit(void);
 
 /* Start an unassociated station or check the channel of the associated AP. */
 esp_err_t wendy_wifi_espnow_channel(unsigned channel);
+enum wendy_wifi_espnow_state {
+    WENDY_WIFI_ESPNOW_UNAVAILABLE,
+    WENDY_WIFI_ESPNOW_SCANNING,
+    WENDY_WIFI_ESPNOW_READY,
+};
+/* Retain the carrier during an AP scan and restore its channel when idle. */
+enum wendy_wifi_espnow_state wendy_wifi_espnow_state(unsigned channel);
 void wendy_wifi_espnow_release(void);
 
 #ifdef __cplusplus

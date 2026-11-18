@@ -76,12 +76,16 @@ esp_err_t esp_netif_init(void);
 void *esp_netif_create_default_wifi_sta(void);
 typedef struct { int unused; } wifi_init_config_t;
 typedef struct { struct { unsigned char ssid[32], password[64]; struct { int authmode; } threshold; int sae_pwe_h2e; } sta; } wifi_config_t;
+typedef struct { uint8_t primary; } wifi_ap_record_t;
+typedef struct { uint8_t schan, nchan; } wifi_country_t;
+typedef int wifi_second_chan_t;
 #define WIFI_INIT_CONFIG_DEFAULT() ((wifi_init_config_t){0})
 #define WIFI_AUTH_OPEN 0
 #define WIFI_AUTH_WPA2_PSK 1
 #define WIFI_MODE_STA 0
 #define WIFI_IF_STA 0
 #define WIFI_PS_NONE 0
+#define WIFI_SECOND_CHAN_NONE 0
 esp_err_t esp_wifi_init(const wifi_init_config_t *config);
 esp_err_t esp_wifi_connect(void);
 esp_err_t esp_wifi_disconnect(void);
@@ -90,6 +94,10 @@ esp_err_t esp_wifi_set_config(int interface, const wifi_config_t *config);
 esp_err_t esp_wifi_start(void);
 esp_err_t esp_wifi_stop(void);
 esp_err_t esp_wifi_set_ps(int mode);
+esp_err_t esp_wifi_sta_get_ap_info(wifi_ap_record_t *ap);
+esp_err_t esp_wifi_get_country(wifi_country_t *country);
+esp_err_t esp_wifi_get_channel(uint8_t *primary, wifi_second_chan_t *secondary);
+esp_err_t esp_wifi_set_channel(uint8_t primary, int secondary);
 esp_err_t esp_wifi_deinit(void);
 typedef int nvs_handle_t;
 #define NVS_READONLY 0
