@@ -1,4 +1,14 @@
 dependencies:
+  # The ESP32-P4 has no Bluetooth controller. NimBLE reaches the controller of
+  # the board's co-processor through ESP-Hosted's VHCI transport. It is here,
+  # not in an app's main component, so that every app using wendy_ble (the
+  # firmware and native apps) gets it. The app's sdkconfig still enables
+  # CONFIG_ESP_HOSTED_ENABLE_BT_NIMBLE and the VHCI transport.
+  espressif/esp_hosted:
+    # Keep the same range as in wendy_wifi's idf_component.yml (2.x only).
+    version: ">=2.0,<3.0"
+    rules:
+      - if: "target == esp32p4"
   wendy_com:
     override_path: "../wendy_com"
   wendy_conf:

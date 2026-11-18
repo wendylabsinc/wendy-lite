@@ -1,17 +1,5 @@
 dependencies:
   idf:
     version: ">=6.0.3"
-  # ESP-Hosted bridges Wi-Fi + BT through the on-board ESP32-C6 on the
-  # ESP32-P4 FireBeetle 2 (DFR1172). On the native-radio C6 build these
-  # components do nothing, so guard them with target rules.
-  espressif/esp_wifi_remote:
-    version: ">=1.3.1"
-    rules:
-      - if: "target == esp32p4"
-  espressif/esp_hosted:
-    # esp_hosted 3.0 restructured its BT Kconfig (breaking change); stay on 2.x
-    # until that migration is done. See:
-    # https://github.com/espressif/esp-hosted/blob/unified_release/docs/migration.md
-    version: ">=2.0,<3.0"
-    rules:
-      - if: "target == esp32p4"
+  # On the ESP32-P4, ESP-Hosted and esp_wifi_remote come through wendy_core,
+  # from the wendy_wifi and wendy_ble manifests, so native apps get them too.

@@ -3,6 +3,23 @@ dependencies:
     version: ">=5.1.0"
   espressif/mdns:
     version: "*"
+  # The ESP32-P4 has no radio. ESP-Hosted bridges Wi-Fi through the board's
+  # co-processor, and esp_wifi_remote implements the esp_wifi API on top of
+  # it. They are here, not in an app's main component, so that every app
+  # using wendy_wifi (the firmware and native apps) gets them. The app's
+  # sdkconfig still selects the co-processor and its transport pins.
+  espressif/esp_wifi_remote:
+    version: ">=1.3.1"
+    rules:
+      - if: "target == esp32p4"
+  espressif/esp_hosted:
+    # esp_hosted 3.0 restructured its BT Kconfig (breaking change); stay on 2.x
+    # until that migration is done. See:
+    # https://github.com/espressif/esp-hosted/blob/unified_release/docs/migration.md
+    # Keep the same range in wendy_ble's idf_component.yml.
+    version: ">=2.0,<3.0"
+    rules:
+      - if: "target == esp32p4"
   wendy_com:
     override_path: "../wendy_com"
   wendy_server:
