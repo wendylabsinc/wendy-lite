@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "wendy_net_control.h"
+#include "wendy_net_espnow_hosted.h"
 #include "wendy_pki_crypto.h"
 #include <inttypes.h>
 #include <psa/crypto.h>
@@ -33,7 +34,7 @@ int wn_operator_ready_write(void *out, size_t cap)
     return wn_finish(&w);
 }
 
-int wn_router_hello_write(const char *self, const char *peer, char *out, size_t cap)
+int wn_router_hello_write(const char *self, const char *peer, unsigned espnow_rate, char *out, size_t cap)
 {
     uint8_t uuid[16];
     if (!out || wn_uuid_parse(self, uuid) || wn_uuid_parse(peer, uuid) || !strcmp(self, peer))
@@ -43,7 +44,7 @@ int wn_router_hello_write(const char *self, const char *peer, char *out, size_t 
     wn_key(&w, "kind");
     wn_text(&w, "hello");
     wn_key(&w, "hello");
-    wn_map(&w, 5);
+    wn_map(&w, espnow_rate ? 6 : 5);
     wn_key(&w, "mtu");
     wn_uint(&w, WN_MTU);
     wn_key(&w, "peer");
@@ -54,13 +55,18 @@ int wn_router_hello_write(const char *self, const char *peer, char *out, size_t 
     wn_uint(&w, 1);
     wn_key(&w, "datagram");
     wn_uint(&w, WN_DATAGRAM_MAX);
+    if (espnow_rate) {
+        wn_key(&w, "espnowRate");
+        wn_uint(&w, espnow_rate);
+    }
     return wn_finish(&w);
 }
 static int number(const struct wn_doc *d, unsigned object, const char *name, uint64_t *value)
 {
     return wn_doc_u64(d, wn_doc_member(d, object, name), value);
 }
-int wn_router_hello_check(const void *data, size_t size, const char *self, const char *peer)
+int wn_router_hello_check(const void *data, size_t size, const char *self, const char *peer,
+                          unsigned *espnow_rate)
 {
     struct wn_doc d;
     uint8_t uuid[16];
@@ -77,7 +83,14 @@ int wn_router_hello_check(const void *data, size_t size, const char *self, const
         !wn_doc_equal(&d, wn_doc_member(&d, h, "peer"), self))
         return -1;
     int role = wn_doc_member(&d, h, "role");
-    return role < 0 || wn_doc_equal(&d, role, "") || wn_doc_equal(&d, role, "router") ? 0 : -1;
+    if (role >= 0 && !wn_doc_equal(&d, role, "") && !wn_doc_equal(&d, role, "router"))
+        return -1;
+    if (espnow_rate) {
+        uint64_t rate;
+        *espnow_rate = !number(&d, h, "espnowRate", &rate) && rate <= UINT8_MAX &&
+                       wn_espnow_rate_valid((unsigned)rate) ? (unsigned)rate : 1;
+    }
+    return 0;
 }
 int wn_gossip_write(const struct wg_message *m, char *out, size_t cap)
 {
