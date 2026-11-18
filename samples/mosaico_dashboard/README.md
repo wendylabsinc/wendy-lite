@@ -52,7 +52,9 @@ does. Generic ESP32-S31 firmware continues to use ESP-IDF 6.1.
 
 The `wendy_ble` NimBLE L2CAP CoC patches support ESP-IDF 6.0.3 and 6.1 only.
 The sample sets `CONFIG_WENDY_BLE_PATCH_NIMBLE=n`, so it builds the ESP-IDF 6.2
-development NimBLE host without these fixes.
+development NimBLE host without these fixes. The build accepts this option only
+on ESP-IDF development builds: before the sample moves to a released ESP-IDF 6.2,
+port the patches and remove the option.
 
 ## Build
 

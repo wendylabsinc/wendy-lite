@@ -111,4 +111,9 @@ menu "Wendy BLE (WendyCom transport)"
             they do not apply, configuration fails. Disable this option only
             for an ESP-IDF whose NimBLE host the patches do not support yet:
             the build then uses the unpatched NimBLE host, without these fixes.
+
+            The build accepts n only with an ESP-IDF development build (an
+            IDF_VER of v<major>.<minor>-dev... or a bare commit hash). With a
+            release, a beta or a release candidate, configuration fails: port
+            the patches before you adopt that ESP-IDF.
 endmenu

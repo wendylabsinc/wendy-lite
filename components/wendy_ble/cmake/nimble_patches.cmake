@@ -29,13 +29,46 @@ function(wendy_patch_nimble)
     wendy_redirect_dependency_target(__idf_bt "${source}" "${destination}")
 endfunction()
 
+# IDF_VER comes from git describe on the ESP-IDF checkout. A development build
+# is v<major>.<minor>-dev[-<n>-g<hash>], or only <hash> when the clone has no
+# tags. A release, a beta, a release candidate, a release branch and a checkout
+# without git (v<major>.<minor>.<patch>) are not development builds.
+function(wendy_ble_idf_is_development output idf_ver)
+    if(idf_ver MATCHES "^v[0-9]+\\.[0-9]+-dev" OR idf_ver MATCHES "^[0-9a-f]+(-dirty)?$")
+        set(${output} TRUE PARENT_SCOPE)
+    else()
+        set(${output} FALSE PARENT_SCOPE)
+    endif()
+endfunction()
+
+# The opt-out exists for ESP-IDF development code that the patches do not
+# support yet. A released ESP-IDF must not be adopted without them: port the
+# patches first.
+function(wendy_ble_check_nimble_opt_out)
+    idf_build_get_property(idf_ver IDF_VER)
+    wendy_ble_idf_is_development(development "${idf_ver}")
+    if(NOT development)
+        message(FATAL_ERROR
+            "CONFIG_WENDY_BLE_PATCH_NIMBLE=n is allowed only with an ESP-IDF "
+            "development build, and this is ESP-IDF ${idf_ver}. Port the NimBLE "
+            "patches in components/wendy_ble/patches to this ESP-IDF before you "
+            "adopt it (see patches/README.md), then remove the option.")
+    endif()
+    message(STATUS "wendy_ble: NimBLE host not patched "
+        "(CONFIG_WENDY_BLE_PATCH_NIMBLE=n, ESP-IDF ${idf_ver})")
+endfunction()
+
 # project_include.cmake defers this to the end of the project's top-level
 # CMakeLists.txt, when the bt target exists. wendy_pki's project_include.cmake
 # normally defines the helpers already; load them here if it has not.
-# CONFIG_WENDY_BLE_PATCH_NIMBLE=n (for an ESP-IDF the patches do not support)
-# keeps the unpatched NimBLE host.
+# CONFIG_WENDY_BLE_PATCH_NIMBLE=n keeps the unpatched NimBLE host, on ESP-IDF
+# development builds only.
 function(wendy_ble_patch_nimble)
+    if(NOT CONFIG_BT_NIMBLE_ENABLED)
+        return()
+    endif()
     if(NOT CONFIG_WENDY_BLE_PATCH_NIMBLE)
+        wendy_ble_check_nimble_opt_out()
         return()
     endif()
     if(NOT COMMAND wendy_prepare_patched_tree)

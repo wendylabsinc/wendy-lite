@@ -135,7 +135,11 @@ the installed SDK stays unchanged.
 Configuration fails when the patches do not match the NimBLE host, for example
 with ESP-IDF 6.2 development code. A project that must use such an ESP-IDF sets
 `CONFIG_WENDY_BLE_PATCH_NIMBLE=n` and builds the unpatched host, without these
-fixes. `samples/mosaico_dashboard` does this today.
+fixes. `samples/mosaico_dashboard` does this today. The build accepts this
+option only with an ESP-IDF development build (`IDF_VER` `v<major>.<minor>-dev...`
+or a bare commit hash). A release, a beta or a release candidate fails
+configuration, so no project can adopt a released ESP-IDF before the patches
+are ported to it.
 
 - Crossed disconnect retires a matching local close procedure before freeing
   its channel. Timeout completion checks live connection membership.
