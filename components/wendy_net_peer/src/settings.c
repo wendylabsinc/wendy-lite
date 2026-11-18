@@ -274,13 +274,15 @@ esp_err_t wn_settings_init(void)
         if (nvs_open_from_partition("wendy_pki", "net-settings", NVS_READONLY, &h) == ESP_OK) {
             struct record r;
             size_t size = sizeof r;
+            unsigned valid_flags = 0x3f7fu;
             esp_err_t result = nvs_get_blob(h, "config2", &r, &size);
             if (result == ESP_ERR_NVS_NOT_FOUND) {
                 size = sizeof r;
+                valid_flags = 0x3fu;
                 result = nvs_get_blob(h, "config", &r, &size);
             }
             if (result == ESP_OK && size == sizeof r &&
-                r.magic == SETTINGS_MAGIC && !(r.flags & ~0x3f7fu)) {
+                r.magic == SETTINGS_MAGIC && !(r.flags & ~valid_flags)) {
                 WendyComNetConfig c = {.enabled = (r.flags & 1) != 0,
                                        .ble = (r.flags & 2) != 0,
                                        .infrastructure_wifi = (r.flags & 4) != 0,

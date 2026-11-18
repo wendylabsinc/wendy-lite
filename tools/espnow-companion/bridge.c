@@ -1,8 +1,7 @@
 #include "wendy_net_espnow_hosted.h"
+#include "wendy_net_espnow_peers.h"
 
 #include "esp_hosted_peer_data.h"
-#include "esp_now.h"
-#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -11,6 +10,7 @@
 #include <string.h>
 
 static QueueHandle_t events;
+static struct wn_espnow_peers radio_peers;
 static atomic_bool active, sending, sent;
 static const uint8_t broadcast[6] = {255, 255, 255, 255, 255, 255};
 
@@ -19,24 +19,9 @@ struct event {
     uint8_t bytes[WN_ESPNOW_HOSTED_PAYLOAD + 14];
 };
 
-static esp_err_t register_peer(const uint8_t mac[6])
-{
-    if (esp_now_is_peer_exist(mac))
-        return ESP_OK;
-    esp_now_peer_info_t peer = {.ifidx = WIFI_IF_STA};
-    memcpy(peer.peer_addr, mac, 6);
-    esp_err_t err = esp_now_add_peer(&peer);
-    if (err != ESP_ERR_ESPNOW_FULL)
-        return err;
-    esp_now_peer_info_t stale;
-    if (esp_now_fetch_peer(true, &stale) != ESP_OK || esp_now_del_peer(stale.peer_addr) != ESP_OK)
-        return err;
-    return esp_now_add_peer(&peer);
-}
-
 static void receive(const esp_now_recv_info_t *info, const uint8_t *bytes, int size)
 {
-    if (!atomic_load(&active) || !info || size < 5 || size > WN_ESPNOW_HOSTED_PAYLOAD ||
+    if (!atomic_load(&active) || !info || !bytes || size < 5 || size > WN_ESPNOW_HOSTED_PAYLOAD ||
         memcmp(bytes, "WNE\1", 4))
         return;
     struct event event = {.size = (uint16_t)(size + 14)};
@@ -67,7 +52,8 @@ static esp_err_t start(uint8_t channel)
     esp_err_t err = esp_now_init();
     if (err != ESP_OK)
         return err;
-    if ((err = register_peer(broadcast)) != ESP_OK ||
+    radio_peers.count = 0;
+    if ((err = wn_espnow_add_peer(broadcast)) != ESP_OK ||
         (err = esp_now_register_recv_cb(receive)) != ESP_OK ||
         (err = esp_now_register_send_cb(completed)) != ESP_OK) {
         (void)esp_now_deinit();
@@ -124,7 +110,7 @@ static void bridge_task(void *unused)
                 send_event(WNE_SENT, 1);
                 break;
             }
-            if (register_peer(bytes + 2) != ESP_OK ||
+            if (wn_espnow_prepare_peer(&radio_peers, bytes + 2) != ESP_OK ||
                 esp_now_send(bytes + 2, bytes + 8, event.size - 8) != ESP_OK) {
                 atomic_store(&sending, false);
                 send_event(WNE_SENT, 1);
