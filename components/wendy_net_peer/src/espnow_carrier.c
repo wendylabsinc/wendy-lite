@@ -48,7 +48,7 @@ static atomic_uint generation, receiving;
 static atomic_bool transmitting;
 static unsigned running_generation, interface_index;
 static int listener = -1;
-static bool backend_started;
+static bool backend_started, radio_paused;
 static int64_t advertise_at, send_deadline;
 
 static void address_from_mac(uint8_t out[16], const uint8_t mac[6])
@@ -362,6 +362,7 @@ esp_err_t wn_espnow_start(unsigned channel)
     }
     running_generation = atomic_fetch_add(&generation, 1) + 1;
     advertise_at = esp_random() % 1000000;
+    radio_paused = false;
     return ESP_OK;
 
 fail:
@@ -403,12 +404,19 @@ void wn_espnow_stop(void)
 
 bool wn_espnow_channel_live(unsigned channel)
 {
-    uint8_t primary;
-    wifi_second_chan_t secondary;
-    if (atomic_load(&transmitting) && esp_timer_get_time() >= send_deadline)
+    if (listener < 0)
         return false;
-    return listener >= 0 && esp_wifi_get_channel(&primary, &secondary) == ESP_OK &&
-           primary == channel;
+    enum wendy_wifi_espnow_state state = wendy_wifi_espnow_state(channel);
+    int64_t now = esp_timer_get_time();
+    radio_paused = state == WENDY_WIFI_ESPNOW_SCANNING;
+    if (radio_paused) {
+        /* The radio may finish an outstanding send after the scan. Keep the
+         * interface and its TCP sockets open across the off-channel dwell. */
+        send_deadline = now + INT64_C(2000000);
+        return true;
+    }
+    return state == WENDY_WIFI_ESPNOW_READY &&
+           (!atomic_load(&transmitting) || now < send_deadline);
 }
 
 int wn_espnow_listener(void)
@@ -504,7 +512,7 @@ void wn_espnow_poll(const char *tenant, const char *device, bool accepting,
             wn_candidate_seen(selection, &hint, now / 1000);
         }
     }
-    if (atomic_load(&transmitting))
+    if (radio_paused || atomic_load(&transmitting))
         return;
     if (now >= advertise_at) {
         advertise_at = now + 900000 + esp_random() % 200001;
