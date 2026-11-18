@@ -49,7 +49,8 @@ also increase latency when a consumer falls behind.
 Use ESP-IDF 6.0.3 and a fresh build directory and sdkconfig for each comparison.
 Appending defaults does not override an existing sdkconfig. With the profile
 flag enabled, the build checks resolved values and fails with the mismatched
-setting if an old window, mailbox or Wi-Fi buffer value remains.
+setting if an old window, mailbox or Wi-Fi buffer value remains. The check is
+in the `wendy_core` component, so native apps that use `wendy_core` run it too.
 
 For the XIAO native camera board:
 
@@ -75,7 +76,7 @@ last overlay omitted. Validate a generated configuration independently with:
 
 ```sh
 cmake -D WENDY_NETWORK_CONFIG="$PWD/build/xiao-net-profile/config/sdkconfig.cmake" \
-  -P cmake/network_profile.cmake
+  -P components/wendy_core/network_profile.cmake
 ```
 
 The profile rejects C6, other unsupported targets, SRAM-only configurations and

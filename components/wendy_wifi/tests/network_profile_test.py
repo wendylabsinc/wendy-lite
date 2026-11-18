@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
-GUARD = ROOT / "cmake/network_profile.cmake"
+GUARD = ROOT / "components/wendy_core/network_profile.cmake"
 
 
 class NetworkProfileTests(unittest.TestCase):
