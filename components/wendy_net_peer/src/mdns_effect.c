@@ -3,6 +3,7 @@
 #include "wendy_pki_work.h"
 #include <limits.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <string.h>
 enum { POLL_US = 100000, DISCOVERY_US = 5000000 };
 struct wnm_owner {
@@ -33,6 +34,15 @@ static void execute(void *context)
             memset(&o->applied, 0, sizeof o->applied);
     }
     if (want->enabled && !o->applied.enabled) {
+        char radio[40] = {0}, psm[6] = {0};
+        if (want->ble_psm) {
+            const uint8_t *address = want->ble_address;
+            /* NimBLE stores addresses least significant byte first. */
+            snprintf(radio, sizeof radio, "ble:%u:%02x:%02x:%02x:%02x:%02x:%02x",
+                     want->ble_address_type, address[5], address[4], address[3], address[2],
+                     address[1], address[0]);
+            snprintf(psm, sizeof psm, "%u", want->ble_psm);
+        }
         mdns_txt_item_t txt[] = {{"version", "1"},
                                  {"protocol", "tls-v1"},
                                  {"principal", want->principal},
@@ -40,10 +50,10 @@ static void execute(void *context)
                                  {"role", "embedded-router"},
                                  {"platform", "Lite"},
                                  {"operator_router", want->operator_router ? "1" : "0"},
-                                 {"ble", want->radio},
-                                 {"ble_psm", want->psm}};
+                                 {"ble", radio},
+                                 {"ble_psm", psm}};
         if (mdns_service_add(want->instance, "_wendy-net", "_tcp", 43024, txt,
-                             want->radio[0] ? 9 : 7) == ESP_OK)
+                             want->ble_psm ? 9 : 7) == ESP_OK)
             o->applied = *want;
     }
     if (o->search && !o->finished) {

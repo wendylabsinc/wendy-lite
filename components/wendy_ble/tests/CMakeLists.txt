@@ -46,6 +46,16 @@ add_test(NAME constrained_management_advertising_success
     COMMAND constrained_management_advertising_success_test)
 
 find_package(Threads REQUIRED)
+add_executable(local_address_success_test local_address_success_test.c)
+target_include_directories(local_address_success_test PRIVATE stubs ../include)
+target_compile_definitions(local_address_success_test PRIVATE
+    CONFIG_WENDY_BLE=1 CONFIG_WENDY_PKI=1 CONFIG_WENDY_BLE_REQUIRE_MTLS=1
+    CONFIG_WENDY_BLE_PSM=128 CONFIG_WENDY_BLE_TASK_PRIORITY=5
+    CONFIG_WENDY_BLE_TASK_CORE_AFFINITY=0 CONFIG_WENDY_NET_BLE=1
+    CONFIG_WENDY_NET_CONSTRAINED_PROFILE=0)
+target_compile_options(local_address_success_test PRIVATE
+    -UNDEBUG -Wall -Wextra -Werror -Wno-unused-parameter)
+add_test(NAME mesh_local_address COMMAND local_address_success_test)
 add_executable(handshake_dispatch_success_test handshake_dispatch_success_test.c
     ../../wendy_pki/src/wendy_pki_work.c ../../wendy_net_common/src/memory.c ../../wendy_net_common/src/runtime_memory.c)
 target_include_directories(handshake_dispatch_success_test PRIVATE stubs ../include ../../wendy_pki/include ../../wendy_pki/src)

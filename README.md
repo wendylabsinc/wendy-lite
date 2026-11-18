@@ -28,6 +28,8 @@ use one BLE or Wi-Fi connection through a neighbour. Applications can publish
 and browse mesh services, and existing management and SensorLink operations can
 use mesh connections. The XIAO ESP32S3, ESP32-S31 Korvo-1 and Mosaico profiles
 also include this interface alongside their physical sensors and management.
+ESP32-P4 board profiles include both carriers through their ESP-Hosted C6
+radio, with mesh state in PSRAM; runtime participation still starts disabled.
 
 ## Optional WASM support
 
@@ -398,6 +400,12 @@ idf.py @boards/dfr1172_firebeetle.cfg set-target esp32p4
 # Same board, native apps only (no WASM, two OTA app slots)
 idf.py @boards/dfr1172_firebeetle_native.cfg set-target esp32p4
 ```
+
+All P4 profiles compile Wendy Net Wi-Fi and BLE carriers and use the
+multi-carrier router profile with a 2 MiB mesh allocation ceiling in PSRAM.
+The catalog's `dfr1172_firebeetle_native` board configuration uses native OTA
+app slots and does not include WASM. Start with a fresh sdkconfig to pick up
+the mesh defaults, then [enroll and enable the carriers](docs/wendy-net.md).
 
 #### Other P4 boards
 
