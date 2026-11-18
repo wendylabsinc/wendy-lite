@@ -29,7 +29,22 @@ static struct wcom_tx_chunk *wire_first, *wire_last;
 static struct wcom_operation *op_first, *op_last;
 static pthread_mutex_t op_lock = PTHREAD_MUTEX_INITIALIZER;
 static unsigned wire_messages, control_messages;
-static uint32_t order[128];
+static uint32_t order[512];
+static bool slow_links, mixed_links;
+static size_t wire_bytes, first_message_bytes;
+static unsigned tx_nodes;
+
+size_t wcom_link_sensor_message_limit(int link_id)
+{
+    assert(link_id == 10 || link_id == 20);
+    return slow_links && (!mixed_links || link_id == 10) ? 1024 : 10 * 1024;
+}
+
+static unsigned expected_chunks(int link_id)
+{
+    // 32 KiB is 34 messages in the slow profile and 4 on a direct socket.
+    return wcom_link_sensor_message_limit(link_id) == 1024 ? 34 : 4;
+}
 static unsigned order_count;
 
 static size_t channel_index(uint32_t channel)
@@ -79,7 +94,11 @@ void wcom_send(int link_id, struct wcom_tx_chunk *chunk)
 #endif
     if (wire_last) wire_last->next = chunk;
     else wire_first = chunk;
-    while (chunk->next) chunk = chunk->next;
+    for (;;) {
+        tx_nodes++;
+        if (!chunk->next) break;
+        chunk = chunk->next;
+    }
     wire_last = chunk;
 }
 
@@ -134,6 +153,9 @@ static void pump_message(void)
         if (chunk->done_handler) chunk->done_handler(link_ids[header.channel], chunk, true);
     }
     assert(size == sizeof(header) + ntohs(header.body_size));
+    assert(size <= wcom_link_sensor_message_limit(link_ids[header.channel]));
+    wire_bytes += size;
+    if (!first_message_bytes) first_message_bytes = size;
     pb_istream_t outer = pb_istream_from_buffer(bytes + sizeof(header), ntohs(header.body_size));
     pb_wire_type_t wire_type;
     uint32_t tag;
@@ -157,7 +179,7 @@ static void pump_message(void)
     assert(pb_decode(&inner, wendy_lite_sensorlink_SensorData_fields, &data));
     assert(pb_close_string_substream(&outer, &inner) && outer.bytes_left == 0);
     if (data.flags & 2) assert(received[i] == FRAME_SIZE);
-    order[order_count++ % 128] = data.channel_id;
+    order[order_count++ % 512] = data.channel_id;
     wire_messages++;
 }
 
@@ -195,8 +217,13 @@ static void test_parallel(void)
     if (!wire_first) wire_last = NULL;
     control.done_handler(10, &control, true);
     drain();
-    assert(control_messages == 1 && wire_messages == 8);
-    for (size_t i = 0; i < 8; i++) assert(order[i] == channels[i % 2]);
+    unsigned expected = 2 * expected_chunks(10);
+    assert(control_messages == 1 && wire_messages == expected);
+    for (size_t i = 0; i < expected; i++) assert(order[i] == channels[i % 2]);
+    // A control response waited for exactly one bounded sensor message.
+    assert(first_message_bytes <= (slow_links ? 1024 : 10240));
+    printf("two_frames payload=65536 wire=%zu messages=%u tx_nodes=%u control_wait_bytes=%zu\n",
+           wire_bytes, wire_messages, tx_nodes, first_message_bytes);
     assert(completions[0] == 1 && completions[1] == 1);
     // Sequences belong to each stream and advance independently.
     received[0] = chunks[0] = 0;
@@ -218,7 +245,7 @@ static void test_independent_links(void)
         assert(i == 2 * link + seen[link] % 2);
         seen[link]++;
     }
-    assert(seen[0] == 8 && seen[1] == 8);
+    assert(seen[0] == 2 * expected_chunks(10) && seen[1] == 2 * expected_chunks(20));
     for (size_t i = 0; i < 4; i++) assert(completions[i] == 1);
 }
 
@@ -362,7 +389,9 @@ static void test_core_parallel(void)
 
 int main(int argc, char **argv)
 {
-    assert(argc == 2 && WCOM_SENSOR_MAX_STREAMS == 4);
+    assert((argc == 2 || argc == 3) && WCOM_SENSOR_MAX_STREAMS == 4);
+    slow_links = argc == 3;
+    mixed_links = slow_links && !strcmp(argv[2], "mixed");
     for (size_t i = 0; i < 4; i++)
         for (size_t j = 0; j < FRAME_SIZE; j++) payload[i][j] = (uint8_t)(i * 17 + j);
     if (!strcmp(argv[1], "parallel")) test_parallel();
