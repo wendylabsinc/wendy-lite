@@ -45,6 +45,10 @@ idf.py -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;boards/wasm.defaults' set-targe
 idf.py build
 ```
 
+`boards/esp32c5_generic.cfg`, `boards/esp32c6_generic.cfg`,
+`boards/esp32s3_generic.cfg` and `boards/dfr1172_firebeetle.cfg` include
+`boards/wasm.defaults`. A bare `idf.py set-target <target>` builds without WASM.
+
 Existing `sdkconfig` files retain their choices. Configure a fresh build to pick
 up the new defaults, including disabled WASM callbacks and host API exports.
 ESP32-C61 and ESP32-S31 have no supported WASM runtime. Disabling
