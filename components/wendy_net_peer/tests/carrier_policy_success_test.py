@@ -95,7 +95,7 @@ struct fixture_identity {
     uint8_t trust_hash[32], journal_trust_hash[32];
 };
 struct peer_state {
-    struct { unsigned max_links, ble_links, wifi_links; bool ble, infrastructure_wifi; } config;
+    struct { unsigned max_links, ble_links, wifi_links, espnow_links; bool ble, infrastructure_wifi, espnow; } config;
     struct peer_state *next, *owner;
     struct wn_selection *selection;
     struct wn_candidate candidate;
@@ -292,6 +292,10 @@ void wn_put32(uint8_t *out, uint32_t value) {
 }
 static int wnad_connect(const char *address, unsigned port, bool *connecting) {
     assert(address && port); *connecting = true; return 7;
+}
+static int wn_espnow_listener(void) { return 8; }
+static int wn_espnow_connect(const struct wn_candidate *candidate, bool *connecting) {
+    return wnad_connect(candidate->address, candidate->port, connecting);
 }
 static bool wnad_prepare_socket(int fd) { return fd >= 0; }
 static int close(int fd) { assert(fd >= 0); return 0; }
@@ -1653,6 +1657,21 @@ static void bound_alias_promotion_boundaries(void) {
     assert_no_allocations();
 }
 #endif
+static void espnow_outgoing_limit(void) {
+    struct fixture f;
+    struct peer_state *root = reset(&f);
+    root->config.espnow = true;
+    root->config.espnow_links = WENDY_NET_NON_TRANSIT ? 1 : 3;
+    assert(espnow_outgoing_available(root));
+    for (unsigned i = 0; i < root->config.espnow_links; i++) {
+        f.links[i].candidate.medium = WN_ESPNOW;
+        f.links[i].setup_waiting = true;
+        assert(espnow_outgoing_available(root) == (i + 1 < root->config.espnow_links));
+    }
+    f.links[0].setup_server = true;
+    assert(espnow_outgoing_available(root));
+    assert(medium_available(root, WN_ESPNOW) == !WENDY_NET_NON_TRANSIT);
+}
 int main(void) {
     assert(wendy_net_runtime_memory_open());
     /* Keep both profile builds strict about declarations and boundary stubs. */
@@ -1675,6 +1694,7 @@ int main(void) {
     (void)reserve_candidate;
     (void)wble_mesh_profile;
     (void)wnad_connect;
+    (void)wn_espnow_connect;
     (void)wnad_prepare_socket;
     (void)close;
     (void)wble_mesh_release;
@@ -1685,6 +1705,7 @@ int main(void) {
     (void)peer_b;
     (void)peer_c;
     (void)full_redundant;
+    espnow_outgoing_limit();
     if (WENDY_NET_NON_TRANSIT) constrained();
 #if !WENDY_NET_NON_TRANSIT
     else {
@@ -1719,7 +1740,7 @@ int main(void) {
 
 ble_header = (root.parent / 'wendy_ble/include/wendy_ble_mesh.h').read_text()
 common_names = ('node_root', 'ble_address', 'clock_idle', 'slot_free', 'capacity_available', 'medium_available',
-                'same_peer', 'candidate_used', 'additional_candidate')
+                'same_peer', 'candidate_used', 'espnow_outgoing_available', 'additional_candidate')
 with tempfile.TemporaryDirectory() as tmp:
     p = Path(tmp)
     for constrained_profile in (0, 1):
@@ -1740,7 +1761,7 @@ with tempfile.TemporaryDirectory() as tmp:
                      'commit_carrier', 'admit_link',
                      'candidate_used', 'candidate_class',
                      'reclaimable_carrier', 'reclaim_victim', 'candidate_room', 'ble_discovery_available',
-                     'additional_candidate', 'setup_room', 'setup_capacity_available',
+                     'espnow_outgoing_available', 'additional_candidate', 'setup_room', 'setup_capacity_available',
                      'plan_additional_candidate', 'incoming_standby_hint', 'maintain_incoming_demand',
                      'reclaim_for_incoming_probe', 'ble_admission_available', 'ble_probe_available',
                      'begin_setup', 'update_ble']

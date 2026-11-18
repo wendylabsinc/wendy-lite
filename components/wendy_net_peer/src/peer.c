@@ -21,6 +21,7 @@
 #include "wendy_net_carrier.h"
 #include "wendy_net_packet_queue.h"
 #include "actor_driver.h"
+#include "espnow_carrier.h"
 #include "wendy_net_agent.h"
 #if CONFIG_WENDY_NET
 #include "wendy_net.h"
@@ -188,6 +189,9 @@ static _Atomic(TaskHandle_t) identity_task;
 static atomic_uint runtime_state = WendyComNetState_WENDY_COM_NET_OFF;
 static atomic_uint runtime_error;
 static WendyComNetConfig applied_config;
+static atomic_uint espnow_runtime_channel, espnow_runtime_error, espnow_runtime_links;
+static unsigned espnow_effective_channel;
+static int64_t espnow_retry_at, espnow_channel_at;
 static void lifecycle_poll(void);
 static pthread_mutex_t state_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct topology_query *topology_query;
@@ -1386,6 +1390,8 @@ static bool medium_available(struct peer_state *root, enum wn_medium medium)
         return false;
     if (medium == WN_BLE)
         return root->config.ble && active < root->config.ble_links;
+    if (medium == WN_ESPNOW)
+        return root->config.espnow && wn_espnow_listener() >= 0;
     if (medium == WN_NAN)
         return false; /* No NAN runtime in this delivery. */
     return root->config.infrastructure_wifi && active < root->config.wifi_links;
@@ -1395,6 +1401,8 @@ static bool medium_available(struct peer_state *root, enum wn_medium medium)
         return false;
     if (medium == WN_BLE)
         return root->config.ble && used.ble < root->config.ble_links;
+    if (medium == WN_ESPNOW)
+        return root->config.espnow && wn_espnow_listener() >= 0;
     return medium == WN_LAN && root->config.infrastructure_wifi &&
            used.lan < root->config.wifi_links;
 #endif
@@ -1762,7 +1770,9 @@ static void begin_setup(struct peer_state *link, const struct wn_candidate *cand
     link->hello_in = link->hello_out = link->hello_size = 0;
     link->setup_connecting = false;
     if (index >= 0 && !link->setup_have_stream && fd < 0)
-        fd = wnad_connect(candidate->address, candidate->port, &link->setup_connecting);
+        fd = candidate->medium == WN_ESPNOW
+                 ? wn_espnow_connect(candidate, &link->setup_connecting)
+                 : wnad_connect(candidate->address, candidate->port, &link->setup_connecting);
     if (!link->setup_have_stream && fd >= 0 && !wnad_prepare_socket(fd)) {
         close(fd);
         fd = -1;
@@ -2008,6 +2018,7 @@ static int admit_link(struct peer_state *root, struct peer_state *link)
     ESP_LOGI(TAG, "authenticated carrier admitted: peer=%s medium=%s link=%llu active=%u",
              link->operator_peer ? link->operator_peer->principal : link->candidate.device,
              link->setup_have_stream            ? "BLE"
+             : link->candidate.medium == WN_ESPNOW ? "ESP-NOW"
              : link->candidate.medium == WN_NAN ? "NAN"
                                                 : "LAN",
              (unsigned long long)wnrs_link_id(link->router), active);
@@ -2064,9 +2075,9 @@ static struct peer_state *reclaim_victim(struct peer_state *root, enum wn_medium
     struct carrier_occupancy used;
     if (!carrier_occupancy(root, &used) || used.retiring)
         return NULL;
-    bool medium_full = medium == WN_BLE ? used.ble >= root->config.ble_links ||
-                                             !used.physical_ready
-                                       : used.lan >= root->config.wifi_links;
+    bool medium_full = (medium == WN_BLE &&
+                        (used.ble >= root->config.ble_links || !used.physical_ready)) ||
+                       (medium == WN_LAN && used.lan >= root->config.wifi_links);
     if ((medium == WN_BLE && !root->config.ble) ||
         (medium == WN_LAN && !root->config.infrastructure_wifi) || medium == WN_NAN ||
         (!medium_full && used.total < root->config.max_links))
@@ -2104,6 +2115,15 @@ static bool candidate_room(struct peer_state *root, enum wn_medium medium)
     return true;
 }
 #endif
+static bool espnow_outgoing_available(struct peer_state *root)
+{
+    unsigned outgoing = 0;
+    for (struct peer_state *link = root; link; link = link->next)
+        if (link->candidate.medium == WN_ESPNOW && !link->setup_server && !slot_free(link))
+            outgoing++;
+    return outgoing < root->config.espnow_links;
+}
+
 static int additional_candidate(struct peer_state *root, int64_t now, bool lan)
 {
     int best = -1;
@@ -2119,6 +2139,9 @@ static int additional_candidate(struct peer_state *root, int64_t now, bool lan)
         if (candidate->medium == WN_BLE && root->bootstrap_time)
             continue;
 #endif
+        if (candidate->medium == WN_ESPNOW &&
+            (!root->config.espnow || wn_espnow_listener() < 0 || !espnow_outgoing_available(root)))
+            continue;
         if (candidate->passive || (candidate->medium == WN_LAN && !lan))
             continue;
         if (!candidate->address[0] || now < candidate->seen_ms ||
@@ -2239,6 +2262,75 @@ static bool setup_in_flight(struct peer_state *root)
             return true;
     return false;
 }
+static void stop_espnow(struct peer_state *root)
+{
+    if (!espnow_effective_channel) {
+        if (espnow_retry_at)
+            wn_espnow_stop();
+        espnow_retry_at = 0;
+        return;
+    }
+    for (struct peer_state *link = root; link; link = link->next)
+        if (link->candidate.medium == WN_ESPNOW && !slot_free(link))
+            retire_link(link);
+    for (unsigned i = 0; i < WN_CANDIDATES; i++) {
+        struct wn_candidate *candidate = &root->selection->candidates[i];
+        if (candidate->medium == WN_ESPNOW) {
+            candidate->seen_ms = -30000;
+            if (!candidate->holds)
+                *candidate = (struct wn_candidate){0};
+        }
+    }
+    wn_espnow_stop();
+    espnow_effective_channel = 0;
+    atomic_store(&espnow_runtime_channel, 0);
+    atomic_store(&espnow_runtime_links, 0);
+}
+
+static void update_espnow(struct peer_state *root, const char *tenant,
+                          const char *device, int64_t now)
+{
+    bool changed = wn_settings_try_espnow(&root->config);
+    bool check_channel = now >= espnow_channel_at;
+    if (check_channel)
+        espnow_channel_at = now + 1000000;
+    unsigned channel = root->config.espnow_channel;
+    if (espnow_effective_channel &&
+        (!root->config.espnow || espnow_effective_channel != channel ||
+         (check_channel && !wn_espnow_channel_live(channel)))) {
+        stop_espnow(root);
+        espnow_retry_at = now;
+    }
+    if (!root->config.espnow) {
+        stop_espnow(root);
+        atomic_store(&espnow_runtime_error, 0);
+    } else {
+        if (!espnow_effective_channel && now >= espnow_retry_at) {
+            espnow_retry_at = now + 1000000;
+            esp_err_t result = wn_espnow_start(channel);
+            atomic_store(&espnow_runtime_error, result);
+            if (result == ESP_OK) {
+                espnow_effective_channel = channel;
+                atomic_store(&espnow_runtime_channel, channel);
+                ESP_LOGI(TAG, "ESP-NOW carrier listening on channel %u", channel);
+            }
+        }
+        unsigned links = 0;
+        for (struct peer_state *link = root; link; link = link->next)
+            links += link->candidate.medium == WN_ESPNOW && atomic_load(&link->active);
+        atomic_store(&espnow_runtime_links, links);
+        wn_espnow_poll(tenant, device, root->clock_ready && medium_available(root, WN_ESPNOW),
+                       root->selection, now);
+    }
+    if (changed) {
+        pthread_mutex_lock(&state_lock);
+        applied_config.espnow = root->config.espnow && espnow_effective_channel != 0;
+        applied_config.espnow_channel = channel;
+        applied_config.espnow_links = root->config.espnow_links;
+        pthread_mutex_unlock(&state_lock);
+    }
+}
+
 static bool setup_capacity_available(struct peer_state *root)
 {
     unsigned pending = 0;
@@ -2387,6 +2479,7 @@ static void router_run(struct peer_state *root)
         /* Read local mesh setup availability; TLS still establishes trust.
          * Public time is opportunistic and never a mesh admission prerequisite. */
         bootstrap_time_tick(root, !setup_in_flight(root));
+        update_espnow(root, tenant, device, now);
 #if CONFIG_WENDY_NET_BLE
         if (root->config.ble) {
             wble_mesh_scan_interest(ble_discovery_available(root));
@@ -2407,7 +2500,8 @@ static void router_run(struct peer_state *root)
             now = esp_timer_get_time();
             if (link->setup_waiting) {
 
-                if (lan_paused && link->candidate.medium == WN_LAN)
+                if ((lan_paused && link->candidate.medium == WN_LAN) ||
+                    (link->candidate.medium == WN_ESPNOW && wn_espnow_listener() < 0))
                     link->tls_state.cancel = true;
                 int pending = advance_setup(link, now);
                 if (pending < 0) {
@@ -2441,7 +2535,8 @@ static void router_run(struct peer_state *root)
                 progress |= io > 0;
             }
             bool lost =
-                link->candidate.medium == WN_LAN && (lan_paused || !wendy_wifi_is_connected());
+                (link->candidate.medium == WN_LAN && (lan_paused || !wendy_wifi_is_connected())) ||
+                (link->candidate.medium == WN_ESPNOW && wn_espnow_listener() < 0);
             bool live = identity_live(link, now);
             if (link->failed || !live || lost) {
                 ESP_LOGW(TAG, "carrier retired: peer=%s failed=%u identity_live=%u medium_lost=%u",
@@ -2570,6 +2665,23 @@ static void router_run(struct peer_state *root)
             }
         }
 #endif
+        if (!accepted && root->clock_ready && setup_capacity_available(root) &&
+            setup_room(root) && medium_available(root, WN_ESPNOW)) {
+            struct wn_candidate radio = {.medium = WN_ESPNOW, .port = WN_ESPNOW_PORT,
+                                         .cost = WN_ESPNOW_COST};
+            int fd = wn_espnow_accept(&radio);
+            if (fd >= 0) {
+                accepted = true;
+                struct peer_state *link = reserve_slot(root);
+                if (!link)
+                    close(fd);
+                else {
+                    link->setup_have_stream = false;
+                    link->setup_server = true;
+                    begin_setup(link, &radio, fd);
+                }
+            }
+        }
         if (!accepted && lan && root->listener >= 0 && root->clock_ready &&
             setup_capacity_available(root) && setup_room(root) && medium_available(root, WN_LAN)) {
             struct sockaddr_in remote;
@@ -2668,6 +2780,13 @@ static void router_run(struct peer_state *root)
             FD_ZERO(&wr);
             int maximum = wnad_wake_fd();
             FD_SET(maximum, &rd);
+            int espnow_fd = wn_espnow_listener();
+            if (espnow_fd >= 0 && root->clock_ready && setup_capacity_available(root) &&
+                setup_room(root) && medium_available(root, WN_ESPNOW)) {
+                FD_SET(espnow_fd, &rd);
+                if (espnow_fd > maximum)
+                    maximum = espnow_fd;
+            }
             if (root->listener >= 0 && root->clock_ready && setup_capacity_available(root) &&
                 setup_room(root) && medium_available(root, WN_LAN)) {
                 FD_SET(root->listener, &rd);
@@ -2758,6 +2877,9 @@ static bool shutdown_step(struct peer_state *root)
     wnne_desire(&root->netif_effect, WNNE_REMOVED);
     poll_netif_effect(root);
     waiting |= !wnne_idle(&root->netif_effect);
+    stop_espnow(root);
+    espnow_retry_at = espnow_channel_at = 0;
+    atomic_store(&espnow_runtime_error, 0);
     close_listener(root);
     struct wnm_intent mdns_off = {0};
     mdns_collect(root, false, "", "");
@@ -3067,6 +3189,9 @@ void wn_peer_runtime_status(WendyComNetStatus *status)
     status->internal_bytes = (uint32_t)memory.internal_bytes;
     status->state = (WendyComNetState)atomic_load(&runtime_state);
     status->error_code = atomic_load(&runtime_error);
+    status->espnow_effective_channel = atomic_load(&espnow_runtime_channel);
+    status->espnow_error = atomic_load(&espnow_runtime_error);
+    status->espnow_active_links = atomic_load(&espnow_runtime_links);
     pthread_mutex_lock(&state_lock);
     status->has_applied = true;
     status->applied = applied_config;
