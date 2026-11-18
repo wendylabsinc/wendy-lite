@@ -1,4 +1,5 @@
 #include "settings.h"
+#include "espnow_carrier.h"
 #include "topology_record.h"
 #if CONFIG_WENDY_NET_BLE
 #include "wendy_ble_mesh.h"
@@ -49,17 +50,32 @@ static bool psram(void)
 {
     return heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0;
 }
-static bool same(const WendyComNetConfig *a, const WendyComNetConfig *b)
+static bool same_base(const WendyComNetConfig *a, const WendyComNetConfig *b)
 {
     return a->enabled == b->enabled && a->ble == b->ble && a->nan == b->nan &&
            a->infrastructure_wifi == b->infrastructure_wifi && a->max_links == b->max_links &&
            a->ble_links == b->ble_links && a->wifi_links == b->wifi_links &&
            a->nan_links == b->nan_links && a->ble_profile == b->ble_profile;
 }
+static bool apply_espnow_only;
+static bool same_espnow(const WendyComNetConfig *a, const WendyComNetConfig *b)
+{
+    return a->espnow == b->espnow && a->espnow_channel == b->espnow_channel &&
+           a->espnow_links == b->espnow_links;
+}
 static esp_err_t normalize(WendyComNetConfig *c)
 {
     if ((unsigned)c->ble_profile > WendyComBleProfile_WENDY_COM_BLE_CODED_S8 ||
         (c->ble_profile && !CODED_PROFILES_SUPPORTED))
+        return ESP_ERR_NOT_SUPPORTED;
+    c->has_espnow = c->has_espnow_channel = c->has_espnow_links = true;
+    if (!c->espnow_channel)
+        c->espnow_channel = 1;
+    if (!c->espnow_links)
+        c->espnow_links = WENDY_NET_NON_TRANSIT ? 1 : 3;
+    if (c->espnow_channel > 14 || c->espnow_links > (WENDY_NET_NON_TRANSIT ? 1u : 3u))
+        return ESP_ERR_INVALID_ARG;
+    if (c->espnow && !wn_espnow_supported())
         return ESP_ERR_NOT_SUPPORTED;
     if (!c->max_links)
         c->max_links = WENDY_NET_NON_TRANSIT ? 1 : CONFIG_WENDY_NET_MAX_LINKS;
@@ -75,12 +91,12 @@ static esp_err_t normalize(WendyComNetConfig *c)
         return ESP_ERR_INVALID_ARG;
     if (WENDY_NET_NON_TRANSIT &&
         (c->max_links != 1 || c->ble_links > 1 || c->wifi_links > 1 || c->nan_links > 1 ||
-         (unsigned)c->ble + (unsigned)c->infrastructure_wifi + (unsigned)c->nan > 1))
+         (unsigned)c->ble + (unsigned)c->infrastructure_wifi + (unsigned)c->nan + (unsigned)c->espnow > 1))
         return ESP_ERR_NOT_SUPPORTED;
     if ((c->ble && !CONFIG_WENDY_NET_BLE) || c->nan ||
         (c->infrastructure_wifi && !CONFIG_WENDY_WIFI_ENABLED))
         return ESP_ERR_NOT_SUPPORTED;
-    if (c->enabled && !c->ble && !c->infrastructure_wifi)
+    if (c->enabled && !c->ble && !c->infrastructure_wifi && !c->espnow)
         return ESP_ERR_INVALID_ARG;
     return ESP_OK;
 }
@@ -97,6 +113,8 @@ static WendyComResult get(WendyComNetStatus *status)
     status->has_desired = true;
     status->desired = wn_settings_get();
     status->ble_supported = CONFIG_WENDY_NET_BLE;
+    status->has_espnow_supported = true;
+    status->espnow_supported = wn_espnow_supported();
     status->ble_profiles_supported =
         CONFIG_WENDY_NET_BLE ? (CODED_PROFILES_SUPPORTED ? 7u : 1u) : 0u;
     status->wifi_supported = CONFIG_WENDY_WIFI_ENABLED;
@@ -132,6 +150,12 @@ static WendyComResult set(const WendyComNetConfig *input, WendyComNetStatus *sta
     *token = 0;
     WendyComNetConfig config = *input;
     get(status);
+    if (!config.has_espnow)
+        config.espnow = status->desired.espnow;
+    if (!config.has_espnow_channel)
+        config.espnow_channel = status->desired.espnow_channel;
+    if (!config.has_espnow_links)
+        config.espnow_links = status->desired.espnow_links;
     WendyComResult rejected = WendyComResult_WENDY_COM_RESULT_OK;
     if (config.infrastructure_wifi && !status->wifi_supported)
         rejected = WendyComResult_WENDY_COM_RESULT_NET_NO_WIFI;
@@ -140,12 +164,14 @@ static WendyComResult set(const WendyComNetConfig *input, WendyComNetStatus *sta
     else if ((unsigned)config.ble_profile > WendyComBleProfile_WENDY_COM_BLE_CODED_S8 ||
              (config.ble_profile && !CODED_PROFILES_SUPPORTED))
         rejected = WendyComResult_WENDY_COM_RESULT_NET_BLE_PROFILE_UNSUPPORTED;
+    else if (config.espnow && !status->espnow_supported)
+        rejected = WendyComResult_WENDY_COM_RESULT_NET_NO_ESPNOW;
     else if (config.nan)
         rejected = WendyComResult_WENDY_COM_RESULT_NET_NO_NAN;
     else if (WENDY_NET_NON_TRANSIT &&
              (config.max_links > 1 || config.ble_links > 1 || config.wifi_links > 1 ||
               config.nan_links > 1 ||
-              (unsigned)config.ble + (unsigned)config.infrastructure_wifi > 1))
+              (unsigned)config.ble + (unsigned)config.infrastructure_wifi + (unsigned)config.espnow > 1))
         rejected = WendyComResult_WENDY_COM_RESULT_NET_ONE_CARRIER_ONLY;
     if (rejected != WendyComResult_WENDY_COM_RESULT_OK) {
         status->error_code = ESP_ERR_NOT_SUPPORTED;
@@ -162,11 +188,14 @@ static WendyComResult set(const WendyComNetConfig *input, WendyComNetStatus *sta
         get(status);
         return WendyComResult_WENDY_COM_RESULT_BUSY;
     }
-    if (!same(&config, &saved)) {
+    bool unchanged_base = same_base(&config, &saved);
+    if (!unchanged_base || !same_espnow(&config, &saved)) {
         struct record r = {SETTINGS_MAGIC,
                            (config.enabled ? 1u : 0) | (config.ble ? 2u : 0) |
                                (config.infrastructure_wifi ? 4u : 0) |
-                               ((unsigned)config.ble_profile << 4),
+                               ((unsigned)config.ble_profile << 4) |
+                               (config.espnow ? 64u : 0u) |
+                               (config.espnow_channel << 8) | (config.espnow_links << 12),
                            config.max_links,
                            config.ble_links,
                            config.wifi_links,
@@ -174,12 +203,13 @@ static WendyComResult set(const WendyComNetConfig *input, WendyComNetStatus *sta
         nvs_handle_t h;
         result = nvs_open_from_partition("wendy_pki", "net-settings", NVS_READWRITE, &h);
         if (result == ESP_OK) {
-            result = nvs_set_blob(h, "config", &r, sizeof r);
+            result = nvs_set_blob(h, "config2", &r, sizeof r);
             if (result == ESP_OK)
                 result = nvs_commit(h);
             nvs_close(h);
         }
         if (result == ESP_OK) {
+            apply_espnow_only = unchanged_base;
             saved = config;
             atomic_store(&restarting,
                          boot_selected &&
@@ -207,6 +237,7 @@ void wn_settings_poll(bool network_drained)
     if (apply.token &&
         atomic_load_explicit(&receipt, memory_order_acquire) == ((apply.token << 1) | 1u))
         wnsa_reply(&apply, apply.token, now);
+    bool live = apply_espnow_only;
     bool ready = wnsa_poll(&apply, now, network_drained);
     if (ready) {
         atomic_store(&receipt, 0);
@@ -214,7 +245,7 @@ void wn_settings_poll(bool network_drained)
         atomic_store(&restart_ready, atomic_load(&restarting));
     }
     pthread_mutex_unlock(&lock);
-    if (ready)
+    if (ready && !live)
         wn_peer_configuration_changed();
 }
 bool wn_settings_pending(void)
@@ -243,17 +274,25 @@ esp_err_t wn_settings_init(void)
         if (nvs_open_from_partition("wendy_pki", "net-settings", NVS_READONLY, &h) == ESP_OK) {
             struct record r;
             size_t size = sizeof r;
-            if (nvs_get_blob(h, "config", &r, &size) == ESP_OK && size == sizeof r &&
-                r.magic == SETTINGS_MAGIC && !(r.flags & ~63u)) {
+            esp_err_t result = nvs_get_blob(h, "config2", &r, &size);
+            if (result == ESP_ERR_NVS_NOT_FOUND) {
+                size = sizeof r;
+                result = nvs_get_blob(h, "config", &r, &size);
+            }
+            if (result == ESP_OK && size == sizeof r &&
+                r.magic == SETTINGS_MAGIC && !(r.flags & ~0x3f7fu)) {
                 WendyComNetConfig c = {.enabled = (r.flags & 1) != 0,
                                        .ble = (r.flags & 2) != 0,
                                        .infrastructure_wifi = (r.flags & 4) != 0,
                                        .nan = (r.flags & 8) != 0,
-                                       .ble_profile = (WendyComBleProfile)(r.flags >> 4),
+                                       .ble_profile = (WendyComBleProfile)((r.flags >> 4) & 3u),
                                        .max_links = r.links,
                                        .ble_links = r.ble,
                                        .wifi_links = r.wifi,
-                                       .nan_links = r.nan};
+                                       .nan_links = r.nan,
+                                       .espnow = (r.flags & 64u) != 0,
+                                       .espnow_channel = (r.flags >> 8) & 15u,
+                                       .espnow_links = (r.flags >> 12) & 3u};
                 if (normalize(&c) == ESP_OK)
                     saved = c;
                 else
@@ -293,4 +332,18 @@ esp_err_t wendy_net_peer_boot_radios(bool *ble, bool *wifi)
     *wifi = CONFIG_WENDY_WIFI_ENABLED;
     pthread_mutex_unlock(&lock);
     return ESP_OK;
+}
+
+bool wn_settings_try_espnow(WendyComNetConfig *config)
+{
+    if (pthread_mutex_trylock(&lock))
+        return false;
+    bool ready = !apply.token && !atomic_load(&restarting);
+    if (ready) {
+        config->espnow = saved.espnow;
+        config->espnow_channel = saved.espnow_channel;
+        config->espnow_links = saved.espnow_links;
+    }
+    pthread_mutex_unlock(&lock);
+    return ready;
 }

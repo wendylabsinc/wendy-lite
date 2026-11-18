@@ -65,6 +65,10 @@ esp_err_t wendy_wifi_set_station_enabled(bool enabled);
  */
 void wendy_wifi_deinit(void);
 
+/* Start an unassociated station or check the channel of the associated AP. */
+esp_err_t wendy_wifi_espnow_channel(unsigned channel);
+void wendy_wifi_espnow_release(void);
+
 #ifdef __cplusplus
 }
 #endif

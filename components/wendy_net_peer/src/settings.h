@@ -13,3 +13,5 @@ void wn_peer_configuration_changed(void);
 void wn_peer_runtime_status(WendyComNetStatus *);
 
 WendyComResult wn_peer_topology(const WendyComNetTopologyParams *, WendyComNetTopologyPage *);
+
+bool wn_settings_try_espnow(WendyComNetConfig *config);

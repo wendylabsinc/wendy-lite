@@ -42,6 +42,7 @@ ESP_EVENT_DEFINE_BASE(WENDY_WIFI_CONTROL_EVENT);
 static EventGroupHandle_t s_wifi_events;
 static bool s_infra_initialized = false;
 static bool s_boot_radio_enabled = true;
+static bool s_station_started, s_espnow_started_station;  /* Protected by s_station_lock. */
 static atomic_bool s_connected;
 static TaskHandle_t s_services_task;
 static pthread_mutex_t s_services_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -216,6 +217,10 @@ static esp_err_t attempt_handoff(uint32_t request)
     int32_t id = (int32_t)s_next_drain_id;
     xEventGroupClearBits(s_wifi_events, WIFI_QUIESCED_BIT);
     esp_err_t err = esp_wifi_stop();
+    if (err == ESP_OK) {
+        s_station_started = false;
+        s_espnow_started_station = false;
+    }
     pthread_mutex_unlock(&s_station_lock);
     if (err != ESP_OK) return retry_handoff_later(request, "stop", err);
     err = esp_event_post(WENDY_WIFI_CONTROL_EVENT, id, NULL, 0,
@@ -245,6 +250,7 @@ static esp_err_t attempt_handoff(uint32_t request)
 #endif
     if (err == ESP_OK) err = esp_wifi_start();
     if (err == ESP_OK) {
+        s_station_started = true;
 #if CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3
     // A SensorLink camera is a continuous source: modem sleep adds beacon/DTIM
     // waits between the TLS records that carry each frame.
@@ -619,6 +625,7 @@ void wendy_wifi_deinit(void)
     s_connect_requested = false;
     s_reconnect_pending = false;
     s_connected = false;
+    s_station_started = s_espnow_started_station = false;
     esp_wifi_stop();
     esp_wifi_deinit();
     pthread_mutex_unlock(&s_station_lock);
@@ -627,4 +634,41 @@ void wendy_wifi_deinit(void)
     mdns_free();
     s_mdns_initialized = s_mdns_started = false;
     pthread_mutex_unlock(&s_services_lock);
+}
+
+esp_err_t wendy_wifi_espnow_channel(unsigned channel)
+{
+    if (!s_infra_initialized || channel < 1 || channel > 14)
+        return ESP_ERR_INVALID_STATE;
+    pthread_mutex_lock(&s_station_lock);
+    wifi_ap_record_t ap;
+    esp_err_t result = esp_wifi_sta_get_ap_info(&ap);
+    if (result == ESP_OK) {
+        result = ap.primary == channel ? ESP_OK : ESP_ERR_WIFI_NOT_CONNECT;
+    } else if (s_connect_requested) {
+        result = ESP_ERR_WIFI_NOT_CONNECT;
+    } else {
+        wifi_country_t country;
+        result = esp_wifi_get_country(&country);
+        if (result == ESP_OK && (channel < country.schan || channel >= country.schan + country.nchan))
+            result = ESP_ERR_INVALID_ARG;
+        if (result == ESP_OK && !s_station_started) {
+            result = esp_wifi_start();
+            if (result == ESP_OK)
+                s_station_started = s_espnow_started_station = true;
+        }
+        if (result == ESP_OK)
+            result = esp_wifi_set_channel((uint8_t)channel, WIFI_SECOND_CHAN_NONE);
+    }
+    pthread_mutex_unlock(&s_station_lock);
+    return result;
+}
+
+void wendy_wifi_espnow_release(void)
+{
+    pthread_mutex_lock(&s_station_lock);
+    if (s_espnow_started_station && !s_connect_requested && esp_wifi_stop() == ESP_OK)
+        s_station_started = false;
+    s_espnow_started_station = false;
+    pthread_mutex_unlock(&s_station_lock);
 }
