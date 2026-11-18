@@ -28,10 +28,11 @@
 #include "esp_hosted_misc.h"
 #include "wendy_net_espnow_hosted.h"
 #else
-#include "esp_now.h"
+#include "wendy_net_espnow_peers.h"
 #endif
 
 enum { IP_MTU = 1280, HEADER_SIZE = 5, QUEUE_DEPTH = 4, AD_SIZE = 40 };
+enum { IPV6_HEADER_SIZE = 40, TCP_HEADER_SIZE = 20 };
 enum { PRESENCE = 1, IPV6 = 2 };
 static const uint8_t broadcast[6] = {255, 255, 255, 255, 255, 255};
 static const uint8_t prefix[] = {'W', 'N', 'E', 1};
@@ -70,19 +71,18 @@ static bool mac_from_address(uint8_t mac[6], const uint8_t address[16])
 }
 
 static void enqueue_received(const uint8_t source[6], const uint8_t destination[6],
-                             const uint8_t *bytes, int size)
+                             const uint8_t *bytes, size_t size, unsigned current)
 {
-    unsigned current = atomic_load(&generation);
-    if (!(current & 1) || !bytes || size <= HEADER_SIZE ||
-        size > HEADER_SIZE + IP_MTU || memcmp(bytes, prefix, sizeof prefix))
+    if (!bytes || size <= HEADER_SIZE || size > HEADER_SIZE + IP_MTU ||
+        memcmp(bytes, prefix, sizeof prefix))
         return;
     bool bcast = !memcmp(destination, broadcast, 6);
     if (bcast ? bytes[4] != PRESENCE || size != AD_SIZE :
-                bytes[4] != IPV6 || size < HEADER_SIZE + 40)
+                bytes[4] != IPV6 || size < HEADER_SIZE + IPV6_HEADER_SIZE + TCP_HEADER_SIZE)
         return;
     struct frame packet;
     memcpy(packet.mac, source, 6);
-    memcpy(packet.bytes, bytes, (size_t)size);
+    memcpy(packet.bytes, bytes, size);
     packet.size = (uint16_t)size;
     packet.generation = current;
     if (xQueueSend(rx, &packet, 0) == pdTRUE)
@@ -90,10 +90,16 @@ static void enqueue_received(const uint8_t source[6], const uint8_t destination[
 }
 
 static void queue_received(const uint8_t source[6], const uint8_t destination[6],
-                           const uint8_t *bytes, int size)
+                           const uint8_t *bytes, size_t size)
 {
+    unsigned current = atomic_load(&generation);
+    if (!(current & 1))
+        return;
     atomic_fetch_add(&receiving, 1);
-    enqueue_received(source, destination, bytes, size);
+    /* A callback that raced with stop must not use a retired queue, even if
+     * another generation has already started. */
+    if (atomic_load(&generation) == current)
+        enqueue_received(source, destination, bytes, size, current);
     atomic_fetch_sub(&receiving, 1);
 }
 
@@ -123,7 +129,7 @@ static void hosted_event(uint32_t id, const uint8_t *bytes, size_t size, void *c
         break;
     case WNE_RECEIVED:
         if (size > 14 && size <= WN_ESPNOW_HOSTED_PAYLOAD + 14)
-            queue_received(bytes + 2, bytes + 8, bytes + 14, (int)size - 14);
+            queue_received(bytes + 2, bytes + 8, bytes + 14, size - 14);
         return;
     case WNE_SENT:
         completed_send();
@@ -175,10 +181,12 @@ static esp_err_t radio_send(const struct frame *packet)
     return esp_hosted_send_custom_data(WN_ESPNOW_HOSTED_MESSAGE, data, packet->size + 8);
 }
 #else
+static struct wn_espnow_peers radio_peers;
+
 static void receive_frame(const esp_now_recv_info_t *info, const uint8_t *bytes, int size)
 {
-    if (info)
-        queue_received(info->src_addr, info->des_addr, bytes, size);
+    if (info && size > 0)
+        queue_received(info->src_addr, info->des_addr, bytes, (size_t)size);
 }
 
 static void sent_frame(const esp_now_send_info_t *info, esp_now_send_status_t status)
@@ -188,33 +196,14 @@ static void sent_frame(const esp_now_send_info_t *info, esp_now_send_status_t st
     completed_send();
 }
 
-static esp_err_t register_peer(const uint8_t mac[6])
-{
-    if (esp_now_is_peer_exist(mac))
-        return ESP_OK;
-
-    esp_now_peer_info_t peer = {.ifidx = WIFI_IF_STA};
-    memcpy(peer.peer_addr, mac, 6);
-    esp_err_t err = esp_now_add_peer(&peer);
-    if (err != ESP_ERR_ESPNOW_FULL)
-        return err;
-    /* Registration only supplies the current destination to the radio.
-     * Active sockets restore a registration on their next transmission. */
-    esp_now_peer_info_t stale;
-    if (esp_now_fetch_peer(true, &stale) != ESP_OK)
-        return err;
-    if (esp_now_del_peer(stale.peer_addr) != ESP_OK)
-        return err;
-    return esp_now_add_peer(&peer);
-}
-
 static esp_err_t radio_start(unsigned channel)
 {
     (void)channel;
     esp_err_t err = esp_now_init();
     if (err != ESP_OK)
         return err;
-    if ((err = register_peer(broadcast)) != ESP_OK ||
+    radio_peers.count = 0;
+    if ((err = wn_espnow_add_peer(broadcast)) != ESP_OK ||
         (err = esp_now_register_send_cb(sent_frame)) != ESP_OK ||
         (err = esp_now_register_recv_cb(receive_frame)) != ESP_OK)
         (void)esp_now_deinit();
@@ -228,7 +217,7 @@ static void radio_stop(void)
 
 static esp_err_t radio_send(const struct frame *packet)
 {
-    esp_err_t err = register_peer(packet->mac);
+    esp_err_t err = wn_espnow_prepare_peer(&radio_peers, packet->mac);
     return err == ESP_OK ? esp_now_send(packet->mac, packet->bytes, packet->size) : err;
 }
 #endif
@@ -467,16 +456,21 @@ static void deliver_ip(const struct frame *packet, bool accepting)
     unsigned size = packet->size - HEADER_SIZE;
     uint8_t expected[16];
     address_from_mac(expected, packet->mac);
-    if (size < 60 || bytes[0] >> 4 != 6 || bytes[6] != 6 ||
-        size != 40u + ((unsigned)bytes[4] << 8) + bytes[5] ||
+    if (size < IPV6_HEADER_SIZE + TCP_HEADER_SIZE || bytes[0] >> 4 != 6 ||
+        bytes[6] != IPPROTO_TCP ||
+        size != IPV6_HEADER_SIZE + ((unsigned)bytes[4] << 8) + bytes[5] ||
         memcmp(bytes + 8, expected, 16))
         return;
     address_from_mac(expected, station);
     if (memcmp(bytes + 24, expected, 16))
         return;
-    unsigned source_port = ((unsigned)bytes[40] << 8) | bytes[41];
-    unsigned destination_port = ((unsigned)bytes[42] << 8) | bytes[43];
-    bool incoming_syn = (bytes[53] & (TCP_SYN | TCP_ACK)) == TCP_SYN;
+    const uint8_t *tcp = bytes + IPV6_HEADER_SIZE;
+    unsigned tcp_header_size = (tcp[12] >> 4) * 4u;
+    if (tcp_header_size < TCP_HEADER_SIZE || tcp_header_size > size - IPV6_HEADER_SIZE)
+        return;
+    unsigned source_port = ((unsigned)tcp[0] << 8) | tcp[1];
+    unsigned destination_port = ((unsigned)tcp[2] << 8) | tcp[3];
+    bool incoming_syn = (tcp[13] & (TCP_SYN | TCP_ACK)) == TCP_SYN;
     if (incoming_syn ? (!accepting || destination_port != WN_ESPNOW_PORT)
                      : (source_port != WN_ESPNOW_PORT && destination_port != WN_ESPNOW_PORT))
         return;

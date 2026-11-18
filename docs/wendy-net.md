@@ -114,16 +114,22 @@ the same command. Its one-connection total still applies. On PSRAM profiles,
 Incoming and outgoing links share the existing `--max-links` budget with BLE
 and infrastructure Wi-Fi. Use `--espnow=false` to disable the carrier.
 
-ESP-NOW discovery broadcasts about once per second. Peers establish the same
-Wendy mutual TLS used by other carriers over a private TCP interface. An
+ESP-NOW discovery broadcasts about once per second. Devices listening on the
+channel can see the tenant and device identifiers in those advertisements.
+Peers establish the same Wendy mutual TLS used by other carriers over a private TCP interface. An
 associated Wi-Fi station and ESP-NOW share the radio channel. If the AP uses
 a different channel, status shows ESP-NOW suspended until the channel matches.
 If the configured AP is unreachable, ESP-NOW can start during Wi-Fi retry
 backoff. Later retry scans can pause radio traffic while the TCP session stays
-open.
+open. ESP-NOW error codes are firmware diagnostics and can change across builds.
 
-For the P4, build the C6 companion application from the same ESP-Hosted 2.x
-release used on the host. With ESP-IDF activated, run:
+Firmware with ESP-NOW reads saved settings from older firmware. If you roll
+back to a build without ESP-NOW, it reads the settings last saved by the older
+firmware. Reapply any carrier changes you want to keep after a rollback.
+
+For the P4, build the C6 companion application from a trusted copy of the
+same ESP-Hosted 2.x release used on the host. The companion was built and tested
+with ESP-IDF 6.0.3. With ESP-IDF activated, run:
 
 ```sh
 tools/espnow-companion/build.sh managed_components/espressif__esp_hosted /tmp/wendy-hosted-espnow
