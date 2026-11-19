@@ -2473,6 +2473,29 @@ static bool ble_probe_available(struct peer_state *root)
 }
 #endif
 #endif
+static int pump_active_carrier(struct peer_state *link)
+{
+    int pumped = wnc_pump(&link->carrier, esp_timer_get_time(), receive_frame, link);
+    if (pumped <= 0 || link->candidate.medium != WN_ESPNOW || !wn_espnow_worker_active() ||
+        !link->tls_channel || link->setup_fd < 0 || link->setup_have_stream)
+        return pumped;
+
+    /* Refill/drain the small socket BIO while the radio worker can sustain
+     * traffic. Bound the batch per link and respect a crypto loan on any step. */
+    for (unsigned step = 0;
+         step < 3 && !link->failed && !wncrypto_borrowed(link->connection); ++step) {
+        int moved = wnad_channel_io(link->tls_channel, link->setup_fd, NULL);
+        if (moved < 0)
+            return WNC_IO;
+        int next = wnc_pump(&link->carrier, esp_timer_get_time(), receive_frame, link);
+        if (next < 0)
+            return next;
+        if (!next && !moved)
+            break;
+    }
+    return pumped;
+}
+
 static void router_run(struct peer_state *root)
 {
     unsigned busy_loops = 0;
@@ -2572,7 +2595,7 @@ static void router_run(struct peer_state *root)
             if (now >= link->refresh_at && wendy_wifi_is_connected())
                 queue_clock(link);
 
-            int pumped = wnc_pump(&link->carrier, esp_timer_get_time(), receive_frame, link);
+            int pumped = pump_active_carrier(link);
             if (pumped < 0) {
                 struct wnc_timeout timeout;
                 if (pumped == WNC_TIMEOUT &&
@@ -2780,9 +2803,16 @@ static void router_run(struct peer_state *root)
             wble_mesh_router_admission(ble_admission_available(root));
 #endif
 
+        /* A dedicated, radio-only data path can advance through more actor
+         * passes while PKI is idle. Other carriers and handshake work retain
+         * the shorter fairness interval. */
+        unsigned pass_budget = 8;
+        if (!root->config.ble && !root->config.infrastructure_wifi && !root->config.nan &&
+            wn_espnow_worker_active() && wendy_pki_work_idle())
+            pass_budget = 32;
         ++busy_loops;
-        if (!progress || busy_loops >= 8) {
-            bool quota = busy_loops >= 8;
+        if (!progress || busy_loops >= pass_budget) {
+            bool quota = busy_loops >= pass_budget;
             /* A ready descriptor/deadline can yield no protocol progress
              * (e.g. send ENOBUFS). Count those polls too: otherwise a zero
              * timeout loop can starve the lower-priority crypto worker. */
