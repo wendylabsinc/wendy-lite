@@ -477,6 +477,10 @@ rules:
     sdkconfig: |
       CONFIG_PARTITION_TABLE_CUSTOM=y
       CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.ota.16mb.csv"
+  - if: flash_size == 32MiB && app_type == "native"
+    sdkconfig: |
+      CONFIG_PARTITION_TABLE_CUSTOM=y
+      CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.ota.32mb.csv"
   - if: board == "dfr1172_firebeetle_2" && app_type == "wasm"
     sdkconfig: |
       # 16 MB SPI flash; 3 MB app, 12.7 MB wasm_a, 248 KB PKI + conf.
@@ -822,6 +826,14 @@ rules:
       # ESP32-P4-86-Panel-ETH-2RO, which shares the same PCB).
 
       CONFIG_WENDY_P4_BOARD_NAME="waveshare_lcd_4b"
+
+  # boards/waveshare_lcd_4b_native.defaults
+  - if: board == "waveshare_esp32p4_lcd_4b" && app_type == "native"
+    sdkconfig: |
+      # Board overlay: Waveshare ESP32-P4-WIFI6-Touch-LCD-4B (and the
+      # ESP32-P4-86-Panel-ETH-2RO, which shares the same PCB), native apps.
+
+      CONFIG_WENDY_P4_BOARD_NAME="waveshare_lcd_4b_native"
 
 # Display: how the Wendy CLI asks the questions (go/internal/cli/litebuild in
 # WendyOS). The solver (conf_model.py) ignores this section.

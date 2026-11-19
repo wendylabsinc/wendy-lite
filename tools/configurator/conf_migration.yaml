@@ -50,3 +50,5 @@
   new_conf: { board: dfr1172_firebeetle_2, app_type: native, cloud_tunnel: true }
 - old_conf: waveshare_lcd_4b
   new_conf: { board: waveshare_esp32p4_lcd_4b, app_type: wasm, cloud_tunnel: true }
+- old_conf: waveshare_lcd_4b_native
+  new_conf: { board: waveshare_esp32p4_lcd_4b, app_type: native, cloud_tunnel: true }
