@@ -1,0 +1,45 @@
+--- a/slave/main/esp_hosted_coprocessor.c
++++ b/slave/main/esp_hosted_coprocessor.c
+@@ -26,6 +26,7 @@
+ #endif // CONFIG_ESP_HOSTED_CP_WIFI
+ 
+ #include "esp_hosted_coprocessor.h"
++#include "wendy_net_espnow_sdio.h"
+ #include "driver/gpio.h"
+ 
+ #include "freertos/FreeRTOS.h"
+@@ -799,6 +800,9 @@
+ 		process_hci_rx_pkt(payload, payload_len);
+ 	}
+ #endif
++	else if (buf_handle->if_type == WNE_SDIO_INTERFACE) {
++		wendy_espnow_sdio_receive(payload, payload_len);
++	}
+ #if TEST_RAW_TP
+ 	else if (buf_handle->if_type == ESP_TEST_IF) {
+ 		debug_update_raw_tp_rx_count(payload_len);
+@@ -869,6 +873,24 @@
+ 
+ 	return ESP_OK;
+ #endif
++}
++
++bool wendy_espnow_sdio_send(const uint8_t *bytes, size_t size)
++{
++	if (!datapath || !size || size > WNE_SDIO_MAX_BYTES)
++		return false;
++	uint8_t *copy = malloc(size);
++	if (!copy)
++		return false;
++	memcpy(copy, bytes, size);
++	interface_buffer_handle_t packet = {
++		.if_type = WNE_SDIO_INTERFACE, .payload = copy, .payload_len = size,
++		.priv_buffer_handle = copy, .free_buf_handle = free,
++	};
++	if (send_to_host_queue(&packet, PRIO_Q_OTHERS) == ESP_OK)
++		return true;
++	free(copy);
++	return false;
+ }
+ 
+ static esp_err_t serial_write_data(uint8_t* data, ssize_t len)
