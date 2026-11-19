@@ -32,6 +32,7 @@
                                  (CONFIG_IDF_TARGET_ESP32P4 && CONFIG_ESP_HOSTED_ENABLE_PEER_DATA_TRANSFER))
 #if CONFIG_IDF_TARGET_ESP32P4
 #include "esp_hosted_misc.h"
+#include "wendy_net_espnow_sdio.h"
 #else
 #include "wendy_net_espnow_peers.h"
 #endif
@@ -182,28 +183,44 @@ static void enqueue_received(const uint8_t source[6], const uint8_t destination[
     }
 }
 
-static void queue_received(const uint8_t source[6], const uint8_t destination[6],
-                           const uint8_t *bytes, size_t size)
+static void complete_send(void)
 {
-    unsigned current = acquire_generation();
-    if (!current)
-        return;
-    enqueue_received(source, destination, bytes, size, current);
-    release_generation();
-}
-
-static void completed_send(void)
-{
-    if (!acquire_generation())
-        return;
     atomic_store(&send_deadline_ms, 0);
     wake_data_path();
-    release_generation();
 }
 
 #if CONFIG_IDF_TARGET_ESP32P4
 static atomic_bool hosted_capability, hosted_rate_capable, hosted_started, hosted_wants_start;
+static atomic_bool hosted_sdio_capable;
+static atomic_uint hosted_session;
 static bool hosted_registered;
+
+static void hosted_data_event(const uint8_t *bytes, size_t size, uint32_t session)
+{
+    if (size < 2 || bytes[0] != WN_ESPNOW_HOSTED_VERSION)
+        return;
+    unsigned current = acquire_generation();
+    if (!current)
+        return;
+    if (session == atomic_load(&hosted_session) && atomic_load(&hosted_started)) {
+        if (bytes[1] == WNE_RECEIVED && size > 14 && size <= WN_ESPNOW_HOSTED_PAYLOAD + 14)
+            enqueue_received(bytes + 2, bytes + 8, bytes + 14, size - 14, current);
+        else if (bytes[1] == WNE_SENT && size == 3)
+            complete_send();
+    }
+    release_generation();
+}
+
+#if CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE
+void wendy_espnow_sdio_receive(const uint8_t *bytes, size_t size)
+{
+    if (size < WNE_SDIO_SESSION_BYTES + 2 || size > WNE_SDIO_MAX_BYTES)
+        return;
+    uint32_t session = wn_espnow_sdio_session(bytes);
+    if (session)
+        hosted_data_event(bytes + WNE_SDIO_SESSION_BYTES, size - WNE_SDIO_SESSION_BYTES, session);
+}
+#endif
 
 static void hosted_event(uint32_t id, const uint8_t *bytes, size_t size, void *context)
 {
@@ -211,22 +228,25 @@ static void hosted_event(uint32_t id, const uint8_t *bytes, size_t size, void *c
     (void)context;
     if (size < 2 || bytes[0] != WN_ESPNOW_HOSTED_VERSION)
         return;
+    unsigned session = atomic_load(&hosted_session);
     switch (bytes[1]) {
     case WNE_CAPABILITY:
         atomic_store(&hosted_rate_capable, size >= 3 &&
                                           (bytes[2] & WN_ESPNOW_HOSTED_RATE_CAPABILITY));
+        atomic_store(&hosted_sdio_capable, size >= 3 &&
+                                          (bytes[2] & WN_ESPNOW_HOSTED_SDIO_CAPABILITY));
         atomic_store(&hosted_capability, true);
         break;
     case WNE_STARTED:
-        if (atomic_load(&hosted_wants_start))
-            atomic_store(&hosted_started, size == 3 && bytes[2] == 0);
+        if (atomic_load(&hosted_wants_start) &&
+            ((!session && size == 3) ||
+             (session && size == 3 + WNE_SDIO_SESSION_BYTES &&
+              wn_espnow_sdio_session(bytes + 3) == session)))
+            atomic_store(&hosted_started, bytes[2] == 0);
         break;
     case WNE_RECEIVED:
-        if (size > 14 && size <= WN_ESPNOW_HOSTED_PAYLOAD + 14)
-            queue_received(bytes + 2, bytes + 8, bytes + 14, size - 14);
-        return;
     case WNE_SENT:
-        completed_send();
+        hosted_data_event(bytes, size, 0);
         return;
     }
     wnad_wake();
@@ -253,8 +273,24 @@ static esp_err_t radio_start(unsigned channel)
     }
     if (atomic_load(&hosted_started))
         return ESP_OK;
+#if CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE
+    if (!atomic_load(&hosted_wants_start) && atomic_load(&hosted_sdio_capable)) {
+        uint32_t session = esp_random();
+        atomic_store(&hosted_session, session ? session : 1);
+    }
+    unsigned session = atomic_load(&hosted_session);
+#endif
     atomic_store(&hosted_wants_start, true);
-    esp_err_t err = hosted_command(WNE_START, channel);
+    esp_err_t err;
+#if CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE
+    if (session) {
+        uint8_t command[3 + WNE_SDIO_SESSION_BYTES] = {
+            WN_ESPNOW_HOSTED_VERSION, WNE_START_SDIO, channel};
+        wn_espnow_sdio_put_session(command + 3, session);
+        err = esp_hosted_send_custom_data(WN_ESPNOW_HOSTED_MESSAGE, command, sizeof command);
+    } else
+#endif
+        err = hosted_command(WNE_START, channel);
     if (err != ESP_OK)
         return err;
     return atomic_load(&hosted_started) ? ESP_OK : ESP_ERR_INVALID_STATE;
@@ -265,33 +301,52 @@ static void radio_stop(void)
     if (atomic_exchange(&hosted_wants_start, false))
         (void)hosted_command(WNE_STOP, 0);
     atomic_store(&hosted_started, false);
+    atomic_store(&hosted_session, 0);
 }
 
 static esp_err_t radio_send(const struct frame *packet)
 {
     unsigned rate = rate_for(packet->mac);
     size_t header = rate > 1 ? 9 : 8;
-    uint8_t data[9 + WN_ESPNOW_HOSTED_PAYLOAD] = {WN_ESPNOW_HOSTED_VERSION,
-                                                rate > 1 ? WNE_SEND_AT_RATE : WNE_SEND};
+    uint8_t frame[WNE_SDIO_SESSION_BYTES + 9 + WN_ESPNOW_HOSTED_PAYLOAD];
+    uint8_t *data = frame + WNE_SDIO_SESSION_BYTES;
+    data[0] = WN_ESPNOW_HOSTED_VERSION;
+    data[1] = rate > 1 ? WNE_SEND_AT_RATE : WNE_SEND;
     memcpy(data + 2, packet->mac, 6);
     data[8] = (uint8_t)rate;
     memcpy(data + header, packet->bytes, packet->size);
-    return esp_hosted_send_custom_data(WN_ESPNOW_HOSTED_MESSAGE, data, packet->size + header);
+    size_t size = packet->size + header;
+#if CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE
+    unsigned session = atomic_load(&hosted_session);
+    if (session) {
+        wn_espnow_sdio_put_session(frame, session);
+        return wendy_espnow_sdio_send(frame, WNE_SDIO_SESSION_BYTES + size) ? ESP_OK : ESP_FAIL;
+    }
+#endif
+    return esp_hosted_send_custom_data(WN_ESPNOW_HOSTED_MESSAGE, data, size);
 }
 #else
 static struct wn_espnow_peers radio_peers;
 
 static void receive_frame(const esp_now_recv_info_t *info, const uint8_t *bytes, int size)
 {
-    if (info && size > 0)
-        queue_received(info->src_addr, info->des_addr, bytes, (size_t)size);
+    if (!info || size <= 0)
+        return;
+    unsigned current = acquire_generation();
+    if (current) {
+        enqueue_received(info->src_addr, info->des_addr, bytes, (size_t)size, current);
+        release_generation();
+    }
 }
 
 static void sent_frame(const esp_now_send_info_t *info, esp_now_send_status_t status)
 {
     (void)info;
     (void)status;
-    completed_send();
+    if (acquire_generation()) {
+        complete_send();
+        release_generation();
+    }
 }
 
 static esp_err_t radio_start(unsigned channel)
@@ -491,6 +546,10 @@ esp_err_t wn_espnow_start(unsigned channel)
         goto fail;
     }
     backend_started = true;
+#if CONFIG_IDF_TARGET_ESP32P4 && CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE
+    if (atomic_load(&hosted_session))
+        ESP_LOGI("wendy_espnow", "Using Hosted SDIO data channel");
+#endif
     if (!start_queues()) {
         err = ESP_ERR_NO_MEM;
         goto fail;
