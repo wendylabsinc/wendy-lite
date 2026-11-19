@@ -1,0 +1,16 @@
+# Opt-in qualification profile. Append AFTER a supported C5/S3 PSRAM board.
+# Does not enable PSRAM or change its wiring, speed, placement threshold or reserve.
+CONFIG_WENDY_WIFI_TEST_PSRAM_THROUGHPUT=y
+# Fail boot if the board's required external memory is absent.
+CONFIG_SPIRAM_IGNORE_NOTFOUND=n
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
+CONFIG_LWIP_TCP_WND_DEFAULT=32768
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=32
+CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
+# Keep radio storage bounded and match the receive BA window to static buffers.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER=y
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_CACHE_TX_BUFFER_NUM=32
+CONFIG_ESP_WIFI_RX_BA_WIN=6

@@ -21,6 +21,9 @@ docker run --rm -v "$PWD:/project" -w /project espressif/idf:v6.0.3 \
 
 Use a fresh build directory and configuration when upgrading from ESP-IDF 5.
 
+For an opt-in C5/S3 PSRAM networking experiment, see the
+[network throughput qualification profile](docs/network-throughput-profile.md).
+
 [Wendy Net](docs/wendy-net.md) connects enrolled Lite devices to other devices
 and services in the same tenant over Wi-Fi or BLE. It is off by default.
 C5 devices with PSRAM can route traffic between several peers; smaller C6 devices
@@ -28,6 +31,8 @@ use one BLE or Wi-Fi connection through a neighbour. Applications can publish
 and browse mesh services, and existing management and SensorLink operations can
 use mesh connections. The XIAO ESP32S3, ESP32-S31 Korvo-1 and Mosaico profiles
 also include this interface alongside their physical sensors and management.
+ESP32-P4 board profiles include both carriers through their ESP-Hosted C6
+radio, with mesh state in PSRAM; runtime participation still starts disabled.
 
 ## Optional WASM support
 
@@ -40,6 +45,10 @@ idf.py -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;boards/wasm.defaults' set-targe
 idf.py build
 ```
 
+`boards/esp32c5_generic.cfg`, `boards/esp32c6_generic.cfg`,
+`boards/esp32s3_generic.cfg` and `boards/dfr1172_firebeetle.cfg` include
+`boards/wasm.defaults`. A bare `idf.py set-target <target>` builds without WASM.
+
 Existing `sdkconfig` files retain their choices. Configure a fresh build to pick
 up the new defaults, including disabled WASM callbacks and host API exports.
 ESP32-C61 and ESP32-S31 have no supported WASM runtime. Disabling
@@ -51,6 +60,11 @@ M5Stack StampS3 and ESP32-S31-Korvo-1 V1.1.
 The `esp32c5_net_psram` and `esp32c6_net` catalog variants include Wendy Net
 and WASM support. Other legacy WASM-layout images, including ESP32-P4 images,
 are available only as manual builds.
+
+Each `boards` entry in `catalog.json` has `cloud_enrollment`: `true` when the image
+supports Wendy Cloud enrollment (`CONFIG_WENDY_PKI`, `CONFIG_WENDY_CLOUD` and
+`CONFIG_WENDY_WIFI_ENABLED` all on), `false` when it does not. The build checks the
+value against the built configuration.
 
 ## Optional Bluetooth support
 
@@ -398,6 +412,12 @@ idf.py @boards/dfr1172_firebeetle.cfg set-target esp32p4
 # Same board, native apps only (no WASM, two OTA app slots)
 idf.py @boards/dfr1172_firebeetle_native.cfg set-target esp32p4
 ```
+
+All P4 profiles compile Wendy Net Wi-Fi and BLE carriers and use the
+multi-carrier router profile with a 2 MiB mesh allocation ceiling in PSRAM.
+The catalog's `dfr1172_firebeetle_native` board configuration uses native OTA
+app slots and does not include WASM. Start with a fresh sdkconfig to pick up
+the mesh defaults, then [enroll and enable the carriers](docs/wendy-net.md).
 
 #### Other P4 boards
 

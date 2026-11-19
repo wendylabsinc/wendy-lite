@@ -17,8 +17,8 @@
 #define _FLAG_KEYFRAME   (1u << 0)
 #define _FLAG_LAST_CHUNK (1u << 1)
 
-// A frame goes out as a run of SensorData messages, each at most this big on
-// the wire, frame header included.
+// Upper bound for a complete SensorData message, including its wire header.
+// The local transport can select a smaller per-frame budget.
 #define _IDEAL_MSG_SIZE (10 * 1024)
 
 // A SensorData with the payload reduced to its tag and length: the five
@@ -27,11 +27,6 @@
 
 // The above, wrapped: sensor_data tag (1) + its length as a varint (5) = 45.
 #define _PREFIX_SIZE 48
-
-// Payload bytes per chunk: what a message of _IDEAL_MSG_SIZE has left once the
-// frame header and the largest prefix are taken out. Every chunk but the last
-// of a frame carries exactly this much.
-#define _CHUNK_PAYLOAD_SIZE (_IDEAL_MSG_SIZE - sizeof(struct wcom_agent_msg_header) - _PREFIX_SIZE)
 
 _Static_assert(_IDEAL_MSG_SIZE - sizeof(struct wcom_agent_msg_header) <= UINT16_MAX,
                "body_size in the frame header is 16 bits");
@@ -57,6 +52,7 @@ struct sensor_frame {
     const uint8_t *data;
     size_t size;
     size_t offset;
+    size_t message_limit;
     void (*done)(uint32_t channel_id);
 };
 
@@ -102,8 +98,9 @@ static WendyComResult _send_chunk(struct sensor_frame *frame)
 
     size_t size = frame->size - frame->offset;
     uint32_t flags = _FLAG_KEYFRAME;
-    if (size > _CHUNK_PAYLOAD_SIZE)
-        size = _CHUNK_PAYLOAD_SIZE;
+    size_t payload_limit = frame->message_limit - sizeof(frame->header) - _PREFIX_SIZE;
+    if (size > payload_limit)
+        size = payload_limit;
     else
         flags |= _FLAG_LAST_CHUNK;
 
@@ -330,8 +327,13 @@ WendyComResult wcom_sensor_stream_push(int client_id, uint32_t channel_id,
     if (link_id < 0 || wcom_get_channel(client_id) < 0)
         return WendyComResult_WENDY_COM_RESULT_BAD_STATE;
 
+    size_t message_limit = wcom_link_sensor_message_limit(link_id);
+    if (message_limit <= sizeof(struct wcom_agent_msg_header) + _PREFIX_SIZE ||
+        message_limit > _IDEAL_MSG_SIZE)
+        return WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+
 #if CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3
-    uint8_t *wire = malloc(_IDEAL_MSG_SIZE);
+    uint8_t *wire = malloc(message_limit);
     if (!wire) return WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
 #endif
     stream->frame = (struct sensor_frame){
@@ -340,6 +342,7 @@ WendyComResult wcom_sensor_stream_push(int client_id, uint32_t channel_id,
 #endif
         .busy = true,
         .link_id = link_id,
+        .message_limit = message_limit,
         .client_id = client_id,
         .channel_id = channel_id,
         .frame_seq = stream->frame_seq++,

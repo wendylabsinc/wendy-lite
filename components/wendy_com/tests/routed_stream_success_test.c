@@ -527,8 +527,33 @@ static bool encode_payload(pb_ostream_t *stream, const pb_field_t *field, void *
     return pb_encode_tag_for_field(stream, field) &&
            pb_encode_string(stream, (const uint8_t *)text, strlen(text));
 }
+static void test_sensor_message_limits(void)
+{
+    // Exercise actual provider constructors before registering protocol callbacks.
+    struct wire wire = {.budget = 2048, .alive = true};
+    int id = wcom_add_socket_link(&ops, &wire, NULL);
+    assert(id > 0 && wcom_link_sensor_message_limit(id) == 10240);
+    wcom_remove_link(id);
+    assert(wcom_link_sensor_message_limit(id) == 0);
+    id = wcom_add_routed_socket_link_with_permission(&ops, &wire, NULL,
+                                                   WCOM_LINK_PERMISSION_SENSOR_ONLY);
+    assert(id > 0 && wcom_link_sensor_message_limit(id) == 1024);
+    wcom_remove_link(id);
+    id = wcom_add_stream_link(&ops, &wire, NULL);
+    assert(id > 0 && wcom_link_sensor_message_limit(id) == 1024);
+    wcom_remove_link(id);
+    id = wcom_add_routed_stream_link_with_permission(&ops, &wire, NULL,
+                                                   WCOM_LINK_PERMISSION_FULL);
+    assert(id > 0 && wcom_link_sensor_message_limit(id) == 1024);
+    _get_link(id)->state = WCOM_LINK_STATE_DISCONNECTED;
+    assert(wcom_link_sensor_message_limit(id) == 0);
+    wcom_remove_link(id);
+    assert(wcom_link_sensor_message_limit(-1) == 0);
+}
+
 int main(void)
 {
+    test_sensor_message_limits();
     memset(large_name, 'm', sizeof(large_name) - 1);
     memset(large_payload, 'p', sizeof(large_payload) - 1);
     static struct wcom_state_change_handler observer = {.func = connected},

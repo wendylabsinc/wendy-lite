@@ -18,6 +18,11 @@ int wble_mesh_profile_sync(void);                    /* host only, after synchro
 void wble_mesh_profile_connected(uint16_t handle);   /* host only */
 void wble_mesh_profile_event(const void *gap_event); /* host only */
 
+/* Nonblocking snapshot of the synchronized controller's identity address.
+ * Bytes use NimBLE order (least significant first); type is public or random.
+ * Returns false before host synchronization or after a host reset. */
+bool wble_mesh_local_address(uint8_t address[6], uint8_t *address_type);
+
 struct wble_mesh_pipe;
 struct wble_mesh_peer {
     uint8_t address[6], address_type;

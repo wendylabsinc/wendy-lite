@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-include("${CMAKE_CURRENT_LIST_DIR}/../dependency_patches.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/../../components/wendy_pki/cmake/pqc_patches.cmake")
 find_package(Git REQUIRED)
 
 # Reproduce an in-checkout build. Without isolation, git apply reports success

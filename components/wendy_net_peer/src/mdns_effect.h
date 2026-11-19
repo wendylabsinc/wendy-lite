@@ -4,7 +4,9 @@
 #include <stdint.h>
 struct wnm_advertisement {
     bool enabled, operator_router;
-    char instance[56], principal[106], mesh[17], radio[40], psm[6];
+    char instance[56], principal[106], mesh[17];
+    uint8_t ble_address[6], ble_address_type;
+    uint8_t ble_psm; /* Dynamic LE PSM (128–255). Zero omits the BLE hint. */
 };
 struct wnm_intent {
     struct wnm_advertisement advertisement;

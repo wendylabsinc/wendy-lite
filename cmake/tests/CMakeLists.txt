@@ -23,6 +23,8 @@ add_test(NAME nimble_build_local_registration COMMAND "${CMAKE_COMMAND}"
     "-DWENDY_TEST_IDF_PATH=${WENDY_TEST_IDF_PATH}")
 add_test(NAME dependency_patches_in_checkout COMMAND "${CMAKE_COMMAND}" -P
     "${CMAKE_CURRENT_LIST_DIR}/dependency_patches_test.cmake")
+add_test(NAME nimble_opt_out_idf_version COMMAND "${CMAKE_COMMAND}" -P
+    "${CMAKE_CURRENT_LIST_DIR}/nimble_opt_out_test.cmake")
 # Optional whole-translation-unit check, using an existing firmware's generated
 # config and toolchain flags without reconfiguring or writing into that build.
 set(WENDY_TEST_COMPILE_COMMANDS "" CACHE FILEPATH "Existing IDF firmware compile_commands.json")

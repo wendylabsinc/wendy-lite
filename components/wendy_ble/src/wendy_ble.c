@@ -53,6 +53,20 @@ static uint8_t _mesh_advertisement[31];
 static size_t _mesh_advertisement_size;
 static bool _mesh_turn;
 static portMUX_TYPE _mesh_adv_lock = portMUX_INITIALIZER_UNLOCKED;
+static uint8_t _mesh_local_address[6], _mesh_local_address_type;
+static bool _mesh_local_address_valid;
+
+bool wble_mesh_local_address(uint8_t address[6], uint8_t *address_type)
+{
+    portENTER_CRITICAL(&_mesh_adv_lock);
+    bool valid = _mesh_local_address_valid;
+    if (valid) {
+        memcpy(address, _mesh_local_address, sizeof _mesh_local_address);
+        *address_type = _mesh_local_address_type;
+    }
+    portEXIT_CRITICAL(&_mesh_adv_lock);
+    return valid;
+}
 static atomic_bool _mesh_configuring;
 static esp_timer_handle_t _mesh_adv_timer;
 static struct ble_npl_event _mesh_adv_event;
@@ -687,6 +701,17 @@ static void _on_sync(void)
         ESP_LOGE(TAG, "BLE profile unavailable: %d", rc);
         return;
     }
+    /* P4 has no local BT MAC: ESP-Hosted's controller supplies the address.
+     * Cache it on the host thread rather than querying HCI from the mesh actor. */
+    uint8_t address[6];
+    rc = ble_hs_id_copy_addr(_own_addr_type, address, NULL);
+    portENTER_CRITICAL(&_mesh_adv_lock);
+    _mesh_local_address_valid = rc == 0;
+    if (!rc) {
+        memcpy(_mesh_local_address, address, sizeof address);
+        _mesh_local_address_type = _own_addr_type;
+    }
+    portEXIT_CRITICAL(&_mesh_adv_lock);
 #endif
     ESP_LOGI(TAG, "BLE host synced");
 
@@ -699,6 +724,9 @@ static void _on_reset(int reason)
     ESP_LOGW(TAG, "BLE host reset: reason=%d", reason);
     wendy_ble_power_host_reset();
 #if CONFIG_WENDY_NET_BLE
+    portENTER_CRITICAL(&_mesh_adv_lock);
+    _mesh_local_address_valid = false;
+    portEXIT_CRITICAL(&_mesh_adv_lock);
     memset(_incoming_gaps, 0, sizeof _incoming_gaps);
 #endif
 #if CONFIG_BT_NIMBLE_EXT_ADV
