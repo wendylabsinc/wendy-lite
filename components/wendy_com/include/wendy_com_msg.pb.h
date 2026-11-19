@@ -41,6 +41,15 @@ typedef enum _WendyComBleProfile {
     WendyComBleProfile_WENDY_COM_BLE_CODED_S8 = 2
 } WendyComBleProfile;
 
+typedef enum _WendyComEspnowRate {
+    WendyComEspnowRate_WENDY_COM_ESPNOW_RATE_DEFAULT = 0,
+    WendyComEspnowRate_WENDY_COM_ESPNOW_RATE_1_MBPS = 1,
+    WendyComEspnowRate_WENDY_COM_ESPNOW_RATE_2_MBPS = 2,
+    WendyComEspnowRate_WENDY_COM_ESPNOW_RATE_6_MBPS = 6,
+    WendyComEspnowRate_WENDY_COM_ESPNOW_RATE_12_MBPS = 12,
+    WendyComEspnowRate_WENDY_COM_ESPNOW_RATE_24_MBPS = 24
+} WendyComEspnowRate;
+
 typedef enum _WendyComNetState {
     WendyComNetState_WENDY_COM_NET_OFF = 0,
     WendyComNetState_WENDY_COM_NET_STARTING = 1,
@@ -69,7 +78,8 @@ typedef enum _WendyComResult {
     WendyComResult_WENDY_COM_RESULT_NET_NO_BLE = 10,
     WendyComResult_WENDY_COM_RESULT_NET_NO_NAN = 11,
     WendyComResult_WENDY_COM_RESULT_NET_ONE_CARRIER_ONLY = 12,
-    WendyComResult_WENDY_COM_RESULT_NET_BLE_PROFILE_UNSUPPORTED = 13
+    WendyComResult_WENDY_COM_RESULT_NET_BLE_PROFILE_UNSUPPORTED = 13,
+    WendyComResult_WENDY_COM_RESULT_NET_NO_ESPNOW = 14
 } WendyComResult;
 
 typedef enum _WendyComChannelErrorReason {
@@ -225,6 +235,14 @@ typedef struct _WendyComNetConfig {
     uint32_t wifi_links;
     uint32_t nan_links;
     WendyComBleProfile ble_profile;
+    bool has_espnow;
+    bool espnow;
+    bool has_espnow_channel;
+    uint32_t espnow_channel;
+    bool has_espnow_links;
+    uint32_t espnow_links; /* Locally initiated links, including setup. */
+    bool has_espnow_rate;
+    WendyComEspnowRate espnow_rate; /* Preferred unicast ceiling. Discovery uses 1 Mbit/s. */
 } WendyComNetConfig;
 
 typedef struct _WendyComNetGetParams {
@@ -255,6 +273,11 @@ typedef struct _WendyComNetStatus {
     uint32_t error_code;
     bool restarting; /* saved carrier/profile change; reboot is pending */
     uint32_t ble_profiles_supported; /* bit N corresponds to WendyComBleProfile N */
+    bool has_espnow_supported;
+    bool espnow_supported;
+    uint32_t espnow_effective_channel;
+    uint32_t espnow_active_links;
+    uint32_t espnow_error; /* ESP-IDF error, zero when ready or disabled. */
 } WendyComNetStatus;
 
 /* Read-only, bounded live projection. One record per page; cursors are opaque.
@@ -284,7 +307,7 @@ typedef struct _WendyComNetTopologyRecord {
     int64_t expires_at_unix_ms;
     uint64_t revision;
     int64_t issued_at_unix_ms;
-    uint32_t transport; /* 1 infrastructure Wi-Fi, 2 BLE, 3 NAN */
+    uint32_t transport; /* 1 infrastructure Wi-Fi, 2 BLE, 3 NAN, 4 ESP-NOW */
     WendyComNetTopologyRecord_next_hop_device_t next_hop_device;
     uint32_t owner_role; /* 0 legacy device, 1 device, 2 operator */
     pb_callback_t owner_principal; /* exact public operator principal, at most 1024 UTF-8 bytes */
@@ -540,6 +563,10 @@ extern "C" {
 #define _WendyComBleProfile_MAX WendyComBleProfile_WENDY_COM_BLE_CODED_S8
 #define _WendyComBleProfile_ARRAYSIZE ((WendyComBleProfile)(WendyComBleProfile_WENDY_COM_BLE_CODED_S8+1))
 
+#define _WendyComEspnowRate_MIN WendyComEspnowRate_WENDY_COM_ESPNOW_RATE_DEFAULT
+#define _WendyComEspnowRate_MAX WendyComEspnowRate_WENDY_COM_ESPNOW_RATE_24_MBPS
+#define _WendyComEspnowRate_ARRAYSIZE ((WendyComEspnowRate)(WendyComEspnowRate_WENDY_COM_ESPNOW_RATE_24_MBPS+1))
+
 #define _WendyComNetState_MIN WendyComNetState_WENDY_COM_NET_OFF
 #define _WendyComNetState_MAX WendyComNetState_WENDY_COM_NET_FAILED
 #define _WendyComNetState_ARRAYSIZE ((WendyComNetState)(WendyComNetState_WENDY_COM_NET_FAILED+1))
@@ -549,8 +576,8 @@ extern "C" {
 #define _WendyComConsoleIo_ARRAYSIZE ((WendyComConsoleIo)(WendyComConsoleIo_WENDY_COM_CONSOLE_IO_STANDARD_ERROR+1))
 
 #define _WendyComResult_MIN WendyComResult_WENDY_COM_RESULT_OK
-#define _WendyComResult_MAX WendyComResult_WENDY_COM_RESULT_NET_BLE_PROFILE_UNSUPPORTED
-#define _WendyComResult_ARRAYSIZE ((WendyComResult)(WendyComResult_WENDY_COM_RESULT_NET_BLE_PROFILE_UNSUPPORTED+1))
+#define _WendyComResult_MAX WendyComResult_WENDY_COM_RESULT_NET_NO_ESPNOW
+#define _WendyComResult_ARRAYSIZE ((WendyComResult)(WendyComResult_WENDY_COM_RESULT_NET_NO_ESPNOW+1))
 
 #define _WendyComChannelErrorReason_MIN WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_NOT_OPEN
 #define _WendyComChannelErrorReason_MAX WendyComChannelErrorReason_WENDY_COM_CHANNEL_ERROR_REASON_REJECTED
@@ -580,6 +607,7 @@ extern "C" {
 
 
 #define WendyComNetConfig_ble_profile_ENUMTYPE WendyComBleProfile
+#define WendyComNetConfig_espnow_rate_ENUMTYPE WendyComEspnowRate
 
 
 
@@ -636,10 +664,10 @@ extern "C" {
 #define WendyComBluetoothPowerStatus_init_default {false, WendyComBluetoothPowerConfig_init_default, false, WendyComBluetoothPowerConfig_init_default, 0, 0, 0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 0, 0, 0, 0, 0, {WendyComBluetoothConnectionPower_init_default, WendyComBluetoothConnectionPower_init_default, WendyComBluetoothConnectionPower_init_default, WendyComBluetoothConnectionPower_init_default, WendyComBluetoothConnectionPower_init_default, WendyComBluetoothConnectionPower_init_default, WendyComBluetoothConnectionPower_init_default, WendyComBluetoothConnectionPower_init_default}, ""}
 #define WendyComBluetoothPowerGetParams_init_default {0}
 #define WendyComBluetoothPowerSetParams_init_default {false, WendyComBluetoothPowerConfig_init_default}
-#define WendyComNetConfig_init_default           {0, 0, 0, 0, 0, 0, 0, 0, _WendyComBleProfile_MIN}
+#define WendyComNetConfig_init_default           {0, 0, 0, 0, 0, 0, 0, 0, _WendyComBleProfile_MIN, false, 0, false, 0, false, 0, false, _WendyComEspnowRate_MIN}
 #define WendyComNetGetParams_init_default        {0}
 #define WendyComNetSetParams_init_default        {false, WendyComNetConfig_init_default}
-#define WendyComNetStatus_init_default           {false, WendyComNetConfig_init_default, false, WendyComNetConfig_init_default, _WendyComNetState_MIN, 0, 0, 0, 0, 0, false, 0, false, 0, 0, 0, 0, 0}
+#define WendyComNetStatus_init_default           {false, WendyComNetConfig_init_default, false, WendyComNetConfig_init_default, _WendyComNetState_MIN, 0, 0, 0, 0, 0, false, 0, false, 0, 0, 0, 0, 0, false, 0, 0, 0, 0}
 #define WendyComNetTopologyParams_init_default   {0, 0}
 #define WendyComNetTopologyRecord_init_default   {0, {0, {0}}, {0, {0}}, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, {0, {0}}, 0, {{NULL}, NULL}, {0, {0}}}
 #define WendyComNetTopologyPage_init_default     {{0}, {0}, 0, 0, 0, 0, 0, 0, false, WendyComNetStatus_init_default, false, WendyComNetTopologyRecord_init_default}
@@ -686,10 +714,10 @@ extern "C" {
 #define WendyComBluetoothPowerStatus_init_zero   {false, WendyComBluetoothPowerConfig_init_zero, false, WendyComBluetoothPowerConfig_init_zero, 0, 0, 0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 0, 0, 0, 0, 0, {WendyComBluetoothConnectionPower_init_zero, WendyComBluetoothConnectionPower_init_zero, WendyComBluetoothConnectionPower_init_zero, WendyComBluetoothConnectionPower_init_zero, WendyComBluetoothConnectionPower_init_zero, WendyComBluetoothConnectionPower_init_zero, WendyComBluetoothConnectionPower_init_zero, WendyComBluetoothConnectionPower_init_zero}, ""}
 #define WendyComBluetoothPowerGetParams_init_zero {0}
 #define WendyComBluetoothPowerSetParams_init_zero {false, WendyComBluetoothPowerConfig_init_zero}
-#define WendyComNetConfig_init_zero              {0, 0, 0, 0, 0, 0, 0, 0, _WendyComBleProfile_MIN}
+#define WendyComNetConfig_init_zero              {0, 0, 0, 0, 0, 0, 0, 0, _WendyComBleProfile_MIN, false, 0, false, 0, false, 0, false, _WendyComEspnowRate_MIN}
 #define WendyComNetGetParams_init_zero           {0}
 #define WendyComNetSetParams_init_zero           {false, WendyComNetConfig_init_zero}
-#define WendyComNetStatus_init_zero              {false, WendyComNetConfig_init_zero, false, WendyComNetConfig_init_zero, _WendyComNetState_MIN, 0, 0, 0, 0, 0, false, 0, false, 0, 0, 0, 0, 0}
+#define WendyComNetStatus_init_zero              {false, WendyComNetConfig_init_zero, false, WendyComNetConfig_init_zero, _WendyComNetState_MIN, 0, 0, 0, 0, 0, false, 0, false, 0, 0, 0, 0, 0, false, 0, 0, 0, 0}
 #define WendyComNetTopologyParams_init_zero      {0, 0}
 #define WendyComNetTopologyRecord_init_zero      {0, {0, {0}}, {0, {0}}, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, {0, {0}}, 0, {{NULL}, NULL}, {0, {0}}}
 #define WendyComNetTopologyPage_init_zero        {{0}, {0}, 0, 0, 0, 0, 0, 0, false, WendyComNetStatus_init_zero, false, WendyComNetTopologyRecord_init_zero}
@@ -768,6 +796,10 @@ extern "C" {
 #define WendyComNetConfig_wifi_links_tag         7
 #define WendyComNetConfig_nan_links_tag          8
 #define WendyComNetConfig_ble_profile_tag        9
+#define WendyComNetConfig_espnow_tag             10
+#define WendyComNetConfig_espnow_channel_tag     11
+#define WendyComNetConfig_espnow_links_tag       12
+#define WendyComNetConfig_espnow_rate_tag        13
 #define WendyComNetSetParams_config_tag          1
 #define WendyComNetStatus_desired_tag            1
 #define WendyComNetStatus_applied_tag            2
@@ -783,6 +815,10 @@ extern "C" {
 #define WendyComNetStatus_error_code_tag         12
 #define WendyComNetStatus_restarting_tag         13
 #define WendyComNetStatus_ble_profiles_supported_tag 14
+#define WendyComNetStatus_espnow_supported_tag   15
+#define WendyComNetStatus_espnow_effective_channel_tag 16
+#define WendyComNetStatus_espnow_active_links_tag 17
+#define WendyComNetStatus_espnow_error_tag       18
 #define WendyComNetTopologyParams_cursor_tag     1
 #define WendyComNetTopologyParams_generation_tag 2
 #define WendyComNetTopologyRecord_kind_tag       1
@@ -1045,7 +1081,11 @@ X(a, STATIC,   SINGULAR, UINT32,   max_links,         5) \
 X(a, STATIC,   SINGULAR, UINT32,   ble_links,         6) \
 X(a, STATIC,   SINGULAR, UINT32,   wifi_links,        7) \
 X(a, STATIC,   SINGULAR, UINT32,   nan_links,         8) \
-X(a, STATIC,   SINGULAR, UENUM,    ble_profile,       9)
+X(a, STATIC,   SINGULAR, UENUM,    ble_profile,       9) \
+X(a, STATIC,   OPTIONAL, BOOL,     espnow,           10) \
+X(a, STATIC,   OPTIONAL, UINT32,   espnow_channel,   11) \
+X(a, STATIC,   OPTIONAL, UINT32,   espnow_links,     12) \
+X(a, STATIC,   OPTIONAL, UENUM,    espnow_rate,      13)
 #define WendyComNetConfig_CALLBACK NULL
 #define WendyComNetConfig_DEFAULT NULL
 
@@ -1074,7 +1114,11 @@ X(a, STATIC,   OPTIONAL, UINT32,   internal_bytes,   10) \
 X(a, STATIC,   SINGULAR, UINT32,   active_links,     11) \
 X(a, STATIC,   SINGULAR, UINT32,   error_code,       12) \
 X(a, STATIC,   SINGULAR, BOOL,     restarting,       13) \
-X(a, STATIC,   SINGULAR, UINT32,   ble_profiles_supported,  14)
+X(a, STATIC,   SINGULAR, UINT32,   ble_profiles_supported,  14) \
+X(a, STATIC,   OPTIONAL, BOOL,     espnow_supported,  15) \
+X(a, STATIC,   SINGULAR, UINT32,   espnow_effective_channel,  16) \
+X(a, STATIC,   SINGULAR, UINT32,   espnow_active_links,  17) \
+X(a, STATIC,   SINGULAR, UINT32,   espnow_error,     18)
 #define WendyComNetStatus_CALLBACK NULL
 #define WendyComNetStatus_DEFAULT NULL
 #define WendyComNetStatus_desired_MSGTYPE WendyComNetConfig
@@ -1501,10 +1545,10 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComGetDeviceIdentityParams_size     0
 #define WendyComGetDeviceInfoParams_size         0
 #define WendyComHandshake_size                   20
-#define WendyComNetConfig_size                   34
+#define WendyComNetConfig_size                   50
 #define WendyComNetGetParams_size                0
-#define WendyComNetSetParams_size                36
-#define WendyComNetStatus_size                   120
+#define WendyComNetSetParams_size                52
+#define WendyComNetStatus_size                   175
 #define WendyComNetTopologyParams_size           17
 #define WendyComOpenChannel_size                 0
 #define WendyComPingParams_size                  0
