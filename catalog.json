@@ -72,6 +72,12 @@
             "flash_size": "16MB"
         },
         {
+            "name": "esp32p4_waveshare_lcd_4b_native",
+            "target": "esp32p4",
+            "board_cfg": "waveshare_lcd_4b_native",
+            "flash_size": "32MB"
+        },
+        {
             "name": "esp32s31_mosaico_native",
             "target": "esp32s31",
             "board_cfg": "esp32s31_mosaico_native",
@@ -182,6 +188,13 @@
             "name": "esp32p4_dfr1172_firebeetle_native",
             "display_name": "DFRobot FireBeetle 2 ESP32-P4 (DFR1172), 16MB flash, 32MB PSRAM",
             "binary": "esp32p4_dfr1172_firebeetle_native",
+            "target": "esp32p4",
+            "cloud_enrollment": true
+        },
+        {
+            "name": "esp32p4_waveshare_lcd_4b_native",
+            "display_name": "Waveshare ESP32-P4-WIFI6-Touch-LCD-4B, 32MB flash, 32MB PSRAM",
+            "binary": "esp32p4_waveshare_lcd_4b_native",
             "target": "esp32p4",
             "cloud_enrollment": true
         },
