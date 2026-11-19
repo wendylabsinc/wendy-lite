@@ -33,6 +33,9 @@ void wendy_pki_close(wendy_pki_connection *connection);
  * Failure returns -1; the caller still owns connection and must close it. */
 int wendy_pki_detach(wendy_pki_connection *connection);
 int wendy_pki_fd(void *connection);
+/* Keep a grown TLS input buffer up to this many allocated bytes between reads.
+ * Larger allocations continue to compact under the connection's TLS policy. */
+void wendy_pki_retain_input_record(wendy_pki_connection *, size_t bytes);
 ssize_t wendy_pki_read(void *connection, void *data, size_t size);
 ssize_t wendy_pki_write(void *connection, const void *data, size_t size);
 

@@ -1672,6 +1672,10 @@ static int setup_hello(struct peer_state *link)
     link->carrier.stall_timeout_us = INT64_C(30000000);
     link->carrier.frame_timeout_us = INT64_C(90000000);
     link->carrier.priority_reserve = 2048;
+    if (link->candidate.medium == WN_ESPNOW && link->tls_channel->input.storage) {
+        link->carrier.batch_ip = true;
+        wendy_pki_retain_input_record(link->connection, WNC_IP_BATCH_BYTES + 256);
+    }
     link->framed = true;
     if (local_rate) {
         unsigned rate = local_rate < remote_rate ? local_rate : remote_rate;
@@ -2643,10 +2647,12 @@ static void router_run(struct peer_state *root)
         if (atomic_load(&root->node_active)) {
             service_app_query(root);
             pthread_mutex_lock(&state_lock);
-            size_t size = 0;
-            void *packet = wnpq_front(root->queue, &size);
-            if (packet) {
-                struct wnrs *router = any_router(root);
+            struct wnrs *router = any_router(root);
+            for (unsigned count = 0; count < 4; count++) {
+                size_t size = 0;
+                void *packet = wnpq_front(root->queue, &size);
+                if (!packet)
+                    break;
                 uint64_t outgoing = 0;
                 struct peer_state *link = NULL;
                 int result = 0;
@@ -2658,12 +2664,14 @@ static void router_run(struct peer_state *root)
                 /* A fragmented UDP burst can fill the smaller carrier queue
                  * while TLS is waiting to write. Keep the head in the sparse
                  * IP FIFO until admitted instead of silently losing a fragment. */
-                if (result != WNC_NOMEM && result != WNC_LIMIT) {
-                    if (result && link)
-                        link->failed = true;
-                    wnpq_drop(root->queue);
-                    progress = true;
-                }
+                if (result == WNC_NOMEM || result == WNC_LIMIT)
+                    break;
+                if (result && link)
+                    link->failed = true;
+                wnpq_drop(root->queue);
+                progress = true;
+                if (!link || !link->carrier.batch_ip || result)
+                    break;
             }
             pthread_mutex_unlock(&state_lock);
         }

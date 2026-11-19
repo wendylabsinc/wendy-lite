@@ -17,6 +17,8 @@ _Static_assert(WNC_CLASS_RESERVE >= sizeof(struct wnc_frame) + 5 + WN_DATAGRAM_M
     "routing reserve must admit a maximum datagram");
 _Static_assert(WNC_CLASS_RESERVE >= WN_MTU + 2 * (sizeof(struct wnc_frame) + 5 + 9),
     "IP reserve must admit one complete two-fragment packet");
+_Static_assert(WN_DATAGRAM_MAX - 9 < WN_MTU && WN_MTU <= 2 * (WN_DATAGRAM_MAX - 9),
+    "a full split IP packet has two fragment envelopes");
 #define CPROBE_ADD(c, key, n) ((void)0)
 #define probe_enqueue(c, f, n) ((void)0)
 #define probe_dequeue(c, f, n) ((void)0)
@@ -114,14 +116,10 @@ void wnc_deinit(struct wnc_carrier *c)
     reset_rx(c);
     memset(c, 0, sizeof *c);
 }
-static int enqueue(struct wnc_carrier *c, const void *data, size_t size, bool control,
-                   bool priority)
+static int reserve_frame(struct wnc_carrier *c, unsigned category, size_t size,
+                         struct wnc_frame **out)
 {
-    if (!c || !c->io.write || !data || !size ||
-        size > (control ? c->control_limit : WN_DATAGRAM_MAX))
-        return WNC_INVALID;
-    size_t prefix = control ? 9 : 5, allocation = sizeof(struct wnc_frame) + prefix + size;
-    unsigned category = control ? WNC_METADATA : priority ? WNC_ROUTE : WNC_IP;
+    size_t allocation = sizeof(struct wnc_frame) + size;
     size_t bound = c->limit;
     if (c->fair) {
         if (category == WNC_ROUTE && c->class_frames[WNC_ROUTE] >= c->routing_limit)
@@ -133,7 +131,7 @@ static int enqueue(struct wnc_carrier *c, const void *data, size_t size, bool co
         if (reserve > bound)
             return WNC_INVALID;
         bound -= reserve;
-    } else if (!control && !priority) {
+    } else if (category == WNC_IP) {
         if (c->priority_reserve > bound)
             return WNC_INVALID;
         bound -= c->priority_reserve;
@@ -143,14 +141,15 @@ static int enqueue(struct wnc_carrier *c, const void *data, size_t size, bool co
     struct wnc_frame *f = wendy_net_calloc(1, allocation);
     if (!f)
         return WNC_NOMEM;
-    f->size = prefix + size;
-    f->priority = priority;
+    f->size = size;
     f->category = (uint8_t)category;
-    f->data[0] = c->operator_router ? (control ? 5 : 4) : (control ? 1 : 2);
-    wn_put32(f->data + 1, (uint32_t)(size + (control ? 4 : 0)));
-    if (control)
-        wn_put32(f->data + 5, (uint32_t)size);
-    memcpy(f->data + prefix, data, size);
+    *out = f;
+    return 0;
+}
+static void append_frame(struct wnc_carrier *c, struct wnc_frame *f)
+{
+    size_t allocation = sizeof *f + f->size;
+    unsigned category = f->category;
     if (c->fair) {
         f->previous = c->tail;
         if (c->tail)
@@ -165,7 +164,7 @@ static int enqueue(struct wnc_carrier *c, const void *data, size_t size, bool co
         c->class_tail[category] = f;
         c->class_bytes[category] += allocation;
         c->class_frames[category]++;
-    } else if (priority) {
+    } else if (f->priority) {
         struct wnc_frame **at = &c->head;
         if (*at && (*at)->begun)
             at = &(*at)->next;
@@ -184,6 +183,26 @@ static int enqueue(struct wnc_carrier *c, const void *data, size_t size, bool co
     }
     c->queued += allocation;
     probe_enqueue(c, f, allocation);
+}
+static int enqueue(struct wnc_carrier *c, const void *data, size_t size, bool control,
+                   bool priority)
+{
+    if (!c || !c->io.write || !data || !size ||
+        size > (control ? c->control_limit : WN_DATAGRAM_MAX))
+        return WNC_INVALID;
+    size_t prefix = control ? 9 : 5;
+    unsigned category = control ? WNC_METADATA : priority ? WNC_ROUTE : WNC_IP;
+    struct wnc_frame *f;
+    int err = reserve_frame(c, category, prefix + size, &f);
+    if (err)
+        return err;
+    f->priority = priority;
+    f->data[0] = c->operator_router ? (control ? 5 : 4) : (control ? 1 : 2);
+    wn_put32(f->data + 1, (uint32_t)(size + (control ? 4 : 0)));
+    if (control)
+        wn_put32(f->data + 5, (uint32_t)size);
+    memcpy(f->data + prefix, data, size);
+    append_frame(c, f);
     return 0;
 }
 int wnc_enqueue(struct wnc_carrier *c, const void *data, size_t size, bool control)
@@ -194,10 +213,33 @@ int wnc_enqueue_priority(struct wnc_carrier *c, const void *data, size_t size, b
 {
     return enqueue(c, data, size, control, true);
 }
+/* Keep both existing fragment envelopes in a single FIFO node and TLS write. */
+static int enqueue_split_packet(struct wnc_carrier *c, const void *packet, size_t size, uint32_t id)
+{
+    struct wnc_frame *f;
+    int err = reserve_frame(c, WNC_IP, size + 2 * (5 + 9), &f);
+    if (err)
+        return err;
+    size_t out = 0;
+    for (size_t offset = 0; offset < size; offset += WN_DATAGRAM_MAX - 9) {
+        size_t n = wn_fragment(f->data + out + 5, packet, size, id, offset);
+        if (!n) {
+            wendy_net_free(f);
+            return WNC_INVALID;
+        }
+        f->data[out] = c->operator_router ? 4 : 2;
+        wn_put32(f->data + out + 1, (uint32_t)n);
+        out += 5 + n;
+    }
+    append_frame(c, f);
+    return 0;
+}
 int wnc_enqueue_packet(struct wnc_carrier *c, const void *packet, size_t size, uint32_t id)
 {
-    if (!c || !packet || size < 40 || size > WN_MTU)
+    if (!c || !c->io.write || !packet || size < 40 || size > WN_MTU)
         return WNC_INVALID;
+    if (c->batch_ip && size > WN_DATAGRAM_MAX - 9)
+        return enqueue_split_packet(c, packet, size, id);
     struct wnc_frame *tail = c->tail;
     struct wnc_frame *class_tail = c->class_tail[WNC_IP];
     size_t queued = c->queued;
@@ -255,10 +297,57 @@ bool wnc_timeout_snapshot(const struct wnc_carrier *c, int64_t now, struct wnc_t
     }
     return false;
 }
+/* Coalesce consecutive, unstarted IP writes only while control queues are empty.
+ * Once the BIO sees a buffer, the usual pinned write rules apply to the bundle. */
+static struct wnc_frame *join_ready_ip(struct wnc_carrier *c)
+{
+    struct wnc_frame *first = c->head;
+    if (!c->batch_ip || !c->fair || !first || first->begun ||
+        first != c->class_head[WNC_IP] || c->class_head[WNC_ROUTE] || c->class_head[WNC_METADATA])
+        return first;
+    struct wnc_frame *last = first;
+    unsigned count = 1;
+    size_t total = first->size;
+    while (count < 3 && last->next && last->next == last->class_next &&
+           !last->next->begun && total + last->next->size <= WNC_IP_BATCH_BYTES) {
+        last = last->next;
+        total += last->size;
+        count++;
+    }
+    if (count == 1)
+        return first;
+    struct wnc_frame *bundle = wendy_net_calloc(1, sizeof *bundle + total);
+    if (!bundle)
+        return first;
+    bundle->size = total;
+    bundle->category = WNC_IP;
+    bundle->next = last->next;
+    bundle->class_next = last->class_next;
+    if (bundle->next)
+        bundle->next->previous = bundle;
+    else
+        c->tail = bundle;
+    if (!bundle->class_next)
+        c->class_tail[WNC_IP] = bundle;
+    c->class_head[WNC_IP] = c->head = bundle;
+    size_t saved = (count - 1) * sizeof *bundle;
+    c->class_bytes[WNC_IP] -= saved;
+    c->queued -= saved;
+    c->class_frames[WNC_IP] -= count - 1;
+    size_t written = 0;
+    while (first != bundle->next) {
+        struct wnc_frame *next = first->next;
+        memcpy(bundle->data + written, first->data, first->size);
+        written += first->size;
+        wendy_net_free(first);
+        first = next;
+    }
+    return bundle;
+}
 static int pump_write(struct wnc_carrier *c, int64_t now)
 {
     choose_frame(c);
-    struct wnc_frame *f = c->head;
+    struct wnc_frame *f = join_ready_ip(c);
     if (!f)
         return 0;
     if (!f->begun) {

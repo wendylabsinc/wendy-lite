@@ -12,6 +12,7 @@
 /* Sparse FIFO classes share one existing allocation ceiling. */
 enum { WNC_ROUTE, WNC_METADATA, WNC_IP, WNC_CLASSES };
 #define WNC_CLASS_RESERVE 1536U
+#define WNC_IP_BATCH_BYTES 4050U
 
 enum {
     WNC_INVALID = -1,
@@ -34,7 +35,7 @@ struct wnc_carrier {
     struct wnc_frame *class_head[WNC_CLASSES], *class_tail[WNC_CLASSES];
     size_t class_bytes[WNC_CLASSES];
     unsigned class_frames[WNC_CLASSES], routing_limit;
-    bool fair, last_routing, last_metadata, operator_router;
+    bool fair, last_routing, last_metadata, operator_router, batch_ip;
     uint8_t *small, *body;
     size_t small_size, limit, control_limit, priority_reserve, queued, body_size, body_have;
     uint8_t header[5];
