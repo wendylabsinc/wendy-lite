@@ -31,8 +31,9 @@ managed_components, sdkconfig.defaults.wendy and version.defaults. After the
 test, the project has the new configuration of the last entry. The results are
 in tools/configurator/test_results/<old_conf>/.
 
-The comparison skips CONFIG_WENDY_VERSION: configure.py sets it from git, and
-the old configuration has no source for it.
+The comparison skips CONFIG_WENDY_VERSION and CONFIG_WENDY_BUILD_PROFILE:
+configure.py sets them (from git and from the input values), and the old
+configuration has no source for them.
 
 Activate ESP-IDF first. Each entry needs two set-target runs (about 1 min each).
 """
@@ -51,7 +52,7 @@ import time
 from typing import Any
 
 import conf_model
-from conf_model import ConfError, Model, read_yaml
+from conf_model import BUILD_PROFILE, ConfError, Model, read_yaml
 from esp_idf import (
     CHIP,
     IDF_PREVIEW,
@@ -72,8 +73,9 @@ LOCK_FILE = "dependencies.lock"
 VERSION_DEFAULTS = "# Release version overlay. Empty: no release version.\n"
 NOT_SET = "<not set>"
 ABSENT = "<absent>"
-# configure.py sets these options from git; the old configuration has no source for them.
-NOT_COMPARED = frozenset({WENDY_VERSION})
+# configure.py sets these options (from git and from the input values); the old
+# configuration has no source for them.
+NOT_COMPARED = frozenset({WENDY_VERSION, BUILD_PROFILE})
 LOG_TAIL = 20
 _NOT_SET_RE = re.compile(r"^# (CONFIG_\w+) is not set$")
 
