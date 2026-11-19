@@ -46,8 +46,9 @@ idf.py build
 ```
 
 `boards/esp32c5_generic.cfg`, `boards/esp32c6_generic.cfg`,
-`boards/esp32s3_generic.cfg` and `boards/dfr1172_firebeetle.cfg` include
-`boards/wasm.defaults`. A bare `idf.py set-target <target>` builds without WASM.
+`boards/esp32s3_generic.cfg`, `boards/dfr1172_firebeetle.cfg` and
+`boards/waveshare_lcd_4b.cfg` include `boards/wasm.defaults`. A bare
+`idf.py set-target <target>` builds without WASM.
 
 Existing `sdkconfig` files retain their choices. Configure a fresh build to pick
 up the new defaults, including disabled WASM callbacks and host API exports.
@@ -154,6 +155,7 @@ For a specific board, select its overlay from `boards/` before `set-target`:
 
 ```bash
 idf.py @boards/waveshare_lcd_4b.cfg          set-target esp32p4  # Waveshare ESP32-P4-WIFI6-Touch-LCD-4B (32 MB flash)
+idf.py @boards/waveshare_lcd_4b_native.cfg   set-target esp32p4  # Waveshare ESP32-P4-WIFI6-Touch-LCD-4B (32 MB flash, OTA app slots)
 idf.py @boards/dfr1172_firebeetle.cfg        set-target esp32p4  # DFRobot FireBeetle 2 ESP32-P4 (DFR1172) (16 MB flash)
 idf.py @boards/dfr1172_firebeetle_native.cfg set-target esp32p4  # DFRobot FireBeetle 2 ESP32-P4 (DFR1172) (16 MB flash, OTA app slots)
 idf.py @boards/seeed_xiao_esp32s3_native.cfg set-target esp32s3  # Seeed Studio XIAO ESP32S3 (8 MB flash, OTA app slots)
@@ -406,6 +408,9 @@ P4 boards differ in flash size and partition layout, so the build selects a boar
 # Waveshare ESP32-P4-WIFI6-Touch-LCD-4B (32 MB flash, 4" 720x720 MIPI-DSI panel)
 idf.py @boards/waveshare_lcd_4b.cfg set-target esp32p4
 
+# Same board, native apps only (no WASM, two OTA app slots)
+idf.py @boards/waveshare_lcd_4b_native.cfg set-target esp32p4
+
 # DFRobot DFR1172 FireBeetle 2 ESP32-P4 (16 MB flash, headless)
 idf.py @boards/dfr1172_firebeetle.cfg set-target esp32p4
 
@@ -415,9 +420,10 @@ idf.py @boards/dfr1172_firebeetle_native.cfg set-target esp32p4
 
 All P4 profiles compile Wendy Net Wi-Fi and BLE carriers and use the
 multi-carrier router profile with a 2 MiB mesh allocation ceiling in PSRAM.
-The catalog's `dfr1172_firebeetle_native` board configuration uses native OTA
-app slots and does not include WASM. Start with a fresh sdkconfig to pick up
-the mesh defaults, then [enroll and enable the carriers](docs/wendy-net.md).
+The catalog's `dfr1172_firebeetle_native` and `waveshare_lcd_4b_native` board
+configurations use native OTA app slots and do not include WASM. Start with a
+fresh sdkconfig to pick up the mesh defaults, then
+[enroll and enable the carriers](docs/wendy-net.md).
 
 #### Other P4 boards
 
