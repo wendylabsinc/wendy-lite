@@ -27,18 +27,16 @@ if args.profile == 'psram' and args.target != 'esp32c5':
     parser.error('PSRAM profile requires esp32c5')
 shutil.copytree(args.wamr, work / 'components/espressif__wasm-micro-runtime')
 shutil.copytree(root / 'components/wendy_wasm', work / 'components/wendy_wasm')
-shutil.copytree(root / 'patches', work / 'patches')
-(work / 'cmake').mkdir()
-shutil.copyfile(root / 'cmake/dependency_patches.cmake', work / 'cmake/dependency_patches.cmake')
 (work / 'components/wendy_pki/cmake').mkdir(parents=True)
 shutil.copyfile(root / 'components/wendy_pki/cmake/pqc_patches.cmake',
                 work / 'components/wendy_pki/cmake/pqc_patches.cmake')
 (work / 'main').mkdir()
+# wendy_wasm's project_include.cmake patches WAMR at the end of this file. The
+# wendy_pki component is not staged, so load its patch helpers here.
 (work / 'CMakeLists.txt').write_text('''cmake_minimum_required(VERSION 3.16)
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+include(components/wendy_pki/cmake/pqc_patches.cmake)
 project(wasm_component_review)
-include(cmake/dependency_patches.cmake)
-wendy_patch_wamr()
 ''')
 (work / 'main/CMakeLists.txt').write_text('idf_component_register(SRCS "main.c" REQUIRES wendy_wasm)\n')
 (work / 'main/Kconfig.projbuild').write_text('config WENDY_CORE_WASM_APP_SUPPORT\n    bool\n    default y\n')

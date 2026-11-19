@@ -43,6 +43,10 @@ CONFIG_WENDY_NET_BLE=y
 CONFIG_WENDY_NET_CONSTRAINED_PROFILE=n
 CONFIG_BT_NIMBLE_L2CAP_COC_MAX_NUM=4
 CONFIG_BT_NIMBLE_MSYS_1_BLOCK_SIZE=256
+# The wendy_ble NimBLE patches support ESP-IDF 6.0.3 and 6.1, not the pinned
+# ESP-IDF 6.2 development NimBLE host. Build that host unpatched until the
+# patches are ported. The build refuses this option on a released ESP-IDF.
+CONFIG_WENDY_BLE_PATCH_NIMBLE=n
 
 # Match the BSP LVGL integration: use FreeRTOS locks and the PSRAM-capable heap.
 CONFIG_LV_CONF_SKIP=y

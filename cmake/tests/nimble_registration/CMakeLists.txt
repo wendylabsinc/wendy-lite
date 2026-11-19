@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(wendy_nimble_registration C)
-include("${CMAKE_CURRENT_LIST_DIR}/../../dependency_patches.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/../../../components/wendy_pki/cmake/pqc_patches.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/../../../components/wendy_ble/cmake/nimble_patches.cmake")
 set(ENV{IDF_PATH} "${WENDY_TEST_IDF_PATH}")
 set(CONFIG_BT_NIMBLE_ENABLED ON)
 set(host "${WENDY_TEST_IDF_PATH}/components/bt/host/nimble/nimble/nimble/host")

@@ -20,9 +20,14 @@ with tempfile.TemporaryDirectory(prefix='wendy-sdk-fixture-') as temporary:
 
     def check_staged_project(command, *, cwd, check):
         assert command[0] == '/bin/bash' and cwd == work and check
-        # This executes the same include as the generated SDK project. The
-        # WAMR target is absent in script mode, so no IDF configuration is needed.
-        real_run(['cmake', '-P', str(work / 'cmake/dependency_patches.cmake')], check=True)
+        # This executes the same includes as the generated SDK project and
+        # wendy_wasm's project_include.cmake. The WAMR target is absent in
+        # script mode, so no IDF configuration is needed.
+        real_run(['cmake', '-P', str(work / 'components/wendy_pki/cmake/pqc_patches.cmake')], check=True)
+        real_run(['cmake', '-P', str(work / 'components/wendy_wasm/cmake/wamr_patches.cmake')], check=True)
+        for name in ['wamr-idf6-platform.patch', 'wamr-linear-mapping-replacement.patch']:
+            assert (work / 'components/wendy_wasm/patches' / name).is_file(), name
+        assert 'pqc_patches.cmake' in (work / 'CMakeLists.txt').read_text()
         (work / 'sdkconfig').write_text(
             'CONFIG_WENDY_WASM=y\nCONFIG_WENDY_WASM_MAX_MEMORY_PAGES=0\n'
             'CONFIG_WAMR_ENABLE_AOT=y\nCONFIG_ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP=y\n'

@@ -4,7 +4,7 @@ dependencies:
   wendy_net:
     override_path: "../wendy_net"
     rules:
-      - if: "target != esp32s31 && $CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True && $CONFIG{WENDY_NET} == True"
+      - if: "target not in [esp32s31, esp32c61] && ($CONFIG{WENDY_CORE_WASM_APP_SUPPORT} == True && $CONFIG{WENDY_NET} == True)"
   wendy_babel:
     override_path: "../wendy_babel"
   wendy_ble:
