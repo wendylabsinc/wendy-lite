@@ -64,7 +64,7 @@ rules:
       chip: esp32p4
       flash_size: 16MiB
       spram_size: 32MiB
-      wendy_net: false
+      wendy_net: true
   - if: board == "seeed_xiao"
     set:
       chip: esp32s3
@@ -86,7 +86,7 @@ rules:
       chip: esp32p4
       flash_size: 32MiB
       spram_size: 32MiB
-      wendy_net: false
+      wendy_net: true
 
   # select the ESP-IDF version
   # tools/configure.py checks that the active ESP-IDF has this version, and adds
@@ -252,7 +252,9 @@ rules:
   # chip settings (copies of sdkconfig.defaults.<chip>, which the old
   # boards/*.cfg builds still use: change both). The flash_size and app_type
   # rules below set the flash size and the WASM app support. The partition
-  # table lines are the fallback when no partition rule below applies.
+  # table lines are the fallback when no partition rule below applies. The
+  # Wendy Net part of sdkconfig.defaults.esp32p4 is in a rule after the
+  # wendy_net rule.
   - if: chip == "esp32c5"
     sdkconfig: |
       # Target: ESP32-C5 (dual-band Wi-Fi 6 + BLE single-chip board).
@@ -341,9 +343,11 @@ rules:
       CONFIG_SPIRAM_BOOT_INIT=y
       CONFIG_SPIRAM_USE_MALLOC=y
       CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
-      # Anything smaller than this stays in internal SRAM (latency-sensitive),
-      # anything larger may land in PSRAM. 16 KiB matches Espressif's guidance.
-      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+      # Keep mesh/TLS allocations in PSRAM and reserve internal RAM for SDIO DMA,
+      # NimBLE and task stacks, as on the PSRAM-equipped C5 mesh profile.
+      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=64
+      CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+      CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC=y
       # Power PSRAM from on-chip LDO2 (default for both current board variants).
       CONFIG_ESP_LDO_CHAN_PSRAM_DOMAIN=2
 
@@ -543,6 +547,34 @@ rules:
       CONFIG_WENDY_CLOUD_TUNNEL=n
 
   # raw board-specific sdkconfig setting
+  # sdkconfig.defaults.esp32p4, Wendy Net part. After the wendy_net rule: its
+  # values win (L2CAP CoC 5, 4 connections, 8 links). The P4 board rules set
+  # wendy_net: every old P4 build has Wendy Net.
+  - if: chip == "esp32p4" && wendy_net
+    sdkconfig: |
+      # Native Wendy Net router over ESP-Hosted Wi-Fi and BLE. Participation remains
+      # off until configured through management after enrollment.
+      CONFIG_WENDY_NET_PEER=y
+      CONFIG_LWIP_IPV6=y
+      CONFIG_LWIP_IPV6_FORWARD=n
+      CONFIG_LWIP_HOOK_IP6_ROUTE_CUSTOM=y
+      CONFIG_WENDY_NET_BLE=y
+      CONFIG_WENDY_NET_CONSTRAINED_PROFILE=n
+      CONFIG_WENDY_NET_MAX_LINKS=8
+      CONFIG_WENDY_NET_BLE_CHANNELS=3
+      CONFIG_WENDY_NET_TASK_PRIORITY=1
+      CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS=2
+      CONFIG_FREERTOS_TLSP_DELETION_CALLBACKS=y
+      CONFIG_MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH=y
+      CONFIG_BT_NIMBLE_MAX_CONNECTIONS=4
+      CONFIG_BT_NIMBLE_L2CAP_COC_MAX_NUM=5
+      CONFIG_BT_NIMBLE_MSYS_1_BLOCK_SIZE=256
+      CONFIG_BT_NIMBLE_EXT_ADV=y
+      CONFIG_BT_NIMBLE_EXT_ADV_V2=y
+      CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES=2
+      CONFIG_BT_NIMBLE_EXT_ADV_MAX_SIZE=31
+      CONFIG_BT_NIMBLE_ENABLE_PERIODIC_ADV=n
+
   # boards/esp32c5_net_psram.defaults
   - if: board == "esp32c5_devkit_c_1_n8r8" && app_type == "wasm" && wendy_net
     sdkconfig: |

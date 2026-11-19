@@ -51,8 +51,7 @@ variants:
     idf_version: "6.0.3"
     idf_preview: false
     tested: true
-    aliases:
-      - board=custom chip=esp32p4 flash_size=32MiB app_type=native cloud_tunnel=true
+    aliases: []
 
   - combination: board=seeed_xiao app_type=native wendy_net=true sensor_link_av=false cloud_tunnel=true
     chip: esp32s3
