@@ -14,7 +14,13 @@
 struct wna_buffer {
     uint8_t bytes[WNA_IO_BYTES];
     size_t offset, size;
+    uint8_t *storage;
+    size_t capacity;
 };
+static inline uint8_t *wna_buffer_data(struct wna_buffer *buffer)
+{
+    return buffer->storage ? buffer->storage : buffer->bytes;
+}
 struct wna_channel {
     struct wna_buffer input, output;
     bool eof, failed;

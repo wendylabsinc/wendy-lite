@@ -24,7 +24,8 @@ head = r'''
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-struct wn_candidate { int port; char address[64]; };
+enum { WN_LAN, WN_ESPNOW };
+struct wn_candidate { int medium, port; char address[64]; };
 struct wendy_pki_stream { int unused; };
 struct wendy_pki_net_issuers { void (*release)(void *); };
 struct wendy_pki_operator_peer;
@@ -54,6 +55,14 @@ static int reserve_candidate(struct peer_state *s, const struct wn_candidate *c)
  (void)s; (void)c; return candidate_ok ? 0 : -1;
 }
 static void *wendy_net_calloc(size_t n, size_t size) { return allocation_ok ? calloc(n,size) : NULL; }
+enum { WENDY_NET_MEMORY_INTERNAL, WENDY_NET_MEMORY_EXTERNAL };
+static struct { int placement; } test_scope;
+#define wendy_net_memory_scope_current() test_scope
+static int wn_espnow_connect(const struct wn_candidate *candidate, bool *connecting) {
+ assert(candidate->medium == WN_ESPNOW);
+ *connecting = true;
+ return 7;
+}
 static int64_t esp_timer_get_time(void) { return clock_us; }
 static int wnad_connect(const char *host, unsigned port, bool *connecting) {
  (void)host; (void)port; *connecting = true; return 7;
@@ -84,6 +93,20 @@ int main(int argc, char **argv) {
  struct peer_state link = {0};
  struct wn_candidate candidate = {.port = 43024, .address = "127.0.0.1"};
  reset();
+ candidate.medium = WN_ESPNOW;
+ struct wna_channel *channel = allocate_carrier_channel(&candidate);
+ assert(channel && wna_buffer_space(&channel->input) == WNA_IO_BYTES);
+ free(channel);
+ test_scope.placement = WENDY_NET_MEMORY_EXTERNAL;
+ channel = allocate_carrier_channel(&candidate);
+ assert(channel && wna_buffer_space(&channel->input) == 6 * 1024 &&
+        wna_buffer_space(&channel->output) == 6 * 1024);
+ free(channel);
+ candidate.medium = WN_LAN;
+ channel = allocate_carrier_channel(&candidate);
+ assert(channel && wna_buffer_space(&channel->output) == WNA_IO_BYTES);
+ free(channel);
+ test_scope.placement = WENDY_NET_MEMORY_INTERNAL;
  if (!strcmp(argv[1], "allocation")) {
   allocation_ok = false;
   begin_setup(&link, &candidate, 7);
@@ -126,7 +149,7 @@ int main(int argc, char **argv) {
 '''
 with tempfile.TemporaryDirectory() as tmp:
     p = Path(tmp)
-    (p / 'test.c').write_text(head + function('advance_setup') + function('begin_setup') + main)
+    (p / 'test.c').write_text(head + function('advance_setup') + function('allocate_carrier_channel') + function('begin_setup') + main)
     subprocess.run([os.environ.get('CC', 'cc'), '-std=c11', '-Wall', '-Wextra', '-Werror',
                     '-fsanitize=address,undefined', '-I' + str(root / 'include'),
                     str(p / 'test.c'), str(root / 'src/actor.c'), '-o', str(p / 'test')], check=True)

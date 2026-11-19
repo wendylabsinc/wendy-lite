@@ -1735,6 +1735,23 @@ static int advance_setup(struct peer_state *link, int64_t now)
     }
     return 1;
 }
+static struct wna_channel *allocate_carrier_channel(const struct wn_candidate *candidate)
+{
+    enum { ESPNOW_IO_BYTES = 6 * 1024 };
+    if (candidate->medium == WN_ESPNOW &&
+        wendy_net_memory_scope_current().placement == WENDY_NET_MEMORY_EXTERNAL) {
+        struct wna_channel *channel = wendy_net_calloc(1, sizeof *channel + 2 * ESPNOW_IO_BYTES);
+        if (channel) {
+            uint8_t *storage = (uint8_t *)(channel + 1);
+            channel->input.storage = storage;
+            channel->output.storage = storage + ESPNOW_IO_BYTES;
+            channel->input.capacity = channel->output.capacity = ESPNOW_IO_BYTES;
+            return channel;
+        }
+    }
+    return wendy_net_calloc(1, sizeof(struct wna_channel));
+}
+
 static void begin_setup(struct peer_state *link, const struct wn_candidate *candidate, int fd)
 {
 #if !WENDY_NET_NON_TRANSIT && CONFIG_WENDY_NET_BLE
@@ -1765,7 +1782,7 @@ static void begin_setup(struct peer_state *link, const struct wn_candidate *cand
         }
     }
 #endif
-    link->tls_channel = index >= 0 ? wendy_net_calloc(1, sizeof *link->tls_channel) : NULL;
+    link->tls_channel = index >= 0 ? allocate_carrier_channel(candidate) : NULL;
     uint64_t budget = UINT64_C(60000000);
 #if CONFIG_WENDY_NET_BLE
     /* S8 took 58 seconds for a valid cold handshake on the bench. Leave
