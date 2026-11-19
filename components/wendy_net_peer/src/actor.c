@@ -4,12 +4,14 @@
 size_t wna_buffer_space(struct wna_buffer *b)
 {
     if (b->offset && b->size) {
-        memmove(b->bytes, b->bytes + b->offset, b->size);
+        uint8_t *data = wna_buffer_data(b);
+        memmove(data, data + b->offset, b->size);
         b->offset = 0;
     }
     if (!b->size)
         b->offset = 0;
-    return sizeof b->bytes - b->size;
+    size_t capacity = b->storage ? b->capacity : sizeof b->bytes;
+    return capacity - b->size;
 }
 void wna_buffer_consume(struct wna_buffer *b, size_t n)
 {
@@ -28,7 +30,7 @@ ssize_t wna_read(void *context, void *bytes, size_t count)
         return c->eof ? 0 : -2;
     if (count > c->input.size)
         count = c->input.size;
-    memcpy(bytes, c->input.bytes + c->input.offset, count);
+    memcpy(bytes, wna_buffer_data(&c->input) + c->input.offset, count);
     wna_buffer_consume(&c->input, count);
     return (ssize_t)count;
 }
@@ -42,7 +44,7 @@ ssize_t wna_write(void *context, const void *bytes, size_t count)
         return -3;
     if (count > room)
         count = room;
-    memcpy(c->output.bytes + c->output.size, bytes, count);
+    memcpy(wna_buffer_data(&c->output) + c->output.size, bytes, count);
     c->output.size += count;
     return (ssize_t)count;
 }

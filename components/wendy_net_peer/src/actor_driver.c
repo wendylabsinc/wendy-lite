@@ -99,9 +99,10 @@ int wnad_channel_io(struct wna_channel *c, int fd, const struct wendy_pki_stream
     wendy_pki_work_metrics(&work);
     if (c->output.size) {
         IOPROBE(tx_calls, 1);
+        const uint8_t *data = wna_buffer_data(&c->output) + c->output.offset;
         n = stream
-                ? stream->write(stream->context, c->output.bytes + c->output.offset, c->output.size)
-                : send(fd, c->output.bytes + c->output.offset, c->output.size, MSG_DONTWAIT);
+                ? stream->write(stream->context, data, c->output.size)
+                : send(fd, data, c->output.size, MSG_DONTWAIT);
         if (n > 0) {
             IOPROBE(tx_bytes, n);
             if (work.running)
@@ -119,8 +120,9 @@ int wnad_channel_io(struct wna_channel *c, int fd, const struct wendy_pki_stream
     size_t room = wna_buffer_space(&c->input);
     if (room && !c->eof) {
         IOPROBE(rx_calls, 1);
-        n = stream ? stream->read(stream->context, c->input.bytes + c->input.size, room)
-                   : recv(fd, c->input.bytes + c->input.size, room, MSG_DONTWAIT);
+        uint8_t *data = wna_buffer_data(&c->input) + c->input.size;
+        n = stream ? stream->read(stream->context, data, room)
+                   : recv(fd, data, room, MSG_DONTWAIT);
         if (n > 0) {
             IOPROBE(rx_bytes, n);
             if (work.running)
