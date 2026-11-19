@@ -146,7 +146,7 @@ jobs:
           enabled = os.environ["BOARD_CFG"] in {
               "seeed_xiao_esp32s3_native", "esp32s31_korvo_1_native",
               "esp32s31_mosaico_native", "esp32c5_net_psram", "esp32c6_net",
-              "dfr1172_firebeetle_native",
+              "dfr1172_firebeetle_native", "waveshare_lcd_4b_native",
           }
           for option in ("WENDY_NET_PEER", "WENDY_NET_BLE"):
               assert bool(config.get(option)) == enabled, f"unexpected {option} for this board"
@@ -155,7 +155,7 @@ jobs:
               assert not config.get("LWIP_IPV6_FORWARD")
               assert config["BT_NIMBLE_L2CAP_COC_MAX_NUM"] >= (3 if os.environ["BOARD_CFG"] == "esp32c6_net" else 4)
               assert config["BT_NIMBLE_MSYS_1_BLOCK_SIZE"] >= 248
-          if os.environ["BOARD_CFG"] == "dfr1172_firebeetle_native":
+          if os.environ["BOARD_CFG"] in {"dfr1172_firebeetle_native", "waveshare_lcd_4b_native"}:
               for option in ("SPIRAM", "SPIRAM_USE_MALLOC", "MBEDTLS_CUSTOM_MEM_ALLOC",
                              "ESP_HOSTED_ENABLE_BT_NIMBLE", "ESP_HOSTED_NIMBLE_HCI_VHCI",
                              "BT_NIMBLE_EXT_ADV"):
