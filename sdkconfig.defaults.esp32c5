@@ -1,3 +1,6 @@
+# tools/configure.py does not read this file: master_config.yaml has a copy
+# of these settings. Change both.
+
 # Target: ESP32-C5 (dual-band Wi-Fi 6 + BLE single-chip board).
 # Mirrors the C6 overlay; the chips differ on radio (C5 adds 5 GHz) and
 # 802.15.4 (C5 omits) but the firmware-side knobs we care about are the

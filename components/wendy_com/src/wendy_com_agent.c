@@ -538,6 +538,10 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
         resp->which_data = WendyComResponse_device_info_tag;
         resp->result = wcom_cmd_get_device_info(&resp->data.device_info);
         break;
+    case WendyComCommand_get_build_info_tag:
+        resp->which_data = WendyComResponse_build_info_tag;
+        resp->result = wcom_cmd_get_build_info(&resp->data.build_info);
+        break;
     case WendyComCommand_console_attach_tag:
         resp->result = wcom_cmd_console_attach(client_id,
                                                cmd->params.console_attach.event_id,

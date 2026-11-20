@@ -42,9 +42,12 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
 
-      # The version a device reports comes from CONFIG_WENDY_FIRMWARE_VERSION_*
-      # (components/wendy_core/Kconfig), whose defaults are a dev placeholder.
-      # On a tag build the real version is derived from the tag here. The file
+      # CONFIG_WENDY_FIRMWARE_VERSION_* (components/wendy_core/Kconfig), whose
+      # defaults are a dev placeholder, gives the version in the boot log, in
+      # the WASM sys_firmware_version API and in the app descriptor. The
+      # version that WendyCom reports is CONFIG_WENDY_VERSION, which only
+      # tools/configure.py writes. On a tag build the real version is derived
+      # from the tag here. The file
       # is always written, even when empty: a file listed in SDKCONFIG_DEFAULTS
       # that does not exist is a CMake FATAL_ERROR, and keeping the build
       # command uniform means PRs exercise this path too.

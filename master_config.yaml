@@ -1,0 +1,913 @@
+format_version: "1.0"
+attributes:
+  board:
+    type: string
+    enum: [custom, dfr1172_firebeetle_2, seeed_xiao, m5_stamp_s3, esp32c5_devkit_c_1_n8r8, esp32c6_devkit_c_1_n8, esp32c6_devkit_m_1,
+           esp32c61_devkit_c_1, esp32s3_devkit_c_1_n8, esp32s31_korvo_1, waveshare_esp32p4_lcd_4b]
+  chip:
+    type: string
+    enum: [esp32c6, esp32c61, esp32c5, esp32p4, esp32s3, esp32s31]
+  idf_version:
+    type: string
+    enum: ["6.0.3", "6.1"]
+  idf_preview:
+    type: boolean
+  flash_size:
+    type: size
+    enum: [4MiB, 8MiB, 16MiB, 32MiB]
+  spram_size:
+    type: size
+  app_type:
+    type: string
+    enum: [native, wasm]
+  wendy_net:
+    type: boolean
+  sensor_link_av:
+    type: boolean
+  cloud_tunnel:
+    type: boolean
+rules:
+  - if: board == "custom"
+    set:
+      spram_size: 0
+      wendy_net: false
+  - if: board == "esp32c5_devkit_c_1_n8r8"
+    set:
+      chip: esp32c5
+      flash_size: 8MiB
+      spram_size: 8MiB
+  - if: board == "esp32c6_devkit_c_1_n8"
+    set:
+      chip: esp32c6
+      flash_size: 8MiB
+      spram_size: 0
+  - if: board == "esp32c6_devkit_m_1"
+    set:
+      chip: esp32c6
+      flash_size: 4MiB
+      spram_size: 0
+      wendy_net: false
+  - if: board == "esp32c61_devkit_c_1"
+    set:
+      chip: esp32c61
+      flash_size: 4MiB
+      spram_size: 0
+      wendy_net: false
+  - if: board == "m5_stamp_s3"
+    set:
+      chip: esp32s3
+      flash_size: 8MiB
+      spram_size: 0
+      wendy_net: false
+  - if: board == "dfr1172_firebeetle_2"
+    set:
+      chip: esp32p4
+      flash_size: 16MiB
+      spram_size: 32MiB
+      wendy_net: true
+  - if: board == "seeed_xiao"
+    set:
+      chip: esp32s3
+      flash_size: 8MiB
+      spram_size: 8MiB
+  - if: board == "esp32s3_devkit_c_1_n8"
+    set:
+      chip: esp32s3
+      flash_size: 8MiB
+      spram_size: 0
+      wendy_net: false
+  - if: board == "esp32s31_korvo_1"
+    set:
+      chip: esp32s31
+      flash_size: 16MiB
+      spram_size: 16MiB
+  - if: board == "waveshare_esp32p4_lcd_4b"
+    set:
+      chip: esp32p4
+      flash_size: 32MiB
+      spram_size: 32MiB
+      wendy_net: true
+
+  # select the ESP-IDF version
+  # tools/configure.py checks that the active ESP-IDF has this version, and adds
+  # idf.py --preview when idf_preview is true.
+  - if: chip == "esp32s31"
+    set:
+      idf_version: "6.1"
+      idf_preview: true
+  - else:
+    set:
+      idf_version: "6.0.3"
+      idf_preview: false
+
+  - if: chip == "esp32c61"
+    set:
+      app_type: "native"
+
+  # SensorLink camera and microphone: the XIAO user selects it, the Korvo-1
+  # always has it. SensorLink needs WASM app support off: it forces a native app.
+  - if: board == "esp32s31_korvo_1"
+    set:
+      sensor_link_av: true
+  - else-if: board != "seeed_xiao"
+    set:
+      sensor_link_av: false
+  - if: sensor_link_av
+    set:
+      app_type: "native"
+
+  # Wendy Cloud tunnel: control of the device through Wendy Cloud. The tunnel
+  # needs Wendy Cloud, and the constrained C6 Wendy Net profile turns Wendy
+  # Cloud off (see its sdkconfig block).
+  - if: board == "esp32c6_devkit_c_1_n8" && app_type == "wasm" && wendy_net
+    set:
+      cloud_tunnel: false
+
+  # define the sdkconfig
+  # The lines of all the rules with a true condition go to
+  # sdkconfig.defaults.wendy in the order of this file. A later line wins.
+  # tools/configure.py gives only this file to ESP-IDF, so it contains all the
+  # settings: first the base lines, then the chip lines, then the other rules.
+
+  # base settings of all builds (copy of sdkconfig.defaults, which the old
+  # boards/*.cfg builds still use: change both). The app_type rule below sets
+  # the WASM, HAL and Wendy Net component options.
+  - sdkconfig: |
+      # WAMR configuration (interpreter/AOT/loader knobs are picked per-target -
+      # tiny C6 builds prefer classic + mini loader; the P4 with PSRAM uses fast.)
+      CONFIG_WENDY_WASM_STACK_SIZE=8192
+      CONFIG_WENDY_WASM_HEAP_SIZE=0
+      # 0 = use system allocator (no pre-allocated pool). Trades the hard guest
+      # ceiling for letting wifi DMA buffers and the wasm runtime share heap
+      # dynamically. With a 224 KiB pre-allocated pool on ESP32-C6, the DMA pool
+      # was being starved to single bytes, breaking outbound wifi entirely.
+      CONFIG_WENDY_WASM_POOL_SIZE=0
+
+      # Bytecode/interpreter-only runtime: trim optional WAMR subsystems.
+      # CONFIG_WAMR_ENABLE_AOT is not set
+      # CONFIG_WAMR_ENABLE_APP_FRAMEWORK is not set
+
+      # Disable WAMR pthread (causes assert in FreeRTOS tasks)
+      # CONFIG_WAMR_ENABLE_LIB_PTHREAD is not set
+      # CONFIG_WAMR_ENABLE_SHARED_MEMORY is not set
+
+      # Disable WAMR built-in WASI (we provide our own shim)
+      # CONFIG_WAMR_ENABLE_LIBC_WASI is not set
+      # CONFIG_WAMR_ENABLE_MEMORY_PROFILING is not set
+
+      # Swift async executables need WAMR ref-types support for their funcref table.
+      CONFIG_WAMR_ENABLE_REF_TYPES=y
+
+      # BLE stack (NimBLE) - runs on the host MCU regardless of whether the
+      # controller is native (C6) or remote-over-VHCI via esp_hosted (P4).
+      CONFIG_BT_ENABLED=y
+      CONFIG_BT_NIMBLE_ENABLED=y
+      CONFIG_BT_NIMBLE_MAX_CONNECTIONS=2
+
+      # WendyCom over mTLS over BLE. The wendy_ble component owns the NimBLE stack:
+      # it is the only caller of nimble_port_init().
+      CONFIG_WENDY_BLE=y
+
+      # L2CAP connection-oriented channels carry the WendyCom byte stream. Defaults
+      # to 0 (compiled out), so this is what makes the transport possible at all.
+      CONFIG_BT_NIMBLE_L2CAP_COC_MAX_NUM=1
+      CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=247
+
+      # The bundled mbedTLS reassembles handshake records against its configured
+      # input size. IDF's dynamic allocator can allocate only the current record's
+      # size, so use fixed buffers to keep that bound equal to the allocation.
+      CONFIG_MBEDTLS_DYNAMIC_BUFFER=n
+      # Mixed ML-DSA-65/87 chains need full TLS records plus handshake reassembly.
+      CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+      # Use the system allocator so boards with PSRAM can keep large TLS buffers
+      # outside the internal RAM reserved for DMA and task stacks.
+      CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y
+
+      # mDNS is used through firmware APIs; its interactive console CLI is unused.
+      # Keep the optional CLI out of minimal builds that do not link console.
+      CONFIG_MDNS_ENABLE_CONSOLE_CLI=n
+
+      # Console over UART (compatible with Wokwi and most debug setups)
+      CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+      # Disable ROM secondary console so the wendy_usj buffered driver owns the USB
+      # Serial/JTAG peripheral exclusively (no TX FIFO conflict with esp_rom_usb_serial_putc).
+      CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+      # --- Memory optimizations ---
+
+      # Size-optimized build (-Os instead of -Og)
+      CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+      CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
+      CONFIG_COMPILER_OPTIMIZATION_ASSERTION_LEVEL=1
+
+      # Disable stack overflow canary (saves RAM per task)
+      CONFIG_FREERTOS_CHECK_STACKOVERFLOW_NONE=y
+
+      # Tune NimBLE buffer pools (sized for max 2 connections). These apply
+      # regardless of whether the controller is native or remote.
+      CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=12
+      CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=12
+      CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=8
+      CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT=12
+      CONFIG_BT_NIMBLE_TRANSPORT_EVT_DISCARD_COUNT=4
+
+      # no need for TERMIOS
+      CONFIG_SUPPORT_TERMIOS=n
+
+      # Take over the bootloader RTC watchdog explicitly in wendy_core_init() instead
+      # of relying on ESP-IDF's automatic disable before app_main(). Keep it armed
+      # with a real 40s timeout: wendy_core_wdt.c derives its feed period from the
+      # timeout below and feeds it only while the wendy_com task stays responsive.
+      CONFIG_WENDY_CORE_WATCHDOG=y
+      CONFIG_BOOTLOADER_WDT_DISABLE_IN_USER_CODE=y
+      CONFIG_BOOTLOADER_WDT_TIME_MS=40000
+
+      # Start the enrollment task when Wi-Fi connects and enrollment is configured.
+      CONFIG_WENDY_CLOUD=y
+
+      # esp-pqc verifies ML-DSA-65 identities/timestamps and ML-DSA-65/87 CAs.
+      # Device keys and relay grants remain P-256; PQ key exchange is not required.
+      CONFIG_LIBOQS_ENABLED=y
+      CONFIG_LIBOQS_ENABLE_SIG_ML_DSA=y
+      CONFIG_LIBOQS_ENABLE_KEM_ML_KEM=n
+      CONFIG_LIBOQS_MLD_HEAP_TEMPORARIES=y
+      CONFIG_LIBOQS_MLD_VERIFY_ONLY=y
+      CONFIG_LIBOQS_MINIMAL_COMMON=y
+      CONFIG_MBEDTLS_USE_BUNDLED_PQC=y
+      CONFIG_MBEDTLS_SSL_TLS1_3_SIG_MLDSA65=y
+      CONFIG_MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_GROUP_X25519MLKEM768=n
+
+      # PKI uses TLS 1.3 through the bundled esp-pqc mbedTLS component.
+      CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y
+      CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE=y
+
+      # Sigstore RFC 3161 timestamps use P-384 TSA certificates and SHA-384 chains.
+      CONFIG_MBEDTLS_ECP_DP_SECP384R1_ENABLED=y
+      CONFIG_MBEDTLS_SHA512_C=y
+
+      # Mesh task reservations use slot 1; ESP-IDF reserves slot 0.
+      CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS=2
+      CONFIG_FREERTOS_TLSP_DELETION_CALLBACKS=y
+
+  # chip settings (copies of sdkconfig.defaults.<chip>, which the old
+  # boards/*.cfg builds still use: change both). The flash_size and app_type
+  # rules below set the flash size and the WASM app support. The partition
+  # table lines are the fallback when no partition rule below applies. The
+  # Wendy Net part of sdkconfig.defaults.esp32p4 is in a rule after the
+  # wendy_net rule.
+  - if: chip == "esp32c5"
+    sdkconfig: |
+      # Target: ESP32-C5 (dual-band Wi-Fi 6 + BLE single-chip board).
+      # Mirrors the C6 overlay; the chips differ on radio (C5 adds 5 GHz) and
+      # 802.15.4 (C5 omits) but the firmware-side knobs we care about are the
+      # same shape: classic WAMR, native Wi-Fi + BT, no USB OTG.
+      CONFIG_IDF_TARGET="esp32c5"
+
+      # Partition table - custom CSV with single WASM slot
+      CONFIG_PARTITION_TABLE_CUSTOM=y
+      CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+      # WAMR: classic interp + mini loader keep flash/RAM use tight on the C5.
+      CONFIG_WAMR_INTERP_CLASSIC=y
+      # CONFIG_WAMR_INTERP_FAST is not set
+      CONFIG_WAMR_INTERP_LOADER_MINI=y
+      # CONFIG_WAMR_INTERP_LOADER_NORMAL is not set
+
+      # Move WiFi/PHY hot paths from IRAM to flash (frees ~15-25 KB DIRAM)
+      CONFIG_ESP_WIFI_IRAM_OPT=n
+      CONFIG_ESP_WIFI_EXTRA_IRAM_OPT=n
+      CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+      CONFIG_ESP_WIFI_SLP_IRAM_OPT=n
+      CONFIG_ESP_PHY_IRAM_OPT=n
+  - if: chip == "esp32c6"
+    sdkconfig: |
+      # Target: ESP32-C6
+      CONFIG_IDF_TARGET="esp32c6"
+
+      # Partition table - custom CSV with single WASM slot
+      CONFIG_PARTITION_TABLE_CUSTOM=y
+      CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+      # WAMR: classic interp + mini loader keep flash/RAM use tight on the C6.
+      CONFIG_WAMR_INTERP_CLASSIC=y
+      # CONFIG_WAMR_INTERP_FAST is not set
+      CONFIG_WAMR_INTERP_LOADER_MINI=y
+      # CONFIG_WAMR_INTERP_LOADER_NORMAL is not set
+
+      # Move WiFi/PHY hot paths from IRAM to flash (frees ~15-25 KB DIRAM)
+      CONFIG_ESP_WIFI_IRAM_OPT=n
+      CONFIG_ESP_WIFI_EXTRA_IRAM_OPT=n
+      CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+      CONFIG_ESP_WIFI_SLP_IRAM_OPT=n
+      CONFIG_ESP_PHY_IRAM_OPT=n
+  - if: chip == "esp32c61"
+    sdkconfig: |
+      # Target: ESP32-C61 (single-chip Wi-Fi 6 + BLE 5 board, RISC-V, no 802.15.4).
+      # Mirrors the C6 overlay; the firmware-side knobs we care about are the same
+      # shape: native Wi-Fi + BT. No published espressif/wasm-micro-runtime
+      # release supports esp32c61 yet: the rules above force a native app.
+      CONFIG_IDF_TARGET="esp32c61"
+
+      # Partition table - shares the standard 4 MB layout (its WASM slot goes
+      # unused on this target, but reflashing to a WASM-capable target later
+      # needs no partition-table change).
+      CONFIG_PARTITION_TABLE_CUSTOM=y
+      CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+      # Move WiFi/PHY hot paths from IRAM to flash (frees ~15-25 KB DIRAM)
+      CONFIG_ESP_WIFI_IRAM_OPT=n
+      CONFIG_ESP_WIFI_EXTRA_IRAM_OPT=n
+      CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+      CONFIG_ESP_WIFI_SLP_IRAM_OPT=n
+      CONFIG_ESP_PHY_IRAM_OPT=n
+  - if: chip == "esp32p4"
+    sdkconfig: |
+      # Target: ESP32-P4 - knobs common to every supported P4 board.
+      # The on-board ESP32-C6 provides Wi-Fi and Bluetooth via ESP-Hosted over SDIO;
+      # its slave firmware is pre-flashed at the factory. The board rules below
+      # set CONFIG_WENDY_P4_BOARD_NAME: the top-level CMakeLists.txt rejects a
+      # P4 build without it.
+      CONFIG_IDF_TARGET="esp32p4"
+
+      # Both currently supported boards ship with early-revision P4 silicon (v1.0).
+      # The default IDF build targets v3.1+, which is mutually incompatible - opt into
+      # the pre-v3 support path and require at least v1.0. On rev 3.0+ silicon, drop
+      # these two knobs and let the IDF defaults stand.
+      CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+      CONFIG_ESP32P4_REV_MIN_100=y
+
+      # --- PSRAM (32 MB HEX @ 200 MHz, integrated in the ESP32-P4R32 / NRW32) ---
+      CONFIG_SPIRAM=y
+      CONFIG_SPIRAM_MODE_HEX=y
+      CONFIG_SPIRAM_SPEED_200M=y
+      CONFIG_SPIRAM_BOOT_INIT=y
+      CONFIG_SPIRAM_USE_MALLOC=y
+      CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+      # Keep mesh/TLS allocations in PSRAM and reserve internal RAM for SDIO DMA,
+      # NimBLE and task stacks, as on the PSRAM-equipped C5 mesh profile.
+      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=64
+      CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+      CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC=y
+      # Power PSRAM from on-chip LDO2 (default for both current board variants).
+      CONFIG_ESP_LDO_CHAN_PSRAM_DOMAIN=2
+
+      # --- ESP-Hosted: Wi-Fi + Bluetooth via on-board C6 over SDIO ---
+      # Both the FireBeetle 2 and the Waveshare LCD-4B copy Espressif's
+      # P4-Function-EV-Board SDIO pinout
+      CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
+      CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6=y
+      CONFIG_ESP_HOSTED_P4_DEV_BOARD_FUNC_BOARD=y
+      CONFIG_ESP_WIFI_REMOTE_LIBRARY_HOSTED=y
+
+      # Bluetooth controller lives on the C6 - disable the (non-existent) native
+      # controller and route NimBLE's HCI through ESP-Hosted's VHCI transport.
+      CONFIG_BT_CONTROLLER_DISABLED=y
+      CONFIG_BT_NIMBLE_TRANSPORT_UART=n
+      CONFIG_ESP_HOSTED_ENABLE_BT_NIMBLE=y
+      CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI=y
+
+      # ESP-Hosted recommends 1 kHz tick rate for snappier SDIO scheduling.
+      CONFIG_FREERTOS_HZ=1000
+
+      # Wi-Fi remote buffer / aggregation knobs from Espressif's P4+C6 reference.
+      CONFIG_WIFI_RMT_STATIC_RX_BUFFER_NUM=16
+      CONFIG_WIFI_RMT_DYNAMIC_RX_BUFFER_NUM=64
+      CONFIG_WIFI_RMT_DYNAMIC_TX_BUFFER_NUM=64
+      CONFIG_WIFI_RMT_AMPDU_TX_ENABLED=y
+      CONFIG_WIFI_RMT_TX_BA_WIN=32
+      CONFIG_WIFI_RMT_AMPDU_RX_ENABLED=y
+      CONFIG_WIFI_RMT_RX_BA_WIN=32
+
+      # LWIP throughput tuning to match the Wi-Fi pipe.
+      CONFIG_LWIP_TCP_SND_BUF_DEFAULT=65534
+      CONFIG_LWIP_TCP_WND_DEFAULT=65534
+      CONFIG_LWIP_TCP_RECVMBOX_SIZE=64
+      CONFIG_LWIP_UDP_RECVMBOX_SIZE=64
+      CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
+      CONFIG_LWIP_TCP_SACK_OUT=y
+
+      # --- WAMR runtime: fast interpreter (more code memory, ~2x speed) ---
+      # Plenty of PSRAM headroom so the larger fast-interp IR is no concern.
+      # CONFIG_WAMR_INTERP_CLASSIC is not set
+      CONFIG_WAMR_INTERP_FAST=y
+      # Use the normal loader so we can load larger / less constrained modules.
+      # CONFIG_WAMR_INTERP_LOADER_MINI is not set
+      CONFIG_WAMR_INTERP_LOADER_NORMAL=y
+
+      # WAMR pool generously sized since running WASM guests is the entire point:
+      # 24 MiB out of the 32 MiB PSRAM. Leaves ~8 MiB PSRAM for system-malloc
+      # fallbacks.
+      CONFIG_WENDY_WASM_POOL_SIZE=25165824
+      CONFIG_WENDY_WASM_USE_PSRAM=y
+
+      # wendy_net: large socket pool, buffers in PSRAM.
+      CONFIG_WENDY_NET_MAX_SOCKETS=32
+      CONFIG_WENDY_NET_MAX_LISTENERS=8
+      CONFIG_WENDY_NET_ACCEPT_QUEUE_SIZE=4
+      CONFIG_WENDY_NET_BUFFER_SIZE=1500
+      CONFIG_WENDY_NET_BUFFERS_IN_PSRAM=y
+      # Required for EXT_RAM_BSS_ATTR to actually place the buffers in PSRAM.
+      CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+      # lwIP needs to be able to hand out at least the wendynet pool + a few
+      # for mDNS / Wi-Fi / system services.
+      CONFIG_LWIP_MAX_SOCKETS=40
+  - if: chip == "esp32s3"
+    sdkconfig: |
+      # Target: ESP32-S3
+      CONFIG_IDF_TARGET="esp32s3"
+
+      # Partition table - custom CSV with single WASM slot
+      CONFIG_PARTITION_TABLE_CUSTOM=y
+      CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+      # WAMR: classic interp + mini loader keep flash/RAM use tight.
+      CONFIG_WAMR_INTERP_CLASSIC=y
+      # CONFIG_WAMR_INTERP_FAST is not set
+      CONFIG_WAMR_INTERP_LOADER_MINI=y
+      # CONFIG_WAMR_INTERP_LOADER_NORMAL is not set
+
+      # Move WiFi/PHY hot paths from IRAM to flash (frees ~15-25 KB DIRAM)
+      CONFIG_ESP_WIFI_IRAM_OPT=n
+      CONFIG_ESP_WIFI_EXTRA_IRAM_OPT=n
+      CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+      CONFIG_ESP_WIFI_SLP_IRAM_OPT=n
+      CONFIG_ESP_PHY_IRAM_OPT=n
+  - if: chip == "esp32s31"
+    sdkconfig: |
+      # Target: ESP32-S31, preview support in ESP-IDF 6.1.
+      CONFIG_IDF_TARGET="esp32s31"
+
+      # Generic native profile: DIO at 40 MHz, no PSRAM dependency.
+      CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+      CONFIG_ESPTOOLPY_FLASHFREQ_40M=y
+      CONFIG_SPIRAM=n
+
+      # Native applications use two OTA slots within the 4 MB flash layout.
+      CONFIG_PARTITION_TABLE_CUSTOM=y
+      CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.ota.csv"
+
+  # set flash size
+  - if: flash_size == 4MiB
+    sdkconfig: |
+      CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+  - if: flash_size == 8MiB
+    sdkconfig: |
+      CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+  - if: flash_size == 16MiB
+    sdkconfig: |
+      CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+  - if: flash_size == 32MiB
+    sdkconfig: |
+      CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+
+  # set partition table
+  - if: flash_size == 4MiB && app_type == "native"
+    sdkconfig: |
+      CONFIG_PARTITION_TABLE_CUSTOM=y
+      CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.ota.csv"
+  - if: flash_size == 8MiB && app_type == "native"
+    sdkconfig: |
+      CONFIG_PARTITION_TABLE_CUSTOM=y
+      CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.ota.8mb.csv"
+  - if: flash_size == 8MiB && app_type == "wasm"
+    sdkconfig: |
+      CONFIG_PARTITION_TABLE_CUSTOM=y
+      CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.net.8mb.csv"
+  - if: flash_size == 16MiB && app_type == "native"
+    sdkconfig: |
+      CONFIG_PARTITION_TABLE_CUSTOM=y
+      CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.ota.16mb.csv"
+  - if: flash_size == 32MiB && app_type == "native"
+    sdkconfig: |
+      CONFIG_PARTITION_TABLE_CUSTOM=y
+      CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.ota.32mb.csv"
+  - if: board == "dfr1172_firebeetle_2" && app_type == "wasm"
+    sdkconfig: |
+      # 16 MB SPI flash; 3 MB app, 12.7 MB wasm_a, 248 KB PKI + conf.
+      CONFIG_PARTITION_TABLE_CUSTOM=y
+      CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.esp32p4.firebeetle.csv"
+  - if: board == "waveshare_esp32p4_lcd_4b" && app_type == "wasm"
+    sdkconfig: |
+      # 32 MB SPI flash (NOR); 3 MB app, 28.7 MB wasm_a, 248 KB PKI + conf.
+      CONFIG_PARTITION_TABLE_CUSTOM=y
+      CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.esp32p4.waveshare.csv"
+
+  # set WASM support
+  - if: app_type == "wasm"
+    sdkconfig: |
+      CONFIG_WENDY_CORE_WASM_APP_SUPPORT=y
+      CONFIG_WENDY_WASM=y
+      CONFIG_WENDY_CALLBACK=y
+      CONFIG_WENDY_NET=y
+      CONFIG_WENDY_HAL_GPIO=y
+      CONFIG_WENDY_HAL_I2C=y
+      CONFIG_WENDY_HAL_TIMER=y
+      CONFIG_WENDY_HAL_NEOPIXEL=y
+      CONFIG_WENDY_HAL_RMT=y
+      CONFIG_WENDY_BLE_EXPORT=y
+  - else:
+    sdkconfig: |
+      CONFIG_WENDY_CORE_WASM_APP_SUPPORT=n
+      CONFIG_WENDY_WASM=n
+      CONFIG_WENDY_CALLBACK=n
+      CONFIG_WENDY_NET=n
+      CONFIG_WENDY_HAL_GPIO=n
+      CONFIG_WENDY_HAL_I2C=n
+      CONFIG_WENDY_HAL_TIMER=n
+      CONFIG_WENDY_HAL_NEOPIXEL=n
+      CONFIG_WENDY_HAL_RMT=n
+      CONFIG_WENDY_BLE_EXPORT=n
+
+  # Wendy NET base config
+  - if: wendy_net
+    sdkconfig: |
+      # Append after a physical board profile (and boards/wasm.defaults when used).
+      # Firmware support is compiled here; persisted WendyCom configuration starts OFF.
+      CONFIG_WENDY_NET_PEER=y
+      CONFIG_LWIP_IPV6=y
+      CONFIG_LWIP_IPV6_FORWARD=n
+      CONFIG_LWIP_HOOK_IP6_ROUTE_CUSTOM=y
+      CONFIG_WENDY_NET_BLE=y
+      CONFIG_BT_NIMBLE_L2CAP_COC_MAX_NUM=4
+      CONFIG_BT_NIMBLE_MSYS_1_BLOCK_SIZE=256
+      CONFIG_MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH=y
+      CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS=2
+      CONFIG_FREERTOS_TLSP_DELETION_CALLBACKS=y
+
+      # Separate bounded sets for Wendy management/mesh and guest advertising.
+      CONFIG_BT_NIMBLE_EXT_ADV=y
+      CONFIG_BT_NIMBLE_EXT_ADV_V2=y
+      CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES=2
+      CONFIG_BT_NIMBLE_EXT_ADV_MAX_SIZE=31
+      CONFIG_BT_NIMBLE_ENABLE_PERIODIC_ADV=n
+
+  # Wendy Cloud tunnel. Off: Wendy Cloud stays enabled (time, identity
+  # renewal), but the device cannot be controlled through the cloud.
+  - if: cloud_tunnel
+    sdkconfig: |
+      CONFIG_WENDY_CLOUD_TUNNEL=y
+  - else:
+    sdkconfig: |
+      CONFIG_WENDY_CLOUD_TUNNEL=n
+
+  # raw board-specific sdkconfig setting
+  # sdkconfig.defaults.esp32p4, Wendy Net part. After the wendy_net rule: its
+  # values win (L2CAP CoC 5, 4 connections, 8 links). The P4 board rules set
+  # wendy_net: every old P4 build has Wendy Net.
+  - if: chip == "esp32p4" && wendy_net
+    sdkconfig: |
+      # Native Wendy Net router over ESP-Hosted Wi-Fi and BLE. Participation remains
+      # off until configured through management after enrollment.
+      CONFIG_WENDY_NET_PEER=y
+      CONFIG_LWIP_IPV6=y
+      CONFIG_LWIP_IPV6_FORWARD=n
+      CONFIG_LWIP_HOOK_IP6_ROUTE_CUSTOM=y
+      CONFIG_WENDY_NET_BLE=y
+      CONFIG_WENDY_NET_CONSTRAINED_PROFILE=n
+      CONFIG_WENDY_NET_MAX_LINKS=8
+      CONFIG_WENDY_NET_BLE_CHANNELS=3
+      CONFIG_WENDY_NET_TASK_PRIORITY=1
+      CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS=2
+      CONFIG_FREERTOS_TLSP_DELETION_CALLBACKS=y
+      CONFIG_MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH=y
+      CONFIG_BT_NIMBLE_MAX_CONNECTIONS=4
+      CONFIG_BT_NIMBLE_L2CAP_COC_MAX_NUM=5
+      CONFIG_BT_NIMBLE_MSYS_1_BLOCK_SIZE=256
+      CONFIG_BT_NIMBLE_EXT_ADV=y
+      CONFIG_BT_NIMBLE_EXT_ADV_V2=y
+      CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES=2
+      CONFIG_BT_NIMBLE_EXT_ADV_MAX_SIZE=31
+      CONFIG_BT_NIMBLE_ENABLE_PERIODIC_ADV=n
+
+  # boards/esp32c5_net_psram.defaults
+  - if: board == "esp32c5_devkit_c_1_n8r8" && app_type == "wasm" && wendy_net
+    sdkconfig: |
+      # Native peer overlay for an ESP32-C5 with verified 8 MiB quad PSRAM.
+      # Append after the board, WASM and boards/wendy_net.defaults.
+      # Missing PSRAM is tolerated at boot, but the full service/WASM capacity
+      # measurements require it; inspect the boot log before using this profile.
+      CONFIG_SPIRAM=y
+      CONFIG_SPIRAM_MODE_QUAD=y
+      CONFIG_SPIRAM_SPEED_40M=y
+      CONFIG_SPIRAM_BOOT_INIT=y
+      CONFIG_SPIRAM_MEMTEST=y
+      CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+      CONFIG_SPIRAM_USE_MALLOC=y
+      # Preserve internal RAM for DMA and task stacks. TLS allocations belong in
+      # external RAM even when individual certificate/crypto objects are small.
+      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=64
+      CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+      CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC=y
+      CONFIG_WENDY_WASM_USE_PSRAM=y
+
+      CONFIG_WENDY_NET_MAX_LINKS=8
+      CONFIG_WENDY_NET_BLE_CHANNELS=3
+      CONFIG_WENDY_NET_BLE_SDU_BUFFERS=16
+      CONFIG_BT_NIMBLE_MAX_CONNECTIONS=4
+      CONFIG_WENDY_NET_CONSTRAINED_PROFILE=n
+      CONFIG_WENDY_NET_RECLAIM_PAYLOADS_FOR_TLS=y
+
+      # Retained four-link policy: keep controller-facing NimBLE data internal while
+      # Wi-Fi/lwIP and guest data can use PSRAM. Eight total slots share the existing bounded mesh budget.
+      CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL=y
+      CONFIG_BT_NIMBLE_L2CAP_COC_MAX_NUM=5
+      CONFIG_BT_NIMBLE_L2CAP_COC_SDU_BUFF_COUNT=2
+      CONFIG_BT_NIMBLE_LOW_SPEED_MODE=y
+      CONFIG_WENDY_NET_BLE_RX_SDU_SLOTS=2
+      CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+      CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+      CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+      CONFIG_ESP_WIFI_STATIC_TX_BUFFER=y
+      CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=8
+      CONFIG_WENDY_NET_TASK_STACK_SIZE=14336
+      CONFIG_WENDY_NET_TASK_PRIORITY=1
+      CONFIG_WENDY_NET_CRYPTO_TASK_STACK_SIZE=10240
+      CONFIG_WENDY_NET_APP_MAX_FLOWS=2
+      CONFIG_WENDY_SERVER_TASK_STACK_SIZE=16384
+      CONFIG_WENDY_CLOUD_TASK_STACK_SIZE=16384
+      CONFIG_LWIP_MAX_SOCKETS=24
+      CONFIG_SPI_FLASH_AUTO_SUSPEND=y
+
+      # Optional guest: preserve 2 MiB mesh headroom beside a 5 MiB linear-memory cap.
+      CONFIG_WENDY_WASM_MAX_MEMORY_PAGES=80
+      CONFIG_WENDY_WASM_STACK_SIZE=8192
+      CONFIG_WENDY_WASM_HEAP_SIZE=0
+      CONFIG_WENDY_WASM_POOL_SIZE=0
+      CONFIG_WAMR_ENABLE_AOT=y
+      CONFIG_WENDY_WASM_AOT_XIP=y
+      CONFIG_WENDY_NET_MAX_SOCKETS=4
+      CONFIG_WENDY_NET_MAX_LISTENERS=4
+      CONFIG_WENDY_NET_BUFFER_SIZE=4096
+      CONFIG_WENDY_NET_DATAGRAM_MAX=65507
+      CONFIG_WENDY_NET_BUFFERS_IN_PSRAM=y
+
+  # boards/esp32c6_net.defaults
+  - if: board == "esp32c6_devkit_c_1_n8" && app_type == "wasm" && wendy_net
+    sdkconfig: |
+      # Append after the C6 board, optional WASM, and boards/wendy_net.defaults.
+      # Both carriers compile into one image; WendyCom chooses BLE OR Wi-Fi at runtime.
+      CONFIG_WENDY_NET_CONSTRAINED_PROFILE=y
+      CONFIG_WENDY_NET_ENDPOINT_GATEWAY=y
+      CONFIG_WENDY_NET_SELECT_RADIO_AT_BOOT=y
+      CONFIG_WENDY_NET_MAX_LINKS=1
+      CONFIG_WENDY_NET_BLE_CHANNELS=1
+      CONFIG_WENDY_NET_INTERNAL_MEMORY_LIMIT_KIB=160
+      CONFIG_WENDY_NET_TASK_STACK_SIZE=14336
+      CONFIG_WENDY_NET_IO_BYTES=256
+      CONFIG_WENDY_NET_TCP_RELAY_BUFFER_SIZE=256
+      CONFIG_WENDY_NET_APP_MAX_FLOWS=1
+      CONFIG_WENDY_NET_RETAIN_TLS_INPUT=y
+      # Cloud overlap is outside this constrained profile's qualified headroom.
+      CONFIG_WENDY_CLOUD=n
+      # SDK code-placement options reduce internal residency; this is not peer storage.
+      CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY=y
+      CONFIG_BT_NIMBLE_LOW_SPEED_MODE=y
+      CONFIG_SPI_FLASH_AUTO_SUSPEND=y
+
+      # Match the measured SRAM policy instead of inheriting larger SDK defaults.
+      CONFIG_WENDY_NET_TASK_PRIORITY=4
+      CONFIG_WENDY_NET_CRYPTO_TASK_STACK_SIZE=10240
+      CONFIG_WENDY_SERVER_TASK_STACK_SIZE=16384
+      CONFIG_WENDY_NET_MANAGEMENT_SETUP_FREE_BYTES=110592
+      CONFIG_WENDY_NET_PREFER_RTC_PACKET_QUEUE=y
+      CONFIG_WENDY_NET_RECLAIM_PAYLOADS_FOR_TLS=y
+      CONFIG_BT_NIMBLE_L2CAP_COC_MAX_NUM=3
+      CONFIG_BT_NIMBLE_ATT_MAX_PREP_ENTRIES=4
+      CONFIG_BT_NIMBLE_GATT_MAX_PROCS=2
+      CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+      CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+      CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+      CONFIG_LWIP_MAX_SOCKETS=24
+      CONFIG_LWIP_TCP_MSS=536
+
+      # Optional small guest: one 64 KiB linear memory, no fixed runtime pool.
+      CONFIG_WENDY_WASM_MAX_MEMORY_PAGES=1
+      CONFIG_WENDY_WASM_STACK_SIZE=4096
+      CONFIG_WENDY_WASM_HEAP_SIZE=0
+      CONFIG_WENDY_WASM_POOL_SIZE=0
+      CONFIG_WAMR_ENABLE_AOT=y
+      CONFIG_WENDY_WASM_AOT_XIP=y
+      CONFIG_ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP=y
+      CONFIG_WENDY_WASM_PREFER_RTC_RAM=y
+      CONFIG_WENDY_NET_MAX_SOCKETS=4
+      CONFIG_WENDY_NET_MAX_LISTENERS=4
+      CONFIG_WENDY_NET_BUFFER_SIZE=256
+      CONFIG_WENDY_NET_DATAGRAM_MAX=16384
+
+  # boards/seeed_xiao_esp32s3_native.defaults
+  - if: board == "seeed_xiao" && app_type == "native"
+    sdkconfig: |
+      # 8MB octal PSRAM
+      CONFIG_SPIRAM=y
+      CONFIG_SPIRAM_MODE_OCT=y
+      CONFIG_SPIRAM_SPEED_80M=y
+
+      # Compile native peer carriers; management enables them explicitly.
+      CONFIG_LWIP_IPV6=y
+      CONFIG_LWIP_IPV6_FORWARD=n
+      CONFIG_LWIP_HOOK_IP6_ROUTE_CUSTOM=y
+      CONFIG_WENDY_NET_PEER=y
+      CONFIG_WENDY_NET_BLE=y
+      CONFIG_WENDY_NET_CONSTRAINED_PROFILE=n
+      CONFIG_BT_NIMBLE_L2CAP_COC_MAX_NUM=4
+      CONFIG_BT_NIMBLE_MSYS_1_BLOCK_SIZE=256
+
+      # Reserve internal memory for sensor DMA and networking/PKI task stacks.
+      CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
+      CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=98304
+      CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=4
+      CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+      CONFIG_ESP_WIFI_RX_BA_WIN=4
+
+      CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS=2
+      CONFIG_FREERTOS_TLSP_DELETION_CALLBACKS=y
+      CONFIG_MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH=y
+  - if: board == "seeed_xiao" && sensor_link_av
+    sdkconfig: |
+      # Bundle the Sense expansion board's camera and PDM microphone over SensorLink.
+      CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3=y
+
+      # Keep JPEG frames in PSRAM without direct PSRAM DMA capture stalls.
+      CONFIG_CAMERA_PSRAM_DMA=n
+
+      # Continuous video: reserve a full TLS flight and run the S3 at its rated peak.
+      CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
+      CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+  # boards/esp32s31_korvo_1_native.defaults
+  - if: board == "esp32s31_korvo_1" && app_type == "native"
+    sdkconfig: |
+      # ESP32-S31-Korvo-1 V1.1: 16 MB flash and 16 MB in-package octal PSRAM.
+      # ESP-IDF 6.1 still requires --preview for the S31 target.
+      CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+      CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+      CONFIG_SPIRAM=y
+      CONFIG_SPIRAM_MODE_OCT=y
+      CONFIG_SPIRAM_SPEED_200M=y
+
+      # Compile native peer carriers; management enables them explicitly.
+      CONFIG_LWIP_IPV6=y
+      CONFIG_LWIP_IPV6_FORWARD=n
+      CONFIG_LWIP_HOOK_IP6_ROUTE_CUSTOM=y
+      CONFIG_WENDY_NET_PEER=y
+      CONFIG_WENDY_NET_BLE=y
+      CONFIG_WENDY_NET_CONSTRAINED_PROFILE=n
+      CONFIG_BT_NIMBLE_L2CAP_COC_MAX_NUM=4
+      CONFIG_BT_NIMBLE_MSYS_1_BLOCK_SIZE=256
+
+      # Keep both HP cores available. PIE/SIMD executes on CPU1 only; native apps
+      # should schedule DSP there. These CPU settings match the S31 SDK defaults.
+      CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_320=y
+      CONFIG_FREERTOS_UNICORE=n
+      CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+      # The Type-C programming port is a USB-to-UART bridge, not native USB/JTAG.
+      # Keep boot/panic diagnostics; Wendy's stdio hook owns ordinary UART0 I/O.
+      CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+      CONFIG_WENDY_USJ_USE_UART=y
+      CONFIG_WENDY_USJ_UART_TX_GPIO=58
+      CONFIG_WENDY_USJ_UART_RX_GPIO=59
+
+      # Large buffers can use PSRAM; preserve internal RAM for DMA and task stacks.
+      # XiP is left off to keep instruction fetches off the frame-buffer PSRAM bus.
+      CONFIG_SPIRAM_XIP_FROM_PSRAM=n
+      CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
+      CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=98304
+
+      # Use the SDK's PSRAM Wi-Fi buffer sizes and a bounded 12-MSS TCP window.
+      # The receive mailbox has two spare slots, as recommended by lwIP Kconfig.
+      CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=16
+      CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=16
+      CONFIG_ESP_WIFI_RX_BA_WIN=16
+      CONFIG_LWIP_TCP_SND_BUF_DEFAULT=17280
+      CONFIG_LWIP_TCP_WND_DEFAULT=17280
+      CONFIG_LWIP_TCP_RECVMBOX_SIZE=14
+
+      # Show a native status page on the optional 800x480 SUB3 RGB display.
+      CONFIG_WENDY_DISPLAY_ESP32S31_KORVO_1=y
+
+      CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS=2
+      CONFIG_FREERTOS_TLSP_DELETION_CALLBACKS=y
+      CONFIG_MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH=y
+  - if: board == "esp32s31_korvo_1" && sensor_link_av
+    sdkconfig: |
+      # Bundle the onboard DVP camera and ES8389 dual-microphone input.
+      CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1=y
+      CONFIG_ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE=y
+      CONFIG_CAMERA_XCLK_USE_LEDC=y
+      CONFIG_CAMERA_OV3660=y
+      CONFIG_CAMERA_OV3660_DVP_JPEG_640X480_25FPS=y
+      CONFIG_CAMERA_OV3660_DVP_DEFAULT_FMT_JPEG_640X480_25FPS=y
+      CONFIG_CAMERA_SC101IOT=y
+      CONFIG_CAMERA_SC101IOT_DVP_YUV422_640X480_15FPS=y
+      CONFIG_CAMERA_SC101IOT_DVP_DEFAULT_FMT_YUV422_640X480_15FPS=y
+
+  # boards/dfr1172_firebeetle.defaults
+  - if: board == "dfr1172_firebeetle_2" && app_type == "wasm"
+    sdkconfig: |
+      # Board overlay: DFRobot DFR1172 FireBeetle 2 ESP32-P4 (16 MB flash, headless).
+
+      CONFIG_WENDY_P4_BOARD_NAME="dfr1172_firebeetle"
+
+  # boards/dfr1172_firebeetle_native.defaults
+  - if: board == "dfr1172_firebeetle_2" && app_type == "native"
+    sdkconfig: |
+      # Board overlay: DFRobot DFR1172 FireBeetle 2 ESP32-P4 (16 MB flash, headless),
+      # native apps.
+
+      CONFIG_WENDY_P4_BOARD_NAME="dfr1172_firebeetle_native"
+
+  # boards/waveshare_lcd_4b.defaults
+  - if: board == "waveshare_esp32p4_lcd_4b" && app_type == "wasm"
+    sdkconfig: |
+      # Board overlay: Waveshare ESP32-P4-WIFI6-Touch-LCD-4B (and the
+      # ESP32-P4-86-Panel-ETH-2RO, which shares the same PCB).
+
+      CONFIG_WENDY_P4_BOARD_NAME="waveshare_lcd_4b"
+
+  # boards/waveshare_lcd_4b_native.defaults
+  - if: board == "waveshare_esp32p4_lcd_4b" && app_type == "native"
+    sdkconfig: |
+      # Board overlay: Waveshare ESP32-P4-WIFI6-Touch-LCD-4B (and the
+      # ESP32-P4-86-Panel-ETH-2RO, which shares the same PCB), native apps.
+
+      CONFIG_WENDY_P4_BOARD_NAME="waveshare_lcd_4b_native"
+
+# Display: how the Wendy CLI asks the questions (go/internal/cli/litebuild in
+# WendyOS). The solver (conf_model.py) ignores this section.
+#
+# An attribute that is not in this section is internal: the CLI never shows
+# it. If it has only one allowed value, the CLI takes it. If the CLI must ask
+# for it, the CLI stops with an error.
+#
+#   title     the question title (default: the attribute name)
+#   help      an optional line under the question
+#   priority  the order of the questions, smaller first. The dependencies come
+#             first: an attribute is asked after the attributes it depends on.
+#             No priority: after the others, in the order of the attributes.
+#   default   the preselected answer, used only when it is allowed
+#   values    the label of each enum value (or of true and false)
+display:
+  board:
+    title: Board
+    help: Select your board, or Custom board to give the hardware yourself.
+    priority: 1
+    values:
+      custom: Custom board
+      dfr1172_firebeetle_2: DFRobot FireBeetle 2 ESP32-P4 (DFR1172)
+      seeed_xiao: Seeed Studio XIAO ESP32S3
+      m5_stamp_s3: M5Stack StampS3
+      esp32c5_devkit_c_1_n8r8: Espressif ESP32-C5-DevKitC-1 N8R8
+      esp32c6_devkit_c_1_n8: Espressif ESP32-C6-DevKitC-1 N8
+      esp32c6_devkit_m_1: Espressif ESP32-C6-DevKitM-1
+      esp32c61_devkit_c_1: Espressif ESP32-C61-DevKitC-1
+      esp32s3_devkit_c_1_n8: Espressif ESP32-S3-DevKitC-1 N8
+      esp32s31_korvo_1: Espressif ESP32-S31-Korvo-1 V1.1 (preview)
+      waveshare_esp32p4_lcd_4b: Waveshare ESP32-P4-WIFI6-Touch-LCD-4B
+    default: custom
+  chip:
+    title: Chip
+    priority: 2
+    values:
+      esp32c6: ESP32-C6
+      esp32c61: ESP32-C61
+      esp32c5: ESP32-C5
+      esp32p4: ESP32-P4
+      esp32s3: ESP32-S3
+      esp32s31: ESP32-S31 (preview)
+  flash_size:
+    title: Flash size
+    priority: 3
+    default: 4MiB
+  sensor_link_av:
+    title: SensorLink camera and microphone
+    help: Stream the board camera and microphone through SensorLink.
+    priority: 4
+    values:
+      true: Enabled
+      false: Disabled
+    default: false
+  app_type:
+    title: Application type
+    priority: 5
+    values:
+      native: Native app
+      wasm: WebAssembly app (experimental)
+    default: native
+  wendy_net:
+    title: Wendy Net mesh networking
+    priority: 6
+    values:
+      true: Enabled
+      false: Disabled
+    default: true
+  cloud_tunnel:
+    title: Wendy Cloud tunnel
+    help: Allow control of the device through Wendy Cloud.
+    priority: 7
+    values:
+      true: Enabled
+      false: Disabled
+    default: true

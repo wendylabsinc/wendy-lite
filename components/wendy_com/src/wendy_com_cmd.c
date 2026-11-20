@@ -251,6 +251,22 @@ WendyComResult wcom_cmd_get_device_info(WendyComDeviceInfo *out)
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 
+WendyComResult wcom_cmd_get_build_info(WendyComBuildInfo *out)
+{
+    ESP_LOGI(TAG, "GET_BUILD_INFO");
+    /* An empty field means "not known" */
+    const char *os_version = "", *build_profile = "", *build_tool = "";
+    if (_app_delegate && _app_delegate->on_get_build_info)
+        _app_delegate->on_get_build_info(&os_version, &build_profile, &build_tool);
+    out->os_version.funcs.encode    = _encode_string;
+    out->os_version.arg             = (void *)os_version;
+    out->build_profile.funcs.encode = _encode_string;
+    out->build_profile.arg          = (void *)build_profile;
+    out->build_tool.funcs.encode    = _encode_string;
+    out->build_tool.arg             = (void *)build_tool;
+    return WendyComResult_WENDY_COM_RESULT_OK;
+}
+
 WendyComResult wcom_cmd_console_attach(int client_id, uint32_t event_id, uint32_t duration_ms, bool blocking)
 {
     ESP_LOGI(TAG, "CONSOLE_ATTACH client=%d event_id=%u duration=%ums blocking=%d",

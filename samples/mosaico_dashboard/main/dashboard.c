@@ -557,7 +557,7 @@ void app_main(void)
         ESP_LOGE(TAG, "Wendy startup failed: %s", esp_err_to_name(result));
         return;
     }
-    ESP_ERROR_CHECK(wendy_net_peer_start());
+    /* wendy_core_init() has started Wendy Net. */
     mosaico_diagnostics_stage("starting dashboard", ESP_OK);
     if (xTaskCreate(dashboard_task, "mosaico_dashboard", 6144, NULL, 3, NULL) != pdPASS) {
         mosaico_diagnostics_stage("dashboard task allocation failed", ESP_ERR_NO_MEM);

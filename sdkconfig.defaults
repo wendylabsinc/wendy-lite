@@ -1,3 +1,6 @@
+# tools/configure.py does not read this file: master_config.yaml has a copy
+# of these settings. Change both.
+
 # Universal Wendy firmware defaults.
 # Target-specific overrides live in sdkconfig.defaults.<target>:
 #   - sdkconfig.defaults.esp32c6   (single-chip board)

@@ -23,6 +23,13 @@
 #include "wendy_core.h"
 #include "wendy_core_wdt.h"
 #include "wendy_conf.h"
+#include "wendy_pki_crypto.h"
+#if CONFIG_WENDY_PKI
+#include "wendy_pki_clock_observation.h"
+#endif
+#if CONFIG_WENDY_NET_PEER
+#include "wendy_net_peer.h"
+#endif
 
 #if CONFIG_WENDY_WASM
 #include "wendy_wasm.h"
@@ -61,10 +68,11 @@ static const char *TAG = "wendy_core";
 
 static EventGroupHandle_t s_events;
 static bool s_boot_ble_enabled = true;
-esp_err_t wendy_core_set_boot_radios(bool ble, bool wifi)
+#if CONFIG_WENDY_NET_SELECT_RADIO_AT_BOOT
+/* Select the radios that wendy_core_init() starts, from the saved Wendy Net
+ * settings. Called by wendy_core_init() only, before BLE and Wi-Fi start. */
+static esp_err_t set_boot_radios(bool ble, bool wifi)
 {
-    if (s_events)
-        return ESP_ERR_INVALID_STATE;
 #if CONFIG_WENDY_WIFI_ENABLED
     esp_err_t result = wendy_wifi_set_boot_radio_enabled(wifi);
     if (result != ESP_OK)
@@ -80,6 +88,7 @@ esp_err_t wendy_core_set_boot_radios(bool ble, bool wifi)
     s_boot_ble_enabled = ble;
     return ESP_OK;
 }
+#endif
 
 /* ── Reboot boot-params ─────────────────────────────────────────────────
  *
@@ -854,41 +863,16 @@ static void com_get_device_identity(const char **id, const char **name, const ch
     *enrolled_device_id = device;
 }
 
-#define _STRINGIFY(x) #x
-#define _TOSTRING(x) _STRINGIFY(x)
-
-// WENDY_CORE_COMPONENT_VERSION is defined by CMakeLists.txt from the COMPONENT_VERSION property.
-#ifndef WENDY_CORE_COMPONENT_VERSION
-#define WENDY_CORE_COMPONENT_VERSION ""
-#endif
-
-static const char *get_version(void)
-{
-#if CONFIG_WENDY_FIRMWARE_VERSION_MAJOR == 0 && CONFIG_WENDY_FIRMWARE_VERSION_MINOR == 0 && CONFIG_WENDY_FIRMWARE_VERSION_PATCH == 0
-    if (WENDY_CORE_COMPONENT_VERSION[0] == 0) {
-        return "dev";
-    } else {
-        // CONFIG_WENDY_FIRMWARE_VERSION_* only carries a real version on a
-        // release build of this repo (injected from the git tag by
-        // .github/workflows/build.yml), so it stays at 0.0.0 when the
-        // component is embedded in someone else's IDF project. There, report
-        // the version the IDF Component Manager resolved for wendy_core
-        // instead: the released version, or the commit for a git dependency.
-        return WENDY_CORE_COMPONENT_VERSION;
-    }
-#else
-    return _TOSTRING(CONFIG_WENDY_FIRMWARE_VERSION_MAJOR) "."
-            _TOSTRING(CONFIG_WENDY_FIRMWARE_VERSION_MINOR) "."
-            _TOSTRING(CONFIG_WENDY_FIRMWARE_VERSION_PATCH);
-#endif
-}
-
+/* get_device_info and get_build_info report the same version:
+   CONFIG_WENDY_VERSION, which tools/configure.py writes from git (X.Y.Z or
+   the full commit hash). It is empty when the build was not configured with
+   configure.py. */
 static void com_get_device_info(const char **os, const char **os_version,
                                 const char **cpu_architecture, const char **target,
                                 bool *wasm_app_support, bool *native_app_support)
 {
     *os = "wendy-lite";
-    *os_version = get_version();
+    *os_version = CONFIG_WENDY_VERSION;
     *cpu_architecture = CONFIG_IDF_TARGET_ARCH;
     *target = CONFIG_IDF_TARGET;
 #if CONFIG_WENDY_WASM
@@ -901,6 +885,19 @@ static void com_get_device_info(const char **os, const char **os_version,
     /* native push is compiled in unconditionally but only works if the
        partition table has an OTA update partition */
     *native_app_support = esp_ota_get_next_update_partition(NULL) != NULL;
+}
+
+/* CONFIG_WENDY_VERSION (the same version as get_device_info) and
+   CONFIG_WENDY_BUILD_PROFILE are written by tools/configure.py, and empty
+   when the build was not configured with it. IDF_VER is the ESP-IDF version
+   that the ESP-IDF build system defines for all components, the string that
+   esp_get_idf_version() returns. */
+static void com_get_build_info(const char **os_version, const char **build_profile,
+                               const char **build_tool)
+{
+    *os_version = CONFIG_WENDY_VERSION;
+    *build_profile = CONFIG_WENDY_BUILD_PROFILE;
+    *build_tool = "idf-" IDF_VER;
 }
 
 /* ── HAL initialization ─────────────────────────────────────────────── */
@@ -927,6 +924,18 @@ esp_err_t wendy_core_init(void)
      * automatic RTC WDT disable before app_main(); feed it explicitly here
      * instead, as the very first thing user code does. */
     wendy_core_wdt_feed();
+
+    /* PKI boot steps. Capture the boot clock first, before any other
+     * initialization. Each call is safe to repeat: the firmware main makes
+     * the clock capture itself, as its first step, because it starts
+     * SensorLink before wendy_core_init(). */
+#if CONFIG_WENDY_PKI
+    wendy_pki_clock_observe_boot();
+#endif
+    if (wendy_pki_memory_init() || wendy_pki_crypto_init()) {
+        ESP_LOGE(TAG, "PKI memory or crypto initialization failed");
+        return ESP_FAIL;
+    }
 
     capture_boot_params();
 
@@ -1017,10 +1026,32 @@ esp_err_t wendy_core_init(void)
         .on_reboot              = com_reboot,
         .on_get_device_identity = com_get_device_identity,
         .on_get_device_info     = com_get_device_info,
+        .on_get_build_info      = com_get_build_info,
     };
     wcom_set_app_delegate(&app_delegate);
     wcom_start();
     wendy_core_wdt_start();
+
+#if CONFIG_WENDY_NET_PEER
+    /* The saved Wendy Net settings select the BLE profile and, with
+     * CONFIG_WENDY_NET_SELECT_RADIO_AT_BOOT, the radios to start. This must
+     * come before the BLE and Wi-Fi starts below. */
+    {
+        bool boot_ble, boot_wifi;
+        err = wendy_net_peer_boot_radios(&boot_ble, &boot_wifi);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Wendy Net boot radios: %s", esp_err_to_name(err));
+            return err;
+        }
+#if CONFIG_WENDY_NET_SELECT_RADIO_AT_BOOT
+        err = set_boot_radios(boot_ble, boot_wifi);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "boot radio selection: %s", esp_err_to_name(err));
+            return err;
+        }
+#endif
+    }
+#endif
 
     /* Initialize the BLE transport (if enabled). Deliberately before WiFi and
      * not gated on it: a board with no credentials is exactly the case BLE
@@ -1083,6 +1114,20 @@ esp_err_t wendy_core_init(void)
              heap_caps_get_free_size(internal), heap_caps_get_largest_free_block(internal),
              heap_caps_get_minimum_free_size(internal),
              heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+
+    /* Last, as when the firmware main made these calls after
+     * wendy_core_init(): the Bluetooth power command (also when the boot
+     * policy omits BLE), then Wendy Net. */
+#if CONFIG_WENDY_BLE
+    wendy_ble_power_init();
+#endif
+#if CONFIG_WENDY_NET_PEER
+    err = wendy_net_peer_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Wendy Net start: %s", esp_err_to_name(err));
+        return err;
+    }
+#endif
 
     return ESP_OK;
 }
