@@ -7,6 +7,7 @@
 #define WN_ESPNOW_COST 1024
 
 bool wn_espnow_supported(void);
+bool wn_espnow_worker_active(void);
 unsigned wn_espnow_rate_limit(unsigned configured);
 void wn_espnow_set_link_rate(const void *link, const char *address, unsigned rate);
 void wn_espnow_clear_link_rate(const void *link);

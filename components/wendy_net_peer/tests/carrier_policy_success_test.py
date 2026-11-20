@@ -1764,7 +1764,7 @@ with tempfile.TemporaryDirectory() as tmp:
                      'espnow_outgoing_available', 'additional_candidate', 'setup_room', 'setup_capacity_available',
                      'plan_additional_candidate', 'incoming_standby_hint', 'maintain_incoming_demand',
                      'reclaim_for_incoming_probe', 'ble_admission_available', 'ble_probe_available',
-                     'begin_setup', 'update_ble']
+                     'allocate_carrier_channel', 'begin_setup', 'update_ble']
         prefix += structure(source, 'ble_seen')
         gate = '' if constrained_profile else incoming_pickup_gate() + setup_authentication_stage()
         (p / 'test.c').write_text(prefix + ''.join(definition(name) for name in names) + gate + main)

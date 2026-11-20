@@ -1735,6 +1735,23 @@ static int advance_setup(struct peer_state *link, int64_t now)
     }
     return 1;
 }
+static struct wna_channel *allocate_carrier_channel(const struct wn_candidate *candidate)
+{
+    enum { ESPNOW_IO_BYTES = 6 * 1024 };
+    if (candidate->medium == WN_ESPNOW &&
+        wendy_net_memory_scope_current().placement == WENDY_NET_MEMORY_EXTERNAL) {
+        struct wna_channel *channel = wendy_net_calloc(1, sizeof *channel + 2 * ESPNOW_IO_BYTES);
+        if (channel) {
+            uint8_t *storage = (uint8_t *)(channel + 1);
+            channel->input.storage = storage;
+            channel->output.storage = storage + ESPNOW_IO_BYTES;
+            channel->input.capacity = channel->output.capacity = ESPNOW_IO_BYTES;
+            return channel;
+        }
+    }
+    return wendy_net_calloc(1, sizeof(struct wna_channel));
+}
+
 static void begin_setup(struct peer_state *link, const struct wn_candidate *candidate, int fd)
 {
 #if !WENDY_NET_NON_TRANSIT && CONFIG_WENDY_NET_BLE
@@ -1765,7 +1782,7 @@ static void begin_setup(struct peer_state *link, const struct wn_candidate *cand
         }
     }
 #endif
-    link->tls_channel = index >= 0 ? wendy_net_calloc(1, sizeof *link->tls_channel) : NULL;
+    link->tls_channel = index >= 0 ? allocate_carrier_channel(candidate) : NULL;
     uint64_t budget = UINT64_C(60000000);
 #if CONFIG_WENDY_NET_BLE
     /* S8 took 58 seconds for a valid cold handshake on the bench. Leave
@@ -2473,6 +2490,29 @@ static bool ble_probe_available(struct peer_state *root)
 }
 #endif
 #endif
+static int pump_active_carrier(struct peer_state *link)
+{
+    int pumped = wnc_pump(&link->carrier, esp_timer_get_time(), receive_frame, link);
+    if (pumped <= 0 || link->candidate.medium != WN_ESPNOW || !wn_espnow_worker_active() ||
+        !link->tls_channel || link->setup_fd < 0 || link->setup_have_stream)
+        return pumped;
+
+    /* Refill/drain the small socket BIO while the radio worker can sustain
+     * traffic. Bound the batch per link and respect a crypto loan on any step. */
+    for (unsigned step = 0;
+         step < 3 && !link->failed && !wncrypto_borrowed(link->connection); ++step) {
+        int moved = wnad_channel_io(link->tls_channel, link->setup_fd, NULL);
+        if (moved < 0)
+            return WNC_IO;
+        int next = wnc_pump(&link->carrier, esp_timer_get_time(), receive_frame, link);
+        if (next < 0)
+            return next;
+        if (!next && !moved)
+            break;
+    }
+    return pumped;
+}
+
 static void router_run(struct peer_state *root)
 {
     unsigned busy_loops = 0;
@@ -2572,7 +2612,7 @@ static void router_run(struct peer_state *root)
             if (now >= link->refresh_at && wendy_wifi_is_connected())
                 queue_clock(link);
 
-            int pumped = wnc_pump(&link->carrier, esp_timer_get_time(), receive_frame, link);
+            int pumped = pump_active_carrier(link);
             if (pumped < 0) {
                 struct wnc_timeout timeout;
                 if (pumped == WNC_TIMEOUT &&
@@ -2780,9 +2820,16 @@ static void router_run(struct peer_state *root)
             wble_mesh_router_admission(ble_admission_available(root));
 #endif
 
+        /* A dedicated, radio-only data path can advance through more actor
+         * passes while PKI is idle. Other carriers and handshake work retain
+         * the shorter fairness interval. */
+        unsigned pass_budget = 8;
+        if (!root->config.ble && !root->config.infrastructure_wifi && !root->config.nan &&
+            wn_espnow_worker_active() && wendy_pki_work_idle())
+            pass_budget = 32;
         ++busy_loops;
-        if (!progress || busy_loops >= 8) {
-            bool quota = busy_loops >= 8;
+        if (!progress || busy_loops >= pass_budget) {
+            bool quota = busy_loops >= pass_budget;
             /* A ready descriptor/deadline can yield no protocol progress
              * (e.g. send ENOBUFS). Count those polls too: otherwise a zero
              * timeout loop can starve the lower-priority crypto worker. */
