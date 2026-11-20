@@ -11,7 +11,7 @@ static EventBits_t event_bits;
 static uint32_t notifications;
 static unsigned task_creates, event_deletes, retry_waits, connect_wait_ms;
 static unsigned netif_inits, event_loop_inits, station_netifs, driver_inits, credential_opens;
-static unsigned mdns_inits, hostname_sets, server_starts, cloud_starts;
+static unsigned mdns_inits, hostname_sets, server_starts, cloud_starts, cloud_wakes;
 static unsigned mdns_failures, hostname_failures, cloud_failures;
 static bool fail_task, enrolled, disconnect_on_retry;
 static bool driver_model, driver_event_pending, access_point_up;
@@ -283,6 +283,7 @@ esp_err_t wendy_cloud_start(void)
     if (cloud_failures) { cloud_failures--; return ESP_ERR_NO_MEM; }
     return ESP_OK;
 }
+void wendy_cloud_wake(void) { cloud_wakes++; }
 const char *wendy_conf_get_resolved_device_name(void) { return resolved_device_name; }
 struct wendy_conf_span wendy_conf_get_network_ssid(void)
 {
@@ -313,7 +314,7 @@ static void reset_test(void)
     worker = NULL;
     event_bits = notifications = 0;
     task_creates = event_deletes = retry_waits = connect_wait_ms = 0;
-    mdns_inits = hostname_sets = server_starts = cloud_starts = 0;
+    mdns_inits = hostname_sets = server_starts = cloud_starts = cloud_wakes = 0;
     mdns_failures = hostname_failures = cloud_failures = 0;
     fail_task = disconnect_on_retry = false;
     enrolled = true;
@@ -366,6 +367,8 @@ static void test_late_ip(void)
     got_ip(); got_ip();
     run_worker_until_idle();
     assert(task_creates == 1 && mdns_inits == 1 && server_starts == 1 && cloud_starts == 1);
+    // Each new address cuts short a broker retry that backed off while offline.
+    assert(cloud_wakes == 3);
 }
 
 static void test_startup_retry(void)
