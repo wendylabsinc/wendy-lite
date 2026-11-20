@@ -75,6 +75,10 @@ struct wendy_pki_connection
      * hourly time fetch (NULL = none). */
     int64_t renew_deadline_us;
     void (*refresh_time)(void);
+    /* Why the broker control connection ended, for its log line; control_error
+     * keeps the mbedTLS code of a TLS failure. */
+    const char *control_failure;
+    int control_error;
     /* Set before the handshake when the clock is verified. Firmware mbedTLS has
      * no date checks, so the verify callback checks the dates of the peer chain
      * and records the earliest end date of that chain. */
