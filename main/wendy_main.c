@@ -1,5 +1,4 @@
 #include "wendy_core.h"
-#include "wendy_pki_crypto.h"
 #if CONFIG_WENDY_PKI
 #include "wendy_pki_clock_observation.h"
 #endif
@@ -27,16 +26,15 @@
  * native apps start the same way. Only firmware-specific board steps belong
  * here: SensorLink, display, benchmark, test probes.
  *
- * The PKI calls below are also in wendy_core_init(). They stay here because
- * SensorLink must start after them and before wendy_core_init().
+ * The boot clock capture below is also in wendy_core_init(). It stays here
+ * because it must be the very first step, and SensorLink starts before
+ * wendy_core_init().
  */
 void app_main(void)
 {
 #if CONFIG_WENDY_PKI
     wendy_pki_clock_observe_boot();
 #endif
-    ESP_ERROR_CHECK(wendy_pki_memory_init() ? ESP_FAIL : ESP_OK);
-    ESP_ERROR_CHECK(wendy_pki_crypto_init() ? ESP_FAIL : ESP_OK);
 #if CONFIG_WENDY_NET_TEST_SENSOR_SERVICE
     void wendy_net_sensor_probe_init(void);
     wendy_net_sensor_probe_init();

@@ -937,11 +937,10 @@ esp_err_t wendy_core_init(void)
      * instead, as the very first thing user code does. */
     wendy_core_wdt_feed();
 
-    /* PKI boot steps, in the order of the firmware main. Capture the boot
-     * clock first, before any other initialization. Each call is safe to
-     * repeat, so an app_main() that already made them (the firmware main,
-     * which must start SensorLink between them and wendy_core_init()) loses
-     * nothing. */
+    /* PKI boot steps. Capture the boot clock first, before any other
+     * initialization. Each call is safe to repeat: the firmware main makes
+     * the clock capture itself, as its first step, because it starts
+     * SensorLink before wendy_core_init(). */
 #if CONFIG_WENDY_PKI
     wendy_pki_clock_observe_boot();
 #endif

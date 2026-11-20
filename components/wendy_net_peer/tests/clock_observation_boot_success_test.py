@@ -18,8 +18,6 @@ typedef int esp_err_t;
 #define ESP_ERROR_CHECK(value) do { assert((value) == ESP_OK); } while (0)
 #define ESP_LOGW(...) ((void)0)
 void wendy_pki_clock_observe_boot(void);
-int wendy_pki_memory_init(void);
-int wendy_pki_crypto_init(void);
 void wendy_net_sensor_probe_init(void);
 esp_err_t wendy_sensor_link_init(void);
 esp_err_t wendy_core_init(void);
@@ -39,19 +37,18 @@ void wendy_pki_clock_observe_boot(void) {
     captured_utc = fake_utc;
     ++boot_calls;
 }
-int wendy_pki_memory_init(void) { return initialized(); }
-int wendy_pki_crypto_init(void) { return initialized(); }
 void wendy_net_sensor_probe_init(void) { (void)initialized(); }
 esp_err_t wendy_sensor_link_init(void) { return initialized(); }
-/* wendy_core_init() also starts BLE and Wendy Net (boot radios, power
- * command, peer start), so the native apps get them too. */
+/* wendy_core_init() also makes the PKI memory and crypto init and starts BLE
+ * and Wendy Net (boot radios, power command, peer start), so the native apps
+ * get them too. */
 esp_err_t wendy_core_init(void) { return initialized(); }
 esp_err_t wendy_display_start(void) { return initialized(); }
 esp_err_t wendy_benchmark_start(void) { return initialized(); }
 const char *esp_err_to_name(esp_err_t error) { (void)error; return "mock"; }
 int main(void) {
     app_main();
-    assert(phase == 7 && fake_utc == 1700);
+    assert(phase == 5 && fake_utc == 1500);
 #if CONFIG_WENDY_PKI
     assert(boot_calls == 1 && captured_utc == 1000 && captured_utc != fake_utc);
 #else
