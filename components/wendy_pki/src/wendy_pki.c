@@ -12,6 +12,7 @@
 #include "wendy_peer_identity.h"
 #if CONFIG_WENDY_NET_PEER
 #include "wendy_pki_native_prepare.h"
+#include <mbedtls/base64.h>
 #endif
 #if CONFIG_WENDY_NET_PEER
 #include "http_parser.h"
@@ -443,6 +444,7 @@ esp_err_t wendy_pki_reset(const char *expected_device_id, const char *nonce_hex)
     result = wendy_conf_clear_enrollment();
     if (result != ESP_OK) goto done;
     const char *keys[] = {"key", "certificate", "pending", "lite_ca", "pending_ca",
+                          "pending_roots", "pending_issuers",
                           "tenant",    "device",      "nonce",     "net_der_meta", "net_der_ranges",
                           "net_der_0", "net_der_1",   "net_der_2", "net_der_3",    "net_der_4",
                           "net_der_5", "net_der_6",   "net_der_7"};
@@ -861,6 +863,50 @@ done:
     mbedtls_x509write_csr_free(&csr); mbedtls_pk_free(&k);
     return pem;
 }
+#if CONFIG_WENDY_NET_PEER
+static void retain_renewal_mesh_trust(nvs_handle_t h, const cJSON *reply)
+{
+    const cJSON *roots = cJSON_GetObjectItemCaseSensitive(reply, "mesh_device_roots");
+    const cJSON *issuers = cJSON_GetObjectItemCaseSensitive(reply, "lite_device_intermediates");
+    if ((!roots && !issuers) || (roots && issuers))
+        return;
+    const cJSON *item = roots ? roots : issuers;
+    if (!cJSON_IsString(item) || !item->valuestring)
+        return;
+    uint8_t *raw = (uint8_t *)item->valuestring;
+    size_t encoded = strlen(item->valuestring), size = 0;
+    if (!encoded || encoded > 4 * ((WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE + 2) / 3) ||
+        mbedtls_base64_decode(raw, encoded, &size, raw, encoded) || !size ||
+        size > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE)
+        return;
+    if (nvs_set_blob(h, roots ? "pending_roots" : "pending_issuers", raw, size) != ESP_OK)
+        ESP_LOGW(TAG, "could not retain renewed mesh trust");
+}
+
+static void install_renewal_mesh_trust(nvs_handle_t h, uint64_t generation,
+    const uint8_t *certificate, size_t certificate_size, const uint8_t *key, size_t key_size,
+    const char *principal)
+{
+    const char *names[] = {"pending_roots", "pending_issuers"};
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
+        size_t size;
+        if (nvs_get_blob(h, names[i], NULL, &size) == ESP_ERR_NVS_NOT_FOUND)
+            continue;
+        uint8_t *der = NULL;
+        time_t expires;
+        if (load_blob(h, names[i], &der, &size) || size > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE ||
+            wendy_pki_verify_roots(der, size) ||
+            (!i && wendy_pki_verify_identity(certificate, certificate_size, der, size,
+                                            key, key_size, principal, time(NULL), &expires, NULL)) ||
+            wendy_conf_store_mesh_trust(generation, i != 0, der, size) != ESP_OK) {
+            ESP_LOGW(TAG, "could not install renewed mesh trust");
+        }
+        free(der);
+        nvs_erase_key(h, names[i]);
+    }
+}
+#endif
+
 static int issue(nvs_handle_t h, const WendyConfEnrollment *cfg,
                  const struct wendy_conf_enrollment_data *data, const uint8_t *key, size_t key_size,
                  struct wendy_conf_span old, const char *principal, struct wendy_conf_span *issued,
@@ -912,6 +958,10 @@ static int issue(nvs_handle_t h, const WendyConfEnrollment *cfg,
         !cJSON_AddStringToObject(body, "device_id", cfg->device_id) ||
         !cJSON_AddStringToObject(body, "tier", "C"))
         goto done;
+#if CONFIG_WENDY_NET_PEER && CONFIG_MBEDTLS_SSL_TLS1_3_SIG_MLDSA65
+    if (old.data && !cJSON_AddBoolToObject(body, "mesh_trust", true))
+        goto done;
+#endif
     json = cJSON_PrintUnformatted(body);
     if (!json)
         goto done;
@@ -954,6 +1004,10 @@ static int issue(nvs_handle_t h, const WendyConfEnrollment *cfg,
                 ? nvs_set_blob(h, "pending_ca", authority_header, strlen(authority_header))
             : old.data ? nvs_set_blob(h, "pending_ca", &omitted_authority, sizeof omitted_authority)
                        : nvs_erase_key(h, "pending_ca");
+#if CONFIG_WENDY_NET_PEER
+        if (old.data)
+            retain_renewal_mesh_trust(h, reply);
+#endif
         esp_err_t committed = nvs_commit(h);
         if (pending_saved != ESP_OK || committed != ESP_OK ||
             (authority_saved != ESP_OK &&
@@ -1021,6 +1075,10 @@ verify:;
         ESP_LOGE(TAG, "saving issued certificate: %s", esp_err_to_name(saved));
         goto done;
     }
+#if CONFIG_WENDY_NET_PEER
+    if (old.data)
+        install_renewal_mesh_trust(h, data->generation, certificate_der, der_size, key, key_size, principal);
+#endif
     nvs_erase_key(h, "pending");
     nvs_erase_key(h, "pending_ca");
     nvs_commit(h);
@@ -1605,6 +1663,9 @@ static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
             .input_reservation = input_reservation,
             .reserve_records_first = true,
             .preparation_owner = preparation_held ? &preparation_cookie : NULL};
+        if (wendy_conf_copy_lite_intermediates(data.generation, &owned.lite_issuer_der,
+                                               &owned.lite_issuer_size) != ESP_OK)
+            goto done;
         data.device_roots = (struct wendy_conf_span){data.storage, roots_size};
         data.storage = NULL;
         key = NULL;

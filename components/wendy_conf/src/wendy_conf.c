@@ -76,6 +76,7 @@ static char s_resolved_device_name[CONFIG_WENDY_DEVICE_NAME_BUF_SIZE];
 //--- functions ---//
 
 static bool _scan_root_fields(const uint8_t *data, size_t size, uint32_t *mask);
+static esp_err_t write_mesh_trust(const uint8_t *data, size_t size);
 
 static void _build_device_id(void)
 {
@@ -151,11 +152,16 @@ static bool _capture_span(pb_istream_t *stream, const pb_field_t *field, void **
  * Reset the cache so no getter can return data from a conf that is being
  * overwritten.  Getters return empty spans / zero scalars afterwards.
  */
-static void _invalidate_cache(void)
+static void advance_generation(void)
 {
     if (s_generation == UINT64_MAX)
         esp_system_abort("configuration generation exhausted");
     s_generation++;
+}
+
+static void _invalidate_cache(void)
+{
+    advance_generation();
     if (s_cache.valid)
         esp_partition_munmap(s_cache.mmap);
     s_cache = CONF_CACHE_INIT;
@@ -517,6 +523,8 @@ esp_err_t wendy_conf_write(const void *data, size_t size, enum wendy_conf_write_
 {
     if (!data || size == 0)
         return ESP_ERR_INVALID_ARG;
+    if (mode == WENDY_CONF_WRITE_MODE_MESH_TRUST)
+        return write_mesh_trust(data, size);
     bool wifi_only = mode == WENDY_CONF_WRITE_MODE_WIFI_ONLY;
     if (wifi_only) {
         pb_istream_t input = pb_istream_from_buffer(data, size);
@@ -654,7 +662,118 @@ enum enrollment_selection {
     ENROLLMENT_HTTPS_ROOTS = 1U << 3,
     ENROLLMENT_ALL = (1U << 4) - 1,
     ENROLLMENT_LITE_INTERMEDIATES = 1U << 4,
+    ENROLLMENT_USE_MESH_TRUST = 1U << 5,
 };
+
+/* Store the DER bundle as one NVS record, bound to the enrolled tenant and
+ * device. The original provisioning trust remains available for issuance. */
+struct mesh_trust_record {
+    char tenant[37], device[37];
+    uint8_t der[];
+};
+
+static esp_err_t read_mesh_trust(bool intermediates, struct mesh_trust_record **record, size_t *size)
+{
+    *record = NULL;
+    *size = 0;
+    nvs_handle_t h;
+    esp_err_t status = nvs_open_from_partition("wendy_pki", "mesh_trust", NVS_READONLY, &h);
+    if (status == ESP_ERR_NVS_NOT_FOUND || status == ESP_ERR_NVS_PART_NOT_FOUND ||
+        status == ESP_ERR_NVS_NOT_INITIALIZED)
+        return ESP_OK;
+    if (status != ESP_OK)
+        return status;
+    size_t bytes = 0;
+    const char *name = intermediates ? "issuers" : "roots";
+    status = nvs_get_blob(h, name, NULL, &bytes);
+    if (status == ESP_ERR_NVS_NOT_FOUND) {
+        status = ESP_OK;
+    } else if (status == ESP_OK) {
+        if (bytes <= sizeof **record || bytes - sizeof **record > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE) {
+            status = ESP_ERR_INVALID_SIZE;
+        } else {
+            struct mesh_trust_record *stored = malloc(bytes);
+            status = stored ? nvs_get_blob(h, name, stored, &bytes) : ESP_ERR_NO_MEM;
+            if (status == ESP_OK && bytes > sizeof *stored &&
+                !strncmp(stored->tenant, s_cache.conf.enrollment.tenant_id, sizeof stored->tenant) &&
+                !strncmp(stored->device, s_cache.conf.enrollment.device_id, sizeof stored->device)) {
+                *record = stored;
+                *size = bytes - sizeof *stored;
+            } else {
+                free(stored);
+            }
+        }
+    }
+    nvs_close(h);
+    return status;
+}
+
+esp_err_t wendy_conf_store_mesh_trust(uint64_t generation, bool intermediates,
+                                    const uint8_t *der, size_t size)
+{
+    if (!der || !size || size > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE)
+        return ESP_ERR_INVALID_ARG;
+    pthread_mutex_lock(&s_cache_lock);
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    struct mesh_trust_record *record = NULL;
+    size_t previous_size;
+    if (!s_cache.valid || !s_cache.conf.has_enrollment || generation != s_generation)
+        goto done;
+    result = read_mesh_trust(intermediates, &record, &previous_size);
+    if (result != ESP_OK || (record && previous_size == size && !memcmp(record->der, der, size)))
+        goto done;
+    free(record);
+    record = calloc(1, sizeof *record + size);
+    if (!record) {
+        result = ESP_ERR_NO_MEM;
+        goto done;
+    }
+    memcpy(record->tenant, s_cache.conf.enrollment.tenant_id, 36);
+    memcpy(record->device, s_cache.conf.enrollment.device_id, 36);
+    memcpy(record->der, der, size);
+    nvs_handle_t h;
+    result = nvs_open_from_partition("wendy_pki", "mesh_trust", NVS_READWRITE, &h);
+    if (result == ESP_OK) {
+        result = nvs_set_blob(h, intermediates ? "issuers" : "roots", record, sizeof *record + size);
+        if (result == ESP_OK)
+            result = nvs_commit(h);
+        nvs_close(h);
+    }
+    if (result == ESP_OK)
+        advance_generation();
+done:
+    free(record);
+    pthread_mutex_unlock(&s_cache_lock);
+    return result;
+}
+
+static esp_err_t write_mesh_trust(const uint8_t *data, size_t size)
+{
+    uint32_t fields = 0;
+    if (!_scan_root_fields(data, size, &fields) || fields != (1u << WendyConf_enrollment_tag))
+        return ESP_ERR_INVALID_ARG;
+    WendyConf payload = WendyConf_init_zero;
+    struct wendy_conf_span roots = {0}, issuers = {0};
+    payload.enrollment.device_roots = (pb_callback_t){.funcs.decode = _capture_span, .arg = &roots};
+    payload.enrollment.lite_device_intermediates = (pb_callback_t){.funcs.decode = _capture_span, .arg = &issuers};
+    pb_istream_t stream = pb_istream_from_buffer(data, size);
+    if (!pb_decode_noinit(&stream, WendyConf_fields, &payload) || !payload.has_enrollment ||
+        strlen(payload.enrollment.tenant_id) != 36 || strlen(payload.enrollment.device_id) != 36 ||
+        (!!roots.size == !!issuers.size))
+        return ESP_ERR_INVALID_ARG;
+    struct wendy_conf_span trust = roots.size ? roots : issuers;
+    size_t der_size = 0;
+    if (trust.size > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE ||
+        wendy_cert_bundle_measure(trust.data, trust.size, &der_size) || der_size != trust.size)
+        return ESP_ERR_INVALID_ARG;
+    pthread_mutex_lock(&s_cache_lock);
+    uint64_t generation = s_cache.valid && s_cache.conf.has_enrollment &&
+        !strcmp(payload.enrollment.tenant_id, s_cache.conf.enrollment.tenant_id) &&
+        !strcmp(payload.enrollment.device_id, s_cache.conf.enrollment.device_id)
+        ? s_generation : 0;
+    pthread_mutex_unlock(&s_cache_lock);
+    return wendy_conf_store_mesh_trust(generation, issuers.size != 0, trust.data, trust.size);
+}
 
 static esp_err_t copy_enrollment(WendyConfEnrollment *config,
                                  struct wendy_conf_enrollment_data *data, unsigned selection,
@@ -663,6 +782,7 @@ static esp_err_t copy_enrollment(WendyConfEnrollment *config,
     if (!config || !data)
         return ESP_ERR_INVALID_ARG;
     esp_err_t result = ESP_ERR_INVALID_STATE;
+    struct mesh_trust_record *mesh_roots = NULL, *mesh_issuers = NULL;
     memset(config, 0, sizeof *config);
     memset(data, 0, sizeof *data);
     pthread_mutex_lock(&s_cache_lock);
@@ -678,6 +798,20 @@ static esp_err_t copy_enrollment(WendyConfEnrollment *config,
         if (der && !s_cache.conf.enrollment.provision_trust &&
             (spans[1].size || spans[2].size || spans[3].size || spans[4].size))
             goto done;
+        if (selection & ENROLLMENT_USE_MESH_TRUST) {
+            size_t root_size = 0, issuer_size = 0;
+            result = read_mesh_trust(false, &mesh_roots, &root_size);
+            if (result != ESP_OK)
+                goto done;
+            if (mesh_roots)
+                spans[1] = (struct wendy_conf_span){mesh_roots->der, root_size};
+            if (selection & ENROLLMENT_LITE_INTERMEDIATES)
+                result = read_mesh_trust(true, &mesh_issuers, &issuer_size);
+            if (result != ESP_OK)
+                goto done;
+            if (mesh_issuers)
+                spans[4] = (struct wendy_conf_span){mesh_issuers->der, issuer_size};
+        }
         size_t total = 0, source_total = 0, sizes[5] = {0};
         result = ESP_ERR_INVALID_SIZE;
         for (size_t i = 0; i < 5; i++) {
@@ -711,7 +845,16 @@ static esp_err_t copy_enrollment(WendyConfEnrollment *config,
                 goto done;
             }
         }
-        data->storage = total ? malloc(total) : NULL;
+        /* Reuse the NVS allocation on the classical profile's common
+         * roots-only path. No second copy of the pins is needed on C6. */
+        bool take_roots = mesh_roots && total == sizes[1] && sizes[1] == spans[1].size;
+        if (take_roots) {
+            memmove(mesh_roots, mesh_roots->der, total);
+            data->storage = (uint8_t *)mesh_roots;
+            mesh_roots = NULL;
+        } else {
+            data->storage = total ? malloc(total) : NULL;
+        }
         if (total && !data->storage) {
             result = ESP_ERR_NO_MEM;
             goto done;
@@ -720,6 +863,11 @@ static esp_err_t copy_enrollment(WendyConfEnrollment *config,
         for (size_t i = 0; i < 5; i++) {
             if (!spans[i].size)
                 continue;
+            if (i == 1 && take_roots) {
+                data->device_roots = (struct wendy_conf_span){data->storage, sizes[1]};
+                offset += sizes[1];
+                continue;
+            }
             if (der && i) {
                 size_t copied = 0;
                 if (wendy_cert_bundle_import(spans[i].data, spans[i].size, data->storage + offset,
@@ -745,6 +893,8 @@ static esp_err_t copy_enrollment(WendyConfEnrollment *config,
         result = ESP_OK;
     }
 done:
+    free(mesh_roots);
+    free(mesh_issuers);
     if (result != ESP_OK) {
         free(data->storage);
         memset(data, 0, sizeof *data);
@@ -768,13 +918,14 @@ esp_err_t wendy_conf_copy_enrollment_der(WendyConfEnrollment *config,
 esp_err_t wendy_conf_copy_device_trust(WendyConfEnrollment *config,
     struct wendy_conf_enrollment_data *data)
 {
-    return copy_enrollment(config, data, ENROLLMENT_DEVICE_ROOTS, true);
+    return copy_enrollment(config, data, ENROLLMENT_DEVICE_ROOTS | ENROLLMENT_USE_MESH_TRUST, true);
 }
 
 esp_err_t wendy_conf_copy_mesh_trust(WendyConfEnrollment *config,
                                      struct wendy_conf_enrollment_data *data)
 {
-    return copy_enrollment(config, data, ENROLLMENT_DEVICE_ROOTS | ENROLLMENT_LITE_INTERMEDIATES,
+    return copy_enrollment(config, data, ENROLLMENT_DEVICE_ROOTS | ENROLLMENT_LITE_INTERMEDIATES |
+                           ENROLLMENT_USE_MESH_TRUST,
                            true);
 }
 
@@ -785,10 +936,22 @@ esp_err_t wendy_conf_copy_lite_intermediates(uint64_t generation, uint8_t **der,
     *der = NULL;
     *size = 0;
     esp_err_t result = ESP_ERR_INVALID_STATE;
+    struct mesh_trust_record *record = NULL;
     pthread_mutex_lock(&s_cache_lock);
     if (!s_cache.valid || !generation || generation != s_generation)
         goto done;
     struct wendy_conf_span source = s_cache.lite_device_intermediates;
+    size_t refreshed_size;
+    result = read_mesh_trust(true, &record, &refreshed_size);
+    if (result != ESP_OK)
+        goto done;
+    if (record) {
+        memmove(record, record->der, refreshed_size);
+        *der = (uint8_t *)record;
+        *size = refreshed_size;
+        record = NULL;
+        goto done;
+    }
     if (!source.size) {
         result = ESP_OK;
         goto done;
@@ -812,6 +975,7 @@ esp_err_t wendy_conf_copy_lite_intermediates(uint64_t generation, uint8_t **der,
     *der = copy;
     result = ESP_OK;
 done:
+    free(record);
     pthread_mutex_unlock(&s_cache_lock);
     return result;
 }

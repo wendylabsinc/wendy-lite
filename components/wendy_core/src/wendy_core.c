@@ -755,8 +755,13 @@ static WendyComResult com_conf_push_begin(size_t size, WendyComConfPushMode mode
         return WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
     }
     s_conf_push_size = size;
-    s_conf_push_mode = wifi_only ? WENDY_CONF_WRITE_MODE_WIFI_ONLY : mode == WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE
-                     ? WENDY_CONF_WRITE_MODE_UPDATE : WENDY_CONF_WRITE_MODE_REPLACE;
+    if (wifi_only)
+        s_conf_push_mode = WENDY_CONF_WRITE_MODE_WIFI_ONLY;
+    else if (mode == WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_MESH_TRUST)
+        s_conf_push_mode = WENDY_CONF_WRITE_MODE_MESH_TRUST;
+    else
+        s_conf_push_mode = mode == WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE
+                           ? WENDY_CONF_WRITE_MODE_UPDATE : WENDY_CONF_WRITE_MODE_REPLACE;
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 

@@ -153,6 +153,7 @@ esp_err_t nvs_erase_key(nvs_handle_t h, const char *name)
     if (!strcmp(name, "pending")) pending_certificate = false;
     else if (!strcmp(name, "lite_ca")) lite_authority[0] = 0;
     else if (!strcmp(name, "pending_ca")) { pending_authority[0] = 0; pending_authority_size = 0; }
+    else if (!strcmp(name, "pending_roots") || !strcmp(name, "pending_issuers")) return ESP_ERR_NVS_NOT_FOUND;
     else if (!strcmp(name, "certificate")) have_certificate = false;
     else if (!strcmp(name, "key")) have_key = false;
     else if (!strcmp(name, "tenant") || !strcmp(name, "device")) have_binding = false;

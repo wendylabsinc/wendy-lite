@@ -149,7 +149,8 @@ WendyComResult wcom_cmd_conf_push_begin(int client_id, size_t size, WendyComConf
              mode == WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE ? "update" : "replace");
     // Unknown update semantics cannot safely be interpreted as REPLACE.
     if (mode != WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_REPLACE &&
-        mode != WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE)
+        mode != WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE &&
+        (mode != WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_MESH_TRUST || wifi_only))
         return WendyComResult_WENDY_COM_RESULT_BAD_STATE;
     if (_push_kind != PUSH_NONE) {
         ESP_LOGW(TAG, "CONF_PUSH_BEGIN from client=%d while client=%d is pushing", client_id, _pushing_client_id);

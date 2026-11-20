@@ -10,6 +10,7 @@ enum wendy_conf_write_mode {
     WENDY_CONF_WRITE_MODE_REPLACE = 0,
     WENDY_CONF_WRITE_MODE_UPDATE = 1,
     WENDY_CONF_WRITE_MODE_WIFI_ONLY = 2, // UPDATE accepting only the wifi root field
+    WENDY_CONF_WRITE_MODE_MESH_TRUST = 3, // USB mesh trust only
 };
 
 /**
@@ -180,6 +181,9 @@ esp_err_t wendy_conf_copy_mesh_trust(WendyConfEnrollment *config,
                                     struct wendy_conf_enrollment_data *data);
 /* A separate owned allocation preserves the device-root snapshot layout. */
 esp_err_t wendy_conf_copy_lite_intermediates(uint64_t generation, uint8_t **der, size_t *size);
+/* Replace the mesh-only trust snapshot for the current enrolled identity. */
+esp_err_t wendy_conf_store_mesh_trust(uint64_t generation, bool intermediates,
+                                    const uint8_t *der, size_t size);
 /* Time-only owned snapshot: TSA roots, optional bootstrap seed and HTTPS
  * roots. Excludes device CA bytes. Generation pins the exact configuration,
  * so refresh can reject any intervening write without reparsing device CAs. */

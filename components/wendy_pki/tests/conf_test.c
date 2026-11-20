@@ -29,9 +29,18 @@ static size_t durable_journal_size, staged_journal_size;
 static bool durable_journal_present, staged_journal_present, journal_open;
 static bool fail_journal_open, fail_journal_set, fail_journal_read, fail_journal_erase;
 static unsigned journal_commits, fail_journal_commit_at;
+static uint8_t stored_mesh_roots[1024], staged_mesh_roots[1024];
+static size_t stored_mesh_size, staged_mesh_size;
+static bool fail_mesh_commit;
 
 esp_err_t nvs_open_from_partition(const char *part, const char *name, int mode, nvs_handle_t *h)
 {
+    if (!strcmp(part, "wendy_pki") && !strcmp(name, "mesh_trust")) {
+        if (mode == NVS_READONLY && !stored_mesh_size)
+            return ESP_ERR_NVS_NOT_FOUND;
+        *h = 2;
+        return ESP_OK;
+    }
     assert(!strcmp(part, "wendy_pki") && !strcmp(name, "conf_recovery"));
     assert(mode == NVS_READWRITE && !journal_open);
     if (fail_journal_open) return ESP_FAIL;
@@ -44,11 +53,22 @@ esp_err_t nvs_open_from_partition(const char *part, const char *name, int mode, 
 }
 void nvs_close(nvs_handle_t h)
 {
+    if (h == 2) return;
     assert(h == 1 && journal_open);
     journal_open = false;
 }
 esp_err_t nvs_get_blob(nvs_handle_t h, const char *name, void *out, size_t *size)
 {
+    if (h == 2) {
+        if (strcmp(name, "roots") || !stored_mesh_size)
+            return ESP_ERR_NVS_NOT_FOUND;
+        if (out) {
+            assert(*size >= stored_mesh_size);
+            memcpy(out, stored_mesh_roots, stored_mesh_size);
+        }
+        *size = stored_mesh_size;
+        return ESP_OK;
+    }
     assert(h == 1 && journal_open && !strcmp(name, "retained"));
     if (fail_journal_read) return ESP_FAIL;
     if (!staged_journal_present) return ESP_ERR_NVS_NOT_FOUND;
@@ -61,6 +81,12 @@ esp_err_t nvs_get_blob(nvs_handle_t h, const char *name, void *out, size_t *size
 }
 esp_err_t nvs_set_blob(nvs_handle_t h, const char *name, const void *data, size_t size)
 {
+    if (h == 2) {
+        assert(!strcmp(name, "roots") && size <= sizeof staged_mesh_roots);
+        memcpy(staged_mesh_roots, data, size);
+        staged_mesh_size = size;
+        return ESP_OK;
+    }
     assert(h == 1 && journal_open && !strcmp(name, "retained"));
     assert(size <= sizeof staged_journal);
     if (fail_journal_set) return ESP_FAIL;
@@ -82,6 +108,13 @@ esp_err_t nvs_erase_key(nvs_handle_t h, const char *name)
 }
 esp_err_t nvs_commit(nvs_handle_t h)
 {
+    if (h == 2) {
+        if (fail_mesh_commit)
+            return ESP_FAIL;
+        memcpy(stored_mesh_roots, staged_mesh_roots, staged_mesh_size);
+        stored_mesh_size = staged_mesh_size;
+        return ESP_OK;
+    }
     assert(h == 1 && journal_open);
     if (++journal_commits == fail_journal_commit_at) return ESP_FAIL;
     durable_journal_present = staged_journal_present;
@@ -500,6 +533,43 @@ static void test_der_snapshots(const char *fixtures)
     assert(wendy_conf_copy_device_trust(&cfg, &next) == ESP_OK);
     free(next.storage);
     s_cache.tsa_roots = saved;
+
+    fail_mesh_commit = true;
+    assert(wendy_conf_store_mesh_trust(full.generation, false, der, der_size) == ESP_FAIL);
+    assert(wendy_conf_snapshot_current(full.generation) && !stored_mesh_size);
+    fail_mesh_commit = false;
+    assert(wendy_conf_store_mesh_trust(full.generation, false, der, der_size) == ESP_OK);
+    assert(!wendy_conf_snapshot_current(full.generation));
+    assert(wendy_conf_copy_device_trust(&cfg, &next) == ESP_OK);
+    assert_span(next.device_roots, der, der_size);
+    assert_source_hash(&next, der, der_size);
+    uint64_t mesh_generation = next.generation;
+    free(next.storage);
+    assert(wendy_conf_store_mesh_trust(mesh_generation, false, der, der_size) == ESP_OK);
+    assert(wendy_conf_snapshot_current(mesh_generation));
+    assert(wendy_conf_copy_enrollment(&cfg, &next) == ESP_OK);
+    assert_source_hash(&next, pem, pem_size); /* Renewal still has the original trust. */
+    free(next.storage);
+
+    WendyConf update = WendyConf_init_zero;
+    update.has_enrollment = true;
+    struct wendy_conf_span roots = {der, der_size};
+    update.enrollment.device_roots = (pb_callback_t){.funcs.encode = encode_span, .arg = &roots};
+    strcpy(update.enrollment.tenant_id, cfg.tenant_id);
+    strcpy(update.enrollment.device_id, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+    uint8_t *update_buf = malloc(der_size + 128);
+    assert(update_buf);
+    pb_ostream_t wire = pb_ostream_from_buffer(update_buf, der_size + 128);
+    assert(pb_encode(&wire, WendyConf_fields, &update));
+    assert(wendy_conf_write(update_buf, wire.bytes_written, WENDY_CONF_WRITE_MODE_MESH_TRUST) ==
+           ESP_ERR_INVALID_STATE);
+    strcpy(update.enrollment.device_id, cfg.device_id);
+    wire = pb_ostream_from_buffer(update_buf, der_size + 128);
+    assert(pb_encode(&wire, WendyConf_fields, &update));
+    assert(wendy_conf_write(update_buf, wire.bytes_written, WENDY_CONF_WRITE_MODE_MESH_TRUST) == ESP_OK);
+    assert(wendy_conf_snapshot_current(mesh_generation));
+    free(update_buf);
+    stored_mesh_size = 0;
 
     /* Equivalent DER provisioned after PEM retains distinct source identity.
      * Every earlier snapshot remains owned after the mapped flash changes. */

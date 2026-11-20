@@ -530,23 +530,36 @@ static int select_server_issuers(mbedtls_ssl_context *ssl)
     return 0;
 }
 
+static bool classical_identity(wendy_pki_connection *c, const char *tenant)
+{
+    if (!tenant || !c->presented_chain)
+        return false;
+    for (mbedtls_x509_crt *root = &c->roots; root && root->raw.len; root = root->next)
+        if (self_issued(root) && lite_device_ca(root, tenant) && matching_issuer(&c->certificate, root))
+            return true;
+    return false;
+}
+
 static int configure_mesh_alpn_for_tenant(wendy_pki_connection *c, const char *const *protocols,
-                                         const char *tenant)
+                                         const char *tenant, bool mesh_link)
 {
     bool recovering = pki_issuer_recovery_active(&pki_issuer_process_recovery, esp_timer_get_time());
+    bool classical = classical_identity(c, tenant);
+    bool constrained_native = false;
+#if CONFIG_WENDY_NET_CONSTRAINED_PROFILE
+    constrained_native = !mesh_link && tenant;
+#endif
     wendy_net_memory_scope_t previous = connection_scope(c);
-    c->issuers = recovering && !tenant ? NULL : prepare_issuer_hint(c, tenant);
+    c->issuers = recovering || (constrained_native && !classical) ? NULL : prepare_issuer_hint(c, tenant);
     wendy_net_memory_scope_leave(previous);
-    if (c->lite_peer_issuers || (c->issuers && !recovering)) {
+    if (c->lite_peer_issuers || c->issuers) {
         c->config.MBEDTLS_PRIVATE(f_wendy_untrusted_issuers) = known_peer_issuers;
         c->config.MBEDTLS_PRIVATE(p_wendy_peer_issuers) = c;
     }
+    if (mesh_link && classical)
+        c->presented_chain->count = 1;
     if (c->issuers) {
         c->issuers->application = protocols[0];
-        if (c->issuers->classical && c->presented_chain)
-            c->presented_chain->count = 1;
-        if (recovering)
-            return mbedtls_ssl_conf_alpn_protocols(&c->config, protocols);
         c->config.MBEDTLS_PRIVATE(f_wendy_peer_chain_begin) = peer_chain_begin;
         if (pki_issuer_protocols(c->issuers, protocols[0]))
             return -1;
@@ -560,11 +573,6 @@ static int configure_mesh_alpn_for_tenant(wendy_pki_connection *c, const char *c
     }
     /* Ordinary service fallback; certificate callback may select an offered prefix. */
     return mbedtls_ssl_conf_alpn_protocols(&c->config, protocols);
-}
-
-static int configure_mesh_alpn(wendy_pki_connection *c, const char *const *protocols)
-{
-    return configure_mesh_alpn_for_tenant(c, protocols, NULL);
 }
 
 void wendy_pki_net_release_issuers(struct wendy_pki_net_issuers *snapshot)
@@ -1858,7 +1866,7 @@ static int open_tls(const char *host, unsigned port, const uint8_t *key, size_t 
         static const char *const router_protocols[] = {"wendy-local-mesh-ble/2", NULL};
         const char *const *protocols =
             !strcmp(protocol, "wendy-app-mesh-tls/1") ? app_protocols : router_protocols;
-        if (configure_mesh_alpn_for_tenant(c, protocols, tenant))
+        if (configure_mesh_alpn_for_tenant(c, protocols, tenant, true))
             goto fail;
         /* Mesh identity is the exact SPIFFE principal, checked below after
          * mandatory CA verification. It is independent of the dial address. */
@@ -2666,7 +2674,7 @@ static int accept_peer(int fd, const uint8_t *key, size_t key_size, struct wendy
                   owned && owned->read_der))
         goto fail;
     static const char *const wendycom_alpn[] = {"wendy-com/2", NULL};
-    if (configure_mesh_alpn(c, wendycom_alpn))
+    if (configure_mesh_alpn_for_tenant(c, wendycom_alpn, owned ? tenant : NULL, false))
         goto fail;
     /* Parsed DER anchors borrow the owned trust bundle through handshake. */
     int r;
@@ -2943,16 +2951,8 @@ int pki_tls_agent_begin(const struct wendy_pki_stream *stream, const char *tenan
     /* Native WendyCom is not an app/carrier ALPN and can accept a device or
      * operator. Do not use finish_mesh or reinterpret its peer as a UUID. */
     static const char *const wendycom_alpn[] = {"wendy-com/2", NULL};
-    if (!r) {
-#if CONFIG_WENDY_NET_CONSTRAINED_PROFILE
-        /* Native management shares the constrained mesh ledger. Keeping
-         * speculative issuer candidates can crowd out signature-verification
-         * scratch even for one client; request ordinary full presentations. */
-        r = mbedtls_ssl_conf_alpn_protocols(&c->config, wendycom_alpn);
-#else
-        r = configure_mesh_alpn(c, wendycom_alpn);
-#endif
-    }
+    if (!r)
+        r = configure_mesh_alpn_for_tenant(c, wendycom_alpn, tenant, false);
     release_identity_input(owned);
     if (r) {
         wendy_pki_close(c);
@@ -3035,7 +3035,7 @@ int pki_tls_net_begin(const struct wendy_pki_stream *stream, bool server, const 
     static const char *const carrier_alpn[] = {"wendy-local-mesh-ble/2", NULL};
     static const char *const app_alpn[] = {"wendy-app-mesh-tls/1", NULL};
     if (!result)
-        result = configure_mesh_alpn_for_tenant(c, application ? app_alpn : carrier_alpn, tenant);
+        result = configure_mesh_alpn_for_tenant(c, application ? app_alpn : carrier_alpn, tenant, true);
     if (!result)
         result = mbedtls_ssl_set_hostname(&c->ssl, NULL);
     if (!result) {
