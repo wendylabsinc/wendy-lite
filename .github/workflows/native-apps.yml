@@ -139,7 +139,7 @@ jobs:
           . "$IDF_PATH/export.sh"
           cd "$RUNNER_TEMP/$APP"
           read -ra args <<< "$COMBINATION"
-          python "$GITHUB_WORKSPACE/tools/configure.py" --app "${args[@]}"
+          python "$GITHUB_WORKSPACE/tools/configure.py" --app -- "${args[@]}"
           idf_args=()
           if [ "$PREVIEW" = true ]; then
             idf_args+=(--preview)

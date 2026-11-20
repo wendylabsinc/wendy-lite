@@ -99,7 +99,7 @@ jobs:
         run: |
           . "$IDF_PATH/export.sh"
           read -ra args <<< "$COMBINATION"
-          python tools/configure.py "${args[@]}"
+          python tools/configure.py -- "${args[@]}"
           idf_args=()
           if [ "$PREVIEW" = true ]; then
             idf_args+=(--preview)
