@@ -10,8 +10,10 @@ mkdir -p "$2"
 staging="$(cd "$2" && pwd)"
 python3 - "$1" "$staging" "$here" <<'PY'
 from pathlib import Path
+import os
 import re
 import shutil
+import subprocess
 import sys
 
 source, staging, here = (Path(arg).resolve(strict=True) for arg in sys.argv[1:])
@@ -30,6 +32,10 @@ for name in ("slave", "common"):
     if any(path.is_symlink() for path in target.rglob("*")):
         raise SystemExit(f"Symlinks are unsupported in the staged {name} tree")
 
+subprocess.run(["git", "apply", "--no-index", str(here / "esp-hosted-sdio.patch")],
+               cwd=staging, check=True,
+               env={**os.environ, "GIT_CEILING_DIRECTORIES": str(staging.parent)})
+
 main = staging / "slave" / "main"
 cmake = main / "CMakeLists.txt"
 app = main / "esp_hosted_coprocessor.c"
@@ -42,7 +48,7 @@ cmake.write_text(cmake_source.replace(component, f'{component}\n    "bridge.c"')
 app.write_text(app_source.replace(entry, entry + "\n\textern void wendy_espnow_bridge_init(void);\n\twendy_espnow_bridge_init();"))
 shutil.copyfile(here / "bridge.c", main / "bridge.c")
 include = here.parent.parent / "components" / "wendy_net_peer" / "include"
-for name in ("wendy_net_espnow_hosted.h", "wendy_net_espnow_peers.h"):
+for name in ("wendy_net_espnow_hosted.h", "wendy_net_espnow_peers.h", "wendy_net_espnow_sdio.h"):
     shutil.copyfile(include / name, main / name)
 
 config = staging / "slave" / "sdkconfig.defaults.esp32c6"

@@ -1,0 +1,48 @@
+--- a/host/drivers/transport/sdio/sdio_drv.c
++++ b/host/drivers/transport/sdio/sdio_drv.c
+@@ -74,6 +74,7 @@
+ 
+ /** Includes **/
+ #include "string.h"
++#include "wendy_net_espnow_sdio.h"
+ #include "sdio_drv.h"
+ #include "sdio_reg.h"
+ #include "serial_drv.h"
+@@ -1497,6 +1497,8 @@
+ 			sdio_start_write_thread = true;
+ 		} else if (buf_handle->if_type == ESP_HCI_IF) {
+ 			hci_rx_handler(buf_handle->payload, buf_handle->payload_len);
++		} else if (buf_handle->if_type == WNE_SDIO_INTERFACE) {
++			wendy_espnow_sdio_receive(buf_handle->payload, buf_handle->payload_len);
+ 		} else if (buf_handle->if_type == ESP_TEST_IF) {
+ #if TEST_RAW_TP
+ 			update_test_raw_tp_rx_len(buf_handle->payload_len +
+@@ -1672,6 +1674,28 @@
+ 	return ESP_OK;
+ }
+ 
++/* Wendy's data-only channel uses the normal bounded SDIO queue. Report
++ * backpressure to the caller instead of waiting for a stalled companion. */
++bool wendy_espnow_sdio_send(const uint8_t *bytes, size_t size)
++{
++	if (!is_transport_tx_ready() || !size || size > MAX_PAYLOAD_SIZE)
++		return false;
++	uint8_t *copy = malloc(size);
++	if (!copy)
++		return false;
++	memcpy(copy, bytes, size);
++	interface_buffer_handle_t packet = {
++		.if_type = WNE_SDIO_INTERFACE, .payload_len = size, .payload = copy,
++		.priv_buffer_handle = copy, .free_buf_handle = free,
++	};
++	if (g_h.funcs->_h_queue_item(to_slave_queue[PRIO_Q_OTHERS], &packet, 0) != RET_OK) {
++		free(copy);
++		return false;
++	}
++	g_h.funcs->_h_post_semaphore(sem_to_slave_queue);
++	return true;
++}
++
+ void check_if_max_freq_used(uint8_t chip_type)
+ {
+ #ifdef CONFIG_IDF_TARGET
