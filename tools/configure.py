@@ -20,6 +20,29 @@ CONFIG_WENDY_VERSION. Then configure.py runs, in the repository root:
 --preview is added only when idf_preview is true (master_config.yaml: the
 esp32s31, a preview target of ESP-IDF 6.1).
 
+Native app (--app): the current folder is a native app project, which
+replaces the firmware on the device, so it is built with the configuration of
+the firmware. This is what the Wendy CLI (wendy run) does before it builds
+the app, without the device:
+
+    cd native_apps/blink-rgb
+    ../../tools/configure.py --app board=esp32c6_devkit_c_1_n8 app_type=native
+    idf.py gen_project_binary
+
+configure.py then writes ./sdkconfig.defaults.wendy, without the
+CONFIG_PARTITION_TABLE_* lines (they name a partition CSV file of this
+repository), and runs [--preview] set-target <chip> in the current folder,
+without -D: the CMakeLists.txt of the project must have
+
+    set(SDKCONFIG_DEFAULTS "sdkconfig.defaults.wendy;sdkconfig.defaults")
+
+before include($ENV{IDF_PATH}/tools/cmake/project.cmake), and the project
+must have a sdkconfig.defaults (the app's own defaults, which win).
+configure.py checks this first and does not change the project.
+CONFIG_WENDY_VERSION is the version of this wendy-lite checkout: pin the
+wendy_core dependency of the app (main/idf_component.yml) to the same commit,
+or use override_path to this checkout. -o cannot be used with --app.
+
 sdkconfig.defaults.wendy is the only defaults file: master_config.yaml has all
 the settings, also those of sdkconfig.defaults and sdkconfig.defaults.<chip>,
 which only the old boards/*.cfg builds read. ESP-IDF also reads
@@ -45,6 +68,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "configurator"))
 
+from conf_model import ConfError  # noqa: E402
+from native_app import APP_DEFAULTS_FILE, PARTITION_TABLE_PREFIX, check_app_project  # noqa: E402
 import solve  # noqa: E402
 from esp_idf import CHIP, IDF_PREVIEW, IDF_VERSION, check_idf_version, idf_command, preview_option  # noqa: E402
 from wendy_version import WENDY_VERSION, version_line, wendy_version  # noqa: E402
@@ -54,13 +79,30 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Solve the configurator master configuration, write sdkconfig.defaults.wendy "
         "(with CONFIG_WENDY_VERSION from git), check the ESP-IDF version and run "
-        "idf.py set-target with the solved chip."
+        "idf.py set-target with the solved chip, for the firmware or (--app) for the "
+        "native app project in the current folder."
     )
     solve.add_arguments(parser)
+    parser.add_argument(
+        "--app",
+        action="store_true",
+        help="the current folder is a native app project: write ./%s without the "
+        "%s* lines and run idf.py set-target here; the project CMakeLists.txt must "
+        "list the file in SDKCONFIG_DEFAULTS" % (APP_DEFAULTS_FILE, PARTITION_TABLE_PREFIX),
+    )
     args = parser.parse_args(argv)
+    if args.app:
+        if args.output != parser.get_default("output"):
+            parser.error("-o cannot be used with --app: the file is ./" + APP_DEFAULTS_FILE)
+        args.output = APP_DEFAULTS_FILE
+    project = os.getcwd() if args.app else solve.REPO_ROOT
 
     def body() -> int:
         idf = idf_command()  # check ESP-IDF before anything is written
+        if args.app:
+            if os.path.realpath(project) == os.path.realpath(solve.REPO_ROOT):
+                raise ConfError("--app: the current folder is the wendy-lite repository, not a native app project")
+            check_app_project(project)
         version = wendy_version(solve.REPO_ROOT)
         print(f"Wendy version: {version or '(empty)'} ({WENDY_VERSION}, from git)")
 
@@ -72,23 +114,21 @@ def main(argv: list[str] | None = None) -> int:
                 IDF_PREVIEW: ["idf.py --preview"],
             },
             extra_lines=[version_line(version)],
+            drop_prefixes=(PARTITION_TABLE_PREFIX,) if args.app else (),
         )
         chip = str(solution.values[CHIP])
         preview = solution.values[IDF_PREVIEW] is True
         check_idf_version(str(solution.values[IDF_VERSION]))
 
-        wendy_defaults = solve.relative(args.output, solve.REPO_ROOT)
-        command: list[str] = [
-            *idf,
-            *preview_option(preview),
-            "-D",
-            f"SDKCONFIG_DEFAULTS={wendy_defaults}",
-            "set-target",
-            chip,
-        ]
-        print(f"\nrun in {solve.REPO_ROOT}:\n  {shlex.join(command)}\n")
+        command: list[str] = [*idf, *preview_option(preview)]
+        if not args.app:
+            # A native app project lists the file in its CMakeLists.txt.
+            wendy_defaults = solve.relative(args.output, solve.REPO_ROOT)
+            command += ["-D", f"SDKCONFIG_DEFAULTS={wendy_defaults}"]
+        command += ["set-target", chip]
+        print(f"\nrun in {project}:\n  {shlex.join(command)}\n")
         sys.stdout.flush()
-        rc = subprocess.call(command, cwd=solve.REPO_ROOT)
+        rc = subprocess.call(command, cwd=project)
         return rc if rc >= 0 else 128 - rc
 
     return solve.run_cli(body)

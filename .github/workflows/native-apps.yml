@@ -7,21 +7,83 @@ on:
   pull_request:
 
 jobs:
+  # A native app replaces the firmware, so it is built with the configuration
+  # of a firmware build. The firmware configurations are the variants of
+  # tests/build-variants/variants.yaml with native_apps: true
+  # (check_variants.py, in the Build Variants workflow, checks that they give
+  # app_type native). Each app of APPS is compiled with each of them.
+  variants:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      count: ${{ steps.matrix.outputs.count }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: python -m pip install pyyaml
+
+      - name: Make the build matrix
+        id: matrix
+        shell: python
+        env:
+          # The folders of native_apps/ to compile, separated by spaces.
+          APPS: blink-rgb
+        run: |
+          import json
+          import os
+
+          import yaml
+
+          with open("tests/build-variants/variants.yaml", encoding="utf-8") as f:
+              variants = yaml.safe_load(f)["variants"]
+          include = [
+              {
+                  "app": app,
+                  "combination": v["combination"],
+                  "idf_version": v["idf_version"],
+                  "idf_preview": v["idf_preview"],
+              }
+              for app in os.environ["APPS"].split()
+              for v in variants
+              if v.get("native_apps", False)
+          ]
+          if len(include) > 256:
+              print(f"::error::{len(include)} builds, a GitHub matrix has at most 256 jobs")
+              raise SystemExit(1)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"matrix={json.dumps({'include': include})}\n")
+              f.write(f"count={len(include)}\n")
+          print(f"{len(include)} builds")
+
   # Compile the example native apps the way a project outside this repo does:
   # wendy-lite's components come from GitHub through the IDF component
   # manager, never from this checkout.
   build:
+    needs: variants
+    if: needs.variants.outputs.count != '0'
+    name: ${{ matrix.app }} ${{ matrix.combination }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - app: blink-rgb
-            target: esp32c6
+      matrix: ${{ fromJSON(needs.variants.outputs.matrix) }}
     container:
-      image: espressif/idf:v6.0.3
+      image: espressif/idf:v${{ matrix.idf_version }}
     steps:
+      # The commit that the wendy-lite components are pinned to (below), so
+      # that the configuration (master_config.yaml) and CONFIG_WENDY_VERSION
+      # are of that commit too.
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      # configure.py reads the Wendy version from git.
+      - name: Trust the checkout in the build container
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       # Outside the checkout, no component of this repo can stand in for the
       # ones fetched from GitHub.
@@ -63,14 +125,23 @@ jobs:
           print(f"pinned {', '.join(pinned)} to {ref}")
           PY
 
-      # Same steps as `wendy run`: only the app binary, not a firmware image.
-      - name: Build
+      # Same steps as `wendy run`: the configuration of the firmware build in
+      # sdkconfig.defaults.wendy (configure.py --app, which also checks the
+      # ESP-IDF version of the container and runs idf.py set-target), then
+      # only the app binary, not a firmware image.
+      - name: Configure and build
         shell: bash
         env:
           APP: ${{ matrix.app }}
-          TARGET: ${{ matrix.target }}
+          COMBINATION: ${{ matrix.combination }}
+          PREVIEW: ${{ matrix.idf_preview }}
         run: |
           . "$IDF_PATH/export.sh"
           cd "$RUNNER_TEMP/$APP"
-          idf.py set-target "$TARGET"
-          idf.py gen_project_binary
+          read -ra args <<< "$COMBINATION"
+          python "$GITHUB_WORKSPACE/tools/configure.py" --app "${args[@]}"
+          idf_args=()
+          if [ "$PREVIEW" = true ]; then
+            idf_args+=(--preview)
+          fi
+          idf.py "${idf_args[@]}" gen_project_binary

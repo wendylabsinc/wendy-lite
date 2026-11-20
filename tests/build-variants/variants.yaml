@@ -8,6 +8,10 @@
 #   idf_version  the ESP-IDF version that the combination gives (CI container)
 #   idf_preview  true: idf.py --preview
 #   tested       false: CI does not compile the variant
+#   native_apps  true: CI also compiles each native app of native_apps/ with
+#                this firmware configuration (.github/workflows/native-apps.yml,
+#                tools/configure.py --app). The combination must give
+#                app_type native. Optional, default false.
 #   aliases      other combinations that must give the same firmware. CI does
 #                not compile them.
 #
@@ -30,6 +34,7 @@ variants:
     idf_version: "6.0.3"
     idf_preview: false
     tested: true
+    native_apps: true
     aliases: []
 
   - combination: board=custom chip=esp32c61 flash_size=32MiB cloud_tunnel=true
@@ -51,6 +56,7 @@ variants:
     idf_version: "6.0.3"
     idf_preview: false
     tested: true
+    native_apps: true
     aliases: []
 
   - combination: board=seeed_xiao app_type=native wendy_net=true sensor_link_av=false cloud_tunnel=true
@@ -58,6 +64,7 @@ variants:
     idf_version: "6.0.3"
     idf_preview: false
     tested: true
+    native_apps: true
     aliases: []
 
   - combination: board=esp32s31_korvo_1 wendy_net=true cloud_tunnel=true

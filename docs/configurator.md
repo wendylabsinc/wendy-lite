@@ -480,6 +480,10 @@ Each variant has these keys:
 - `chip`, `idf_version`, `idf_preview`: the values that the combination gives.
   CI uses them for the `espressif/idf` container and for `--preview`.
 - `tested`: `false` and CI does not compile the variant.
+- `native_apps` (optional, default `false`): `true` and CI also compiles the
+  native apps of [native_apps/](../native_apps) with this firmware
+  configuration (see [Native apps in CI](#native-apps-in-ci)). The combination
+  must give `app_type` native.
 - `aliases`: other combinations that must give the same firmware. CI does not
   compile them. Use `all_combinations.py --all` to find the aliases of a
   combination.
@@ -494,9 +498,89 @@ runs on each pull request, on each push to `main`, and manually:
      `master_config.yaml` gives `sdkconfig` lines (no error).
    - [tests/build-variants/check_variants.py](../tests/build-variants/check_variants.py):
      in `variants.yaml`, each combination and each alias is allowed and gives
-     no error, each alias gives the same firmware as its combination, and
-     `chip`, `idf_version` and `idf_preview` are the values of the combination.
+     no error, each alias gives the same firmware as its combination,
+     `chip`, `idf_version` and `idf_preview` are the values of the
+     combination, and a variant with `native_apps: true` gives `app_type`
+     native.
 2. Then there is one build job for each variant with `tested: true`. The jobs
    run in parallel. A job compiles the combination in the `espressif/idf`
    container of its `idf_version`: `tools/configure.py <combination>`, then
    `idf.py build` (with `--preview` when `idf_preview` is true).
+
+## Native apps without the Wendy CLI
+
+A native app replaces the firmware on the device. Thus it is built with the
+configuration of the firmware: the same `sdkconfig` lines, the same
+`CONFIG_WENDY_BUILD_PROFILE` and the same `CONFIG_WENDY_VERSION`. After the
+app starts, the device reports them again in the reply to `get_build_info`.
+
+`wendy run` does these steps for a native app (WendyOS
+`go/internal/cli/providers/microwendy.go`):
+
+1. It gets the Wendy Lite version and the build profile from the device
+   (`get_build_info`).
+2. It writes `sdkconfig.defaults.wendy` in the app project: the solution of
+   the build profile with the `master_config.yaml` of that version, with
+   `CONFIG_WENDY_BUILD_PROFILE` and `CONFIG_WENDY_VERSION`, but without the
+   `CONFIG_PARTITION_TABLE_*` lines. These lines name a partition CSV file of
+   the wendy-lite repository, which the app project does not have.
+3. It makes sure that the project `CMakeLists.txt` has this line before
+   `include($ENV{IDF_PATH}/tools/cmake/project.cmake)`, and that the project
+   has a `sdkconfig.defaults` file (the app's own defaults, which win):
+
+   ```cmake
+   set(SDKCONFIG_DEFAULTS "sdkconfig.defaults.wendy;sdkconfig.defaults")
+   ```
+
+4. It sets the `version` of the `wendy_core` git dependency in
+   `main/idf_component.yml` to the Wendy Lite version of the device.
+5. It selects the ESP-IDF of `idf_version`, then runs
+   `idf.py [--preview] set-target <chip>` and `idf.py gen_project_binary`.
+
+To do the same without the CLI and without a device, run
+`tools/configure.py --app` in the app project folder. It does steps 2 and 5
+for the combination that you give:
+
+```sh
+cd native_apps/blink-rgb
+../../tools/configure.py --app board=esp32c6_devkit_c_1_n8 app_type=native
+idf.py gen_project_binary
+```
+
+With `--app`, `configure.py`:
+
+- first checks the line in `CMakeLists.txt` and the `sdkconfig.defaults` file
+  (step 3). If they are not correct, it prints what to add and stops. It does
+  not change the project;
+- writes `./sdkconfig.defaults.wendy` without the `CONFIG_PARTITION_TABLE_*`
+  lines. `-o` cannot be used with `--app`;
+- does the same checks as without `--app` (missing values, `valid: false`,
+  ESP-IDF version);
+- runs `idf.py [--preview] set-target <chip>` in the current folder, without
+  `-D SDKCONFIG_DEFAULTS` (the line in `CMakeLists.txt` gives it).
+
+`configure.py` does not do step 4. `CONFIG_WENDY_VERSION` is the version of
+the wendy-lite checkout of `configure.py`, so pin `wendy_core` to the same
+commit, or use `override_path` to this checkout for a local test:
+
+```yaml
+  wendy_core:
+    override_path: "/path/to/wendy-lite/components/wendy_core"
+```
+
+### Native apps in CI
+
+The workflow
+[.github/workflows/native-apps.yml](../.github/workflows/native-apps.yml)
+compiles each app of its `APPS` list with each variant of
+[tests/build-variants/variants.yaml](../tests/build-variants/variants.yaml)
+that has `native_apps: true`. Each build job, in the `espressif/idf`
+container of the `idf_version` of the variant:
+
+1. checks out the commit under test (the head of the pull request);
+2. copies the app out of the checkout, so that no component of the checkout
+   can stand in for the components from GitHub;
+3. pins the wendy-lite git dependencies of the app copy to the commit under
+   test;
+4. runs `tools/configure.py --app <combination>` in the app copy, then
+   `idf.py gen_project_binary` (with `--preview` when `idf_preview` is true).

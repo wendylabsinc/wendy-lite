@@ -12,7 +12,10 @@ configuration (master_config.yaml). For each variant:
   Then the sdkconfig after idf.py set-target is the same too, so CI does not
   compile the aliases;
 - chip, idf_version and idf_preview in the file must be the values that the
-  combination gives (CI selects the ESP-IDF container with idf_version).
+  combination gives (CI selects the ESP-IDF container with idf_version);
+- with native_apps: true (CI also compiles the native apps of native_apps/
+  with the variant, .github/workflows/native-apps.yml), the combination must
+  give app_type native.
 
 The variants with tested: false are checked too.
 
@@ -45,6 +48,8 @@ import solve  # noqa: E402
 
 VARIANTS_FILE = os.path.join(_HERE, "variants.yaml")
 VARIANTS_FORMAT = "1.0"
+APP_TYPE = "app_type"
+NATIVE = "native"
 
 
 @dataclass
@@ -55,6 +60,7 @@ class Entry:
     aliases: list[str]
     fields: dict[str, Any]  # chip, idf_version and idf_preview, as written
     tested: bool
+    native_apps: bool
 
 
 def read_variants(path: str) -> list[Entry]:
@@ -75,6 +81,9 @@ def read_variants(path: str) -> list[Entry]:
             raise ConfError(f"{where}: combination must be NAME=VALUE text")
         if not isinstance(tested, bool):
             raise ConfError(f"{where}: tested must be true or false")
+        native_apps = item.get("native_apps", False)
+        if not isinstance(native_apps, bool):
+            raise ConfError(f"{where}: native_apps must be true or false")
         if aliases is None:  # "aliases:" with no item
             aliases = []
         if not isinstance(aliases, list) or not all(isinstance(a, str) for a in aliases):
@@ -82,7 +91,8 @@ def read_variants(path: str) -> list[Entry]:
         missing = [name for name in CONFIGURE_NEEDS if name not in item]
         if missing:
             raise ConfError(f"{where}: {', '.join(missing)} missing")
-        entries.append(Entry(combination, aliases, {name: item[name] for name in CONFIGURE_NEEDS}, tested))
+        fields = {name: item[name] for name in CONFIGURE_NEEDS}
+        entries.append(Entry(combination, aliases, fields, tested, native_apps))
     return entries
 
 
@@ -132,6 +142,10 @@ def check_entries(model: Model, entries: list[Entry]) -> list[tuple[str, list[st
                 same = False
             if not same:
                 wrong.append(f"{name}: {raw} in the file, the combination gives {attr.format(main.values[name])}")
+        if entry.native_apps and main.values.get(APP_TYPE) != NATIVE:
+            app_type = main.values.get(APP_TYPE)
+            given = "no app_type" if app_type is None else f"app_type {app_type}"
+            wrong.append(f"native_apps: true, but the combination gives {given} (a native app needs {APP_TYPE} {NATIVE})")
         if wrong:
             problems.append((entry.combination, wrong))
         for alias in entry.aliases:
@@ -171,6 +185,7 @@ def main(argv: list[str] | None = None) -> int:
         for entry in entries:
             aliases = len(entry.aliases)
             note = f"{aliases} alias{'es' if aliases != 1 else ''}" + ("" if entry.tested else ", not tested")
+            note += ", native apps" if entry.native_apps else ""
             print(f"  {entry.combination}  ({note})")
 
         problems = check_entries(model, entries)
