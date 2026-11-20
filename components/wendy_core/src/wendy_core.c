@@ -23,6 +23,13 @@
 #include "wendy_core.h"
 #include "wendy_core_wdt.h"
 #include "wendy_conf.h"
+#include "wendy_pki_crypto.h"
+#if CONFIG_WENDY_PKI
+#include "wendy_pki_clock_observation.h"
+#endif
+#if CONFIG_WENDY_NET_PEER
+#include "wendy_net_peer.h"
+#endif
 
 #if CONFIG_WENDY_WASM
 #include "wendy_wasm.h"
@@ -61,10 +68,11 @@ static const char *TAG = "wendy_core";
 
 static EventGroupHandle_t s_events;
 static bool s_boot_ble_enabled = true;
-esp_err_t wendy_core_set_boot_radios(bool ble, bool wifi)
+#if CONFIG_WENDY_NET_SELECT_RADIO_AT_BOOT
+/* Select the radios that wendy_core_init() starts, from the saved Wendy Net
+ * settings. Called by wendy_core_init() only, before BLE and Wi-Fi start. */
+static esp_err_t set_boot_radios(bool ble, bool wifi)
 {
-    if (s_events)
-        return ESP_ERR_INVALID_STATE;
 #if CONFIG_WENDY_WIFI_ENABLED
     esp_err_t result = wendy_wifi_set_boot_radio_enabled(wifi);
     if (result != ESP_OK)
@@ -80,6 +88,7 @@ esp_err_t wendy_core_set_boot_radios(bool ble, bool wifi)
     s_boot_ble_enabled = ble;
     return ESP_OK;
 }
+#endif
 
 /* ── Reboot boot-params ─────────────────────────────────────────────────
  *
@@ -928,6 +937,19 @@ esp_err_t wendy_core_init(void)
      * instead, as the very first thing user code does. */
     wendy_core_wdt_feed();
 
+    /* PKI boot steps, in the order of the firmware main. Capture the boot
+     * clock first, before any other initialization. Each call is safe to
+     * repeat, so an app_main() that already made them (the firmware main,
+     * which must start SensorLink between them and wendy_core_init()) loses
+     * nothing. */
+#if CONFIG_WENDY_PKI
+    wendy_pki_clock_observe_boot();
+#endif
+    if (wendy_pki_memory_init() || wendy_pki_crypto_init()) {
+        ESP_LOGE(TAG, "PKI memory or crypto initialization failed");
+        return ESP_FAIL;
+    }
+
     capture_boot_params();
 
     esp_err_t stdio_err = wendy_stdio_init();
@@ -1022,6 +1044,27 @@ esp_err_t wendy_core_init(void)
     wcom_start();
     wendy_core_wdt_start();
 
+#if CONFIG_WENDY_NET_PEER
+    /* The saved Wendy Net settings select the BLE profile and, with
+     * CONFIG_WENDY_NET_SELECT_RADIO_AT_BOOT, the radios to start. This must
+     * come before the BLE and Wi-Fi starts below. */
+    {
+        bool boot_ble, boot_wifi;
+        err = wendy_net_peer_boot_radios(&boot_ble, &boot_wifi);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Wendy Net boot radios: %s", esp_err_to_name(err));
+            return err;
+        }
+#if CONFIG_WENDY_NET_SELECT_RADIO_AT_BOOT
+        err = set_boot_radios(boot_ble, boot_wifi);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "boot radio selection: %s", esp_err_to_name(err));
+            return err;
+        }
+#endif
+    }
+#endif
+
     /* Initialize the BLE transport (if enabled). Deliberately before WiFi and
      * not gated on it: a board with no credentials is exactly the case BLE
      * exists to cover. The identity comes from wendy_conf, the same source the
@@ -1083,6 +1126,20 @@ esp_err_t wendy_core_init(void)
              heap_caps_get_free_size(internal), heap_caps_get_largest_free_block(internal),
              heap_caps_get_minimum_free_size(internal),
              heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+
+    /* Last, as when the firmware main made these calls after
+     * wendy_core_init(): the Bluetooth power command (also when the boot
+     * policy omits BLE), then Wendy Net. */
+#if CONFIG_WENDY_BLE
+    wendy_ble_power_init();
+#endif
+#if CONFIG_WENDY_NET_PEER
+    err = wendy_net_peer_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Wendy Net start: %s", esp_err_to_name(err));
+        return err;
+    }
+#endif
 
     return ESP_OK;
 }

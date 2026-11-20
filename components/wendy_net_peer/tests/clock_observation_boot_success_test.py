@@ -22,11 +22,7 @@ int wendy_pki_memory_init(void);
 int wendy_pki_crypto_init(void);
 void wendy_net_sensor_probe_init(void);
 esp_err_t wendy_sensor_link_init(void);
-esp_err_t wendy_net_peer_boot_radios(bool *, bool *);
-esp_err_t wendy_core_set_boot_radios(bool, bool);
 esp_err_t wendy_core_init(void);
-void wendy_ble_power_init(void);
-esp_err_t wendy_net_peer_start(void);
 esp_err_t wendy_display_start(void);
 esp_err_t wendy_benchmark_start(void);
 const char *esp_err_to_name(esp_err_t);
@@ -47,21 +43,15 @@ int wendy_pki_memory_init(void) { return initialized(); }
 int wendy_pki_crypto_init(void) { return initialized(); }
 void wendy_net_sensor_probe_init(void) { (void)initialized(); }
 esp_err_t wendy_sensor_link_init(void) { return initialized(); }
-esp_err_t wendy_net_peer_boot_radios(bool *ble, bool *wifi) {
-    *ble = true; *wifi = false; return initialized();
-}
-esp_err_t wendy_core_set_boot_radios(bool ble, bool wifi) {
-    assert(ble && !wifi); return initialized();
-}
+/* wendy_core_init() also starts BLE and Wendy Net (boot radios, power
+ * command, peer start), so the native apps get them too. */
 esp_err_t wendy_core_init(void) { return initialized(); }
-void wendy_ble_power_init(void) { (void)initialized(); }
-esp_err_t wendy_net_peer_start(void) { return initialized(); }
 esp_err_t wendy_display_start(void) { return initialized(); }
 esp_err_t wendy_benchmark_start(void) { return initialized(); }
 const char *esp_err_to_name(esp_err_t error) { (void)error; return "mock"; }
 int main(void) {
     app_main();
-    assert(phase == 11 && fake_utc == 2100);
+    assert(phase == 7 && fake_utc == 1700);
 #if CONFIG_WENDY_PKI
     assert(boot_calls == 1 && captured_utc == 1000 && captured_utc != fake_utc);
 #else

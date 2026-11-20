@@ -4,12 +4,6 @@
 #include "wendy_pki_clock_observation.h"
 #endif
 #include "esp_log.h"
-#if CONFIG_WENDY_BLE
-#include "wendy_ble.h"
-#endif
-#if CONFIG_WENDY_NET_PEER
-#include "wendy_net_peer.h"
-#endif
 
 #if CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3 || CONFIG_WENDY_SENSOR_LINK_ESP32S31_KORVO_1
 #include "wendy_sensor_link.h"
@@ -21,6 +15,21 @@
 #include "wendy_benchmark.h"
 #endif
 
+/*
+ * READ THIS BEFORE YOU ADD CODE HERE (engineers and AI agents).
+ *
+ * Only the Wendy Lite firmware uses this app_main(). A native Wendy app has
+ * its own app_main() and calls only wendy_core_init(), so code here never
+ * runs in native apps.
+ *
+ * Put every generic start step (PKI, Wendy Net, BLE, Wi-Fi, services, ...)
+ * in wendy_core_init() (components/wendy_core), so that the firmware and the
+ * native apps start the same way. Only firmware-specific board steps belong
+ * here: SensorLink, display, benchmark, test probes.
+ *
+ * The PKI calls below are also in wendy_core_init(). They stay here because
+ * SensorLink must start after them and before wendy_core_init().
+ */
 void app_main(void)
 {
 #if CONFIG_WENDY_PKI
@@ -40,20 +49,7 @@ void app_main(void)
                  esp_err_to_name(err));
     }
 #endif
-#if CONFIG_WENDY_NET_PEER
-    bool boot_ble, boot_wifi;
-    ESP_ERROR_CHECK(wendy_net_peer_boot_radios(&boot_ble, &boot_wifi));
-#if CONFIG_WENDY_NET_SELECT_RADIO_AT_BOOT
-    ESP_ERROR_CHECK(wendy_core_set_boot_radios(boot_ble, boot_wifi));
-#endif
-#endif
     ESP_ERROR_CHECK(wendy_core_init());
-#if CONFIG_WENDY_BLE
-    wendy_ble_power_init();
-#endif
-#if CONFIG_WENDY_NET_PEER
-    ESP_ERROR_CHECK(wendy_net_peer_start());
-#endif
 #if CONFIG_WENDY_DISPLAY_ESP32S31_KORVO_1
     esp_err_t display_err = wendy_display_start();
     if (display_err != ESP_OK) {
