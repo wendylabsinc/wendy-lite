@@ -1825,6 +1825,25 @@ bool wendy_pki_operator_snapshot_current(const struct wendy_pki_mesh_identity *c
 {
     return wendy_pki_mesh_identity_current(clock, esp_timer_get_time());
 }
+static int verify_provisioned_lite_path(const uint8_t *leaf, size_t leaf_size,
+    const struct wendy_conf_enrollment_data *trust, const char *tenant, time_t now,
+    const struct wendy_pki_certificate_time *policy, struct wendy_pki_mesh_peer *peer)
+{
+    const uint8_t *parts[WENDY_CERT_BUNDLE_MAX_CERTS] = {leaf};
+    size_t lengths[WENDY_CERT_BUNDLE_MAX_CERTS] = {leaf_size};
+    size_t offset = 0, count = 1;
+    const uint8_t *data = trust->lite_device_intermediates.data;
+    size_t size = trust->lite_device_intermediates.size;
+    while (offset < size) {
+        if (count == WENDY_CERT_BUNDLE_MAX_CERTS ||
+            wendy_cert_der_next(data, size, &offset, &parts[count], &lengths[count]) != 1)
+            return -1;
+        count++;
+    }
+    return wendy_pki_mesh_chain_policy(parts, lengths, count, trust->device_roots.data,
+                                      trust->device_roots.size, tenant, now, policy, peer);
+}
+
 static int public_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
                                   const uint8_t *const *der, const size_t *sizes, size_t count,
                                   void *peer, bool operator)
@@ -1839,7 +1858,9 @@ static int public_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
     struct wendy_conf_enrollment_data trust = {0};
     uint8_t hash[32];
     int result = -1;
-    if (wendy_conf_copy_device_trust(&config, &trust) != ESP_OK)
+    esp_err_t copied = operator ? wendy_conf_copy_device_trust(&config, &trust)
+                                : wendy_conf_copy_mesh_trust(&config, &trust);
+    if (copied != ESP_OK)
         goto done;
     if (!config.provision_trust)
         trust.device_roots =
@@ -1855,6 +1876,9 @@ static int public_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
                         trust.device_roots.size, clock->tenant, now, &policy, peer)
                       : wendy_pki_mesh_chain_policy(der, sizes, count, trust.device_roots.data,
                         trust.device_roots.size, clock->tenant, now, &policy, peer);
+    if (result && !operator && trust.lite_device_intermediates.size)
+        result = verify_provisioned_lite_path(der[0], sizes[0], &trust, clock->tenant, now,
+                                              &policy, peer);
     if (!wendy_conf_snapshot_current(trust.generation) || wendy_pki_reset_in_progress())
         result = -1;
 done:
@@ -2062,6 +2086,11 @@ static esp_err_t mesh_connect(const char *host, unsigned port, const char *route
         if (async && certificate_source.count) {
             async->source = certificate_source;
             owned.der_context = &async->source;
+        }
+        if (wendy_conf_copy_lite_intermediates(data.generation, &owned.lite_issuer_der,
+                                               &owned.lite_issuer_size) != ESP_OK) {
+            pki_public_chain_free(owned.public_chain);
+            goto done;
         }
         data.storage = NULL;
         key = NULL;

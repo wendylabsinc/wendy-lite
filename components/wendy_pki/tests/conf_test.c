@@ -620,7 +620,7 @@ int main(int argc, char **argv)
     assert(next.device_roots.size == 11 && !memcmp(next.device_roots.data, "second-root", 11));
     free(next.storage);
     /* Corrupted/oversized persisted data still fails the read-side bound. */
-    s_cache.device_roots.size = WENDY_CONF_MAX_TRUST_BUNDLE + 1;
+    s_cache.device_roots.size = WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE + 1;
     assert(test_copy_enrollment_encoded(&cfg, &next) == ESP_ERR_INVALID_SIZE && !next.storage);
     free(large);
     test_clear_enrollment();

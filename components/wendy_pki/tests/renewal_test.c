@@ -260,6 +260,12 @@ esp_err_t wendy_conf_copy_device_trust(WendyConfEnrollment *out,
     return wendy_conf_copy_enrollment(out, data);
 }
 
+esp_err_t wendy_conf_copy_mesh_trust(WendyConfEnrollment *out,
+    struct wendy_conf_enrollment_data *data)
+{
+    return wendy_conf_copy_enrollment(out, data);
+}
+
 const char *wendy_conf_get_device_id(void) { return "441bf6804824"; }
 bool wendy_conf_is_current(void) { return !config_cleared; }
 bool wendy_conf_snapshot_current(uint64_t generation)

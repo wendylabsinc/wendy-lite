@@ -72,12 +72,12 @@ add_executable(conf_test conf_test.c ../../wendy_conf/src/wendy_conf.pb.c
 target_compile_options(conf_test PRIVATE -UNDEBUG)
 target_include_directories(conf_test PRIVATE stubs ../../wendy_conf/include ../../nanopb)
 target_link_libraries(conf_test PRIVATE cert_bundle Threads::Threads)
-target_link_libraries(renewal_test PRIVATE Threads::Threads)
+target_link_libraries(renewal_test PRIVATE Threads::Threads cert_bundle)
 add_executable(mesh_identity_test renewal_test.c ../src/wendy_pki_clock_observation.c ../src/wendy_pki_certificate_time.c ../src/wendy_pki_crypto.c)
 target_include_directories(mesh_identity_test PRIVATE ../../wendy_net_common/include stubs ../include ../src
     ../../wendy_conf/include ../../nanopb)
 target_compile_definitions(mesh_identity_test PRIVATE WENDY_PKI_BOOT_PERSISTENCE_HOST_TEST=1)
-target_link_libraries(mesh_identity_test PRIVATE mbedtls mbedx509 tfpsacrypto Threads::Threads)
+target_link_libraries(mesh_identity_test PRIVATE mbedtls mbedx509 tfpsacrypto Threads::Threads cert_bundle)
 
 enable_testing()
 add_test(NAME dependency_patches_in_checkout COMMAND "${CMAKE_COMMAND}" -P

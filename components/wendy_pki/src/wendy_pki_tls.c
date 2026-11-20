@@ -1,3 +1,4 @@
+#include "wendy_conf.h"
 #include "artifact_crypto.h"
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -26,6 +27,7 @@
 #include <stdatomic.h>
 #include <mbedtls/platform.h>
 #include <mbedtls/md.h>
+#include <mbedtls/oid.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -242,14 +244,97 @@ static void issuer_available(struct pki_issuer_state *s, const uint8_t hash[32])
     if (s->available_count < 24)
         memcpy(s->available[s->available_count++], hash, 16);
 }
-static struct pki_issuer_state *prepare_issuer_hint(wendy_pki_connection *c)
+static bool self_issued(const mbedtls_x509_crt *crt)
+{
+    return crt->subject_raw.len == crt->issuer_raw.len &&
+           !memcmp(crt->subject_raw.p, crt->issuer_raw.p, crt->subject_raw.len);
+}
+
+static bool lite_device_ca(const mbedtls_x509_crt *crt, const char *tenant)
+{
+    static const char suffix[] = " Lite Device CA";
+    if (!tenant || !crt->MBEDTLS_PRIVATE(ca_istrue))
+        return false;
+    for (const mbedtls_x509_name *name = &crt->subject; name; name = name->next)
+        if (!MBEDTLS_OID_CMP(MBEDTLS_OID_AT_CN, &name->oid) &&
+            name->val.len == 36 + sizeof suffix - 1 && !memcmp(name->val.p, tenant, 36) &&
+            !memcmp(name->val.p + 36, suffix, sizeof suffix - 1))
+            return true;
+    return false;
+}
+
+static void release_lite_issuers(wendy_pki_connection *c)
+{
+    if (c->lite_peer_issuers) {
+        mbedtls_x509_crt_free(c->lite_peer_issuers);
+        pki_owned_free(c->lite_peer_issuers);
+        c->lite_peer_issuers = NULL;
+    }
+    free(c->lite_issuer_der);
+    c->lite_issuer_der = NULL;
+}
+
+static int seed_lite_issuers(wendy_pki_connection *c, struct pki_tls_owned_identity *owned)
+{
+    if (!owned || !owned->lite_issuer_size)
+        return 0;
+    c->lite_peer_issuers = pki_owned_calloc(1, sizeof *c->lite_peer_issuers);
+    if (!c->lite_peer_issuers)
+        return -1;
+    mbedtls_x509_crt_init(c->lite_peer_issuers);
+    c->lite_issuer_der = owned->lite_issuer_der;
+    owned->lite_issuer_der = NULL;
+    if (pki_parse_certificate_bundle(c->lite_peer_issuers, c->lite_issuer_der,
+                                     owned->lite_issuer_size, true))
+        return -1;
+    for (mbedtls_x509_crt *issuer = c->lite_peer_issuers; issuer; issuer = issuer->next)
+        if (!issuer->MBEDTLS_PRIVATE(ca_istrue) || self_issued(issuer))
+            return -1;
+    return 0;
+}
+
+static void prepare_leaf_offers(wendy_pki_connection *c, struct pki_issuer_state *state,
+                                const char *tenant)
+{
+    const struct pki_presented_chain *source = c->presented_chain;
+    if (!source || !tenant)
+        return;
+    state->accepts_lite = c->lite_peer_issuers && lite_device_ca(c->lite_peer_issuers, tenant);
+    for (mbedtls_x509_crt *root = &c->roots; root && root->raw.len; root = root->next) {
+        if (self_issued(root) && lite_device_ca(root, tenant)) {
+            state->accepts_lite = true;
+            if (matching_issuer(&c->certificate, root))
+                state->classical = true;
+        }
+        if (self_issued(root))
+            continue;
+        uint8_t hash[32];
+        if (wendy_pki_sha256(root->raw.p, root->raw.len, hash))
+            continue;
+        if (state->trusted_count < PKI_LEAF_OFFER_MAX)
+            memcpy(state->trusted_ca[state->trusted_count++], hash, 16);
+        if (matching_issuer(&c->certificate, root)) {
+            state->has_issuer = true;
+            memcpy(state->issuing_ca, hash, 16);
+        }
+    }
+    if (source->count > 1) {
+        state->has_issuer = true;
+        memcpy(state->issuing_ca, source->part[1].hash, 16);
+    }
+}
+
+static struct pki_issuer_state *prepare_issuer_hint(wendy_pki_connection *c, const char *tenant)
 {
     struct pki_presented_chain *source = c->presented_chain;
-    if (!source || source->count < 2 || source->count > 8)
+    if (!source || source->count > 8)
         return NULL;
     struct pki_issuer_state *state = pki_owned_calloc(1, sizeof *state);
     if (!state)
         return NULL;
+    prepare_leaf_offers(c, state, tenant);
+    if (state->classical || source->count < 2)
+        return state;
     for (unsigned i = 1; i < source->count; i++) {
         unsigned n = i - 1;
         for (mbedtls_x509_crt *root = &c->roots; root && root->raw.len; root = root->next) {
@@ -348,16 +433,23 @@ static size_t known_peer_issuers(void *context, const mbedtls_x509_crt *peer,
                                  mbedtls_x509_crt **candidates, size_t capacity)
 {
     wendy_pki_connection *c = context;
-    if (!c || !c->issuers || !peer)
+    if (!c || !peer)
         return 0;
+    size_t unique = 0;
+    if (c->lite_peer_issuers && matching_issuer(peer, c->lite_peer_issuers))
+        for (mbedtls_x509_crt *issuer = c->lite_peer_issuers; issuer && unique < capacity;
+             issuer = issuer->next)
+            candidates[unique++] = issuer;
+    if (!c->issuers)
+        return unique;
     size_t count = c->issuers->known_count;
-    if (count > capacity)
-        return 0;
+    if (count > capacity - unique)
+        return unique;
     /* Mbed TLS searches untrusted parents after their child in this list.
      * Cached issuing CAs can arrive after their common ancestors, so order
      * children before parents without changing any owned next pointer here. */
     bool used[16] = {0};
-    size_t unique = 0, processed = 0;
+    size_t processed = 0;
     while (processed < count) {
         size_t chosen = count;
         for (size_t i = 0; i < count; i++) {
@@ -416,10 +508,10 @@ static int select_server_issuers(mbedtls_ssl_context *ssl)
         struct pki_issuer_state *s = c->issuers;
         const uint8_t *hello = ssl->MBEDTLS_PRIVATE(in_msg);
         size_t size = ssl->MBEDTLS_PRIVATE(in_hslen);
-        size_t selected =
-            pki_issuer_recovery_active(&pki_issuer_process_recovery, esp_timer_get_time())
-                ? 0
-                : pki_issuer_select(s, hello, size);
+        bool recovering = pki_issuer_recovery_active(&pki_issuer_process_recovery, esp_timer_get_time());
+        const char *protocol = mbedtls_ssl_get_alpn_protocol(ssl);
+        size_t leaf = recovering || !protocol ? 0 : pki_leaf_select(s, protocol, hello, size);
+        size_t selected = leaf ? leaf : recovering ? 0 : pki_issuer_select(s, hello, size);
         s->hinted = selected != 0;
         if (selected) {
             ssl->MBEDTLS_PRIVATE(alpn_chosen) = s->hint;
@@ -429,7 +521,7 @@ static int select_server_issuers(mbedtls_ssl_context *ssl)
         /* Ordinary selected ALPN requests full chains, even when the client
          * also advertised auxiliary cached fingerprints. */
         for (unsigned i = 1; selected && c->presented_chain && i < c->presented_chain->count; i++)
-            if (pki_issuer_peer_has(hello, size, s->application, c->presented_chain->part[i].hash))
+            if (leaf || pki_issuer_peer_has(hello, size, s->application, c->presented_chain->part[i].hash))
                 s->omit_mask |= 1u << i;
         issuer_omit_status(c);
         if (!selected)
@@ -438,17 +530,24 @@ static int select_server_issuers(mbedtls_ssl_context *ssl)
     return 0;
 }
 
-static int configure_mesh_alpn(wendy_pki_connection *c, const char *const *protocols)
+static int configure_mesh_alpn_for_tenant(wendy_pki_connection *c, const char *const *protocols,
+                                         const char *tenant)
 {
-    if (pki_issuer_recovery_active(&pki_issuer_process_recovery, esp_timer_get_time()))
-        return mbedtls_ssl_conf_alpn_protocols(&c->config, protocols);
+    bool recovering = pki_issuer_recovery_active(&pki_issuer_process_recovery, esp_timer_get_time());
     wendy_net_memory_scope_t previous = connection_scope(c);
-    c->issuers = prepare_issuer_hint(c);
+    c->issuers = recovering && !tenant ? NULL : prepare_issuer_hint(c, tenant);
     wendy_net_memory_scope_leave(previous);
-    if (c->issuers) {
-        c->config.MBEDTLS_PRIVATE(f_wendy_peer_chain_begin) = peer_chain_begin;
+    if (c->lite_peer_issuers || (c->issuers && !recovering)) {
         c->config.MBEDTLS_PRIVATE(f_wendy_untrusted_issuers) = known_peer_issuers;
         c->config.MBEDTLS_PRIVATE(p_wendy_peer_issuers) = c;
+    }
+    if (c->issuers) {
+        c->issuers->application = protocols[0];
+        if (c->issuers->classical && c->presented_chain)
+            c->presented_chain->count = 1;
+        if (recovering)
+            return mbedtls_ssl_conf_alpn_protocols(&c->config, protocols);
+        c->config.MBEDTLS_PRIVATE(f_wendy_peer_chain_begin) = peer_chain_begin;
         if (pki_issuer_protocols(c->issuers, protocols[0]))
             return -1;
         if (c->config.MBEDTLS_PRIVATE(endpoint) == MBEDTLS_SSL_IS_CLIENT) {
@@ -461,6 +560,11 @@ static int configure_mesh_alpn(wendy_pki_connection *c, const char *const *proto
     }
     /* Ordinary service fallback; certificate callback may select an offered prefix. */
     return mbedtls_ssl_conf_alpn_protocols(&c->config, protocols);
+}
+
+static int configure_mesh_alpn(wendy_pki_connection *c, const char *const *protocols)
+{
+    return configure_mesh_alpn_for_tenant(c, protocols, NULL);
 }
 
 void wendy_pki_net_release_issuers(struct wendy_pki_net_issuers *snapshot)
@@ -594,6 +698,7 @@ void wendy_pki_close(wendy_pki_connection *c)
     wendy_pki_handshake_release(c);
     mbedtls_ssl_free(&c->ssl);
     release_known_issuers(c->issuers);
+    release_lite_issuers(c);
     mbedtls_ssl_config_free(&c->config);
     mbedtls_x509_crt_free(&c->roots);
     mbedtls_x509_crt_free(&c->certificate);
@@ -801,9 +906,10 @@ static int handshake_step_direct(wendy_pki_connection *c, bool compact_server)
         state == MBEDTLS_SSL_CLIENT_CERTIFICATE) {
         const uint8_t *selected = (const uint8_t *)mbedtls_ssl_get_alpn_protocol(&c->ssl);
         size_t length = c->ssl.MBEDTLS_PRIVATE(wendy_alpn_chosen_length);
+        bool leaf = selected && pki_leaf_selected(issuers, selected, length);
         issuers->omit_mask = 0;
         for (unsigned i = 1; c->presented_chain && i < c->presented_chain->count; i++)
-            if (pki_issuer_ack_has(selected, length, issuers->application,
+            if (leaf || pki_issuer_ack_has(selected, length, issuers->application,
                                    c->presented_chain->part[i].hash))
                 issuers->omit_mask |= 1u << i;
         issuer_omit_status(c);
@@ -823,13 +929,15 @@ static int handshake_step_direct(wendy_pki_connection *c, bool compact_server)
         c->ssl.MBEDTLS_PRIVATE(state) == MBEDTLS_SSL_CERTIFICATE_VERIFY)
         issuers->peer_presented_certificates = pki_certificate_message_count(
             c->ssl.MBEDTLS_PRIVATE(in_msg), c->ssl.MBEDTLS_PRIVATE(in_hslen));
-    if (!result && issuers &&
+    if (!result && (issuers || c->lite_peer_issuers) &&
         ((state == MBEDTLS_SSL_SERVER_CERTIFICATE &&
           c->config.MBEDTLS_PRIVATE(endpoint) == MBEDTLS_SSL_IS_CLIENT) ||
          (state == MBEDTLS_SSL_CLIENT_CERTIFICATE &&
           c->config.MBEDTLS_PRIVATE(endpoint) == MBEDTLS_SSL_IS_SERVER)) &&
-        c->ssl.MBEDTLS_PRIVATE(state) == MBEDTLS_SSL_CERTIFICATE_VERIFY)
+        c->ssl.MBEDTLS_PRIVATE(state) == MBEDTLS_SSL_CERTIFICATE_VERIFY) {
         release_known_issuers(issuers);
+        release_lite_issuers(c);
+    }
     return result;
 }
 
@@ -862,6 +970,7 @@ static void release_identity_input(struct pki_tls_owned_identity *owned)
     free(owned->key);
     free(owned->certificate);
     free(owned->trust);
+    free(owned->lite_issuer_der);
     pki_tls_input_return(owned->input_reservation, owned->input_reserve);
     pki_public_chain_free(owned->public_chain);
     memset(owned, 0, sizeof *owned);
@@ -1122,7 +1231,7 @@ static int configure_direct(wendy_pki_connection *c, int server, const uint8_t *
     }
     int r = wendy_pki_crypto_init();
     if (r) return configure_failed("crypto initialization", r);
-    if (!roots.data || !roots.size || roots.size > 16384 ||
+    if (!roots.data || !roots.size || roots.size > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE ||
         (verify_at && ((const uint8_t *)roots.data)[0] != 0x30))
         return configure_failed("CA bundle input", MBEDTLS_ERR_SSL_BAD_INPUT_DATA);
     r = mbedtls_ssl_config_defaults(&c->config,
@@ -1290,6 +1399,8 @@ static int configure_direct(wendy_pki_connection *c, int server, const uint8_t *
         c->public_chain = public;
         owned->public_chain = NULL;
     }
+    if (seed_lite_issuers(c, owned))
+        return configure_failed("provisioned Lite intermediates", MBEDTLS_ERR_X509_BAD_INPUT_DATA);
     release_identity_input(owned);
     /* Prefer one final-sized input allocation over a 16KiB buffer followed
      * by a simultaneous 24KiB replacement during certificate reassembly. */
@@ -1747,7 +1858,7 @@ static int open_tls(const char *host, unsigned port, const uint8_t *key, size_t 
         static const char *const router_protocols[] = {"wendy-local-mesh-ble/2", NULL};
         const char *const *protocols =
             !strcmp(protocol, "wendy-app-mesh-tls/1") ? app_protocols : router_protocols;
-        if (configure_mesh_alpn(c, protocols))
+        if (configure_mesh_alpn_for_tenant(c, protocols, tenant))
             goto fail;
         /* Mesh identity is the exact SPIFFE principal, checked below after
          * mandatory CA verification. It is independent of the dial address. */
@@ -2195,7 +2306,8 @@ int wendy_pki_mesh_verify_bundle(wendy_pki_connection *c, const uint8_t *const *
         mbedtls_x509_crt_init(&roots);
         int r = -1;
         if (c->public_chain->load_trust(c->public_chain->context, &trust_der, &size) ||
-            !trust_der || !size || size > 16384 || trust_der[0] != 0x30 ||
+            !trust_der || !size || size > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE ||
+            trust_der[0] != 0x30 ||
             wendy_pki_sha256(trust_der, size, hash) ||
             memcmp(hash, c->public_chain->trust_hash, 32))
             goto trust_done;
@@ -2923,7 +3035,7 @@ int pki_tls_net_begin(const struct wendy_pki_stream *stream, bool server, const 
     static const char *const carrier_alpn[] = {"wendy-local-mesh-ble/2", NULL};
     static const char *const app_alpn[] = {"wendy-app-mesh-tls/1", NULL};
     if (!result)
-        result = configure_mesh_alpn(c, application ? app_alpn : carrier_alpn);
+        result = configure_mesh_alpn_for_tenant(c, application ? app_alpn : carrier_alpn, tenant);
     if (!result)
         result = mbedtls_ssl_set_hostname(&c->ssl, NULL);
     if (!result) {

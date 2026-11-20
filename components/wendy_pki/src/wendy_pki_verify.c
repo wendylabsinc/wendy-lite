@@ -1,3 +1,4 @@
+#include "wendy_conf.h"
 #include "wendy_pki_verify.h"
 #include "wendy_pki_alloc.h"
 #include "wendy_pki_work.h"
@@ -112,7 +113,7 @@ int pki_parse_certificate_bundle(mbedtls_x509_crt *cert, const uint8_t *data, si
 }
 static int verify_roots_direct(const uint8_t *data, size_t size)
 {
-    if (!data || !size || size > 16384 || wendy_pki_crypto_init())
+    if (!data || !size || size > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE || wendy_pki_crypto_init())
         return -1;
     uint8_t *imported = NULL;
     if (data[0] != 0x30) {
@@ -519,7 +520,7 @@ static int verify_chain(mbedtls_x509_crt *leaf, mbedtls_x509_crt **certs, int co
     const struct wendy_pki_certificate_time *policy, time_t *not_before,
     time_t *issuer_not_before, time_t *expires)
 {
-    if (!roots || !size || size > 16384)
+    if (!roots || !size || size > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE)
         return -1;
     /* The caller's DER bundle remains immutable until this synchronous path
      * check ends. Borrow its payload while checking policy and signatures. */

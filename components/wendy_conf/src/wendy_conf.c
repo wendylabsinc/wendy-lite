@@ -49,7 +49,7 @@ struct conf_cache {
     struct wendy_conf_span      network_ssid;
     struct wendy_conf_span      network_password;
     struct wendy_conf_span      enrollment_time;
-    struct wendy_conf_span      device_roots, tsa_roots, https_roots;
+    struct wendy_conf_span      device_roots, tsa_roots, https_roots, lite_device_intermediates;
 };
 
 
@@ -219,6 +219,8 @@ static void _load_conf(void)
     s_cache.conf.enrollment.tsa_roots.arg = &s_cache.tsa_roots;
     s_cache.conf.enrollment.https_roots.funcs.decode = _capture_span;
     s_cache.conf.enrollment.https_roots.arg = &s_cache.https_roots;
+    s_cache.conf.enrollment.lite_device_intermediates =
+        (pb_callback_t){.funcs.decode = _capture_span, .arg = &s_cache.lite_device_intermediates};
     pb_istream_t stream = pb_istream_from_buffer(data + HEADER_LEN, pb_size);
     uint32_t fields;
     bool ok = pb_decode_noinit(&stream, WendyConf_fields, &s_cache.conf) &&
@@ -330,11 +332,13 @@ static esp_err_t _write_conf(const void *pb_data, size_t pb_size, enum wendy_con
 
     // Check enrollment sizes and authorization before replacing persisted data.
     WendyConf tmp = WendyConf_init_zero;
-    struct wendy_conf_span spans[4] = {0};
+    struct wendy_conf_span spans[5] = {0};
     tmp.enrollment.signed_time = (pb_callback_t){.funcs.decode = _capture_span, .arg = &spans[0]};
     tmp.enrollment.device_roots = (pb_callback_t){.funcs.decode = _capture_span, .arg = &spans[1]};
     tmp.enrollment.tsa_roots = (pb_callback_t){.funcs.decode = _capture_span, .arg = &spans[2]};
     tmp.enrollment.https_roots = (pb_callback_t){.funcs.decode = _capture_span, .arg = &spans[3]};
+    tmp.enrollment.lite_device_intermediates =
+        (pb_callback_t){.funcs.decode = _capture_span, .arg = &spans[4]};
     pb_istream_t stream = pb_istream_from_buffer(pb_data, pb_size);
     if (!pb_decode_noinit(&stream, WendyConf_fields, &tmp)) {
         ESP_LOGE(TAG, "invalid conf: %s", PB_GET_ERROR(&stream));
@@ -342,14 +346,17 @@ static esp_err_t _write_conf(const void *pb_data, size_t pb_size, enum wendy_con
     }
 
     size_t enrollment_size = 0;
-    for (size_t i = 0; i < 4; i++) {
-        size_t limit = i ? WENDY_CONF_MAX_TRUST_BUNDLE : WENDY_CONF_MAX_ENROLLMENT_DATA;
+    for (size_t i = 0; i < 5; i++) {
+        size_t limit = (i == 1 || i == 4) ? WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE
+                             : i ? WENDY_CONF_MAX_TRUST_BUNDLE : WENDY_CONF_MAX_ENROLLMENT_DATA;
         if (spans[i].size > limit ||
             spans[i].size > WENDY_CONF_MAX_ENROLLMENT_DATA - enrollment_size)
             return ESP_ERR_INVALID_SIZE;
         enrollment_size += spans[i].size;
         bool optional_tsa = i == 2 && !strcmp(tmp.enrollment.time_url, "roughtime") && !spans[i].size;
-        if (i && !optional_tsa && ((spans[i].size != 0) != tmp.enrollment.provision_trust))
+        if (spans[i].size && i && !tmp.enrollment.provision_trust)
+            return ESP_ERR_INVALID_ARG;
+        if (i && i < 4 && !optional_tsa && tmp.enrollment.provision_trust && !spans[i].size)
             return ESP_ERR_INVALID_ARG;
     }
 
@@ -646,6 +653,7 @@ enum enrollment_selection {
     ENROLLMENT_TSA_ROOTS = 1U << 2,
     ENROLLMENT_HTTPS_ROOTS = 1U << 3,
     ENROLLMENT_ALL = (1U << 4) - 1,
+    ENROLLMENT_LITE_INTERMEDIATES = 1U << 4,
 };
 
 static esp_err_t copy_enrollment(WendyConfEnrollment *config,
@@ -660,22 +668,25 @@ static esp_err_t copy_enrollment(WendyConfEnrollment *config,
     pthread_mutex_lock(&s_cache_lock);
     if (s_cache.valid && s_cache.conf.has_enrollment) {
         struct wendy_conf_span spans[] = {s_cache.enrollment_time, s_cache.device_roots,
-                                         s_cache.tsa_roots, s_cache.https_roots};
+                                         s_cache.tsa_roots, s_cache.https_roots,
+                                         s_cache.lite_device_intermediates};
         struct wendy_conf_span *copies[] = {&data->signed_time, &data->device_roots,
-                                          &data->tsa_roots, &data->https_roots};
+                                          &data->tsa_roots, &data->https_roots,
+                                          &data->lite_device_intermediates};
         /* Partial snapshots must not hide forbidden runtime trust in another
          * domain. The encoded API keeps its existing import policy. */
         if (der && !s_cache.conf.enrollment.provision_trust &&
-            (spans[1].size || spans[2].size || spans[3].size))
+            (spans[1].size || spans[2].size || spans[3].size || spans[4].size))
             goto done;
-        size_t total = 0, source_total = 0, sizes[4] = {0};
+        size_t total = 0, source_total = 0, sizes[5] = {0};
         result = ESP_ERR_INVALID_SIZE;
-        for (size_t i = 0; i < 4; i++) {
+        for (size_t i = 0; i < 5; i++) {
             if (!(selection & (1U << i))) {
                 spans[i] = (struct wendy_conf_span){0};
                 continue;
             }
-            size_t limit = i ? WENDY_CONF_MAX_TRUST_BUNDLE : WENDY_CONF_MAX_ENROLLMENT_DATA;
+            size_t limit = (i == 1 || i == 4) ? WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE
+                             : i ? WENDY_CONF_MAX_TRUST_BUNDLE : WENDY_CONF_MAX_ENROLLMENT_DATA;
             if (spans[i].size > limit ||
                 spans[i].size > WENDY_CONF_MAX_ENROLLMENT_DATA - source_total)
                 goto done;
@@ -706,7 +717,7 @@ static esp_err_t copy_enrollment(WendyConfEnrollment *config,
             goto done;
         }
         size_t offset = 0;
-        for (size_t i = 0; i < 4; i++) {
+        for (size_t i = 0; i < 5; i++) {
             if (!spans[i].size)
                 continue;
             if (der && i) {
@@ -728,6 +739,7 @@ static esp_err_t copy_enrollment(WendyConfEnrollment *config,
         memset(&config->device_roots, 0, sizeof config->device_roots);
         memset(&config->tsa_roots, 0, sizeof config->tsa_roots);
         memset(&config->https_roots, 0, sizeof config->https_roots);
+        memset(&config->lite_device_intermediates, 0, sizeof config->lite_device_intermediates);
         if (der)
             data->generation = s_generation;
         result = ESP_OK;
@@ -757,6 +769,51 @@ esp_err_t wendy_conf_copy_device_trust(WendyConfEnrollment *config,
     struct wendy_conf_enrollment_data *data)
 {
     return copy_enrollment(config, data, ENROLLMENT_DEVICE_ROOTS, true);
+}
+
+esp_err_t wendy_conf_copy_mesh_trust(WendyConfEnrollment *config,
+                                     struct wendy_conf_enrollment_data *data)
+{
+    return copy_enrollment(config, data, ENROLLMENT_DEVICE_ROOTS | ENROLLMENT_LITE_INTERMEDIATES,
+                           true);
+}
+
+esp_err_t wendy_conf_copy_lite_intermediates(uint64_t generation, uint8_t **der, size_t *size)
+{
+    if (!der || !size)
+        return ESP_ERR_INVALID_ARG;
+    *der = NULL;
+    *size = 0;
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    pthread_mutex_lock(&s_cache_lock);
+    if (!s_cache.valid || !generation || generation != s_generation)
+        goto done;
+    struct wendy_conf_span source = s_cache.lite_device_intermediates;
+    if (!source.size) {
+        result = ESP_OK;
+        goto done;
+    }
+    size_t extent = 0;
+    result = ESP_ERR_INVALID_ARG;
+    if (!s_cache.conf.enrollment.provision_trust ||
+        source.size > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE ||
+        wendy_cert_bundle_measure(source.data, source.size, &extent))
+        goto done;
+    uint8_t *copy = malloc(extent);
+    if (!copy) {
+        result = ESP_ERR_NO_MEM;
+        goto done;
+    }
+    if (wendy_cert_bundle_import(source.data, source.size, copy, extent, size) || *size != extent) {
+        free(copy);
+        *size = 0;
+        goto done;
+    }
+    *der = copy;
+    result = ESP_OK;
+done:
+    pthread_mutex_unlock(&s_cache_lock);
+    return result;
 }
 
 esp_err_t wendy_conf_copy_time_trust(WendyConfEnrollment *config,
