@@ -36,6 +36,12 @@ int wendy_pki_fd(void *connection);
 ssize_t wendy_pki_read(void *connection, void *data, size_t size);
 ssize_t wendy_pki_write(void *connection, const void *data, size_t size);
 
+/* Nonblocking send-side close_notify for authenticated app-mesh TLS1.3.
+ * 0=complete, -2/-3=retry in the same manner as write, -1=failure. Once begun,
+ * writes are refused; reads and full connection ownership remain intact.
+ * Owner must finish all pending writes first and serialize TLS operations. */
+int wendy_pki_shutdown_write(wendy_pki_connection *connection);
+
 /* Nonblocking encrypted-byte transport. read/write return a byte count, 0 for
  * EOF, -2 for WANT_READ, -3 for WANT_WRITE, or -1 for failure. wait returns 0
  * to retry or -1 on timeout/disconnect; deadline_us uses esp_timer_get_time().
