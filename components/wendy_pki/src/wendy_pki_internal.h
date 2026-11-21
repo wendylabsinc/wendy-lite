@@ -50,6 +50,7 @@ struct wendy_pki_connection
 {
     mbedtls_ssl_config config;
     mbedtls_ssl_context ssl;
+    struct pki_resumption *resumption;
     mbedtls_x509_crt roots, certificate;
     mbedtls_pk_context key;
     int fd;
