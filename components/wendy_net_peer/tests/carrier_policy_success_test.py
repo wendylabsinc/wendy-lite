@@ -689,6 +689,42 @@ static void planner_release_and_gates(void) {
     assert_no_allocations();
 }
 
+/* An ordinary incoming retry can arrive during another carrier handshake.
+ * Preserve that demand until the existing setup finishes, without requiring
+ * the radio to send a second capacity notification at precisely that instant. */
+static void incoming_setup_wait(void) {
+    struct fixture f;
+    full_redundant(&f);
+    struct peer_state *root = &f.links[0];
+    f.links[7].active = false;
+    f.links[7].setup_waiting = true;
+    capacity_refused = true;
+    assert(!reclaim_for_incoming_probe(root) && !retired);
+    assert(!capacity_refused && incoming_demand_active(root, clock_us));
+    /* The ordinary existing setup completes; capacity remains full. */
+    f.links[7].setup_waiting = false;
+    f.links[7].active = true;
+    clock_us += 1000000;
+    assert(reclaim_for_incoming_probe(root));
+    assert(retired == 1 && last_retired == &f.links[1]);
+    assert(root->incoming_probe_waiting);
+    assert_no_allocations();
+
+    /* A caller that has gone away only gets the existing finite retry window. */
+    full_redundant(&f); root = &f.links[0];
+    f.links[7].active = false;
+    f.links[7].setup_waiting = true;
+    capacity_refused = true;
+    assert(!reclaim_for_incoming_probe(root));
+    clock_us += INT64_C(1000) * WN_CANDIDATE_FAILURE_PENALTY_MS;
+    maintain_incoming_demand(root, clock_us);
+    f.links[7].setup_waiting = false;
+    f.links[7].active = true;
+    assert(!reclaim_for_incoming_probe(root) && !retired);
+    assert(!incoming_demand_active(root, clock_us));
+    assert_no_allocations();
+}
+
 static void incoming_probe(void) {
     struct fixture f;
     full_redundant(&f);
@@ -1688,6 +1724,7 @@ int main(void) {
     if (WENDY_NET_NON_TRANSIT) constrained();
 #if !WENDY_NET_NON_TRANSIT
     else {
+        incoming_setup_wait();
         priority_and_aliases();
         authenticated_admission();
         reclaim_boundaries();
