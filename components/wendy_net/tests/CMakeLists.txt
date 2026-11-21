@@ -9,3 +9,6 @@ target_compile_options(raw_socket_success_test PRIVATE -Wall -Wextra -Werror -UN
 target_link_libraries(raw_socket_success_test PRIVATE Threads::Threads)
 add_test(NAME raw_socket_success COMMAND raw_socket_success_test)
 set_tests_properties(raw_socket_success PROPERTIES TIMEOUT 10)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME retained_datagram_lifetime COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/direct_guest_retained_test.py)
+add_test(NAME mesh_datagram_wakeup COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/direct_guest_wake_test.py)
