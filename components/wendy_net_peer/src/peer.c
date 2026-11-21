@@ -1960,13 +1960,16 @@ static int admit_link(struct peer_state *root, struct peer_state *link)
         return -1;
     root->selection->active = -1;
     link->candidate_index = index;
+    /* BLE retains its measured control-gap tolerance; fast media detect loss sooner. */
+    uint32_t hello_ms = (link->candidate.medium == WN_LAN ||
+                         link->candidate.medium == WN_NAN) ? 1000 : 4000;
     int opened =
         link->operator_peer
-            ? wnrs_open_operator(&link->router, &root->router_node, link->connection,
+            ? wnrs_open_operator_timed(&link->router, &root->router_node, link->connection,
                                  &link->identity, link->operator_instance, link->candidate.cost,
-                                 router_send, link)
-            : wnrs_open(&link->router, &root->router_node, link->connection, &link->identity,
-                        link->candidate.device, link->candidate.cost, router_send, link);
+                                 hello_ms, router_send, link)
+            : wnrs_open_timed(&link->router, &root->router_node, link->connection, &link->identity,
+                        link->candidate.device, link->candidate.cost, hello_ms, router_send, link);
     if (opened)
         return -1;
     pthread_mutex_lock(&state_lock);

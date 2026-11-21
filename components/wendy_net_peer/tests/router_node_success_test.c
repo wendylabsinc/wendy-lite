@@ -872,6 +872,19 @@ static int discard_operator_frame(void *ctx, const void *bytes, size_t size, boo
     (void)control;
     return 0;
 }
+/* Check the scheduled wire cadence, not just the supplied configuration. */
+static inline void assert_hello_cadence(struct wnrs_node *node, uint64_t id, uint32_t expected)
+{
+    for (size_t i = 0; i < node->core.babel.links_capacity; i++) {
+        const struct wb_link_state *link = &node->core.babel.links[i];
+        if (link->config.id != id)
+            continue;
+        uint64_t remaining = link->next_hello - node->core.babel.now;
+        assert(remaining >= expected - expected / 8 && remaining <= expected);
+        return;
+    }
+    assert(!"missing link");
+}
 static void operator_attachment_fixture(void)
 {
     struct wendy_pki_operator_peer primary = {.expires = 1800003600};
@@ -899,6 +912,7 @@ static void operator_attachment_fixture(void)
     assert(!wnrs_open_operator(&first, &owner, &tls, &identity, installation, 128,
                                discard_operator_frame, NULL));
     assert(first->operator_peer == &primary && !owner->core.directory.count);
+    assert_hello_cadence(owner, first->link, 4000);
     assert(owner->core.babel.links[0].config.local[15] == 1 &&
            owner->core.babel.links[0].config.peer[15] == 2);
     struct wb_route route;
@@ -906,8 +920,10 @@ static void operator_attachment_fixture(void)
     /* TLS plus hello creates no route authority. Separate installations of
      * one operator have distinct addresses and typed topology ownership. */
     installation[0] = 2;
-    assert(!wnrs_open_operator(&second, &owner, &tls, &identity, installation, 128,
-                               discard_operator_frame, NULL));
+    assert(!wnrs_open_operator_timed(&second, &owner, &tls, &identity, installation, 128,
+                                     1000, discard_operator_frame, NULL));
+    assert_hello_cadence(owner, first->link, 4000);
+    assert_hello_cadence(owner, second->link, 1000);
     assert(memcmp(first->peer_address, second->peer_address, 16));
     struct wnt_record_view row = {.record = WendyComNetTopologyRecord_init_zero};
     assert(topology_record(owner, 0, clock_us, &row));
@@ -1466,6 +1482,7 @@ static void reclaim_transit_fixture(const struct wendy_pki_mesh_identity *identi
     struct endpoint slow = {.index = 1}, fast = {.index = 1};
     assert(!wnrs_open(&slow.session, &node, connection, identity, ids[1], WNR_BLE_COST,
                       send_frame, &slow));
+    assert_hello_cadence(node, slow.session->link, 4000);
     remote_open(&slow, WNR_BLE_COST);
     drain();
     for (unsigned step = 0; step < 20; step++) {
@@ -1490,8 +1507,10 @@ static void reclaim_transit_fixture(const struct wendy_pki_mesh_identity *identi
     assert(wnr_lookup(&node->core, address, clock_us, &installed));
     assert(installed.link == slow.session->link);
 
-    assert(!wnrs_open(&fast.session, &node, connection, identity, ids[1], WNR_LAN_COST,
-                      send_frame, &fast));
+    assert(!wnrs_open_timed(&fast.session, &node, connection, identity, ids[1], WNR_LAN_COST,
+                            1000, send_frame, &fast));
+    assert_hello_cadence(node, fast.session->link, 1000);
+    assert(node->core.babel.config.hello_ms == 4000);
     remote_open_routing(&fast, WNR_LAN_COST);
     origin(&fast, 2);
     drain();

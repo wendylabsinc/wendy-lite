@@ -1884,7 +1884,7 @@ fail:
 static int open_session(struct wnrs **out, struct wnrs_node **owner,
                         wendy_pki_connection *connection,
                         const struct wendy_pki_mesh_identity *identity, const char *peer,
-                        const uint8_t *instance, uint16_t cost, wnrs_send send, void *ctx)
+                        const uint8_t *instance, uint16_t cost, uint32_t hello_ms, wnrs_send send, void *ctx)
 {
     if (!out || !owner || !connection || !identity || !send)
         return -1;
@@ -1961,8 +1961,8 @@ static int open_session(struct wnrs **out, struct wnrs_node **owner,
     s->link = node->core.babel.last_link + 1;
     uint64_t attached = 0;
     int attachment =
-        instance ? wnr_attach_operator(&node->core, cost, wall, esp_timer_get_time(), &attached)
-                 : wnr_attach(&node->core, peer, cost, wall, esp_timer_get_time(), &attached);
+        instance ? wnr_attach_operator_timed(&node->core, cost, hello_ms, wall, esp_timer_get_time(), &attached)
+                 : wnr_attach_timed(&node->core, peer, cost, hello_ms, wall, esp_timer_get_time(), &attached);
     if (attachment || attached != s->link)
         goto fail;
     s->attached = true;
@@ -1982,12 +1982,24 @@ int wnrs_open(struct wnrs **out, struct wnrs_node **owner, wendy_pki_connection 
               const struct wendy_pki_mesh_identity *identity, const char *peer, uint16_t cost,
               wnrs_send send, void *ctx)
 {
-    return open_session(out, owner, connection, identity, peer, NULL, cost, send, ctx);
+    return wnrs_open_timed(out, owner, connection, identity, peer, cost, 0, send, ctx);
 }
-int wnrs_open_operator(struct wnrs **out, struct wnrs_node **owner,
-                       wendy_pki_connection *connection,
+int wnrs_open_operator(struct wnrs **out, struct wnrs_node **owner, wendy_pki_connection *connection,
                        const struct wendy_pki_mesh_identity *identity, const uint8_t instance[16],
                        uint16_t cost, wnrs_send send, void *ctx)
+{
+    return wnrs_open_operator_timed(out, owner, connection, identity, instance, cost, 0, send, ctx);
+}
+int wnrs_open_timed(struct wnrs **out, struct wnrs_node **owner, wendy_pki_connection *connection,
+              const struct wendy_pki_mesh_identity *identity, const char *peer, uint16_t cost,
+              uint32_t hello_ms, wnrs_send send, void *ctx)
+{
+    return open_session(out, owner, connection, identity, peer, NULL, cost, hello_ms, send, ctx);
+}
+int wnrs_open_operator_timed(struct wnrs **out, struct wnrs_node **owner,
+                       wendy_pki_connection *connection,
+                       const struct wendy_pki_mesh_identity *identity, const uint8_t instance[16],
+                       uint16_t cost, uint32_t hello_ms, wnrs_send send, void *ctx)
 {
     if (!instance || WENDY_NET_SMALL_RESOURCES || CONFIG_WENDY_NET_ENDPOINT_GATEWAY)
         return -1;
@@ -1996,7 +2008,7 @@ int wnrs_open_operator(struct wnrs **out, struct wnrs_node **owner,
         nonzero |= instance[i];
     if (!nonzero)
         return -1;
-    return open_session(out, owner, connection, identity, NULL, instance, cost, send, ctx);
+    return open_session(out, owner, connection, identity, NULL, instance, cost, hello_ms, send, ctx);
 }
 void wnrs_close(struct wnrs *s)
 {
