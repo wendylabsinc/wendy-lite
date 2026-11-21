@@ -643,7 +643,8 @@ done:
 #endif
 static int refresh_time_source(nvs_handle_t h, const char *url,
                         const struct wendy_conf_enrollment_data *data,
-                               const struct wendy_pki_stream *stream, const char magic[4])
+                               const struct wendy_pki_stream *stream, const char magic[4],
+                               bool yield_identity)
 {
     uint8_t nonce[32], request[128], *response = NULL;
     size_t response_size = 0;
@@ -653,6 +654,14 @@ static int refresh_time_source(nvs_handle_t h, const char *url,
     if (!n)
         return -1;
     int64_t started = esp_timer_get_time();
+    /* Background mesh refresh owns an immutable trust/configuration snapshot
+     * and a private NVS handle. Its WAN wait must not hold up native identity
+     * preparation or DER reads. No storage or clock state is accessed until
+     * the lock is reacquired; the current generation and floor are then read
+     * again before applying the reply. Enrollment/bootstrap keep their
+     * existing serialization by passing false. */
+    if (yield_identity)
+        pthread_mutex_unlock(&identity_lock);
     int exchanged =
         stream && magic ? mesh_time_exchange(stream, request, n, &response, &response_size, magic)
         : stream        ? pki_http_post_stream(url, "application/timestamp-query", request, n,
@@ -660,6 +669,8 @@ static int refresh_time_source(nvs_handle_t h, const char *url,
                  : pki_http_post(url, "application/timestamp-query", NULL, request, n, NULL, 0,
                                  (struct wendy_conf_span){0}, data->https_roots, &response,
                                  &response_size);
+    if (yield_identity)
+        pthread_mutex_lock(&identity_lock);
     if (exchanged)
         return -1;
     int64_t floor = 0;
@@ -667,7 +678,8 @@ static int refresh_time_source(nvs_handle_t h, const char *url,
     int result = -1;
     bool direct_https = !stream && !magic;
     struct pki_clock_observation_raw before = {0}, after = {0};
-    if (esp_timer_get_time() - started <= 30000000 &&
+    if ((!yield_identity || identity_use_allowed()) &&
+        esp_timer_get_time() - started <= 30000000 &&
         wendy_conf_snapshot_current(data->generation) && !clock_floor(h, &floor) &&
         !wendy_pki_verify_time(response, response_size, nonce, data->tsa_roots.data,
                                data->tsa_roots.size, floor, &when)) {
@@ -697,7 +709,7 @@ static int refresh_time_via(nvs_handle_t h, const char *url,
                             const struct wendy_conf_enrollment_data *data,
                             const struct wendy_pki_stream *stream)
 {
-    return refresh_time_source(h, url, data, stream, NULL);
+    return refresh_time_source(h, url, data, stream, NULL, false);
 }
 #if CONFIG_WENDY_NET_PEER
 static ssize_t time_recv(void *context, void *bytes, size_t size)
@@ -764,7 +776,7 @@ static int refresh_time_peer(nvs_handle_t h, const char *url,
     }
     struct wendy_pki_stream stream = {
         .context = &fd, .read = time_recv, .write = time_send, .wait = time_wait};
-    result = refresh_time_source(h, url, data, &stream, "WNT1");
+    result = refresh_time_source(h, url, data, &stream, "WNT1", false);
 done:
     close(fd);
     freeaddrinfo(address);
@@ -2341,7 +2353,7 @@ esp_err_t wendy_pki_net_bootstrap_time(const struct wendy_pki_stream *stream)
         goto done;
     opened = true;
     if (seed_clock(handle, trust.signed_time, trust.tsa_roots) ||
-        refresh_time_source(handle, config.time_url, &trust, stream, NULL) ||
+        refresh_time_source(handle, config.time_url, &trust, stream, NULL, false) ||
         !wendy_conf_snapshot_current(trust.generation) || wendy_pki_reset_in_progress())
         goto done;
     result = ESP_OK;
@@ -2603,7 +2615,7 @@ esp_err_t wendy_pki_net_refresh_time(struct wendy_pki_mesh_identity *identity,
                  mesh_verified_monotonic_us > identity->verified_monotonic_us;
     if (!newer) {
     (void)relay_host;
-        if (refresh_time(h, cfg.time_url, &data))
+        if (refresh_time_source(h, cfg.time_url, &data, NULL, NULL, true))
         goto done;
     }
     if (!wendy_conf_is_current() || wendy_pki_reset_in_progress() ||
