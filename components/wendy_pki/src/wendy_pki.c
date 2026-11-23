@@ -61,6 +61,15 @@ static bool mesh_time_recent(void)
     return mesh_verified_seconds > 0 && age >= 0 && age < INT64_C(300000000) &&
            wendy_conf_snapshot_current(mesh_verified_generation);
 }
+
+static void select_peer_device_roots(const WendyConfEnrollment *cfg,
+                                     struct wendy_conf_enrollment_data *data)
+{
+    /* A mesh trust update is independent of the original provisioning source. */
+    if (!cfg->provision_trust && !data->device_roots.size)
+        data->device_roots = (struct wendy_conf_span){wendy_pki_device_roots_start, ROOT_SIZE(device)};
+}
+
 #if CONFIG_WENDY_NET_PEER
 /* Under identity_lock. Cache only a complete successful bundle-policy check;
  * every call hashes its exact bytes and binds the configuration generation.
@@ -242,16 +251,24 @@ static int public_trust_load(void *context, uint8_t **bytes, size_t *size)
     struct wendy_conf_enrollment_data data = {0};
     int result = -1;
     pthread_mutex_lock(&identity_lock);
-    if (identity_use_allowed() && wendy_conf_is_current() &&
-        wendy_conf_copy_device_trust(&cfg, &data) == ESP_OK &&
-        data.generation == source->generation && data.device_roots.size) {
-        memmove(data.storage, data.device_roots.data, data.device_roots.size);
-        data.storage[data.device_roots.size] = 0;
-        *bytes = data.storage;
-        *size = data.device_roots.size;
-        data.storage = NULL;
-        result = 0;
-    }
+    if (!identity_use_allowed() || !wendy_conf_is_current() ||
+        wendy_conf_copy_device_trust(&cfg, &data) != ESP_OK ||
+        data.generation != source->generation)
+        goto done;
+    select_peer_device_roots(&cfg, &data);
+    if (!data.device_roots.size)
+        goto done;
+    if (!data.storage)
+        data.storage = malloc(data.device_roots.size + 1);
+    if (!data.storage)
+        goto done;
+    memmove(data.storage, data.device_roots.data, data.device_roots.size);
+    data.storage[data.device_roots.size] = 0;
+    *bytes = data.storage;
+    *size = data.device_roots.size;
+    data.storage = NULL;
+    result = 0;
+done:
     free(data.storage);
     erase(cfg.token, sizeof cfg.token);
     pthread_mutex_unlock(&identity_lock);
@@ -1548,9 +1565,7 @@ static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
     if (crypto_status || copied != ESP_OK || !valid_config(&cfg))
         goto done;
     if (consume_native) {
-        if (!cfg.provision_trust)
-            data.device_roots =
-                (struct wendy_conf_span){wendy_pki_device_roots_start, ROOT_SIZE(device)};
+        select_peer_device_roots(&cfg, &data);
         stage = "CA validation";
 #if CONFIG_WENDY_NET_PEER
         if (check_device_roots(&data))
@@ -1923,9 +1938,7 @@ static int public_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
                                 : wendy_conf_copy_mesh_trust(&config, &trust);
     if (copied != ESP_OK)
         goto done;
-    if (!config.provision_trust)
-        trust.device_roots =
-            (struct wendy_conf_span){wendy_pki_device_roots_start, ROOT_SIZE(device)};
+    select_peer_device_roots(&config, &trust);
     if (trust.generation != clock->config_generation || strcmp(config.tenant_id, clock->tenant) ||
         strcmp(config.device_id, clock->device) ||
         wendy_pki_sha256(trust.device_roots.data, trust.device_roots.size, hash) ||
@@ -2032,9 +2045,7 @@ static esp_err_t mesh_connect(const char *host, unsigned port, const char *route
         if (snapshot != ESP_OK || !valid_config(&cfg) ||
             !wendy_conf_snapshot_current(data.generation))
             goto done;
-        if (!cfg.provision_trust)
-            data.device_roots =
-                (struct wendy_conf_span){wendy_pki_device_roots_start, ROOT_SIZE(device)};
+        select_peer_device_roots(&cfg, &data);
         /* Prime the complete bundle-policy check before app flows occupy the
          * heap. Return the optional record hole while doing this once; later
          * management handshakes reuse only the exact generation/hash match.

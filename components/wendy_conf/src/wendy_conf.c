@@ -77,6 +77,7 @@ static char s_resolved_device_name[CONFIG_WENDY_DEVICE_NAME_BUF_SIZE];
 
 static bool _scan_root_fields(const uint8_t *data, size_t size, uint32_t *mask);
 static esp_err_t write_mesh_trust(const uint8_t *data, size_t size);
+static esp_err_t clear_mesh_trust_locked(void);
 
 static void _build_device_id(void)
 {
@@ -650,6 +651,8 @@ done:
         nvs_close(recovery);
     free(journal);
     if (result == ESP_OK)
+        result = clear_mesh_trust_locked();
+    if (result == ESP_OK)
         s_enrollment_required = false;
     pthread_mutex_unlock(&s_cache_lock);
     return result;
@@ -672,6 +675,33 @@ struct mesh_trust_record {
     uint8_t der[];
 };
 
+static const char *const mesh_trust_keys[] = {"roots", "issuers"};
+
+/* The caller holds s_cache_lock. Reset completion includes the overlays even
+ * if the retained configuration was already committed by an earlier attempt. */
+static esp_err_t clear_mesh_trust_locked(void)
+{
+    nvs_handle_t h;
+    esp_err_t status = nvs_open_from_partition("wendy_pki", "mesh_trust", NVS_READONLY, &h);
+    if (status == ESP_ERR_NVS_NOT_FOUND)
+        return ESP_OK;
+    if (status != ESP_OK)
+        return status;
+    nvs_close(h);
+    status = nvs_open_from_partition("wendy_pki", "mesh_trust", NVS_READWRITE, &h);
+    if (status != ESP_OK)
+        return status;
+    for (size_t i = 0; i < sizeof mesh_trust_keys / sizeof mesh_trust_keys[0]; i++) {
+        status = nvs_erase_key(h, mesh_trust_keys[i]);
+        if (status != ESP_OK && status != ESP_ERR_NVS_NOT_FOUND)
+            break;
+    }
+    if (status == ESP_OK || status == ESP_ERR_NVS_NOT_FOUND)
+        status = nvs_commit(h);
+    nvs_close(h);
+    return status;
+}
+
 static esp_err_t read_mesh_trust(bool intermediates, struct mesh_trust_record **record, size_t *size)
 {
     *record = NULL;
@@ -684,7 +714,7 @@ static esp_err_t read_mesh_trust(bool intermediates, struct mesh_trust_record **
     if (status != ESP_OK)
         return status;
     size_t bytes = 0;
-    const char *name = intermediates ? "issuers" : "roots";
+    const char *name = mesh_trust_keys[intermediates];
     status = nvs_get_blob(h, name, NULL, &bytes);
     if (status == ESP_ERR_NVS_NOT_FOUND) {
         status = ESP_OK;
@@ -734,7 +764,7 @@ esp_err_t wendy_conf_store_mesh_trust(uint64_t generation, bool intermediates,
     nvs_handle_t h;
     result = nvs_open_from_partition("wendy_pki", "mesh_trust", NVS_READWRITE, &h);
     if (result == ESP_OK) {
-        result = nvs_set_blob(h, intermediates ? "issuers" : "roots", record, sizeof *record + size);
+        result = nvs_set_blob(h, mesh_trust_keys[intermediates], record, sizeof *record + size);
         if (result == ESP_OK)
             result = nvs_commit(h);
         nvs_close(h);

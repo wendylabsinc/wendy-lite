@@ -1164,6 +1164,27 @@ static void test_normal_boot_persistence(void)
         "normal carrier reconnect, certificate change, boot revision and clock persistence passed");
 }
 #endif
+static void test_peer_roots_selection(void)
+{
+    WendyConfEnrollment cfg = WendyConfEnrollment_init_zero;
+    struct wendy_conf_enrollment_data data = {0};
+    select_peer_device_roots(&cfg, &data);
+    assert(data.device_roots.data == wendy_pki_device_roots_start);
+    assert(data.device_roots.size == build_roots_size);
+
+    /* The physical or PKI update overrides peer trust even on a board whose
+     * enrollment continues to use its original compiled bundle. */
+    data.device_roots = (struct wendy_conf_span){usb_roots, sizeof usb_roots};
+    select_peer_device_roots(&cfg, &data);
+    assert(data.device_roots.data == usb_roots);
+    assert(data.device_roots.size == sizeof usb_roots);
+
+    cfg.provision_trust = true;
+    data.device_roots = (struct wendy_conf_span){0};
+    select_peer_device_roots(&cfg, &data);
+    assert(!data.device_roots.data && !data.device_roots.size);
+}
+
 int main(int argc, char **argv)
 {
 #if defined(WENDY_PKI_BOOT_PERSISTENCE_HOST_TEST)
@@ -1179,6 +1200,7 @@ int main(int argc, char **argv)
 #endif
     test_signed_clock_generation();
     test_mesh_certificate_clock();
+    test_peer_roots_selection();
     assert(argc == 2);
     FILE *f = fopen(argv[1], "rb");
     assert(f);

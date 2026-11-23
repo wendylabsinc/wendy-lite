@@ -29,15 +29,25 @@ static size_t durable_journal_size, staged_journal_size;
 static bool durable_journal_present, staged_journal_present, journal_open;
 static bool fail_journal_open, fail_journal_set, fail_journal_read, fail_journal_erase;
 static unsigned journal_commits, fail_journal_commit_at;
-static uint8_t stored_mesh_roots[1024], staged_mesh_roots[1024];
-static size_t stored_mesh_size, staged_mesh_size;
+struct mesh_blob {
+    uint8_t data[1024];
+    size_t size;
+};
+static struct mesh_blob stored_mesh[2], staged_mesh[2];
 static bool fail_mesh_commit;
+
+static unsigned mesh_blob_index(const char *name)
+{
+    assert(!strcmp(name, "roots") || !strcmp(name, "issuers"));
+    return !strcmp(name, "issuers");
+}
 
 esp_err_t nvs_open_from_partition(const char *part, const char *name, int mode, nvs_handle_t *h)
 {
     if (!strcmp(part, "wendy_pki") && !strcmp(name, "mesh_trust")) {
-        if (mode == NVS_READONLY && !stored_mesh_size)
+        if (mode == NVS_READONLY && !stored_mesh[0].size && !stored_mesh[1].size)
             return ESP_ERR_NVS_NOT_FOUND;
+        memcpy(staged_mesh, stored_mesh, sizeof staged_mesh);
         *h = 2;
         return ESP_OK;
     }
@@ -60,13 +70,14 @@ void nvs_close(nvs_handle_t h)
 esp_err_t nvs_get_blob(nvs_handle_t h, const char *name, void *out, size_t *size)
 {
     if (h == 2) {
-        if (strcmp(name, "roots") || !stored_mesh_size)
+        const struct mesh_blob *blob = &staged_mesh[mesh_blob_index(name)];
+        if (!blob->size)
             return ESP_ERR_NVS_NOT_FOUND;
         if (out) {
-            assert(*size >= stored_mesh_size);
-            memcpy(out, stored_mesh_roots, stored_mesh_size);
+            assert(*size >= blob->size);
+            memcpy(out, blob->data, blob->size);
         }
-        *size = stored_mesh_size;
+        *size = blob->size;
         return ESP_OK;
     }
     assert(h == 1 && journal_open && !strcmp(name, "retained"));
@@ -82,9 +93,10 @@ esp_err_t nvs_get_blob(nvs_handle_t h, const char *name, void *out, size_t *size
 esp_err_t nvs_set_blob(nvs_handle_t h, const char *name, const void *data, size_t size)
 {
     if (h == 2) {
-        assert(!strcmp(name, "roots") && size <= sizeof staged_mesh_roots);
-        memcpy(staged_mesh_roots, data, size);
-        staged_mesh_size = size;
+        struct mesh_blob *blob = &staged_mesh[mesh_blob_index(name)];
+        assert(size <= sizeof blob->data);
+        memcpy(blob->data, data, size);
+        blob->size = size;
         return ESP_OK;
     }
     assert(h == 1 && journal_open && !strcmp(name, "retained"));
@@ -97,6 +109,13 @@ esp_err_t nvs_set_blob(nvs_handle_t h, const char *name, const void *data, size_
 }
 esp_err_t nvs_erase_key(nvs_handle_t h, const char *name)
 {
+    if (h == 2) {
+        struct mesh_blob *blob = &staged_mesh[mesh_blob_index(name)];
+        if (!blob->size)
+            return ESP_ERR_NVS_NOT_FOUND;
+        blob->size = 0;
+        return ESP_OK;
+    }
     assert(h == 1 && journal_open && !strcmp(name, "retained"));
     /* Journal removal must follow successful flash verification. */
     assert(s_cache.valid && s_cache.pb_size + MAGIC_LEN == staged_journal_size);
@@ -111,8 +130,7 @@ esp_err_t nvs_commit(nvs_handle_t h)
     if (h == 2) {
         if (fail_mesh_commit)
             return ESP_FAIL;
-        memcpy(stored_mesh_roots, staged_mesh_roots, staged_mesh_size);
-        stored_mesh_size = staged_mesh_size;
+        memcpy(stored_mesh, staged_mesh, sizeof stored_mesh);
         return ESP_OK;
     }
     assert(h == 1 && journal_open);
@@ -536,7 +554,7 @@ static void test_der_snapshots(const char *fixtures)
 
     fail_mesh_commit = true;
     assert(wendy_conf_store_mesh_trust(full.generation, false, der, der_size) == ESP_FAIL);
-    assert(wendy_conf_snapshot_current(full.generation) && !stored_mesh_size);
+    assert(wendy_conf_snapshot_current(full.generation) && !stored_mesh[0].size);
     fail_mesh_commit = false;
     assert(wendy_conf_store_mesh_trust(full.generation, false, der, der_size) == ESP_OK);
     assert(!wendy_conf_snapshot_current(full.generation));
@@ -569,7 +587,18 @@ static void test_der_snapshots(const char *fixtures)
     assert(wendy_conf_write(update_buf, wire.bytes_written, WENDY_CONF_WRITE_MODE_MESH_TRUST) == ESP_OK);
     assert(wendy_conf_snapshot_current(mesh_generation));
     free(update_buf);
-    stored_mesh_size = 0;
+
+    /* Reset must remove both overrides even after an interrupted attempt has
+     * already removed the original enrollment from the configuration. */
+    assert(wendy_conf_store_mesh_trust(mesh_generation, true, der, der_size) == ESP_OK);
+    assert(stored_mesh[0].size && stored_mesh[1].size);
+    fail_mesh_commit = true;
+    assert(wendy_conf_clear_enrollment() == ESP_FAIL);
+    assert(!s_cache.conf.has_enrollment && stored_mesh[0].size && stored_mesh[1].size);
+    fail_mesh_commit = false;
+    _invalidate_cache();
+    assert(wendy_conf_clear_enrollment() == ESP_OK);
+    assert(!wendy_conf_has_enrollment() && !stored_mesh[0].size && !stored_mesh[1].size);
 
     /* Equivalent DER provisioned after PEM retains distinct source identity.
      * Every earlier snapshot remains owned after the mapped flash changes. */
