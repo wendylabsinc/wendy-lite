@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include "../../src/settings.c"
 static int64_t now;
-static unsigned writes, changes;
+static unsigned writes, changes, registrations;
 static bool have_record, fail_write;
 static struct record stored;
 static const struct wcom_net_delegate *delegate;
@@ -49,6 +49,7 @@ void wnt_page_release(WendyComNetTopologyPage *page)
 void wcom_cmd_set_net_delegate(const struct wcom_net_delegate *d)
 {
     delegate = d;
+    registrations++;
 }
 esp_err_t nvs_flash_init_partition(const char *name)
 {
@@ -103,7 +104,10 @@ static void applied(uint32_t token, bool drained)
 }
 int main(void)
 {
-    assert(wn_settings_init() == ESP_OK && delegate && !writes);
+    bool boot_ble_selected, boot_wifi_selected;
+    assert(wendy_net_peer_boot_radios(&boot_ble_selected, &boot_wifi_selected) == ESP_OK &&
+           delegate && registrations == 1 && !writes);
+    assert(wn_settings_init() == ESP_OK && registrations == 1);
     WendyComNetStatus status;
     uint32_t token = 999;
     assert(delegate->get(&status) == WendyComResult_WENDY_COM_RESULT_OK && !status.desired.enabled);

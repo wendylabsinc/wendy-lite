@@ -1023,6 +1023,26 @@ esp_err_t wendy_core_init(void)
     /* Initialize hardware */
     init_hal();
 
+#if CONFIG_WENDY_NET_PEER
+    /* Load the saved radio policy before starting the radios and register
+     * the Wendy Net delegate before WendyCom accepts management commands. */
+    {
+        bool boot_ble, boot_wifi;
+        err = wendy_net_peer_boot_radios(&boot_ble, &boot_wifi);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Wendy Net boot radios: %s", esp_err_to_name(err));
+            return err;
+        }
+#if CONFIG_WENDY_NET_SELECT_RADIO_AT_BOOT
+        err = set_boot_radios(boot_ble, boot_wifi);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "boot radio selection: %s", esp_err_to_name(err));
+            return err;
+        }
+#endif
+    }
+#endif
+
     /* Initialize main com infrastructure */
     static const struct wcom_app_delegate app_delegate = {
         .on_app_push_begin      = com_push_begin,
@@ -1042,27 +1062,6 @@ esp_err_t wendy_core_init(void)
     wcom_set_app_delegate(&app_delegate);
     wcom_start();
     wendy_core_wdt_start();
-
-#if CONFIG_WENDY_NET_PEER
-    /* The saved Wendy Net settings select the BLE profile and, with
-     * CONFIG_WENDY_NET_SELECT_RADIO_AT_BOOT, the radios to start. This must
-     * come before the BLE and Wi-Fi starts below. */
-    {
-        bool boot_ble, boot_wifi;
-        err = wendy_net_peer_boot_radios(&boot_ble, &boot_wifi);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Wendy Net boot radios: %s", esp_err_to_name(err));
-            return err;
-        }
-#if CONFIG_WENDY_NET_SELECT_RADIO_AT_BOOT
-        err = set_boot_radios(boot_ble, boot_wifi);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "boot radio selection: %s", esp_err_to_name(err));
-            return err;
-        }
-#endif
-    }
-#endif
 
     /* Initialize the BLE transport (if enabled). Deliberately before WiFi and
      * not gated on it: a board with no credentials is exactly the case BLE
