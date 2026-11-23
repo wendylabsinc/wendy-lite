@@ -572,10 +572,21 @@ static void test_der_snapshots(const char *fixtures)
     assert_source_hash(&next, pem, pem_size); /* Renewal still has the original trust. */
     free(next.storage);
 
-    /* Reset must remove both overrides even after an interrupted attempt has
-     * already removed the original enrollment from the configuration. */
     assert(wendy_conf_store_mesh_trust(mesh_generation, true, der, der_size) == ESP_OK);
-    assert(stored_mesh[0].size && stored_mesh[1].size);
+    assert(wendy_conf_copy_device_trust(&cfg, &next) == ESP_OK);
+    mesh_generation = next.generation;
+    free(next.storage);
+    s_cache.lite_device_intermediates = (struct wendy_conf_span){der, der_size};
+    assert(wendy_conf_store_mesh_trust(mesh_generation, true, NULL, 0) == ESP_OK);
+    assert(wendy_conf_copy_device_trust(&cfg, &next) == ESP_OK);
+    uint8_t *issuers = NULL;
+    size_t issuers_size;
+    assert(wendy_conf_copy_lite_intermediates(next.generation, &issuers, &issuers_size) == ESP_OK);
+    assert(!issuers && !issuers_size && stored_mesh[0].size && stored_mesh[1].size);
+    free(next.storage);
+
+    /* Reset removes both overrides even if the original enrollment was
+     * already removed from configuration by an interrupted attempt. */
     fail_mesh_commit = true;
     assert(wendy_conf_clear_enrollment() == ESP_FAIL);
     assert(!s_cache.conf.has_enrollment && stored_mesh[0].size && stored_mesh[1].size);

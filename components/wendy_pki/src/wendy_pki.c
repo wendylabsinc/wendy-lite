@@ -13,8 +13,8 @@
 #if CONFIG_WENDY_NET_PEER
 #include "wendy_pki_native_prepare.h"
 #endif
-#if CONFIG_WENDY_NET_PEER || defined(WENDY_PKI_RENEWAL_MESH_HOST_TEST)
-#define PKI_RENEWAL_MESH_TRUST 1
+#if (CONFIG_WENDY_NET_PEER && CONFIG_MBEDTLS_SSL_TLS1_3_SIG_MLDSA65) || defined(WENDY_PKI_PEER_CA_HOST_TEST)
+#define PKI_REFRESH_PEER_CAS 1
 #include <mbedtls/base64.h>
 #endif
 #if CONFIG_WENDY_NET_PEER
@@ -883,94 +883,112 @@ done:
     mbedtls_x509write_csr_free(&csr); mbedtls_pk_free(&k);
     return pem;
 }
-#if PKI_RENEWAL_MESH_TRUST
-static const char *const pending_mesh_trust_keys[] = {"pending_roots", "pending_issuers"};
-#define PKI_MESH_TRUST_BINDING_SIZE 32
+#if PKI_REFRESH_PEER_CAS
+#define PEER_CA_REFRESH_US (INT64_C(3600) * 1000000)
+#define PEER_CA_RETRY_US (INT64_C(60) * 1000000)
+/* Accessed under identity_lock. */
+static int64_t peer_ca_refresh_at;
 
-static void retain_renewal_mesh_trust(nvs_handle_t h, const cJSON *reply,
-                                      const uint8_t *certificate, size_t certificate_size)
+static int peer_ca_array(const cJSON *array, uint8_t *out, size_t capacity, size_t *size)
 {
-    const cJSON *roots = cJSON_GetObjectItemCaseSensitive(reply, "mesh_device_roots");
-    const cJSON *issuers = cJSON_GetObjectItemCaseSensitive(reply, "lite_device_intermediates");
-    if ((!roots && !issuers) || (roots && issuers))
-        return;
-    const cJSON *item = roots ? roots : issuers;
-    if (!cJSON_IsString(item) || !item->valuestring)
-        return;
-    uint8_t *raw = (uint8_t *)item->valuestring;
-    size_t encoded = strlen(item->valuestring), size = 0;
-    if (!encoded || encoded > 4 * ((WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE + 2) / 3) ||
-        mbedtls_base64_decode(raw, encoded, &size, raw, encoded) || !size ||
-        size > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE)
-        return;
-    /* The decoded certificates leave room in the base64 buffer to bind this
-     * optional record to the exact pending issuance without another copy. */
-    if (encoded - size < PKI_MESH_TRUST_BINDING_SIZE ||
-        wendy_pki_sha256(certificate, certificate_size, raw + size))
-        return;
-    if (nvs_set_blob(h, pending_mesh_trust_keys[issuers != NULL], raw,
-                     size + PKI_MESH_TRUST_BINDING_SIZE) != ESP_OK || nvs_commit(h) != ESP_OK)
-        ESP_LOGW(TAG, "could not retain renewed mesh trust");
+    *size = 0;
+    if (!cJSON_IsArray(array) || cJSON_GetArraySize(array) >= WENDY_CERT_BUNDLE_MAX_CERTS)
+        return -1;
+    const cJSON *item;
+    cJSON_ArrayForEach(item, array) {
+        if (!cJSON_IsString(item) || !item->valuestring)
+            return -1;
+        const uint8_t *encoded = (const uint8_t *)item->valuestring;
+        size_t length = strlen(item->valuestring), decoded = 0;
+        int result = mbedtls_base64_decode(out ? out + *size : NULL, capacity - *size,
+                                          &decoded, encoded, length);
+        if (result != (out ? 0 : MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) ||
+            !decoded || decoded > capacity - *size)
+            return -1;
+        if (out) {
+            const uint8_t *certificate;
+            size_t offset = 0, certificate_size;
+            if (wendy_cert_der_next(out + *size, decoded, &offset, &certificate, &certificate_size) != 1 ||
+                offset != decoded)
+                return -1;
+        }
+        *size += decoded;
+    }
+    return 0;
 }
 
-/* True while optional material must be retried. The active identity has
- * already been verified, independently of this record or its staging order. */
-static bool install_renewal_mesh_trust(nvs_handle_t h,
-    const struct wendy_conf_enrollment_data *data, const char *tenant, bool classical,
-    const uint8_t *certificate, size_t certificate_size, const uint8_t *key, size_t key_size,
-    const char *principal)
+static int apply_peer_ca_snapshot(const cJSON *reply, const WendyConfEnrollment *cfg,
+                                  const struct wendy_conf_enrollment_data *data,
+                                  struct wendy_conf_span chain, const uint8_t *key, size_t key_size,
+                                  const char *principal, bool classical)
 {
-    bool retry = false;
-    uint8_t binding[PKI_MESH_TRUST_BINDING_SIZE];
-    bool binding_ready = false;
-    for (size_t i = 0; i < sizeof pending_mesh_trust_keys / sizeof pending_mesh_trust_keys[0]; i++) {
-        const char *name = pending_mesh_trust_keys[i];
-        size_t size;
-        esp_err_t loaded = nvs_get_blob(h, name, NULL, &size);
-        if (loaded == ESP_ERR_NVS_NOT_FOUND)
-            continue;
-        uint8_t *der = NULL;
-        int verified = -1;
-        if (loaded != ESP_OK) {
-            verified = WENDY_PKI_VERIFY_RETRY;
-        } else if (classical == (i == 0) && size > PKI_MESH_TRUST_BINDING_SIZE &&
-                   size <= WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE + PKI_MESH_TRUST_BINDING_SIZE) {
-            binding_ready = binding_ready || !wendy_pki_sha256(certificate, certificate_size, binding);
-            if (!binding_ready || load_blob(h, name, &der, &size)) {
-                verified = WENDY_PKI_VERIFY_RETRY;
-            } else if (size > PKI_MESH_TRUST_BINDING_SIZE &&
-                       size <= WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE + PKI_MESH_TRUST_BINDING_SIZE) {
-                size -= PKI_MESH_TRUST_BINDING_SIZE;
-                if (!memcmp(der + size, binding, PKI_MESH_TRUST_BINDING_SIZE)) {
-                    time_t now = time(NULL), expires;
-                    if (i) {
-                        verified = wendy_pki_verify_lite_issuers(der, size, data->device_roots.data,
-                            data->device_roots.size, tenant, now);
-                    } else {
-                        verified = wendy_pki_verify_roots(der, size);
-                        if (!verified)
-                            verified = wendy_pki_verify_identity(certificate, certificate_size,
-                                der, size, key, key_size, principal, now, &expires, NULL);
-                    }
-                    if (!verified && wendy_conf_store_mesh_trust(data->generation, i != 0, der,
-                                                               size) != ESP_OK)
-                        verified = WENDY_PKI_VERIFY_RETRY;
-                }
-            }
+    const cJSON *roots = cJSON_GetObjectItemCaseSensitive(reply, "additional_roots");
+    const cJSON *issuers = cJSON_GetObjectItemCaseSensitive(reply, "additional_intermediates");
+    if (!cJSON_IsArray(roots) || !cJSON_IsArray(issuers) ||
+        cJSON_GetArraySize(classical ? issuers : roots))
+        return -1;
+
+    /* A classical peer keeps its own validated Lite Device CA even when
+     * there are no extra pins. The CSR endpoint only supplies the extras. */
+    const uint8_t *anchor = NULL;
+    size_t anchor_size = 0, offset = 0;
+    if (classical &&
+        (wendy_cert_der_next(chain.data, chain.size, &offset, &anchor, &anchor_size) != 1 ||
+         wendy_cert_der_next(chain.data, chain.size, &offset, &anchor, &anchor_size) != 1 ||
+         offset != chain.size || anchor_size > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE))
+        return -1;
+
+    const cJSON *extras = classical ? roots : issuers;
+    size_t size;
+    if (peer_ca_array(extras, NULL, WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE - anchor_size, &size))
+        return -1;
+    size_t total = anchor_size + size;
+    uint8_t *der = total ? malloc(total) : NULL;
+    if (total && !der)
+        return -1;
+    if (anchor_size)
+        memcpy(der, anchor, anchor_size);
+    int result = peer_ca_array(extras, der ? der + anchor_size : NULL, size, &size);
+    if (!result && classical) {
+        result = wendy_pki_verify_roots(der, total);
+        if (!result) {
+            time_t expires;
+            result = wendy_pki_verify_identity(chain.data, chain.size, der, total, key, key_size,
+                                               principal, time(NULL), &expires, NULL);
         }
-        free(der);
-        if (verified == WENDY_PKI_VERIFY_RETRY) {
-            retry = true;
-            ESP_LOGW(TAG, "renewed mesh trust upgrade deferred");
-            continue;
-        }
-        if (verified)
-            ESP_LOGW(TAG, "ignoring invalid renewed mesh trust");
-        esp_err_t erased = nvs_erase_key(h, name);
-        if ((erased != ESP_OK && erased != ESP_ERR_NVS_NOT_FOUND) || nvs_commit(h) != ESP_OK)
-            retry = true;
+    } else if (!result && total) {
+        result = wendy_pki_verify_lite_issuers(der, total, data->device_roots.data,
+                                               data->device_roots.size, cfg->tenant_id, time(NULL));
     }
-    return retry;
+    if (!result && wendy_conf_store_mesh_trust(data->generation, !classical, der, total) != ESP_OK)
+        result = -1;
+    free(der);
+    return result;
+}
+
+static void refresh_peer_cas(const WendyConfEnrollment *cfg, const struct wendy_conf_enrollment_data *data,
+                             struct wendy_conf_span chain, const uint8_t *key, size_t key_size,
+                             const char *principal, bool classical, bool renewed)
+{
+    if (!renewed && esp_timer_get_time() < peer_ca_refresh_at)
+        return;
+    char url[sizeof cfg->csr_url + sizeof "/peer-ca-certificates"];
+    snprintf(url, sizeof url, "%s/peer-ca-certificates", cfg->csr_url);
+    uint8_t *response = NULL;
+    size_t size = 0;
+    int result = pki_http_get_peer_cas(url, key, key_size, chain, data->https_roots, &response, &size);
+    cJSON *reply = result ? NULL : cJSON_ParseWithLength((const char *)response, size);
+    free(response);
+    if (reply)
+        result = apply_peer_ca_snapshot(reply, cfg, data, chain, key, key_size, principal, classical);
+    else
+        result = -1;
+    cJSON_Delete(reply);
+    peer_ca_refresh_at = esp_timer_get_time() + (result ? PEER_CA_RETRY_US : PEER_CA_REFRESH_US);
+    if (result)
+        ESP_LOGW(TAG, "peer CA refresh failed; keeping existing peer certificates");
+    else
+        ESP_LOGI(TAG, "peer CA snapshot current");
 }
 #endif
 
@@ -1025,10 +1043,6 @@ static int issue(nvs_handle_t h, const WendyConfEnrollment *cfg,
         !cJSON_AddStringToObject(body, "device_id", cfg->device_id) ||
         !cJSON_AddStringToObject(body, "tier", "C"))
         goto done;
-#if PKI_RENEWAL_MESH_TRUST && (CONFIG_MBEDTLS_SSL_TLS1_3_SIG_MLDSA65 || defined(WENDY_PKI_RENEWAL_MESH_HOST_TEST))
-    if (old.data && !cJSON_AddBoolToObject(body, "mesh_trust", true))
-        goto done;
-#endif
     json = cJSON_PrintUnformatted(body);
     if (!json)
         goto done;
@@ -1098,10 +1112,6 @@ verify:;
     if (!certificate_der || wendy_cert_bundle_import((const uint8_t *)certificate, n,
                                                      certificate_der, der_size, &der_size))
         goto done;
-#if PKI_RENEWAL_MESH_TRUST
-    if (old.data && reply)
-        retain_renewal_mesh_trust(h, reply, certificate_der, der_size);
-#endif
     /* Keep only DER and the decoded authority through the next TLS request.
      * A pending replay also allocated a CSR before discovering its response. */
     free(csr);
@@ -1319,6 +1329,28 @@ static void control_refresh_time(void)
             if (!validate_config_and_trust(&cfg, &data) && open_identity(&h) == ESP_OK) {
                 int64_t started = esp_timer_get_time();
                 int failed = refresh_time(h, cfg.time_url, &data);
+#if PKI_REFRESH_PEER_CAS
+                if (!failed && esp_timer_get_time() >= peer_ca_refresh_at) {
+                    uint8_t *key = NULL, *cert = NULL;
+                    size_t key_size = 0, cert_size = 0;
+                    char principal[160];
+                    snprintf(principal, sizeof principal, "spiffe://wendy.sh/tenant/%s/device/%s",
+                             cfg.tenant_id, cfg.device_id);
+                    struct wendy_pki_validity leaf = {0};
+                    time_t expires;
+                    if (!load_blob(h, "certificate", &cert, &cert_size) &&
+                        !load_blob(h, "key", &key, &key_size) &&
+                        !wendy_pki_verify_identity(cert, cert_size, data.device_roots.data,
+                                                   data.device_roots.size, key, key_size, principal,
+                                                   time(NULL), &expires, &leaf))
+                        refresh_peer_cas(&cfg, &data, (struct wendy_conf_span){cert, cert_size},
+                                         key, key_size, principal, leaf.classical_lite, false);
+                    if (key)
+                        erase(key, key_size);
+                    free(key);
+                    free(cert);
+                }
+#endif
                 nvs_close(h);
                 ESP_LOGI(TAG, "hourly time fetch %s: ms=%u free=%u largest=%u minimum=%u",
                          failed ? "failed" : "done",
@@ -1438,14 +1470,11 @@ static esp_err_t connect_identity(wendy_pki_connection **connection)
                              authority_size > 0 && authority_size <= PKI_MAX_RESPONSE;
         }
     }
-    bool retry_mesh_trust = false;
-#if PKI_RENEWAL_MESH_TRUST
-    /* The current identity can be used even while its optional trust update
-     * is deferred. Never discard a newer staged bundle during a failed replay. */
+#if PKI_REFRESH_PEER_CAS
     if (fresh.data || !have_pending) {
         struct wendy_conf_span active = fresh.data ? fresh : (struct wendy_conf_span){stored, stored_size};
-        retry_mesh_trust = install_renewal_mesh_trust(h, &data, cfg.tenant_id, leaf.classical_lite,
-            active.data, active.size, key, key_size, principal);
+        refresh_peer_cas(&cfg, &data, active, key, key_size, principal,
+                         leaf.classical_lite, fresh.data != NULL);
     }
 #endif
     /* Maintenance ends here: the time is verified and the identity is valid. */
@@ -1476,8 +1505,6 @@ static esp_err_t connect_identity(wendy_pki_connection **connection)
      * time to run, and a failed renewal retries after the retry delay. */
     time_t stop_in = renew_at + RENEW_STOP_MARGIN_S - time(NULL);
     if ((renew_due && !fresh.data) || !have_authority || stop_in <= 0)
-        stop_in = RENEW_RETRY_S;
-    if (retry_mesh_trust && stop_in > RENEW_RETRY_S)
         stop_in = RENEW_RETRY_S;
     /* A fake broker never closes the connection, so the device must not stay
      * connected past the date on which a new handshake refuses this chain. */

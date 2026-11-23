@@ -164,6 +164,9 @@ int pki_http_post_stream(const char *, const char *, const void *, size_t, struc
                          const struct wendy_pki_stream *, uint8_t **, size_t *);
 /* Only enrollment/renewal may consume this authenticated response header.
  * The caller owns both the response body and optional allocated header. */
+int pki_http_get_peer_cas(const char *url, const uint8_t *key, size_t key_size,
+                          struct wendy_conf_span cert, struct wendy_conf_span roots,
+                          uint8_t **response, size_t *response_size);
 int pki_http_post_enrollment(const char *url, const char *type, const char *token, const void *body,
                              size_t body_size, const uint8_t *key, size_t key_size,
                              struct wendy_conf_span cert, struct wendy_conf_span roots,

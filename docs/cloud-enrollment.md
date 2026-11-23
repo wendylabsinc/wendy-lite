@@ -110,9 +110,18 @@ roots. Missing, partial, or malformed installed trust fails closed, with no
 fallback to a different trust source. Network peers cannot write this configuration.
 Wi-Fi-only configuration updates preserve it; replacing or erasing the entire
 configuration removes it. Existing enrolled boards require operator recovery to
-change enrollment through the CLI. Those root bundles do not rotate remotely.
-The separate Lite operator anchor described below can rotate through authenticated
-renewal; changes to device, TSA and HTTPS roots require USB enrollment recovery.
+change enrollment through the CLI. The installed issuance, TSA and HTTPS roots
+require USB enrollment recovery. The separate Lite operator anchor described
+below can rotate through authenticated renewal.
+
+During identity maintenance, firmware with Wendy Net and ML-DSA verification
+can fetch the current peer CA snapshot from
+`GET /v1/{tenant}/peer-ca-certificates` on its CSR service. The request uses
+the device's enrolled certificate. Classical Lite adds the returned regular
+Device Identity and Operator Authority CAs to its own Lite Device CA for peer
+verification. Regular Lite uses the returned Lite CA path as intermediate
+candidates under its existing trust anchors. Failed fetches preserve the last
+saved snapshot. A successful empty list clears extras of that kind.
 
 If an enrolled board reports `Invalid or missing device CA bundle` after a
 firmware update and both LAN TLS and Cloud stop working, first check the firmware

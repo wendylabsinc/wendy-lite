@@ -179,6 +179,7 @@ esp_err_t wendy_conf_copy_device_trust(WendyConfEnrollment *config,
 /* A separate owned allocation preserves the device-root snapshot layout. */
 esp_err_t wendy_conf_copy_lite_intermediates(uint64_t generation, uint8_t **der, size_t *size);
 /* Replace the mesh-only trust snapshot for the current enrolled identity. */
+/* An empty intermediate snapshot supersedes any provisioned issuer candidates. */
 esp_err_t wendy_conf_store_mesh_trust(uint64_t generation, bool intermediates,
                                     const uint8_t *der, size_t size);
 /* Time-only owned snapshot: TSA roots, optional bootstrap seed and HTTPS

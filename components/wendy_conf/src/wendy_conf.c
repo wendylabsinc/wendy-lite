@@ -715,12 +715,12 @@ static esp_err_t read_mesh_trust(bool intermediates, struct mesh_trust_record **
     if (status == ESP_ERR_NVS_NOT_FOUND) {
         status = ESP_OK;
     } else if (status == ESP_OK) {
-        if (bytes <= sizeof **record || bytes - sizeof **record > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE) {
+        if (bytes < sizeof **record || bytes - sizeof **record > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE) {
             status = ESP_ERR_INVALID_SIZE;
         } else {
             struct mesh_trust_record *stored = malloc(bytes);
             status = stored ? nvs_get_blob(h, name, stored, &bytes) : ESP_ERR_NO_MEM;
-            if (status == ESP_OK && bytes > sizeof *stored &&
+            if (status == ESP_OK && bytes >= sizeof *stored &&
                 !strncmp(stored->tenant, s_cache.conf.enrollment.tenant_id, sizeof stored->tenant) &&
                 !strncmp(stored->device, s_cache.conf.enrollment.device_id, sizeof stored->device)) {
                 *record = stored;
@@ -737,7 +737,7 @@ static esp_err_t read_mesh_trust(bool intermediates, struct mesh_trust_record **
 esp_err_t wendy_conf_store_mesh_trust(uint64_t generation, bool intermediates,
                                     const uint8_t *der, size_t size)
 {
-    if (!der || !size || size > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE)
+    if ((!der && size) || (!intermediates && !size) || size > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE)
         return ESP_ERR_INVALID_ARG;
     pthread_mutex_lock(&s_cache_lock);
     esp_err_t result = ESP_ERR_INVALID_STATE;
@@ -746,7 +746,7 @@ esp_err_t wendy_conf_store_mesh_trust(uint64_t generation, bool intermediates,
     if (!s_cache.valid || !s_cache.conf.has_enrollment || generation != s_generation)
         goto done;
     result = read_mesh_trust(intermediates, &record, &previous_size);
-    if (result != ESP_OK || (record && previous_size == size && !memcmp(record->der, der, size)))
+    if (result != ESP_OK || (record && previous_size == size && (!size || !memcmp(record->der, der, size))))
         goto done;
     free(record);
     record = calloc(1, sizeof *record + size);
@@ -756,7 +756,8 @@ esp_err_t wendy_conf_store_mesh_trust(uint64_t generation, bool intermediates,
     }
     memcpy(record->tenant, s_cache.conf.enrollment.tenant_id, 36);
     memcpy(record->device, s_cache.conf.enrollment.device_id, 36);
-    memcpy(record->der, der, size);
+    if (size)
+        memcpy(record->der, der, size);
     nvs_handle_t h;
     result = nvs_open_from_partition("wendy_pki", "mesh_trust", NVS_READWRITE, &h);
     if (result == ESP_OK) {
@@ -932,6 +933,8 @@ esp_err_t wendy_conf_copy_lite_intermediates(uint64_t generation, uint8_t **der,
     if (result != ESP_OK)
         goto done;
     if (record) {
+        if (!refreshed_size)
+            goto done;
         memmove(record, record->der, refreshed_size);
         *der = (uint8_t *)record;
         *size = refreshed_size;

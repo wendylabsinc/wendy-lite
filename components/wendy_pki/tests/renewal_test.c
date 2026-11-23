@@ -46,20 +46,12 @@ const uint8_t wendy_pki_tsa_roots_start[] = {0};
 const uint8_t wendy_pki_https_roots_start[] = {0};
 static struct wendy_conf_enrollment_data usb_data;
 static const uint8_t usb_roots[] = {1};
-#if PKI_RENEWAL_MESH_TRUST
-static uint8_t staged_mesh_trust[2][256];
-static size_t staged_mesh_size[2];
-static int mesh_trust_reply, mesh_issuer_validation, mesh_store_attempts;
+#if PKI_REFRESH_PEER_CAS
+static int peer_ca_reply, peer_ca_fetches, mesh_issuer_validation, mesh_store_attempts;
 static esp_err_t mesh_store_error;
 static bool issued_classical;
-static char mesh_trust_base64[129];
-
-static int mesh_trust_slot(const char *name)
-{
-    if (!strcmp(name, pending_mesh_trust_keys[0])) return 0;
-    if (!strcmp(name, pending_mesh_trust_keys[1])) return 1;
-    return -1;
-}
+static size_t stored_peer_ca_size;
+static const uint8_t fake_classical_chain[] = {0x30, 1, 1, 0x30, 1, 2};
 #endif
 static int bad_roots;
 int wendy_pki_verify_roots(const uint8_t *pem, size_t size)
@@ -165,13 +157,6 @@ esp_err_t nvs_erase_key(nvs_handle_t h, const char *name)
     if (fail_erase && !strcmp(name, fail_erase)) return ESP_FAIL;
     if (!strncmp(name, "net_der_", 8))
         return ESP_ERR_NVS_NOT_FOUND;
-#if PKI_RENEWAL_MESH_TRUST
-    int slot = mesh_trust_slot(name);
-    if (slot >= 0) {
-        staged_mesh_size[slot] = 0;
-        return ESP_OK;
-    }
-#endif
     if (!strcmp(name, "pending")) pending_certificate = false;
     else if (!strcmp(name, "lite_ca")) lite_authority[0] = 0;
     else if (!strcmp(name, "pending_ca")) { pending_authority[0] = 0; pending_authority_size = 0; }
@@ -188,9 +173,6 @@ esp_err_t nvs_get_blob(nvs_handle_t h, const char *name, void *out, size_t *size
 {
     const void *data;
     size_t n;
-#if PKI_RENEWAL_MESH_TRUST
-    int slot = mesh_trust_slot(name);
-#endif
     if (!strcmp(name, "mesh_revision") && mesh_reserved) { data=&mesh_reserved; n=sizeof mesh_reserved; }
     else if (!strcmp(name, "nonce") && have_nonce) { data = stored_nonce; n = sizeof stored_nonce; }
     else if (!strcmp(name, "key") && have_key)
@@ -214,12 +196,6 @@ esp_err_t nvs_get_blob(nvs_handle_t h, const char *name, void *out, size_t *size
         data = pending_authority;
         n = pending_authority_size;
     }
-#if PKI_RENEWAL_MESH_TRUST
-    else if (slot >= 0 && staged_mesh_size[slot]) {
-        data = staged_mesh_trust[slot];
-        n = staged_mesh_size[slot];
-    }
-#endif
     else
         return ESP_ERR_NVS_NOT_FOUND;
     if (out)
@@ -233,15 +209,6 @@ esp_err_t nvs_get_blob(nvs_handle_t h, const char *name, void *out, size_t *size
 esp_err_t nvs_set_blob(nvs_handle_t h, const char *name, const void *data, size_t size)
 {
     if (fail_set && !strcmp(name, fail_set)) return ESP_FAIL;
-#if PKI_RENEWAL_MESH_TRUST
-    int slot = mesh_trust_slot(name);
-    if (slot >= 0) {
-        assert(size <= sizeof staged_mesh_trust[slot]);
-        memcpy(staged_mesh_trust[slot], data, size);
-        staged_mesh_size[slot] = size;
-        return ESP_OK;
-    }
-#endif
     if (!strcmp(name, "mesh_revision")) {
         assert(size==sizeof mesh_reserved);
         memcpy(&mesh_reserved,data,size);
@@ -314,22 +281,24 @@ bool wendy_conf_snapshot_current(uint64_t generation)
 {
     return !config_cleared && generation == snapshot_generation;
 }
-#if PKI_RENEWAL_MESH_TRUST
+#if PKI_REFRESH_PEER_CAS
 int wendy_pki_verify_lite_issuers(const uint8_t *der, size_t size, const uint8_t *roots,
     size_t roots_size, const char *tenant, time_t now)
 {
-    assert(size == 96 && der[0] == 0x30 && roots && roots_size && !strcmp(config.tenant_id, tenant));
+    assert(size == 3 && der[0] == 0x30 && roots && roots_size && !strcmp(config.tenant_id, tenant));
     return mesh_issuer_validation;
 }
 
 esp_err_t wendy_conf_store_mesh_trust(uint64_t generation, bool intermediates,
     const uint8_t *der, size_t size)
 {
-    assert(generation == snapshot_generation && size == 96 && der[0] == 0x30);
+    assert(generation == snapshot_generation && intermediates != issued_classical);
+    assert((size && der && der[0] == 0x30) || (!size && !der && intermediates));
     mesh_store_attempts++;
     if (mesh_store_error != ESP_OK)
         return mesh_store_error;
     snapshot_generation++;
+    stored_peer_ca_size = size;
     return ESP_OK;
 }
 #endif
@@ -362,15 +331,19 @@ int wendy_pki_verify_identity(const uint8_t *pem, size_t size, const uint8_t *ro
 {
     identity_checks++;
     assert(roots == (config.provision_trust ? usb_roots : wendy_pki_device_roots_start)
-#if PKI_RENEWAL_MESH_TRUST
-           || (issued_classical && roots_size == 96 && roots[0] == 0x30)
+#if PKI_REFRESH_PEER_CAS
+           || (issued_classical && (roots_size == 3 || roots_size == 6) && roots[0] == 0x30)
 #endif
     );
     assert(size == 6);
-    if (!memcmp(pem, "issued", 6)) {
+    if (!memcmp(pem, "issued", 6)
+#if PKI_REFRESH_PEER_CAS
+        || !memcmp(pem, fake_classical_chain, sizeof fake_classical_chain)
+#endif
+    ) {
         if (leaf) {
             *leaf = (struct wendy_pki_validity){issued_not_before, issued_expiry};
-#if PKI_RENEWAL_MESH_TRUST
+#if PKI_REFRESH_PEER_CAS
             leaf->classical_lite = issued_classical;
 #endif
         }
@@ -473,27 +446,38 @@ int pki_tls_connect_dated(const char *host, unsigned port, const uint8_t *key, s
 }
 cJSON *cJSON_CreateObject(void) { return calloc(1, sizeof(cJSON)); }
 cJSON *cJSON_AddStringToObject(cJSON *o, const char *k, const char *v) { return o; }
-cJSON *cJSON_AddBoolToObject(cJSON *o, const char *k, int v) { return o; }
 char *cJSON_PrintUnformatted(const cJSON *o) { return strdup("{}"); }
 cJSON *cJSON_ParseWithLength(const char *s, size_t n)
 {
     cJSON *o = calloc(1, sizeof *o);
-    o->valuestring = distinct_issued_certificate ? "issued" : "stored";
+    if (n == 4 && !memcmp(s, "peer", 4))
+        o->array = 1;
+    else
+        o->valuestring = distinct_issued_certificate ? "issued" : "stored";
     return o;
 }
 cJSON *cJSON_GetObjectItemCaseSensitive(const cJSON *o, const char *k)
 {
     if (!strcmp(k, "certificate"))
         return (cJSON *)o;
-#if PKI_RENEWAL_MESH_TRUST
-    static cJSON mesh = {.valuestring = mesh_trust_base64};
-    if ((!strcmp(k, "mesh_device_roots") && mesh_trust_reply == 1) ||
-        (!strcmp(k, "lite_device_intermediates") && mesh_trust_reply == 2))
-        return &mesh;
+#if PKI_REFRESH_PEER_CAS
+    static cJSON item = {.valuestring = "MAED"};
+    static cJSON root_array = {.array = 1};
+    static cJSON intermediate_array = {.array = 1};
+    if (o->array && !strcmp(k, "additional_roots")) {
+        root_array.child = peer_ca_reply == 1 ? &item : NULL;
+        return &root_array;
+    }
+    if (o->array && !strcmp(k, "additional_intermediates") && peer_ca_reply != 4) {
+        intermediate_array.child = peer_ca_reply == 2 ? &item : NULL;
+        return &intermediate_array;
+    }
 #endif
     return NULL;
 }
 int cJSON_IsString(const cJSON *o) { return o && o->valuestring; }
+int cJSON_IsArray(const cJSON *o) { return o && o->array; }
+int cJSON_GetArraySize(const cJSON *o) { return o && o->child ? 1 : 0; }
 void cJSON_Delete(cJSON *o) { free(o); }
 
 static void reset(void)
@@ -512,9 +496,10 @@ static void reset(void)
     strcpy(lite_authority, "old-authority-pem");
     pending_authority[0] = 0;
     pending_authority_size = 0;
-#if PKI_RENEWAL_MESH_TRUST
-    memset(staged_mesh_size, 0, sizeof staged_mesh_size);
-    mesh_trust_reply = mesh_issuer_validation = mesh_store_attempts = 0;
+#if PKI_REFRESH_PEER_CAS
+    peer_ca_reply = peer_ca_fetches = mesh_issuer_validation = mesh_store_attempts = 0;
+    peer_ca_refresh_at = INT64_MAX;
+    stored_peer_ca_size = 0;
     mesh_store_error = ESP_OK;
     issued_classical = false;
 #endif
@@ -1271,80 +1256,64 @@ static void test_peer_roots_selection(void)
     assert(!data.device_roots.data && !data.device_roots.size);
 }
 
-#if PKI_RENEWAL_MESH_TRUST
-static void mesh_trust_response(int reply)
+#if PKI_REFRESH_PEER_CAS
+int pki_http_get_peer_cas(const char *url, const uint8_t *key, size_t key_size,
+                          struct wendy_conf_span cert, struct wendy_conf_span roots,
+                          uint8_t **response, size_t *response_size)
 {
-    uint8_t der[96] = {0x30};
-    size_t size = 0;
-    assert(!mbedtls_base64_encode((uint8_t *)mesh_trust_base64, sizeof mesh_trust_base64,
-                                  &size, der, sizeof der));
-    mesh_trust_reply = reply;
-    distinct_issued_certificate = issuance_success = true;
-    snapshot_generation = 7;
+    assert(strstr(url, "/peer-ca-certificates") && key && key_size);
+    assert(cert.data && cert.size && roots.data);
+    if (!peer_ca_reply)
+        return -1;
+    peer_ca_fetches++;
+    *response = (uint8_t *)strdup("peer");
+    *response_size = 4;
+    return *response ? 0 : -1;
 }
 
-static void test_mesh_trust_renewal(void)
+static void test_peer_ca_refresh(void)
 {
     wendy_pki_connection *connection = NULL;
-    for (int reply = 1; reply <= 2; reply++) {
-        reset();
-        mesh_trust_response(reply);
-        issued_classical = reply == 1;
-        mesh_store_error = ESP_ERR_NO_MEM;
-        assert(wendy_pki_connect(&connection) == ESP_OK);
-        assert(stored_is_issued && !pending_certificate && staged_mesh_size[reply - 1]);
-        assert(renewal_calls == 1 && mesh_store_attempts == 1 && snapshot_generation == 7);
-        assert(connection->renew_deadline_us == RENEW_RETRY_S * INT64_C(1000000));
-
-        mesh_store_error = ESP_OK;
-        assert(wendy_pki_maintain() == ESP_OK);
-        assert(renewal_calls == 1 && mesh_store_attempts == 2 && snapshot_generation == 8);
-        assert(stored_is_issued && !pending_certificate && !staged_mesh_size[reply - 1]);
-    }
-
     reset();
-    mesh_trust_response(2);
-    mesh_issuer_validation = WENDY_PKI_VERIFY_RETRY;
-    assert(wendy_pki_maintain() == ESP_OK);
-    assert(stored_is_issued && !pending_certificate && staged_mesh_size[1]);
-    assert(renewal_calls == 1 && mesh_store_attempts == 0);
-    /* A stale blob or a different response cannot be attached to this identity. */
-    staged_mesh_trust[1][staged_mesh_size[1] - 1] ^= 1;
-    mesh_issuer_validation = 0;
-    assert(wendy_pki_maintain() == ESP_OK);
-    assert(stored_is_issued && !pending_certificate && !staged_mesh_size[1]);
-    assert(renewal_calls == 1 && mesh_store_attempts == 0);
-
-    reset();
-    mesh_trust_response(2);
+    peer_ca_reply = 2;
+    peer_ca_refresh_at = 0;
+    distinct_issued_certificate = issuance_success = true;
+    snapshot_generation = 7;
     mesh_store_error = ESP_ERR_NO_MEM;
-    assert(wendy_pki_maintain() == ESP_OK);
-    assert(stored_is_issued && !pending_certificate && staged_mesh_size[1]);
-    assert(renewal_calls == 1 && mesh_store_attempts == 1);
-    reply_seconds = issued_not_before + (issued_expiry - issued_not_before) * 3 / 4;
-    mesh_trust_reply = 0;
-    assert(wendy_pki_maintain() == ESP_OK);
-    assert(renewal_calls == 2 && mesh_store_attempts == 2 && !pending_certificate);
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(stored_is_issued && !pending_certificate);
+    assert(renewal_calls == 1 && peer_ca_fetches == 1 && mesh_store_attempts == 1);
+    assert(connection->renew_deadline_us > RENEW_RETRY_S * INT64_C(1000000));
+
+    mesh_store_error = ESP_OK;
+    assert(wendy_pki_maintain() == ESP_OK && peer_ca_fetches == 1);
+    monotonic_us += PEER_CA_RETRY_US;
+    assert(wendy_pki_maintain() == ESP_OK && peer_ca_fetches == 2);
+    assert(renewal_calls == 1 && mesh_store_attempts == 2 && stored_peer_ca_size == 3);
+
+    peer_ca_reply = 4;
+    monotonic_us += PEER_CA_REFRESH_US;
+    assert(wendy_pki_maintain() == ESP_OK && peer_ca_fetches == 3);
+    assert(renewal_calls == 1 && mesh_store_attempts == 2 && stored_peer_ca_size == 3);
+
+    peer_ca_reply = 3;
+    monotonic_us += PEER_CA_RETRY_US;
+    assert(wendy_pki_maintain() == ESP_OK && peer_ca_fetches == 4);
+    assert(renewal_calls == 1 && mesh_store_attempts == 3 && !stored_peer_ca_size);
 
     reset();
-    mesh_trust_response(2);
-    mesh_issuer_validation = -1;
-    assert(wendy_pki_maintain() == ESP_OK);
-    assert(stored_is_issued && !pending_certificate && !staged_mesh_size[1]);
-    assert(renewal_calls == 1 && mesh_store_attempts == 0);
-
-    reset();
-    mesh_trust_response(1);
-    assert(wendy_pki_maintain() == ESP_OK);
-    assert(stored_is_issued && !pending_certificate && !staged_mesh_size[0]);
-    assert(renewal_calls == 1 && mesh_store_attempts == 0);
-
-    reset();
-    mesh_trust_response(2);
-    fail_set = pending_mesh_trust_keys[1];
-    assert(wendy_pki_maintain() == ESP_OK);
-    assert(stored_is_issued && !pending_certificate && !staged_mesh_size[1]);
-    assert(renewal_calls == 1 && mesh_store_attempts == 0);
+    snapshot_generation = usb_data.generation = 7;
+    issued_classical = true;
+    struct wendy_conf_span chain = {fake_classical_chain, sizeof fake_classical_chain};
+    peer_ca_reply = 1;
+    cJSON reply = {.array = 1};
+    clock_now = signed_now + 20;
+    assert(!apply_peer_ca_snapshot(&reply, &config, &usb_data, chain, key_der, key_der_size, "", true));
+    assert(stored_peer_ca_size == 6);
+    usb_data.generation = snapshot_generation;
+    peer_ca_reply = 3;
+    assert(!apply_peer_ca_snapshot(&reply, &config, &usb_data, chain, key_der, key_der_size, "", true));
+    assert(stored_peer_ca_size == 3);
 }
 #endif
 
@@ -1371,8 +1340,8 @@ int main(int argc, char **argv)
     fclose(f);
     assert(key_der_size > 0);
     wendy_pki_connection *connection = NULL;
-#if PKI_RENEWAL_MESH_TRUST
-    test_mesh_trust_renewal();
+#if PKI_REFRESH_PEER_CAS
+    test_peer_ca_refresh();
 #endif
 
     reset();

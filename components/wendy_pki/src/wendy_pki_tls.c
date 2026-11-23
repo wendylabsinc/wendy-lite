@@ -2396,7 +2396,7 @@ static int write_all(wendy_pki_connection *c, const void *b, size_t n, int64_t d
     }
     return 0;
 }
-static int http_post(const char *url, const char *type, const char *token, const void *body,
+static int http_request(const char *url, bool get, const char *type, const char *token, const void *body,
                      size_t body_size, const uint8_t *key, size_t key_size,
                      struct wendy_conf_span cert, struct wendy_conf_span roots, uint8_t **response,
                      size_t *response_size, char **lite_authority_header,
@@ -2427,7 +2427,8 @@ static int http_post(const char *url, const char *type, const char *token, const
     int connected =
         stream ? open_tls(host, target_port, NULL, 0, (struct wendy_conf_span){0}, roots, &c, NULL,
                           NULL, NULL, stream, false, false, NULL, NULL, NULL, NULL, NULL, false)
-               : pki_tls_connect(host, target_port, key, key_size, cert, roots, &c);
+               : get ? pki_tls_connect_dated(host, target_port, key, key_size, cert, roots, &c)
+                     : pki_tls_connect(host, target_port, key, key_size, cert, roots, &c);
     if (connected)
         return -1;
     char authority[264];
@@ -2435,7 +2436,10 @@ static int http_post(const char *url, const char *type, const char *token, const
     snprintf(authority, sizeof authority, strchr(host, ':') ? "[%s]:%u" : "%s:%u", host, port);
     int answer = -1;
     char headers[1400];
-    int n = snprintf(headers, sizeof headers,
+    int n = get ? snprintf(headers, sizeof headers,
+                           "GET %s HTTP/1.1\r\nHost: %s\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
+                           path, authority)
+                : snprintf(headers, sizeof headers,
                      "POST %s HTTP/1.1\r\nHost: %s\r\nContent-Type: %s\r\nContent-Length: "
                      "%zu\r\nConnection: close\r\n%s%s%s\r\n",
                      path, authority, type, body_size, token ? "Authorization: Bearer " : "",
@@ -2452,7 +2456,7 @@ static int http_post(const char *url, const char *type, const char *token, const
         goto done;
     int64_t deadline = esp_timer_get_time() + network_budget_us(false, NULL);
     failure_stage = "request write";
-    if (write_all(c, headers, n, deadline) || write_all(c, body, body_size, deadline))
+    if (write_all(c, headers, n, deadline) || (body_size && write_all(c, body, body_size, deadline)))
         goto done;
     http_parser parser;
     http_parser_init(&parser, HTTP_RESPONSE);
@@ -2540,12 +2544,20 @@ done:
     return answer;
 }
 
+int pki_http_get_peer_cas(const char *url, const uint8_t *key, size_t key_size,
+                          struct wendy_conf_span cert, struct wendy_conf_span roots,
+                          uint8_t **response, size_t *response_size)
+{
+    return http_request(url, true, NULL, NULL, NULL, 0, key, key_size, cert, roots,
+                        response, response_size, NULL, NULL);
+}
+
 int pki_http_post_enrollment(const char *url, const char *type, const char *token, const void *body,
                              size_t body_size, const uint8_t *key, size_t key_size,
                              struct wendy_conf_span cert, struct wendy_conf_span roots,
                              uint8_t **response, size_t *response_size, char **authority)
 {
-    return http_post(url, type, token, body, body_size, key, key_size, cert, roots, response,
+    return http_request(url, false, type, token, body, body_size, key, key_size, cert, roots, response,
                      response_size, authority, NULL);
 }
 /* The stream transports HTTPS ciphertext. It supplies no trust, clock,
@@ -2556,7 +2568,7 @@ int pki_http_post_stream(const char *url, const char *type, const void *body, si
 {
     if (!stream)
         return -1;
-    return http_post(url, type, NULL, body, body_size, NULL, 0, (struct wendy_conf_span){0}, roots,
+    return http_request(url, false, type, NULL, body, body_size, NULL, 0, (struct wendy_conf_span){0}, roots,
                      response, response_size, NULL, stream);
 }
 
