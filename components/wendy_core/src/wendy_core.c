@@ -1079,10 +1079,22 @@ esp_err_t wendy_core_init(void)
     }
 
     const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
-    ESP_LOGI(TAG, "heap: internal free %zu, largest block %zu, min free %zu, psram free %zu",
+#if CONFIG_BT_ENABLED
+    const char *bluetooth_built_in = "yes";
+#else
+    const char *bluetooth_built_in = "no";
+#endif
+    ESP_LOGI(TAG, "heap: internal free %zu, largest block %zu, min free %zu, psram free %zu, Bluetooth built in: %s",
              heap_caps_get_free_size(internal), heap_caps_get_largest_free_block(internal),
              heap_caps_get_minimum_free_size(internal),
-             heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+             heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT), bluetooth_built_in);
+#if CONFIG_BT_ENABLED
+    /* Name the trade-off instead of taking it silently: see "Boards without
+     * PSRAM" in the README. */
+    if (!heap_caps_get_total_size(MALLOC_CAP_SPIRAM))
+        ESP_LOGW(TAG, "no PSRAM and Bluetooth built in: when active, Bluetooth shares internal RAM with TLS; "
+                      "boards/no-ble.defaults gives that RAM to Wi-Fi and TLS");
+#endif
 
     return ESP_OK;
 }

@@ -2673,55 +2673,116 @@ enum wendy_peer_role wendy_pki_get_peer_role(const wendy_pki_connection *connect
     return connection ? connection->peer_role : WENDY_PEER_ROLE_NONE;
 }
 
-enum { READ_ALL_IDLE_TIMEOUT = -2 };
+/* Nonzero results of read_all. A TLS failure returns its mbedTLS code. */
+enum {
+    READ_ALL_IDLE_TIMEOUT = -2,
+    READ_ALL_TIMEOUT = -3,
+    READ_ALL_CLOSED = -4,
+    READ_ALL_RESET = -5,
+    READ_ALL_SOCKET = -6,
+};
 static int read_all(wendy_pki_connection *c, uint8_t *out, size_t n, int64_t deadline)
 {
     size_t size = n;
     bool idle_read = true;
     while (n) {
         if (wendy_pki_reset_in_progress())
-            return -1;
+            return READ_ALL_RESET;
         if (esp_timer_get_time() >= deadline)
-            return n == size && idle_read ? READ_ALL_IDLE_TIMEOUT : -1;
+            return n == size && idle_read ? READ_ALL_IDLE_TIMEOUT : READ_ALL_TIMEOUT;
         int got = connection_read(c, out, n);
         if (got > 0) {
             out += got;
             n -= got;
         } else {
-            if (!got)
-                return -1;
+            if (!got || got == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY)
+                return READ_ALL_CLOSED;
+            /* A code in the READ_ALL range would read as one of them. */
+            if (got != MBEDTLS_ERR_SSL_WANT_READ && got != MBEDTLS_ERR_SSL_WANT_WRITE)
+                return got >= READ_ALL_SOCKET ? READ_ALL_SOCKET : got;
             /* A readiness hint can cross the deadline before the next loop.
              * Keep WANT_WRITE failures distinct from an empty idle read. */
             idle_read = got == MBEDTLS_ERR_SSL_WANT_READ;
             int waited = wait_socket(c, got, deadline);
             if (waited) {
+                if (wendy_pki_reset_in_progress())
+                    return READ_ALL_RESET;
                 if (waited == SOCKET_WAIT_TIMEOUT && got == MBEDTLS_ERR_SSL_WANT_READ && n == size)
                     return READ_ALL_IDLE_TIMEOUT;
-                return -1;
+                return waited == SOCKET_WAIT_TIMEOUT ? READ_ALL_TIMEOUT : READ_ALL_SOCKET;
             }
         }
     }
     return 0;
 }
 
+/* Records why a control read failed. Returns nonzero when it did. */
+static int control_read_failed(wendy_pki_connection *c, int result)
+{
+    switch (result) {
+    case 0:
+        return 0;
+    case READ_ALL_IDLE_TIMEOUT:
+    case READ_ALL_TIMEOUT:
+        c->control_failure = "timed out";
+        break;
+    case READ_ALL_CLOSED:
+        c->control_failure = "closed by the broker";
+        break;
+    case READ_ALL_RESET:
+        c->control_failure = "device reset";
+        break;
+    case READ_ALL_SOCKET:
+        c->control_failure = "socket error";
+        break;
+    case MBEDTLS_ERR_NET_RECV_FAILED:
+        c->control_failure = "socket receive error";
+        c->control_error = result;
+        break;
+    case MBEDTLS_ERR_NET_CONN_RESET:
+        c->control_failure = "connection reset";
+        break;
+    default:
+        c->control_failure = "TLS error";
+        c->control_error = result;
+        break;
+    }
+    return result;
+}
+
 #define CONTROL_TIME_REFRESH_US INT64_C(3600000000)
 int wendy_pki_relay_upgrade(wendy_pki_connection *c, struct wendy_lite_trust *trust)
 {
     memset(trust, 0, sizeof *trust);
+    c->control_failure = NULL;
+    c->control_error = 0;
     const char *stage = "grant key set";
     uint8_t header[4], count;
     int64_t deadline = esp_timer_get_time() + 10000000;
-    if (read_all(c, header, 4, deadline) || memcmp(header, "WR\x03\x04", 4) ||
-        read_all(c, &count, 1, deadline) || count < 1 || count > 2) goto fail;
+    if (control_read_failed(c, read_all(c, header, 4, deadline))) goto fail;
+    if (memcmp(header, "WR\x03\x04", 4)) {
+        c->control_failure = "unexpected record";
+        goto fail;
+    }
+    if (control_read_failed(c, read_all(c, &count, 1, deadline))) goto fail;
+    c->control_failure = "invalid key set";
+    if (count < 1 || count > 2) goto fail;
     trust->count = count;
     for (unsigned i = 0; i < count; i++) {
         struct wendy_lite_key *key = &trust->keys[i];
-        if (read_all(c, &key->id_size, 1, deadline) || key->id_size < 1 || key->id_size > 128 ||
-            read_all(c, key->id, key->id_size, deadline) || wendy_lite_key_id(key->id, key->id_size) ||
-            read_all(c, key->public_key, sizeof key->public_key, deadline)) goto fail;
+        if (control_read_failed(c, read_all(c, &key->id_size, 1, deadline))) goto fail;
+        c->control_failure = "invalid key set";
+        if (key->id_size < 1 || key->id_size > 128) goto fail;
+        if (control_read_failed(c, read_all(c, key->id, key->id_size, deadline))) goto fail;
+        c->control_failure = "invalid key set";
+        if (wendy_lite_key_id(key->id, key->id_size)) goto fail;
+        if (control_read_failed(c, read_all(c, key->public_key, sizeof key->public_key, deadline)))
+            goto fail;
+        c->control_failure = "invalid key set";
         if (i && trust->keys[0].id_size == key->id_size &&
             !memcmp(trust->keys[0].id, key->id, key->id_size)) goto fail;
     }
+    c->control_failure = NULL;
     /* The connection stays open while heartbeats work. The only voluntary stop
      * is the deadline that the connect path set, for certificate renewal or the
      * end of the broker chain. The peer cannot delay it. */
@@ -2739,11 +2800,14 @@ int wendy_pki_relay_upgrade(wendy_pki_connection *c, struct wendy_lite_trust *tr
                 ESP_LOGI("wendy_pki", "planned stop reached; stopping broker control connection");
                 return WENDY_PKI_RELAY_RENEW;
             }
+            control_read_failed(c, result);
             goto fail;
         }
+        c->control_failure = "unexpected record";
         if (memcmp(header, "WR\x03", 3))
             goto fail;
         if (header[3] == 1) {
+            c->control_failure = "heartbeat reply failed";
             if (write_all(c, "WR\x03\x02", 4, deadline)) goto fail;
             if (first) ESP_LOGI("wendy_pki", "broker control heartbeat received and answered");
             first = false;
@@ -2757,8 +2821,9 @@ int wendy_pki_relay_upgrade(wendy_pki_connection *c, struct wendy_lite_trust *tr
         } else if (header[3] == 3) {
             stage = "relay handoff";
             deadline = esp_timer_get_time() + 10000000;
-            if (read_all(c, trust->session, 16, deadline) ||
-                read_all(c, trust->grant_hash, 32, deadline)) goto fail;
+            if (control_read_failed(c, read_all(c, trust->session, 16, deadline)) ||
+                control_read_failed(c, read_all(c, trust->grant_hash, 32, deadline))) goto fail;
+            c->control_failure = "socket handoff failed";
             int fd = detach_socket(c);
             if (fd < 0) goto fail;
             ESP_LOGI("wendy_pki", "broker control handed off to operator TLS");
@@ -2766,7 +2831,16 @@ int wendy_pki_relay_upgrade(wendy_pki_connection *c, struct wendy_lite_trust *tr
         } else goto fail;
     }
 fail:
-    ESP_LOGW("wendy_pki", "broker control failed at %s", stage);
+    if (!c->control_failure)
+        c->control_failure = "unexpected record";
+#if ESP_PLATFORM
+    ESP_LOGW("wendy_pki", "broker control failed at %s: %s (%d); free=%u largest=%u", stage,
+             c->control_failure, c->control_error, (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+#else
+    ESP_LOGW("wendy_pki", "broker control failed at %s: %s (%d)", stage, c->control_failure,
+             c->control_error);
+#endif
     return WENDY_PKI_RELAY_FAILED;
 }
 
