@@ -559,6 +559,7 @@ static void test_der_snapshots(const char *fixtures)
     fail_mesh_commit = false;
     assert(wendy_conf_store_mesh_trust(full.generation, false, der, der_size) == ESP_OK);
     assert(!wendy_conf_snapshot_current(full.generation));
+    assert(wendy_conf_store_mesh_trust(full.generation, false, der, der_size) == ESP_ERR_INVALID_STATE);
     assert(wendy_conf_copy_device_trust(&cfg, &next) == ESP_OK);
     assert_span(next.device_roots, der, der_size);
     assert(next.device_roots.data == next.storage && next.storage[der_size] == 0);
@@ -570,25 +571,6 @@ static void test_der_snapshots(const char *fixtures)
     assert(wendy_conf_copy_enrollment(&cfg, &next) == ESP_OK);
     assert_source_hash(&next, pem, pem_size); /* Renewal still has the original trust. */
     free(next.storage);
-
-    WendyConf update = WendyConf_init_zero;
-    update.has_enrollment = true;
-    struct wendy_conf_span roots = {der, der_size};
-    update.enrollment.device_roots = (pb_callback_t){.funcs.encode = encode_span, .arg = &roots};
-    strcpy(update.enrollment.tenant_id, cfg.tenant_id);
-    strcpy(update.enrollment.device_id, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
-    uint8_t *update_buf = malloc(der_size + 128);
-    assert(update_buf);
-    pb_ostream_t wire = pb_ostream_from_buffer(update_buf, der_size + 128);
-    assert(pb_encode(&wire, WendyConf_fields, &update));
-    assert(wendy_conf_write(update_buf, wire.bytes_written, WENDY_CONF_WRITE_MODE_MESH_TRUST) ==
-           ESP_ERR_INVALID_STATE);
-    strcpy(update.enrollment.device_id, cfg.device_id);
-    wire = pb_ostream_from_buffer(update_buf, der_size + 128);
-    assert(pb_encode(&wire, WendyConf_fields, &update));
-    assert(wendy_conf_write(update_buf, wire.bytes_written, WENDY_CONF_WRITE_MODE_MESH_TRUST) == ESP_OK);
-    assert(wendy_conf_snapshot_current(mesh_generation));
-    free(update_buf);
 
     /* Reset must remove both overrides even after an interrupted attempt has
      * already removed the original enrollment from the configuration. */

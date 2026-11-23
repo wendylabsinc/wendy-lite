@@ -10,7 +10,6 @@ enum wendy_conf_write_mode {
     WENDY_CONF_WRITE_MODE_REPLACE = 0,
     WENDY_CONF_WRITE_MODE_UPDATE = 1,
     WENDY_CONF_WRITE_MODE_WIFI_ONLY = 2, // UPDATE accepting only the wifi root field
-    WENDY_CONF_WRITE_MODE_MESH_TRUST = 3, // USB mesh trust only
 };
 
 /**

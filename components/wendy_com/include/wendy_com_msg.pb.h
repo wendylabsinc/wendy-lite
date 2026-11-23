@@ -22,8 +22,7 @@ typedef enum _WendyComAppType {
  keeps the current value of root fields absent from the pushed blob. */
 typedef enum _WendyComConfPushMode {
     WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_REPLACE = 0,
-    WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE = 1,
-    WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_MESH_TRUST = 2 /* physical USB, current identity only */
+    WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE = 1
 } WendyComConfPushMode;
 
 /* Device-wide LE transmit policy, independent of Wendy Net participation. */
@@ -533,8 +532,8 @@ extern "C" {
 #define _WendyComAppType_ARRAYSIZE ((WendyComAppType)(WendyComAppType_WENDY_COM_APP_TYPE_NATIVE+1))
 
 #define _WendyComConfPushMode_MIN WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_REPLACE
-#define _WendyComConfPushMode_MAX WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_MESH_TRUST
-#define _WendyComConfPushMode_ARRAYSIZE ((WendyComConfPushMode)(WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_MESH_TRUST+1))
+#define _WendyComConfPushMode_MAX WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE
+#define _WendyComConfPushMode_ARRAYSIZE ((WendyComConfPushMode)(WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE+1))
 
 #define _WendyComBluetoothPowerMode_MIN WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_DEFAULT
 #define _WendyComBluetoothPowerMode_MAX WendyComBluetoothPowerMode_WENDY_COM_BT_POWER_DBM

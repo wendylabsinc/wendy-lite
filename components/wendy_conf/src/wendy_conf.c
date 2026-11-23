@@ -76,7 +76,6 @@ static char s_resolved_device_name[CONFIG_WENDY_DEVICE_NAME_BUF_SIZE];
 //--- functions ---//
 
 static bool _scan_root_fields(const uint8_t *data, size_t size, uint32_t *mask);
-static esp_err_t write_mesh_trust(const uint8_t *data, size_t size);
 static esp_err_t clear_mesh_trust_locked(void);
 
 static void _build_device_id(void)
@@ -524,8 +523,6 @@ esp_err_t wendy_conf_write(const void *data, size_t size, enum wendy_conf_write_
 {
     if (!data || size == 0)
         return ESP_ERR_INVALID_ARG;
-    if (mode == WENDY_CONF_WRITE_MODE_MESH_TRUST)
-        return write_mesh_trust(data, size);
     bool wifi_only = mode == WENDY_CONF_WRITE_MODE_WIFI_ONLY;
     if (wifi_only) {
         pb_istream_t input = pb_istream_from_buffer(data, size);
@@ -775,34 +772,6 @@ done:
     free(record);
     pthread_mutex_unlock(&s_cache_lock);
     return result;
-}
-
-static esp_err_t write_mesh_trust(const uint8_t *data, size_t size)
-{
-    uint32_t fields = 0;
-    if (!_scan_root_fields(data, size, &fields) || fields != (1u << WendyConf_enrollment_tag))
-        return ESP_ERR_INVALID_ARG;
-    WendyConf payload = WendyConf_init_zero;
-    struct wendy_conf_span roots = {0}, issuers = {0};
-    payload.enrollment.device_roots = (pb_callback_t){.funcs.decode = _capture_span, .arg = &roots};
-    payload.enrollment.lite_device_intermediates = (pb_callback_t){.funcs.decode = _capture_span, .arg = &issuers};
-    pb_istream_t stream = pb_istream_from_buffer(data, size);
-    if (!pb_decode_noinit(&stream, WendyConf_fields, &payload) || !payload.has_enrollment ||
-        strlen(payload.enrollment.tenant_id) != 36 || strlen(payload.enrollment.device_id) != 36 ||
-        (!!roots.size == !!issuers.size))
-        return ESP_ERR_INVALID_ARG;
-    struct wendy_conf_span trust = roots.size ? roots : issuers;
-    size_t der_size = 0;
-    if (trust.size > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE ||
-        wendy_cert_bundle_measure(trust.data, trust.size, &der_size) || der_size != trust.size)
-        return ESP_ERR_INVALID_ARG;
-    pthread_mutex_lock(&s_cache_lock);
-    uint64_t generation = s_cache.valid && s_cache.conf.has_enrollment &&
-        !strcmp(payload.enrollment.tenant_id, s_cache.conf.enrollment.tenant_id) &&
-        !strcmp(payload.enrollment.device_id, s_cache.conf.enrollment.device_id)
-        ? s_generation : 0;
-    pthread_mutex_unlock(&s_cache_lock);
-    return wendy_conf_store_mesh_trust(generation, issuers.size != 0, trust.data, trust.size);
 }
 
 static esp_err_t copy_enrollment(WendyConfEnrollment *config,

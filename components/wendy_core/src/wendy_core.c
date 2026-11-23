@@ -757,8 +757,6 @@ static WendyComResult com_conf_push_begin(size_t size, WendyComConfPushMode mode
     s_conf_push_size = size;
     if (wifi_only)
         s_conf_push_mode = WENDY_CONF_WRITE_MODE_WIFI_ONLY;
-    else if (mode == WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_MESH_TRUST)
-        s_conf_push_mode = WENDY_CONF_WRITE_MODE_MESH_TRUST;
     else
         s_conf_push_mode = mode == WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE
                            ? WENDY_CONF_WRITE_MODE_UPDATE : WENDY_CONF_WRITE_MODE_REPLACE;
