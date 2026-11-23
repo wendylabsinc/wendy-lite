@@ -1031,13 +1031,13 @@ esp_err_t wendy_core_init(void)
         err = wendy_net_peer_boot_radios(&boot_ble, &boot_wifi);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Wendy Net boot radios: %s", esp_err_to_name(err));
-            return err;
+            return WENDY_CORE_ERR_NET_STARTUP;
         }
 #if CONFIG_WENDY_NET_SELECT_RADIO_AT_BOOT
         err = set_boot_radios(boot_ble, boot_wifi);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "boot radio selection: %s", esp_err_to_name(err));
-            return err;
+            return WENDY_CORE_ERR_NET_STARTUP;
         }
 #endif
     }
@@ -1135,7 +1135,7 @@ esp_err_t wendy_core_init(void)
     err = wendy_net_peer_start();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Wendy Net start: %s", esp_err_to_name(err));
-        return err;
+        return WENDY_CORE_ERR_NET_STARTUP;
     }
 #endif
 

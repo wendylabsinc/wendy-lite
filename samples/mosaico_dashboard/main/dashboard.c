@@ -553,8 +553,13 @@ void app_main(void)
     mosaico_diagnostics_stage("starting Wendy services", ESP_OK);
     esp_err_t result = wendy_core_init();
     if (result != ESP_OK) {
-        mosaico_diagnostics_stage("Wendy startup failed", result);
-        ESP_LOGE(TAG, "Wendy startup failed: %s", esp_err_to_name(result));
+        if (result == WENDY_CORE_ERR_NET_STARTUP) {
+            mosaico_diagnostics_stage("Wendy Net startup failed", result);
+            ESP_ERROR_CHECK(result);
+        } else {
+            mosaico_diagnostics_stage("Wendy startup failed", result);
+            ESP_LOGE(TAG, "Wendy startup failed: %s", esp_err_to_name(result));
+        }
         return;
     }
     /* wendy_core_init() has started Wendy Net. */

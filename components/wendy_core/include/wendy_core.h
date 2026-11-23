@@ -8,6 +8,9 @@
 extern "C" {
 #endif
 
+/// Wendy Net boot policy or peer initialization failed. The core logs the cause.
+#define WENDY_CORE_ERR_NET_STARTUP ((esp_err_t)0x10000000)
+
 /// This is the heart of Wendy Lite. It brings up all main peripherals and the
 /// Wendy communication channel: PKI, BLE and Wi-Fi (with the radios that the
 /// saved Wendy Net settings select), the services and, when
