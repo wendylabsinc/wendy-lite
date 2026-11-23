@@ -6,6 +6,7 @@ typedef struct
 } cJSON;
 cJSON *cJSON_CreateObject(void);
 cJSON *cJSON_AddStringToObject(cJSON *, const char *, const char *);
+cJSON *cJSON_AddBoolToObject(cJSON *, const char *, int);
 char *cJSON_PrintUnformatted(const cJSON *);
 cJSON *cJSON_ParseWithLength(const char *, size_t);
 cJSON *cJSON_GetObjectItemCaseSensitive(const cJSON *, const char *);

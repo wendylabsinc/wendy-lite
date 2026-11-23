@@ -27,7 +27,6 @@
 #include <stdatomic.h>
 #include <mbedtls/platform.h>
 #include <mbedtls/md.h>
-#include <mbedtls/oid.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -244,25 +243,6 @@ static void issuer_available(struct pki_issuer_state *s, const uint8_t hash[32])
     if (s->available_count < 24)
         memcpy(s->available[s->available_count++], hash, 16);
 }
-static bool self_issued(const mbedtls_x509_crt *crt)
-{
-    return crt->subject_raw.len == crt->issuer_raw.len &&
-           !memcmp(crt->subject_raw.p, crt->issuer_raw.p, crt->subject_raw.len);
-}
-
-static bool lite_device_ca(const mbedtls_x509_crt *crt, const char *tenant)
-{
-    static const char suffix[] = " Lite Device CA";
-    if (!tenant || !crt->MBEDTLS_PRIVATE(ca_istrue))
-        return false;
-    for (const mbedtls_x509_name *name = &crt->subject; name; name = name->next)
-        if (!MBEDTLS_OID_CMP(MBEDTLS_OID_AT_CN, &name->oid) &&
-            name->val.len == 36 + sizeof suffix - 1 && !memcmp(name->val.p, tenant, 36) &&
-            !memcmp(name->val.p + 36, suffix, sizeof suffix - 1))
-            return true;
-    return false;
-}
-
 static void release_lite_issuers(wendy_pki_connection *c)
 {
     if (c->lite_peer_issuers) {
@@ -287,9 +267,6 @@ static int seed_lite_issuers(wendy_pki_connection *c, struct pki_tls_owned_ident
     if (pki_parse_certificate_bundle(c->lite_peer_issuers, c->lite_issuer_der,
                                      owned->lite_issuer_size, true))
         return -1;
-    for (mbedtls_x509_crt *issuer = c->lite_peer_issuers; issuer; issuer = issuer->next)
-        if (!issuer->MBEDTLS_PRIVATE(ca_istrue) || self_issued(issuer))
-            return -1;
     return 0;
 }
 
@@ -299,14 +276,14 @@ static void prepare_leaf_offers(wendy_pki_connection *c, struct pki_issuer_state
     const struct pki_presented_chain *source = c->presented_chain;
     if (!source || !tenant)
         return;
-    state->accepts_lite = c->lite_peer_issuers && lite_device_ca(c->lite_peer_issuers, tenant);
+    state->accepts_lite = c->lite_peer_issuers != NULL;
     for (mbedtls_x509_crt *root = &c->roots; root && root->raw.len; root = root->next) {
-        if (self_issued(root) && lite_device_ca(root, tenant)) {
+        if (pki_certificate_self_issued(root) && pki_lite_device_ca(root, tenant)) {
             state->accepts_lite = true;
             if (matching_issuer(&c->certificate, root))
                 state->classical = true;
         }
-        if (self_issued(root))
+        if (pki_certificate_self_issued(root))
             continue;
         uint8_t hash[32];
         if (wendy_pki_sha256(root->raw.p, root->raw.len, hash))
@@ -534,7 +511,8 @@ static bool classical_identity(wendy_pki_connection *c, const char *tenant)
     if (!tenant || !c->presented_chain)
         return false;
     for (mbedtls_x509_crt *root = &c->roots; root && root->raw.len; root = root->next)
-        if (self_issued(root) && lite_device_ca(root, tenant) && matching_issuer(&c->certificate, root))
+        if (pki_certificate_self_issued(root) && pki_lite_device_ca(root, tenant) &&
+            matching_issuer(&c->certificate, root))
             return true;
     return false;
 }
@@ -543,6 +521,8 @@ static int configure_mesh_alpn_for_tenant(wendy_pki_connection *c, const char *c
                                          const char *tenant, bool mesh_link)
 {
     bool recovering = pki_issuer_recovery_active(&pki_issuer_process_recovery, esp_timer_get_time());
+    if (c->lite_peer_issuers && !pki_lite_issuer_path(c->lite_peer_issuers, tenant))
+        release_lite_issuers(c);
     bool classical = classical_identity(c, tenant);
     bool constrained_native = false;
 #if CONFIG_WENDY_NET_CONSTRAINED_PROFILE
@@ -1409,7 +1389,7 @@ static int configure_direct(wendy_pki_connection *c, int server, const uint8_t *
         owned->public_chain = NULL;
     }
     if (seed_lite_issuers(c, owned))
-        return configure_failed("provisioned Lite intermediates", MBEDTLS_ERR_X509_BAD_INPUT_DATA);
+        release_lite_issuers(c);
     release_identity_input(owned);
     /* Prefer one final-sized input allocation over a 16KiB buffer followed
      * by a simultaneous 24KiB replacement during certificate reassembly. */

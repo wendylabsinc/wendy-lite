@@ -152,7 +152,7 @@ void wendy_conf_get_enrolled_ids(char tenant[37], char device[65]);
 #define WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE 32768
 #define WENDY_CONF_MAX_ENROLLMENT_DATA 65536
 struct wendy_conf_enrollment_data {
-    struct wendy_conf_span signed_time, device_roots, tsa_roots, https_roots, lite_device_intermediates;
+    struct wendy_conf_span signed_time, device_roots, tsa_roots, https_roots;
     uint8_t *storage;
     /* Boot-local generation of this owned DER snapshot. */
     uint64_t generation;
@@ -176,9 +176,6 @@ esp_err_t wendy_conf_copy_enrollment_der(WendyConfEnrollment *config,
  * for service TLS using the already established system clock. */
 esp_err_t wendy_conf_copy_device_trust(WendyConfEnrollment *config,
                                      struct wendy_conf_enrollment_data *data);
-/* Mesh trust adds the untrusted, locally provisioned Lite issuer candidates. */
-esp_err_t wendy_conf_copy_mesh_trust(WendyConfEnrollment *config,
-                                    struct wendy_conf_enrollment_data *data);
 /* A separate owned allocation preserves the device-root snapshot layout. */
 esp_err_t wendy_conf_copy_lite_intermediates(uint64_t generation, uint8_t **der, size_t *size);
 /* Replace the mesh-only trust snapshot for the current enrolled identity. */

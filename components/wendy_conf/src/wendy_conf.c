@@ -661,8 +661,7 @@ enum enrollment_selection {
     ENROLLMENT_TSA_ROOTS = 1U << 2,
     ENROLLMENT_HTTPS_ROOTS = 1U << 3,
     ENROLLMENT_ALL = (1U << 4) - 1,
-    ENROLLMENT_LITE_INTERMEDIATES = 1U << 4,
-    ENROLLMENT_USE_MESH_TRUST = 1U << 5,
+    ENROLLMENT_USE_MESH_TRUST = 1U << 4,
 };
 
 /* Store the DER bundle as one NVS record, bound to the enrolled tenant and
@@ -781,44 +780,36 @@ static esp_err_t copy_enrollment(WendyConfEnrollment *config,
     if (!config || !data)
         return ESP_ERR_INVALID_ARG;
     esp_err_t result = ESP_ERR_INVALID_STATE;
-    struct mesh_trust_record *mesh_roots = NULL, *mesh_issuers = NULL;
+    struct mesh_trust_record *mesh_roots = NULL;
     memset(config, 0, sizeof *config);
     memset(data, 0, sizeof *data);
     pthread_mutex_lock(&s_cache_lock);
     if (s_cache.valid && s_cache.conf.has_enrollment) {
         struct wendy_conf_span spans[] = {s_cache.enrollment_time, s_cache.device_roots,
-                                         s_cache.tsa_roots, s_cache.https_roots,
-                                         s_cache.lite_device_intermediates};
+                                         s_cache.tsa_roots, s_cache.https_roots};
         struct wendy_conf_span *copies[] = {&data->signed_time, &data->device_roots,
-                                          &data->tsa_roots, &data->https_roots,
-                                          &data->lite_device_intermediates};
+                                          &data->tsa_roots, &data->https_roots};
         /* Partial snapshots must not hide forbidden runtime trust in another
          * domain. The encoded API keeps its existing import policy. */
         if (der && !s_cache.conf.enrollment.provision_trust &&
-            (spans[1].size || spans[2].size || spans[3].size || spans[4].size))
+            (spans[1].size || spans[2].size || spans[3].size || s_cache.lite_device_intermediates.size))
             goto done;
         if (selection & ENROLLMENT_USE_MESH_TRUST) {
-            size_t root_size = 0, issuer_size = 0;
+            size_t root_size = 0;
             result = read_mesh_trust(false, &mesh_roots, &root_size);
             if (result != ESP_OK)
                 goto done;
             if (mesh_roots)
                 spans[1] = (struct wendy_conf_span){mesh_roots->der, root_size};
-            if (selection & ENROLLMENT_LITE_INTERMEDIATES)
-                result = read_mesh_trust(true, &mesh_issuers, &issuer_size);
-            if (result != ESP_OK)
-                goto done;
-            if (mesh_issuers)
-                spans[4] = (struct wendy_conf_span){mesh_issuers->der, issuer_size};
         }
-        size_t total = 0, source_total = 0, sizes[5] = {0};
+        size_t total = 0, source_total = 0, sizes[4] = {0};
         result = ESP_ERR_INVALID_SIZE;
-        for (size_t i = 0; i < 5; i++) {
+        for (size_t i = 0; i < 4; i++) {
             if (!(selection & (1U << i))) {
                 spans[i] = (struct wendy_conf_span){0};
                 continue;
             }
-            size_t limit = (i == 1 || i == 4) ? WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE
+            size_t limit = i == 1 ? WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE
                              : i ? WENDY_CONF_MAX_TRUST_BUNDLE : WENDY_CONF_MAX_ENROLLMENT_DATA;
             if (spans[i].size > limit ||
                 spans[i].size > WENDY_CONF_MAX_ENROLLMENT_DATA - source_total)
@@ -862,7 +853,7 @@ static esp_err_t copy_enrollment(WendyConfEnrollment *config,
             goto done;
         }
         size_t offset = 0;
-        for (size_t i = 0; i < 5; i++) {
+        for (size_t i = 0; i < 4; i++) {
             if (!spans[i].size)
                 continue;
             if (i == 1 && take_roots) {
@@ -898,7 +889,6 @@ static esp_err_t copy_enrollment(WendyConfEnrollment *config,
     }
 done:
     free(mesh_roots);
-    free(mesh_issuers);
     if (result != ESP_OK) {
         free(data->storage);
         memset(data, 0, sizeof *data);
@@ -923,14 +913,6 @@ esp_err_t wendy_conf_copy_device_trust(WendyConfEnrollment *config,
     struct wendy_conf_enrollment_data *data)
 {
     return copy_enrollment(config, data, ENROLLMENT_DEVICE_ROOTS | ENROLLMENT_USE_MESH_TRUST, true);
-}
-
-esp_err_t wendy_conf_copy_mesh_trust(WendyConfEnrollment *config,
-                                     struct wendy_conf_enrollment_data *data)
-{
-    return copy_enrollment(config, data, ENROLLMENT_DEVICE_ROOTS | ENROLLMENT_LITE_INTERMEDIATES |
-                           ENROLLMENT_USE_MESH_TRUST,
-                           true);
 }
 
 esp_err_t wendy_conf_copy_lite_intermediates(uint64_t generation, uint8_t **der, size_t *size)

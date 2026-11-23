@@ -63,6 +63,7 @@ target_link_libraries(crypto_test PRIVATE pki)
 add_executable(verify_test verify_test.c)
 target_link_libraries(verify_test PRIVATE pki)
 add_executable(renewal_test renewal_test.c)
+target_compile_definitions(renewal_test PRIVATE WENDY_PKI_RENEWAL_MESH_HOST_TEST=1)
 target_include_directories(renewal_test PRIVATE ../../wendy_net_common/include stubs ../include ../src
     ../../wendy_conf/include ../../nanopb)
 target_sources(renewal_test PRIVATE ../src/wendy_pki_clock_observation.c ../src/wendy_pki_certificate_time.c ../src/wendy_pki_crypto.c)
