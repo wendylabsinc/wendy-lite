@@ -262,15 +262,17 @@ esp_err_t wn_settings_init(void)
             }
             nvs_close(h);
         }
+        static const struct wcom_net_delegate delegate = {
+            .get = get,
+            .set = set,
+            .reply_complete = reply_complete,
+            .topology = topology,
+            .topology_release = wnt_page_release,
+        };
+        wcom_cmd_set_net_delegate(&delegate);
         loaded = true;
     }
     pthread_mutex_unlock(&lock);
-    static const struct wcom_net_delegate delegate = {.get = get,
-                                                      .set = set,
-                                                      .reply_complete = reply_complete,
-                                                      .topology = topology,
-                                                      .topology_release = wnt_page_release};
-    wcom_cmd_set_net_delegate(&delegate);
     return ESP_OK;
 }
 esp_err_t wendy_net_peer_boot_radios(bool *ble, bool *wifi)
