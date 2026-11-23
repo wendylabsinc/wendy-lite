@@ -105,8 +105,8 @@ Choose the trade-off for the board's role. A sensor that is reached over
 Wi-Fi should append `boards/no-ble.defaults`; it then cannot be discovered or
 reached over BLE. A board that must stay reachable over BLE keeps Bluetooth
 and accepts fewer simultaneous TLS connections. At boot the firmware logs
-`bluetooth on` or `off` with its free internal heap, and warns when a board
-without PSRAM keeps Bluetooth on.
+`Bluetooth built in: yes` or `Bluetooth built in: no` with its free internal
+heap, and warns when Bluetooth is compiled in on a board without PSRAM.
 
 ## Supported Hardware
 
