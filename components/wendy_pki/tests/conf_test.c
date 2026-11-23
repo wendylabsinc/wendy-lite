@@ -525,6 +525,7 @@ static void test_der_snapshots(const char *fixtures)
     assert(device.generation == full.generation);
     assert_source_hash(&device, pem, pem_size);
     assert_span(device.device_roots, der, der_size);
+    assert(device.device_roots.data == device.storage && device.storage[der_size] == 0);
     assert_span(device.tsa_roots, NULL, 0);
     assert_span(device.https_roots, NULL, 0);
     assert_span(device.signed_time, NULL, 0);
@@ -560,6 +561,7 @@ static void test_der_snapshots(const char *fixtures)
     assert(!wendy_conf_snapshot_current(full.generation));
     assert(wendy_conf_copy_device_trust(&cfg, &next) == ESP_OK);
     assert_span(next.device_roots, der, der_size);
+    assert(next.device_roots.data == next.storage && next.storage[der_size] == 0);
     assert_source_hash(&next, der, der_size);
     uint64_t mesh_generation = next.generation;
     free(next.storage);

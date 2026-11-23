@@ -163,8 +163,9 @@ struct wendy_conf_enrollment_data {
 };
 /* All snapshot functions require non-NULL outputs, replace their contents,
  * and return empty data on failure. Free a previous snapshot before reuse.
- * Callers free storage. The historical name is a thin DER snapshot wrapper;
- * every trust span carries an explicit concatenated-DER byte length. */
+ * Callers free storage, which has a trailing NUL after the final nonempty
+ * span. The historical name is a thin DER snapshot wrapper; every trust span
+ * carries an explicit concatenated-DER byte length. */
 esp_err_t wendy_conf_copy_enrollment(WendyConfEnrollment *, struct wendy_conf_enrollment_data *);
 /* DER snapshot callers free data->storage. Trust spans contain concatenated DER.
  * All spans survive configuration writes. PEM is decoded from mapped flash at

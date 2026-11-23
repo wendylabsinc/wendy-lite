@@ -865,6 +865,8 @@ static esp_err_t copy_enrollment(WendyConfEnrollment *config,
                 goto done;
             total += sizes[i];
         }
+        _Static_assert(WENDY_CONF_MAX_ENROLLMENT_DATA < SIZE_MAX,
+                       "enrollment snapshot must leave room for a trailing NUL");
         if (der && spans[1].size) {
             size_t hashed = 0;
             if (psa_crypto_init() != PSA_SUCCESS ||
@@ -876,14 +878,15 @@ static esp_err_t copy_enrollment(WendyConfEnrollment *config,
             }
         }
         /* Reuse the NVS allocation on the classical profile's common
-         * roots-only path. No second copy of the pins is needed on C6. */
+         * roots-only path. Moving the DER over the record header leaves
+         * room for the trailing NUL. No second copy of the pins is needed. */
         bool take_roots = mesh_roots && total == sizes[1] && sizes[1] == spans[1].size;
         if (take_roots) {
             memmove(mesh_roots, mesh_roots->der, total);
             data->storage = (uint8_t *)mesh_roots;
             mesh_roots = NULL;
         } else {
-            data->storage = total ? malloc(total) : NULL;
+            data->storage = total ? malloc(total + 1) : NULL;
         }
         if (total && !data->storage) {
             result = ESP_ERR_NO_MEM;
@@ -912,6 +915,8 @@ static esp_err_t copy_enrollment(WendyConfEnrollment *config,
             *copies[i] = (struct wendy_conf_span){data->storage + offset, sizes[i]};
             offset += sizes[i];
         }
+        if (total)
+            data->storage[total] = 0;
         *config = s_cache.conf.enrollment;
         memset(&config->signed_time, 0, sizeof config->signed_time);
         memset(&config->device_roots, 0, sizeof config->device_roots);
