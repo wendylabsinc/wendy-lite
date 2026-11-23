@@ -960,16 +960,16 @@ esp_err_t wendy_core_init(void)
 #endif
 
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "  Wendy MCU Firmware v%d.%d.%d",
-             CONFIG_WENDY_FIRMWARE_VERSION_MAJOR,
-             CONFIG_WENDY_FIRMWARE_VERSION_MINOR,
-             CONFIG_WENDY_FIRMWARE_VERSION_PATCH);
+    /* CONFIG_WENDY_VERSION: the version that get_device_info reports. */
+    ESP_LOGI(TAG, "  Wendy Lite");
+    ESP_LOGI(TAG, "  Version: %s",
+             CONFIG_WENDY_VERSION[0] != '\0' ? CONFIG_WENDY_VERSION : "unknown");
+    ESP_LOGI(TAG, "  Target: %s", CONFIG_IDF_TARGET);
 #if CONFIG_WENDY_WASM
     ESP_LOGI(TAG, "  WASM Runtime: WAMR (C)");
 #else
     ESP_LOGI(TAG, "  Runtime: native applications");
 #endif
-    ESP_LOGI(TAG, "  Target: %s", CONFIG_IDF_TARGET);
     ESP_LOGI(TAG, "========================================");
 
     esp_vfs_eventfd_config_t cfg = ESP_VFS_EVENTD_CONFIG_DEFAULT();
