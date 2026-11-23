@@ -35,7 +35,8 @@ enum scenario {
     KEYSET_BAD_RECORD,
     KEYSET_BAD_COUNT,
     KEYSET_TIMEOUT,
-    KEYSET_CONN_RESET
+    KEYSET_CONN_RESET,
+    KEYSET_RECV_FAILED
 };
 static enum scenario scenario;
 static int64_t now, fetch_cost;
@@ -62,6 +63,8 @@ static int keyset_read(unsigned char *out, size_t size)
         return MBEDTLS_ERR_SSL_FATAL_ALERT_MESSAGE;
     case KEYSET_CONN_RESET:
         return MBEDTLS_ERR_NET_CONN_RESET;
+    case KEYSET_RECV_FAILED:
+        return MBEDTLS_ERR_NET_RECV_FAILED;
     case KEYSET_BAD_RECORD:
         assert(size == 4);
         memcpy(out, "WR\x03\x09", 4);
@@ -181,6 +184,8 @@ static const char *expected_cause(enum scenario which)
         return "invalid key set";
     case KEYSET_CONN_RESET:
         return "connection reset";
+    case KEYSET_RECV_FAILED:
+        return "socket receive error";
     default:
         return NULL;
     }
@@ -197,6 +202,7 @@ static void run_keyset(enum scenario which)
     assert(wendy_pki_relay_upgrade(&connection, &trust) == WENDY_PKI_RELAY_FAILED);
     assert(connection.control_failure && !strcmp(connection.control_failure, expected_cause(which)));
     assert(which != KEYSET_ALERT || connection.control_error == MBEDTLS_ERR_SSL_FATAL_ALERT_MESSAGE);
+    assert(which != KEYSET_RECV_FAILED || connection.control_error == MBEDTLS_ERR_NET_RECV_FAILED);
     assert(which != KEYSET_TIMEOUT || now >= 10000000);
 }
 static void run(enum scenario which, int expected)
@@ -278,6 +284,7 @@ int main(void)
     run_keyset(KEYSET_BAD_COUNT);
     run_keyset(KEYSET_TIMEOUT);
     run_keyset(KEYSET_CONN_RESET);
+    run_keyset(KEYSET_RECV_FAILED);
     puts("PASS open control connection, hourly time fetch, planned stop, failure deadlines, "
          "failure causes and detached handoff");
 }

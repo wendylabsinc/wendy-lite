@@ -2735,6 +2735,10 @@ static int control_read_failed(wendy_pki_connection *c, int result)
     case READ_ALL_SOCKET:
         c->control_failure = "socket error";
         break;
+    case MBEDTLS_ERR_NET_RECV_FAILED:
+        c->control_failure = "socket receive error";
+        c->control_error = result;
+        break;
     case MBEDTLS_ERR_NET_CONN_RESET:
         c->control_failure = "connection reset";
         break;
