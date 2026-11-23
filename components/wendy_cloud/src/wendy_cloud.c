@@ -21,20 +21,28 @@ static pthread_mutex_t s_start_lock = PTHREAD_MUTEX_INITIALIZER;
 unsigned wendy_cloud_connect_failures(void) { return atomic_load(&s_failures); }
 void wendy_cloud_reset_failures(void) { atomic_store(&s_failures, 0); }
 static TaskHandle_t s_task;
-static SemaphoreHandle_t s_stopped, s_wake;
+static SemaphoreHandle_t s_stopped;
+/* This binary semaphore coalesces notifications and lives for the firmware lifetime.
+ * The Wi-Fi event task can signal it as soon as cloud_start_locked publishes it. */
+static _Atomic(SemaphoreHandle_t) s_wake;
 static pthread_mutex_t s_connection_lock = PTHREAD_MUTEX_INITIALIZER;
 static int s_outer_fd = -1;
+static void signal_wake(void)
+{
+    SemaphoreHandle_t wake = atomic_load(&s_wake);
+    if (wake) xSemaphoreGive(wake);
+}
 void wendy_cloud_network_changed(void)
 {
     pthread_mutex_lock(&s_connection_lock);
     if (s_outer_fd >= 0) shutdown(s_outer_fd, SHUT_RDWR);
     pthread_mutex_unlock(&s_connection_lock);
-    if (s_wake) xSemaphoreGive(s_wake);
+    signal_wake();
 }
 void wendy_cloud_wake(void)
 {
 #if CONFIG_WENDY_CLOUD_TUNNEL
-    if (s_wake) xSemaphoreGive(s_wake);
+    signal_wake();
 #endif
 }
 
@@ -60,6 +68,7 @@ void wendy_cloud_wake(void)
 static void cloud_task(void *unused)
 {
     (void)unused;
+    SemaphoreHandle_t wake = atomic_load(&s_wake);
 #if CONFIG_WENDY_CLOUD_TUNNEL
     const unsigned base_delay = CONFIG_WENDY_CLOUD_RECONNECT_DELAY_MS;
     const unsigned max_delay = base_delay > CLOUD_RECONNECT_MAX_DELAY_MS ? base_delay
@@ -106,7 +115,7 @@ static void cloud_task(void *unused)
             if (stayed_up)
                 delay = base_delay;
             /* A new IP address wakes the wait and makes the next delay short. */
-            bool woken = xSemaphoreTake(s_wake, pdMS_TO_TICKS(delay)) == pdTRUE;
+            bool woken = xSemaphoreTake(wake, pdMS_TO_TICKS(delay)) == pdTRUE;
             delay = woken ? base_delay : (delay > max_delay / 2 ? max_delay : delay * 2);
         } else {
             delay = base_delay;
@@ -120,7 +129,7 @@ static void cloud_task(void *unused)
             atomic_fetch_add(&s_failures, 1);
         s_state = WENDY_CLOUD_STATE_DISCONNECTED;
         if (!s_stop)
-            xSemaphoreTake(s_wake,
+            xSemaphoreTake(wake,
                            pdMS_TO_TICKS(checked ? CLOUD_CHECK_PERIOD_MS : CLOUD_CHECK_RETRY_MS));
 #endif
     }
@@ -135,10 +144,16 @@ static esp_err_t cloud_start_locked(void)
     if (s_task) return ESP_OK;
     if (!wendy_conf_has_enrollment()) return ESP_ERR_INVALID_STATE;
     if (!s_stopped) s_stopped = xSemaphoreCreateBinary();
-    if (!s_wake) s_wake = xSemaphoreCreateBinary();
-    if (!s_stopped || !s_wake) return ESP_ERR_NO_MEM;
+    if (!s_stopped) return ESP_ERR_NO_MEM;
+    SemaphoreHandle_t wake = atomic_load(&s_wake);
+    if (wake) {
+        xSemaphoreTake(wake, 0);
+    } else {
+        wake = xSemaphoreCreateBinary();
+        if (!wake) return ESP_ERR_NO_MEM;
+        atomic_store(&s_wake, wake);
+    }
     xSemaphoreTake(s_stopped, 0);
-    xSemaphoreTake(s_wake, 0);
     s_stop = false;
     if (xTaskCreatePinnedToCore(cloud_task, "wendy_cloud", CONFIG_WENDY_CLOUD_TASK_STACK_SIZE,
         NULL, CONFIG_WENDY_CLOUD_TASK_PRIORITY, &s_task, CONFIG_WENDY_CLOUD_TASK_CORE_AFFINITY) != pdPASS) {
