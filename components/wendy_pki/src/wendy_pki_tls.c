@@ -512,7 +512,6 @@ static int select_server_issuers(mbedtls_ssl_context *ssl)
         const char *protocol = mbedtls_ssl_get_alpn_protocol(ssl);
         size_t leaf = recovering || !protocol ? 0 : pki_leaf_select(s, protocol, hello, size);
         size_t selected = leaf ? leaf : recovering ? 0 : pki_issuer_select(s, hello, size);
-        s->hinted = selected != 0;
         if (selected) {
             ssl->MBEDTLS_PRIVATE(alpn_chosen) = s->hint;
             ssl->MBEDTLS_PRIVATE(wendy_alpn_chosen_length) = selected;
@@ -564,7 +563,6 @@ static int configure_mesh_alpn_for_tenant(wendy_pki_connection *c, const char *c
         if (pki_issuer_protocols(c->issuers, protocols[0]))
             return -1;
         if (c->config.MBEDTLS_PRIVATE(endpoint) == MBEDTLS_SSL_IS_CLIENT) {
-            c->issuers->hinted = true;
             int result = mbedtls_ssl_conf_alpn_protocols(&c->config, c->issuers->protocols);
             c->config.MBEDTLS_PRIVATE(wendy_alpn_lengths) = c->issuers->protocol_lengths;
             return result;
@@ -923,7 +921,10 @@ static int handshake_step_direct(wendy_pki_connection *c, bool compact_server)
         issuer_omit_status(c);
     }
     int result = mbedtls_ssl_handshake_step(&c->ssl);
-    if (result == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED && issuers && issuers->hinted) {
+    if (result == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED && issuers &&
+        pki_issuer_shortened(issuers->application,
+            (const uint8_t *)mbedtls_ssl_get_alpn_protocol(&c->ssl),
+            c->ssl.MBEDTLS_PRIVATE(wendy_alpn_chosen_length))) {
         uint32_t flags = mbedtls_ssl_get_verify_result(&c->ssl);
         /* Date, usage, identity, revocation and other policy flags exclude
          * recovery. Generic peer alerts and transport errors never arm it. */

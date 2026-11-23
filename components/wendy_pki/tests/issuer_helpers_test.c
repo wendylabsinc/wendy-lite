@@ -67,6 +67,8 @@ int main(void)
         assert(!pki_issuer_failure_recoverable(excluded[i] | MBEDTLS_X509_BADCERT_NOT_TRUSTED));
     }
     const char *service = "wendy-local-mesh-ble/2";
+    assert(!pki_issuer_shortened(service, NULL, 0));
+    assert(!pki_issuer_shortened(service, (const uint8_t *)service, strlen(service)));
     struct pki_issuer_state client = {.chain_count = 3}, server = {0};
     for (unsigned i = 0; i < 3; i++) {
         uint8_t input = (uint8_t)i, hash[32];
@@ -85,6 +87,7 @@ int main(void)
     memcpy(server.available, client.chain, 2 * 16);
     size_t selected = pki_issuer_select(&server, hello, at);
     assert(selected == strlen(service) + 5 + 2 * 16);
+    assert(pki_issuer_shortened(service, (const uint8_t *)server.hint, selected));
     assert(pki_issuer_ack_has((const uint8_t *)server.hint, selected, service, client.chain[0]));
     assert(pki_issuer_ack_has((const uint8_t *)server.hint, selected, service, client.chain[1]));
     assert(!pki_issuer_ack_has((const uint8_t *)server.hint, selected, service, client.chain[2]));
@@ -96,6 +99,8 @@ int main(void)
     at = client_hello(hello, &classical);
     selected = pki_leaf_select(&regular, service, hello, at);
     assert(selected == strlen(service) + 22);
+    assert(pki_issuer_shortened(service, (const uint8_t *)regular.hint, selected));
+    assert(!pki_issuer_shortened(service, (const uint8_t *)regular.hint, selected - 1));
     assert(pki_leaf_selected(&classical, (const uint8_t *)regular.hint, selected));
     assert(pki_issuer_select(&regular, hello, at) == 0);
     memcpy(regular.issuing_ca, client.chain[1], 16);

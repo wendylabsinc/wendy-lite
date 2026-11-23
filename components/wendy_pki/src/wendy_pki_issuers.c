@@ -306,6 +306,17 @@ bool pki_leaf_selected(const struct pki_issuer_state *s, const uint8_t *name, si
     return kind == REGULAR_CLIENT && s->accepts_lite && s->has_issuer &&
            !memcmp(s->issuing_ca, issuer, 16);
 }
+
+bool pki_issuer_shortened(const char *app, const uint8_t *name, size_t length)
+{
+    if (!name)
+        return false;
+    const uint8_t *hashes;
+    unsigned count;
+    int leaf = leaf_offer_kind(app, name, length, &hashes);
+    return leaf == CLASSICAL_CLIENT || leaf == REGULAR_CLIENT ||
+           decode_issuer_protocol(name, length, app, &hashes, &count);
+}
 struct issuer_selection {
     struct pki_issuer_state *state;
     unsigned count;

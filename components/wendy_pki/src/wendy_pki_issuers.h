@@ -31,7 +31,7 @@ struct pki_issuer_state {
     unsigned char cached_hint[3][17 + PKI_ISSUER_CHAIN_MAX * 16];
     unsigned peer_presented_certificates;
     size_t peer_der_bytes;
-    bool omit, hinted;
+    bool omit;
     unsigned known_count;
     struct mbedtls_x509_crt *known[16], *owned[16];
     uint8_t *der[16];
@@ -56,6 +56,7 @@ bool pki_issuer_peer_has(const uint8_t *, size_t, const char *, const uint8_t[16
 bool pki_issuer_ack_has(const uint8_t *, size_t, const char *, const uint8_t[16]);
 size_t pki_leaf_select(struct pki_issuer_state *, const char *, const uint8_t *, size_t);
 bool pki_leaf_selected(const struct pki_issuer_state *, const uint8_t *, size_t);
+bool pki_issuer_shortened(const char *application, const uint8_t *, size_t);
 
 bool pki_certificate_message_last(const uint8_t *, size_t, const uint8_t **, size_t *);
 
