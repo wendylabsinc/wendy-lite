@@ -133,8 +133,8 @@ and example chat/UDP programs emit application/debug text, not a Wendy Net
 control protocol. Standard USB, BLE, DNS, Wi-Fi, IPv6, TCP, UDP, HTTP and TLS
 headers remain the responsibility of their respective SDK implementations.
 
-Implementation entry points: [management schema](../components/wendy_com/proto/wendy_com_msg.proto),
-[SensorLink schema](../components/wendy_com/proto/sensorlink.proto),
+Implementation entry points: [management schema](https://github.com/wendylabsinc/service-protos/blob/main/wendylite/v1/wendy_com_msg.proto),
+[SensorLink schema](https://github.com/wendylabsinc/service-protos/blob/main/wendylite/v1/sensorlink.proto),
 [relay schema](../go/proto/wendy_com_relay_service.proto),
 [mesh codecs](../components/wendy_net_peer/src),
 [Babel codec](../components/wendy_babel/src/wire.c),

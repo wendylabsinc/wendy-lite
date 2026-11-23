@@ -4,15 +4,22 @@ regenerate protobuf code from every proto file listed in PROTO_TARGETS.
 
 Usage:
     python tools/update_protobuf.py [--version X.Y.Z]
+    python tools/update_protobuf.py --shared-contracts-only
+    python tools/update_protobuf.py --check-shared-contracts
 
 Requirements:
-  - protoc:         brew install protobuf  OR  pip install grpcio-tools
-  - protoc-gen-go:  go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+  - buf 1.75.0 and protoc 34.0
+  - Python protobuf: python -m pip install protobuf==7.34.0
+  - protoc-gen-go: go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+  - protoc-gen-go-grpc (full generation only):
+      go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
 """
 
 import argparse
+import filecmp
 import io
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -37,18 +44,20 @@ RUNTIME_FILES = [
     "pb_decode.h",  "pb_decode.c",
 ]
 
-# (proto path, output header, output source)  — all relative to repo root
-PROTO_TARGETS = [
+# (proto path, output header, output source)
+SHARED_PROTO_TARGETS = [
     (
-        "components/wendy_com/proto/wendy_com_msg.proto",
+        "wendylite/v1/wendy_com_msg.proto",
         "components/wendy_com/include/wendy_com_msg.pb.h",
         "components/wendy_com/src/wendy_com_msg.pb.c",
     ),
     (
-        "components/wendy_com/proto/sensorlink.proto",
+        "wendylite/v1/sensorlink.proto",
         "components/wendy_com/include/sensorlink.pb.h",
         "components/wendy_com/src/sensorlink.pb.c",
     ),
+]
+PROTO_TARGETS = [
     (
         "components/wendy_conf/proto/wendy_conf.proto",
         "components/wendy_conf/include/wendy_conf.pb.h",
@@ -70,21 +79,25 @@ SENSORLINK_GO_PKG = (
 # The last element names the Go package of protos that are imported but not
 # generated here: no code is emitted for them, but protoc-gen-go still has to
 # know which package the generated code should import them from.
-GO_TARGETS = [
+SHARED_GO_TARGETS = [
     (
-        ["components/wendy_com/proto/wendy_com_msg.proto"],
+        "wendylite/v1",  # Keep the existing WendyCom descriptor filename.
+        ["wendy_com_msg.proto"],
         "go/console/wendypb",
         "github.com/wendylabsinc/wendy/go/proto/gen/litepb;litepb",
         False,
-        {"sensorlink.proto": SENSORLINK_GO_PKG},
+        {"wendylite/v1/sensorlink.proto": SENSORLINK_GO_PKG},
     ),
     (
-        ["components/wendy_com/proto/sensorlink.proto"],
+        ".",
+        ["wendylite/v1/sensorlink.proto"],
         "go/console/sensorlinkpb",
         SENSORLINK_GO_PKG,
         False,
         {},
     ),
+]
+GO_TARGETS = [
     (
         ["components/wendy_conf/proto/wendy_conf.proto"],
         "go/console/wendypb",
@@ -157,7 +170,7 @@ def populate_runtime(buf, version, dest):
     print(f"  Wrote {len(RUNTIME_FILES)} files → {rel}/")
 
 
-def generate(buf, version, proto_rel, out_h_rel, out_c_rel, root):
+def generate(buf, version, proto_rel, out_h_rel, out_c_rel, root, *, shared_root=None):
     """Extract the nanopb generator from the tarball and run it."""
     strip = f"nanopb-{version}/"
 
@@ -175,15 +188,16 @@ def generate(buf, version, proto_rel, out_h_rel, out_c_rel, root):
         out_dir   = os.path.join(tmp, "out")
         os.makedirs(out_dir)
 
-        proto_abs  = os.path.join(root, proto_rel)
-        proto_dir  = os.path.dirname(proto_abs)
-        proto_base = os.path.splitext(os.path.basename(proto_abs))[0]
+        proto_dir = shared_root or os.path.dirname(os.path.join(root, proto_rel))
+        proto_name = proto_rel if shared_root else os.path.basename(proto_rel)
+        proto_base = os.path.splitext(proto_name)[0]
 
         # Run from proto_dir so the generator finds <proto_base>.options
         # automatically (it searches for it alongside the proto file).
-        cmd = [sys.executable, generator,
-               f"--output-dir={out_dir}",
-               os.path.basename(proto_abs)]
+        cmd = [sys.executable, generator, f"--output-dir={out_dir}"]
+        if shared_root:
+            cmd += ["--strip-path", "--error-on-unmatched"]
+        cmd.append(proto_name)
 
         print(f"  Generating {proto_base}.pb.{{h,c}} …")
         r = subprocess.run(cmd, capture_output=True, text=True, cwd=proto_dir)
@@ -199,18 +213,23 @@ def generate(buf, version, proto_rel, out_h_rel, out_c_rel, root):
                 )
             sys.exit(f"Generator failed:\n{output}")
 
-        shutil.copy(os.path.join(out_dir, proto_base + ".pb.h"),
-                    os.path.join(root, out_h_rel))
-        shutil.copy(os.path.join(out_dir, proto_base + ".pb.c"),
-                    os.path.join(root, out_c_rel))
+        for suffix, dest in ((".pb.h", out_h_rel), (".pb.c", out_c_rel)):
+            output = Path(root, dest)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            source = Path(out_dir, proto_base + suffix)
+            if shared_root:
+                # nanopb emits trailing blank lines for every imported descriptor.
+                output.write_bytes(source.read_bytes().rstrip(b"\n") + b"\n")
+            else:
+                shutil.copyfile(source, output)
         print(f"    → {out_h_rel}")
         print(f"    → {out_c_rel}")
 
 
-def generate_go(proto_rels, out_dir_rel, go_package, grpc, import_pkgs, root):
+def generate_go(proto_rels, out_dir_rel, go_package, grpc, import_pkgs, root, *, proto_root=None, import_root=None):
     """Run protoc with protoc-gen-go (and protoc-gen-go-grpc for services)."""
-    proto_names = [os.path.basename(p) for p in proto_rels]
-    proto_dir   = os.path.dirname(os.path.join(root, proto_rels[0]))
+    proto_names = proto_rels if proto_root else [os.path.basename(p) for p in proto_rels]
+    proto_dir = proto_root or os.path.dirname(os.path.join(root, proto_rels[0]))
     out_dir     = os.path.join(root, out_dir_rel)
     os.makedirs(out_dir, exist_ok=True)
 
@@ -226,14 +245,17 @@ def generate_go(proto_rels, out_dir_rel, go_package, grpc, import_pkgs, root):
         "protoc",
         f"--proto_path={proto_dir}",
         f"--go_out={out_dir}",
-        "--go_opt=paths=source_relative",
     ]
+    layout = f"module={go_package.split(';')[0]}" if proto_root else "paths=source_relative"
+    cmd.append(f"--go_opt={layout}")
+    if import_root and import_root != proto_dir:
+        cmd.append(f"--proto_path={import_root}")
     cmd += [f"--go_opt=M{name}={go_package}" for name in proto_names]
     cmd += [f"--go_opt=M{name}={pkg}" for name, pkg in import_pkgs.items()]
     if grpc:
         cmd += [
             f"--go-grpc_out={out_dir}",
-            "--go-grpc_opt=paths=source_relative",
+            f"--go-grpc_opt={layout}",
         ]
         cmd += [f"--go-grpc_opt=M{name}={go_package}" for name in proto_names]
         cmd += [f"--go-grpc_opt=M{name}={pkg}" for name, pkg in import_pkgs.items()]
@@ -254,7 +276,7 @@ def generate_go(proto_rels, out_dir_rel, go_package, grpc, import_pkgs, root):
         sys.exit(f"Go generation failed:\n{output}")
 
     for name in proto_names:
-        base = os.path.splitext(name)[0]
+        base = os.path.splitext(os.path.basename(name))[0]
         print(f"    → {os.path.join(out_dir_rel, base + '.pb.go')}")
         if grpc and os.path.exists(os.path.join(out_dir, base + "_grpc.pb.go")):
             print(f"    → {os.path.join(out_dir_rel, base + '_grpc.pb.go')}")
@@ -263,6 +285,44 @@ def generate_go(proto_rels, out_dir_rel, go_package, grpc, import_pkgs, root):
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
+def generate_shared(buf, version, root, *, check):
+    with tempfile.TemporaryDirectory(prefix="wendy_shared_protos_") as scratch:
+        shared_root = os.path.join(scratch, "protos")
+        subprocess.run(
+            ["bash", os.path.join(root, "tools/shared-grpc-api-contracts.sh"), "--export", shared_root],
+            check=True,
+        )
+        generated = os.path.join(scratch, "generated")
+        outputs = []
+        for proto, _, _ in SHARED_PROTO_TARGETS:
+            options = os.path.splitext(os.path.basename(proto))[0] + ".options"
+            shutil.copyfile(
+                os.path.join(root, "components/wendy_com/proto", options),
+                os.path.join(shared_root, os.path.dirname(proto), options),
+            )
+        for proto, header, source in SHARED_PROTO_TARGETS:
+            generate(buf, version, proto, header, source, generated, shared_root=shared_root)
+            outputs.extend([header, source])
+        for proto_dir, protos, out, package, grpc, imports in SHARED_GO_TARGETS:
+            generate_go(protos, out, package, grpc, imports, generated,
+                        proto_root=str(Path(shared_root, proto_dir)), import_root=shared_root)
+            outputs.extend(os.path.join(out, os.path.basename(p).replace(".proto", ".pb.go")) for p in protos)
+        if check:
+            drift = []
+            for path in outputs:
+                committed = Path(root, path)
+                if not committed.is_file() or not filecmp.cmp(committed, Path(generated, path), shallow=False):
+                    drift.append(path)
+            if drift:
+                sys.exit("Shared protobuf bindings differ. Run python tools/update_protobuf.py "
+                         "--shared-contracts-only to regenerate:\n" + "\n".join(drift))
+        else:
+            for path in outputs:
+                dest = Path(root, path)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(Path(generated, path), dest)
+
 
 def main():
     ap = argparse.ArgumentParser(
@@ -273,10 +333,17 @@ def main():
         "--version", default=NANOPB_VERSION_DEFAULT,
         metavar="X.Y.Z", help=f"nanopb version (default: {NANOPB_VERSION_DEFAULT})",
     )
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--shared-contracts-only", action="store_true")
+    mode.add_argument("--check-shared-contracts", action="store_true")
     args = ap.parse_args()
 
     root = repo_root()
     buf  = download(args.version)
+
+    generate_shared(buf, args.version, root, check=args.check_shared_contracts)
+    if args.shared_contracts_only or args.check_shared_contracts:
+        return
 
     print("\n--- Runtime files ---")
     populate_runtime(buf, args.version,

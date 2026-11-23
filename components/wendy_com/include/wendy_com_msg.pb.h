@@ -349,7 +349,7 @@ typedef struct _WendyComEnrollmentChallenge {
     bool has_cloud_enrollment_supported;
     bool cloud_enrollment_supported; /* absent on older firmware */
     bool has_mldsa_verification_supported;
-    bool mldsa_verification_supported; /* ML-DSA-65 CA and peer certificate verification */
+    bool mldsa_verification_supported; /* wolfSSL ML-DSA CA and peer certificate verification */
     char device_id[65]; /* configured PKI identity; distinct from the USB hardware ID */
     char tenant_id[37];
     bool uuid_enrollment_supported; /* UUID discovery and enrollment identity reporting */
@@ -439,9 +439,9 @@ typedef struct _WendyComCommand {
         WendyComConfPushBeginParams conf_push_begin;
         WendyComConfPushDataParams conf_push_data;
         WendyComConfPushEndParams conf_push_end;
-        wendy_lite_sensorlink_GetSensorManifest sensor_link_get_manifest;
-        wendy_lite_sensorlink_Subscribe sensor_link_subscribe;
-        wendy_lite_sensorlink_Unsubscribe sensor_link_unsubscribe;
+        wendylite_v1_GetSensorManifest sensor_link_get_manifest;
+        wendylite_v1_Subscribe sensor_link_subscribe;
+        wendylite_v1_Unsubscribe sensor_link_unsubscribe;
         WendyComEnrollmentChallengeParams enrollment_challenge;
         WendyComSyncTimeParams sync_time;
         WendyComEnrollmentResetParams enrollment_reset;
@@ -461,7 +461,7 @@ typedef struct _WendyComResponse {
     union {
         WendyComDeviceIdentity device_identity;
         WendyComDeviceInfo device_info;
-        wendy_lite_sensorlink_SensorManifest sensor_link_manifest;
+        wendylite_v1_SensorManifest sensor_link_manifest;
         WendyComEnrollmentChallenge enrollment_challenge;
         WendyComSyncTimeResult sync_time;
         WendyComNetStatus net_status;
@@ -537,7 +537,7 @@ typedef struct _WendyComMessage {
         WendyComCommand command;
         WendyComResponse response;
         WendyComEvent event;
-        wendy_lite_sensorlink_SensorData sensor_data;
+        wendylite_v1_SensorData sensor_data;
     } msg;
 } WendyComMessage;
 
@@ -1295,9 +1295,9 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (params,bluetooth_power_set,params.bluetooth_
 #define WendyComCommand_params_conf_push_begin_MSGTYPE WendyComConfPushBeginParams
 #define WendyComCommand_params_conf_push_data_MSGTYPE WendyComConfPushDataParams
 #define WendyComCommand_params_conf_push_end_MSGTYPE WendyComConfPushEndParams
-#define WendyComCommand_params_sensor_link_get_manifest_MSGTYPE wendy_lite_sensorlink_GetSensorManifest
-#define WendyComCommand_params_sensor_link_subscribe_MSGTYPE wendy_lite_sensorlink_Subscribe
-#define WendyComCommand_params_sensor_link_unsubscribe_MSGTYPE wendy_lite_sensorlink_Unsubscribe
+#define WendyComCommand_params_sensor_link_get_manifest_MSGTYPE wendylite_v1_GetSensorManifest
+#define WendyComCommand_params_sensor_link_subscribe_MSGTYPE wendylite_v1_Subscribe
+#define WendyComCommand_params_sensor_link_unsubscribe_MSGTYPE wendylite_v1_Unsubscribe
 #define WendyComCommand_params_enrollment_challenge_MSGTYPE WendyComEnrollmentChallengeParams
 #define WendyComCommand_params_sync_time_MSGTYPE WendyComSyncTimeParams
 #define WendyComCommand_params_enrollment_reset_MSGTYPE WendyComEnrollmentResetParams
@@ -1322,7 +1322,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (data,bluetooth_power,data.bluetooth_power), 
 #define WendyComResponse_DEFAULT NULL
 #define WendyComResponse_data_device_identity_MSGTYPE WendyComDeviceIdentity
 #define WendyComResponse_data_device_info_MSGTYPE WendyComDeviceInfo
-#define WendyComResponse_data_sensor_link_manifest_MSGTYPE wendy_lite_sensorlink_SensorManifest
+#define WendyComResponse_data_sensor_link_manifest_MSGTYPE wendylite_v1_SensorManifest
 #define WendyComResponse_data_enrollment_challenge_MSGTYPE WendyComEnrollmentChallenge
 #define WendyComResponse_data_sync_time_MSGTYPE WendyComSyncTimeResult
 #define WendyComResponse_data_net_status_MSGTYPE WendyComNetStatus
@@ -1399,7 +1399,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (msg,sensor_data,msg.sensor_data),   6)
 #define WendyComMessage_msg_command_MSGTYPE WendyComCommand
 #define WendyComMessage_msg_response_MSGTYPE WendyComResponse
 #define WendyComMessage_msg_event_MSGTYPE WendyComEvent
-#define WendyComMessage_msg_sensor_data_MSGTYPE wendy_lite_sensorlink_SensorData
+#define WendyComMessage_msg_sensor_data_MSGTYPE wendylite_v1_SensorData
 
 extern const pb_msgdesc_t WendyComProtocolVersion_msg;
 extern const pb_msgdesc_t WendyComHandshake_msg;
