@@ -3,7 +3,8 @@ attributes:
   board:
     type: string
     enum: [custom, dfr1172_firebeetle_2, seeed_xiao, m5_stamp_s3, esp32c5_devkit_c_1_n8r8, esp32c6_devkit_c_1_n8, esp32c6_devkit_m_1,
-           esp32c61_devkit_c_1, esp32s3_devkit_c_1_n8, esp32s31_korvo_1, waveshare_esp32p4_lcd_4b]
+           esp32c61_devkit_c_1, esp32s3_devkit_c_1_n8, esp32s31_korvo_1, esp32s31_function_coreboard_1,
+           waveshare_esp32p4_lcd_4b]
   chip:
     type: string
     enum: [esp32c6, esp32c61, esp32c5, esp32p4, esp32s3, esp32s31]
@@ -81,6 +82,11 @@ rules:
       chip: esp32s31
       flash_size: 16MiB
       spram_size: 16MiB
+  - if: board == "esp32s31_function_coreboard_1"
+    set:
+      chip: esp32s31
+      flash_size: 16MiB
+      spram_size: 16MiB
   - if: board == "waveshare_esp32p4_lcd_4b"
     set:
       chip: esp32p4
@@ -100,12 +106,15 @@ rules:
       idf_version: "6.0.3"
       idf_preview: false
 
-  - if: chip == "esp32c61"
+  # The pinned WAMR release supports neither the C61 nor the S31 (see the
+  # top-level CMakeLists.txt): native app only.
+  - if: chip == "esp32c61" || chip == "esp32s31"
     set:
       app_type: "native"
 
   # SensorLink camera and microphone: the XIAO user selects it, the Korvo-1
-  # always has it. SensorLink needs WASM app support off: it forces a native app.
+  # always has it, the other boards never have it. SensorLink needs WASM app
+  # support off: it forces a native app.
   - if: board == "esp32s31_korvo_1"
     set:
       sensor_link_av: true
@@ -735,11 +744,13 @@ rules:
       CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
       CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 
-  # boards/esp32s31_korvo_1_native.defaults
-  - if: board == "esp32s31_korvo_1" && app_type == "native"
+  # boards/esp32s31_korvo_1_native.defaults, module part: the Korvo-1 and the
+  # Function-CoreBoard-1 have the same ESP32-S31-WROOM-3 module.
+  - if: (board == "esp32s31_korvo_1" || board == "esp32s31_function_coreboard_1") && app_type == "native"
     sdkconfig: |
-      # ESP32-S31-Korvo-1 V1.1: 16 MB flash and 16 MB in-package octal PSRAM.
-      # ESP-IDF 6.1 still requires --preview for the S31 target.
+      # ESP32-S31-WROOM-3 module (ESP32-S31-Korvo-1 V1.1,
+      # ESP32-S31-Function-CoreBoard-1): 16 MB flash and 16 MB in-package
+      # octal PSRAM. ESP-IDF 6.1 still requires --preview for the S31 target.
       CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
       CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
       CONFIG_SPIRAM=y
@@ -762,15 +773,9 @@ rules:
       CONFIG_FREERTOS_UNICORE=n
       CONFIG_COMPILER_OPTIMIZATION_PERF=y
 
-      # The Type-C programming port is a USB-to-UART bridge, not native USB/JTAG.
-      # Keep boot/panic diagnostics; Wendy's stdio hook owns ordinary UART0 I/O.
-      CONFIG_ESP_CONSOLE_UART_DEFAULT=y
-      CONFIG_WENDY_USJ_USE_UART=y
-      CONFIG_WENDY_USJ_UART_TX_GPIO=58
-      CONFIG_WENDY_USJ_UART_RX_GPIO=59
-
       # Large buffers can use PSRAM; preserve internal RAM for DMA and task stacks.
-      # XiP is left off to keep instruction fetches off the frame-buffer PSRAM bus.
+      # XiP is left off to keep instruction fetches off the PSRAM bus, which
+      # carries the camera and display frame buffers on the Korvo-1.
       CONFIG_SPIRAM_XIP_FROM_PSRAM=n
       CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
       CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
@@ -785,12 +790,23 @@ rules:
       CONFIG_LWIP_TCP_WND_DEFAULT=17280
       CONFIG_LWIP_TCP_RECVMBOX_SIZE=14
 
-      # Show a native status page on the optional 800x480 SUB3 RGB display.
-      CONFIG_WENDY_DISPLAY_ESP32S31_KORVO_1=y
-
       CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS=2
       CONFIG_FREERTOS_TLSP_DELETION_CALLBACKS=y
       CONFIG_MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH=y
+
+  # boards/esp32s31_korvo_1_native.defaults, Korvo-1 part. The
+  # Function-CoreBoard-1 keeps the default Wendy port: native USB Serial/JTAG.
+  - if: board == "esp32s31_korvo_1" && app_type == "native"
+    sdkconfig: |
+      # The Type-C programming port is a USB-to-UART bridge, not native USB/JTAG.
+      # Keep boot/panic diagnostics; Wendy's stdio hook owns ordinary UART0 I/O.
+      CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+      CONFIG_WENDY_USJ_USE_UART=y
+      CONFIG_WENDY_USJ_UART_TX_GPIO=58
+      CONFIG_WENDY_USJ_UART_RX_GPIO=59
+
+      # Show a native status page on the optional 800x480 SUB3 RGB display.
+      CONFIG_WENDY_DISPLAY_ESP32S31_KORVO_1=y
   - if: board == "esp32s31_korvo_1" && sensor_link_av
     sdkconfig: |
       # Bundle the onboard DVP camera and ES8389 dual-microphone input.
@@ -865,6 +881,7 @@ display:
       esp32c61_devkit_c_1: Espressif ESP32-C61-DevKitC-1
       esp32s3_devkit_c_1_n8: Espressif ESP32-S3-DevKitC-1 N8
       esp32s31_korvo_1: Espressif ESP32-S31-Korvo-1 V1.1 (preview)
+      esp32s31_function_coreboard_1: Espressif ESP32-S31-Function-CoreBoard-1 (preview)
       waveshare_esp32p4_lcd_4b: Waveshare ESP32-P4-WIFI6-Touch-LCD-4B
     default: custom
   chip:

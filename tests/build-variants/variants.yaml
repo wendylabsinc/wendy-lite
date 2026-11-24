@@ -26,8 +26,7 @@ variants:
   # One variant for each chip: the most capable one, without the SensorLink
   # camera and microphone (sensor_link_av off). A native app, each other
   # feature on (Wendy Net, Wendy Cloud tunnel) when the chip has a board that
-  # allows it, then the largest flash and PSRAM. Exception: the Korvo-1
-  # always has the SensorLink camera and microphone (board rule).
+  # allows it, then the largest flash and PSRAM.
 
   - combination: board=esp32c6_devkit_c_1_n8 app_type=native wendy_net=true cloud_tunnel=true
     chip: esp32c6
@@ -67,7 +66,7 @@ variants:
     native_apps: true
     aliases: []
 
-  - combination: board=esp32s31_korvo_1 wendy_net=true cloud_tunnel=true
+  - combination: board=esp32s31_function_coreboard_1 wendy_net=true cloud_tunnel=true
     chip: esp32s31
     idf_version: "6.1"
     idf_preview: true
@@ -76,12 +75,20 @@ variants:
 
   # SensorLink camera and microphone (sensor_link_av on). The XIAO variant
   # above, with sensor_link_av=true (a rule then sets app_type=native). The
-  # Korvo-1 variant above also has them.
+  # Korvo-1 always has them (board rule), and also has the display: the
+  # ESP32-S31 variant above, on the Korvo-1.
 
   - combination: board=seeed_xiao wendy_net=true sensor_link_av=true cloud_tunnel=true
     chip: esp32s3
     idf_version: "6.0.3"
     idf_preview: false
+    tested: true
+    aliases: []
+
+  - combination: board=esp32s31_korvo_1 wendy_net=true cloud_tunnel=true
+    chip: esp32s31
+    idf_version: "6.1"
+    idf_preview: true
     tested: true
     aliases: []
 
