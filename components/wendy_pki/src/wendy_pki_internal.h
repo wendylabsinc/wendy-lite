@@ -77,7 +77,8 @@ struct wendy_pki_connection
      * certificate renewal or the end of the broker chain (0 = none), and the
      * hourly time fetch (NULL = none). */
     int64_t renew_deadline_us;
-    void (*refresh_time)(void);
+    int64_t (*refresh_time)(void);
+    int64_t refresh_deadline_us;
     /* Set before the handshake when the clock is verified. Firmware mbedTLS has
      * no date checks, so the verify callback checks the dates of the peer chain
      * and records the earliest end date of that chain. */

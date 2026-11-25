@@ -3,17 +3,27 @@
  * TLS/cache/snapshot interoperability fixtures. */
 #include "wendy_cert_bundle.h"
 #include <string.h>
+static const char legacy_classical_pem[] =
+    "-----BEGIN CERTIFICATE-----\nMAEB\n-----END CERTIFICATE-----\n"
+    "-----BEGIN CERTIFICATE-----\nMAEC\n-----END CERTIFICATE-----\n";
+static const uint8_t fake_classical_chain[] = {0x30, 1, 1, 0x30, 1, 2};
 static int test_bundle_measure(const uint8_t *p, size_t n, size_t *out)
 {
     if (!p || !n)
         return -1;
-    *out = n;
+    *out = n == sizeof legacy_classical_pem - 1 && !memcmp(p, legacy_classical_pem, n)
+        ? sizeof fake_classical_chain : n;
     return 0;
 }
 static int test_bundle_import(const uint8_t *p, size_t n, uint8_t *out, size_t cap, size_t *written)
 {
     if (!p || !out || n > cap)
         return -1;
+    if (n == sizeof legacy_classical_pem - 1 && !memcmp(p, legacy_classical_pem, n)) {
+        memcpy(out, fake_classical_chain, sizeof fake_classical_chain);
+        *written = sizeof fake_classical_chain;
+        return 0;
+    }
     memmove(out, p, n);
     *written = n;
     return 0;
@@ -49,9 +59,8 @@ static const uint8_t usb_roots[] = {1};
 #if PKI_REFRESH_PEER_CAS
 static int peer_ca_reply, peer_ca_fetches, mesh_issuer_validation, mesh_store_attempts;
 static esp_err_t mesh_store_error;
-static bool issued_classical;
+static bool issued_classical, have_legacy_classical_pem;
 static size_t stored_peer_ca_size;
-static const uint8_t fake_classical_chain[] = {0x30, 1, 1, 0x30, 1, 2};
 #endif
 static int bad_roots;
 int wendy_pki_verify_roots(const uint8_t *pem, size_t size)
@@ -181,6 +190,12 @@ esp_err_t nvs_get_blob(nvs_handle_t h, const char *name, void *out, size_t *size
         data = key_der;
         n = key_der_size;
     }
+#if PKI_REFRESH_PEER_CAS
+    else if (!strcmp(name, "certificate") && have_certificate && have_legacy_classical_pem) {
+        data = legacy_classical_pem;
+        n = sizeof legacy_classical_pem - 1;
+    }
+#endif
     else if ((!strcmp(name, "certificate") && have_certificate) ||
              (!strcmp(name, "pending") && pending_certificate))
     {
@@ -486,7 +501,7 @@ static void reset(void)
     peer_ca_refresh_at = INT64_MAX;
     stored_peer_ca_size = 0;
     mesh_store_error = ESP_OK;
-    issued_classical = false;
+    issued_classical = have_legacy_classical_pem = false;
 #endif
     distinct_issued_certificate = stored_is_issued = pending_is_issued = false;
     issuance_received = fail_post_issue_time = false;
@@ -979,7 +994,7 @@ static void test_control_time_fetch(void)
     monotonic_us = 1000000;
     stored_renews_in_1000_s();
     assert(wendy_pki_connect(&connection) == ESP_OK && timestamp_calls == 1);
-    void (*fetch)(void) = broker_connection.refresh_time;
+    int64_t (*fetch)(void) = broker_connection.refresh_time;
 
     /* The connect path has just verified the time. */
     fetch();
@@ -1290,6 +1305,8 @@ static void test_peer_ca_refresh(void)
     assert(wendy_pki_connect(&connection) == ESP_OK);
     assert(stored_is_issued && !pending_certificate);
     assert(renewal_calls == 1 && peer_ca_fetches == 1 && mesh_store_attempts == 1);
+    assert(connection->refresh_deadline_us == monotonic_us + PEER_CA_RETRY_US);
+    assert(wendy_pki_maintenance_wait_ms() == PEER_CA_RETRY_US / 1000);
     assert(connection->renew_deadline_us > RENEW_RETRY_S * INT64_C(1000000));
 
     mesh_store_error = ESP_OK;
@@ -1318,6 +1335,26 @@ static void test_peer_ca_refresh(void)
     assert(!fetch_peer_ca_snapshot(&config, &usb_data, chain, true));
     assert(peer_ca_fetches == 2 && stored_peer_ca_size == 15);
 }
+
+static void test_control_peer_ca_refresh_with_fresh_mesh_clock(void)
+{
+    reset();
+    snapshot_generation = 7;
+    issued_classical = have_legacy_classical_pem = true;
+    clock_now = signed_now + 20;
+    mesh_verified_seconds = clock_now;
+    mesh_verified_generation = snapshot_generation;
+    mesh_verified_monotonic_us = 0;
+    monotonic_us = INT64_C(60000000);
+    peer_ca_refresh_at = monotonic_us;
+    peer_ca_reply = 4;
+    assert(control_refresh_time() == PEER_CA_RETRY_US);
+    assert(peer_ca_fetches == 1 && !timestamp_calls && !mesh_store_attempts);
+    peer_ca_reply = 1;
+    monotonic_us += PEER_CA_RETRY_US;
+    assert(control_refresh_time() == PEER_CA_REFRESH_US);
+    assert(peer_ca_fetches == 3 && !timestamp_calls && stored_peer_ca_size == 15);
+}
 #endif
 
 int main(int argc, char **argv)
@@ -1345,6 +1382,7 @@ int main(int argc, char **argv)
     wendy_pki_connection *connection = NULL;
 #if PKI_REFRESH_PEER_CAS
     test_peer_ca_refresh();
+    test_control_peer_ca_refresh_with_fresh_mesh_clock();
 #endif
 
     reset();

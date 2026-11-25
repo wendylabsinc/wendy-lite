@@ -141,15 +141,21 @@ static void run(enum scenario which, int expected)
         assert(now == (which == EARLY_TIMEOUT ? 30000000 : 240000000));
     }
 }
-static void count_fetch(void)
+static int64_t count_fetch(void)
 {
     /* The pong of the current heartbeat went out first. */
     assert(replies == heartbeats);
     fetches++;
     now += fetch_cost;
+    return CONTROL_TIME_REFRESH_US;
+}
+static int64_t retry_fetch(void)
+{
+    count_fetch();
+    return INT64_C(60000000);
 }
 /* One heartbeat every 29 s, then silence. */
-static void run_long(int64_t renew, unsigned count, int64_t cost, void (*hook)(void), int expected,
+static void run_long(int64_t renew, unsigned count, int64_t cost, int64_t (*hook)(void), int expected,
                      unsigned expected_fetches)
 {
     scenario = LONG_RUN;
@@ -176,6 +182,7 @@ int main(void)
     run_long(0, 125, five_s, count_fetch, WENDY_PKI_RELAY_FAILED, 1);
     run_long(0, 249, five_s, count_fetch, WENDY_PKI_RELAY_FAILED, 1);
     run_long(0, 250, five_s, count_fetch, WENDY_PKI_RELAY_FAILED, 2);
+    run_long(0, 128, 0, retry_fetch, WENDY_PKI_RELAY_FAILED, 2);
     run_long(0, 130, 0, NULL, WENDY_PKI_RELAY_FAILED, 0);
     /* The heartbeat at 3625 s crosses the renewal date: no fetch, only the stop. */
     run_long(INT64_C(3610000000), 125, five_s, count_fetch, WENDY_PKI_RELAY_RENEW, 0);

@@ -109,7 +109,9 @@ func main() {
 	cms("lite.cms.b64", customer, lite, newParent)
 	cms("overlap.cms.b64", oldDev, newOp, platform, newParent, wrong, oldOp, customer, newDev, oldParent)
 	cms("cutover.cms.b64", newOp, customer, newDev, newParent, platform)
-	cms("missing-role.cms.b64", newDev, newParent, customer, platform)
+	cms("revoked-operator.cms.b64", newDev, newParent, customer, platform)
+	cms("revoked-both.cms.b64", newParent, customer, platform)
+	cms("invalid-operator.cms.b64", newDev, oldOp, newParent, customer, platform)
 	cms("wrong-branch.cms.b64", newDev, oldOp, oldParent, customer, platform)
 	for n, c := range map[string]cert{"old-device": oldDev, "new-device": newDev, "old-operator": oldOp, "new-operator": newOp} {
 		put(n+".der", c.Raw)

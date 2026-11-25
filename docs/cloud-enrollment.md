@@ -116,7 +116,9 @@ below can rotate through authenticated renewal.
 
 During identity maintenance, firmware with Wendy Net and ML-DSA verification
 refreshes peer CA certificates through the tenant's existing EST `/cacerts` endpoint.
-USB enrollment saves the resolved URL, including a custom `--ca-certs-url`.
+USB enrollment saves Wendy-hosted EST URLs. Set `--est-url` to save an exact
+EST refresh URL for self-hosted PKI, including when supplying private roots.
+`--ca-certs-url` also supports legacy CA discovery formats during enrollment.
 Boards with an older enrollment can derive it from a recognized Wendy CSR hostname.
 The board authenticates the EST server using its configured HTTPS roots.
 
@@ -125,6 +127,8 @@ regular Device Identity and Operator Authority CAs, including overlapping
 generations. Regular Lite requests the parent-signed Lite CA path and uses it
 as untrusted intermediate material under its existing anchors. The firmware
 validates a complete bounded response before replacing the saved snapshot.
+A complete verified snapshot can withdraw a regular CA role that was revoked
+without a successor.
 A failed refresh keeps the last snapshot and leaves identity renewal independent.
 
 If an enrolled board reports `Invalid or missing device CA bundle` after a

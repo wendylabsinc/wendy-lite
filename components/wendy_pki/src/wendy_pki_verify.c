@@ -791,7 +791,7 @@ static void est_pins(void *context)
     mbedtls_x509_crt *issuers[WENDY_CERT_BUNDLE_MAX_CERTS], *roots = NULL;
     mbedtls_x509_crt *lite = parse_cert_borrowed(job->signed_lite->der, job->signed_lite->size);
     bool selected[PKI_EST_MAX_CERTS] = {0};
-    unsigned n = 0, roles = 0;
+    unsigned n = 0;
     if (!lite)
         goto done;
     for (size_t i = 0; i < s->count; i++) {
@@ -819,10 +819,9 @@ static void est_pins(void *context)
         if (!est_verified(cert, issuers, n, roots, job->now))
             goto done;
         selected[i] = true;
-        roles |= (unsigned)role;
     }
-    if (roles != 3)
-        goto done;
+    /* A complete tenant bundle anchored by the enrolled Lite CA can withdraw
+     * either role, including revocation of its last CA without a successor. */
     job->result = 0;
 done:
     free_cert(lite);

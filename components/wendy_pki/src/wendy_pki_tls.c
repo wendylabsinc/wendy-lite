@@ -2946,7 +2946,8 @@ int wendy_pki_relay_upgrade(wendy_pki_connection *c, struct wendy_lite_trust *tr
      * is the deadline that the connect path set, for certificate renewal or the
      * end of the broker chain. The peer cannot delay it. */
     int64_t renew = c->renew_deadline_us;
-    int64_t next_time = esp_timer_get_time() + CONTROL_TIME_REFRESH_US;
+    int64_t next_time = c->refresh_deadline_us ? c->refresh_deadline_us
+                                               : esp_timer_get_time() + CONTROL_TIME_REFRESH_US;
     bool first = true;
     for (;;) {
         stage = "heartbeat";
@@ -2971,8 +2972,8 @@ int wendy_pki_relay_upgrade(wendy_pki_connection *c, struct wendy_lite_trust *tr
              * after this loop returns, so the two never run in parallel. */
             int64_t now = esp_timer_get_time();
             if (c->refresh_time && now >= next_time && (!renew || now < renew)) {
-                c->refresh_time();
-                next_time = esp_timer_get_time() + CONTROL_TIME_REFRESH_US;
+                int64_t delay = c->refresh_time();
+                next_time = esp_timer_get_time() + delay;
             }
         } else if (header[3] == 3) {
             stage = "relay handoff";

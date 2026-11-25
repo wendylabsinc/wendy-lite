@@ -77,7 +77,9 @@ int main(int argc,char **argv)
     const char *d=argv[1];
     verify(d,"overlap.cms.b64",4,"lite-twin.der");
     verify(d,"cutover.cms.b64",2,"lite-twin.der");
-    verify(d,"missing-role.cms.b64",-1,"lite-twin.der");
+    verify(d,"revoked-operator.cms.b64",1,"lite-twin.der");
+    verify(d,"revoked-both.cms.b64",0,"lite-twin.der");
+    verify(d,"invalid-operator.cms.b64",-1,"lite-twin.der");
     verify(d,"wrong-branch.cms.b64",-1,"lite-twin.der");
     verify(d,"overlap.cms.b64",-1,"wrong-twin.der");
 }

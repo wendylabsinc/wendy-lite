@@ -883,9 +883,9 @@ done:
     mbedtls_x509write_csr_free(&csr); mbedtls_pk_free(&k);
     return pem;
 }
-#if PKI_REFRESH_PEER_CAS
 #define PEER_CA_REFRESH_US (INT64_C(3600) * 1000000)
 #define PEER_CA_RETRY_US (INT64_C(60) * 1000000)
+#if PKI_REFRESH_PEER_CAS
 /* Accessed under identity_lock. */
 static int64_t peer_ca_refresh_at;
 
@@ -1321,25 +1321,46 @@ static time_t renewal_date(const struct wendy_pki_validity *leaf, time_t expires
 {
     return leaf->not_before + (expires - leaf->not_before) / 2;
 }
+/* Under identity_lock. A due refresh that could not start gets the retry
+ * delay, rather than making the cloud task loop on a busy identity. */
+static int64_t maintenance_wait_us(void)
+{
+#if PKI_REFRESH_PEER_CAS
+    if (peer_ca_refresh_at) {
+        int64_t remaining = peer_ca_refresh_at - esp_timer_get_time();
+        if (remaining <= 0)
+            return PEER_CA_RETRY_US;
+        if (remaining < PEER_CA_REFRESH_US)
+            return remaining;
+    }
+#endif
+    return PEER_CA_REFRESH_US;
+}
+
 /* The relay grant check has no clock tolerance, so a long control connection
  * still needs a correct clock. The cloud task calls this between heartbeats. A
- * failure has no effect on the connection: the next call retries. Skip when
- * another identity user is active, to limit parallel sockets, or when the
- * clock was verified recently, for example by the mesh actor. */
-static void control_refresh_time(void)
+ * recent mesh time can be reused for a due CA refresh. Skip while another
+ * identity user is active to limit parallel sockets. */
+static int64_t control_refresh_time(void)
 {
     if (pthread_mutex_trylock(&identity_lock))
-        return;
-    if (identity_use_allowed() && !mesh_time_recent()) {
+        return PEER_CA_RETRY_US;
+    bool recent = mesh_time_recent();
+    bool peer_ca_due = false;
+#if PKI_REFRESH_PEER_CAS
+    peer_ca_due = esp_timer_get_time() >= peer_ca_refresh_at;
+#endif
+    if (identity_use_allowed() && (!recent || peer_ca_due)) {
         WendyConfEnrollment cfg = WendyConfEnrollment_init_zero;
         struct wendy_conf_enrollment_data data = {0};
         nvs_handle_t h;
         if (wendy_conf_copy_enrollment(&cfg, &data) == ESP_OK) {
             if (!validate_config_and_trust(&cfg, &data) && open_identity(&h) == ESP_OK) {
                 int64_t started = esp_timer_get_time();
-                int failed = refresh_time(h, cfg.time_url, &data);
+                bool reuse_time = recent && data.generation == mesh_verified_generation;
+                int failed = reuse_time ? 0 : refresh_time(h, cfg.time_url, &data);
 #if PKI_REFRESH_PEER_CAS
-                if (!failed && esp_timer_get_time() >= peer_ca_refresh_at) {
+                if (!failed && peer_ca_due) {
                     uint8_t *key = NULL, *cert = NULL;
                     size_t key_size = 0, cert_size = 0;
                     char principal[160];
@@ -1347,7 +1368,7 @@ static void control_refresh_time(void)
                              cfg.tenant_id, cfg.device_id);
                     struct wendy_pki_validity leaf = {0};
                     time_t expires;
-                    if (!load_blob(h, "certificate", &cert, &cert_size) &&
+                    if (!load_certificate(h, "certificate", &cert, &cert_size) &&
                         !load_blob(h, "key", &key, &key_size) &&
                         !wendy_pki_verify_identity(cert, cert_size, data.device_roots.data,
                                                    data.device_roots.size, key, key_size, principal,
@@ -1361,18 +1382,21 @@ static void control_refresh_time(void)
                 }
 #endif
                 nvs_close(h);
-                ESP_LOGI(TAG, "hourly time fetch %s: ms=%u free=%u largest=%u minimum=%u",
-                         failed ? "failed" : "done",
-                         (unsigned)((esp_timer_get_time() - started) / 1000),
-                         (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-                         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
-                         (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
+                if (!reuse_time)
+                    ESP_LOGI(TAG, "hourly time fetch %s: ms=%u free=%u largest=%u minimum=%u",
+                             failed ? "failed" : "done",
+                             (unsigned)((esp_timer_get_time() - started) / 1000),
+                             (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+                             (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
             }
             free(data.storage);
         }
         erase(cfg.token, sizeof cfg.token);
     }
+    int64_t delay = maintenance_wait_us();
     pthread_mutex_unlock(&identity_lock);
+    return delay;
 }
 static esp_err_t connect_identity(wendy_pki_connection **connection)
 {
@@ -1523,6 +1547,7 @@ static esp_err_t connect_identity(wendy_pki_connection **connection)
     }
     (*connection)->renew_deadline_us = esp_timer_get_time() + stop_in * INT64_C(1000000);
     (*connection)->refresh_time = control_refresh_time;
+    (*connection)->refresh_deadline_us = esp_timer_get_time() + maintenance_wait_us();
     char stop_text[24];
     format_lifetime(stop_text, stop_in);
     ESP_LOGI(TAG, "broker control connection: planned stop in %s (%s)", stop_text, stop_reason);
@@ -1563,6 +1588,14 @@ esp_err_t wendy_pki_maintain(void)
              (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
     pthread_mutex_unlock(&identity_lock);
     return result;
+}
+
+uint32_t wendy_pki_maintenance_wait_ms(void)
+{
+    pthread_mutex_lock(&identity_lock);
+    uint32_t delay = (uint32_t)((maintenance_wait_us() + 999) / 1000);
+    pthread_mutex_unlock(&identity_lock);
+    return delay;
 }
 
 #if CONFIG_WENDY_NET_PEER
