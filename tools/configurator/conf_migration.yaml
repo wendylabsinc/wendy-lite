@@ -24,8 +24,10 @@
   new_conf: { board: esp32c6_devkit_c_1_n8, app_type: wasm, wendy_net: false, cloud_tunnel: true, chain_algorithm: ecdsa_p256 }
 - old_conf: esp32c6_generic_native
   new_conf: { board: esp32c6_devkit_c_1_n8, app_type: native, wendy_net: false, cloud_tunnel: true, chain_algorithm: ecdsa_p256 }
+# Known difference: the old build turns Wendy Cloud off, the configurator
+# keeps it on (cloud_tunnel false is the closest: no tunnel).
 - old_conf: esp32c6_net
-  new_conf: { board: esp32c6_devkit_c_1_n8, app_type: wasm, wendy_net: true, chain_algorithm: ecdsa_p256 }
+  new_conf: { board: esp32c6_devkit_c_1_n8, app_type: wasm, wendy_net: true, cloud_tunnel: false, chain_algorithm: ecdsa_p256 }
 
 # ESP32-C61
 - old_conf: esp32c61_generic_native

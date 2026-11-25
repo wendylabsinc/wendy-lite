@@ -125,10 +125,9 @@ variants:
     aliases:
       - board=custom chip=esp32c6 flash_size=8MiB app_type=native cloud_tunnel=true chain_algorithm=ecdsa_p256
 
-  # WASM app. The ESP32-C6 variant above, with app_type=wasm. With Wendy Net,
-  # a rule turns the Wendy Cloud tunnel off (constrained C6 Wendy Net profile).
+  # WASM app. The ESP32-C6 variant above, with app_type=wasm.
 
-  - combination: board=esp32c6_devkit_c_1_n8 app_type=wasm wendy_net=true chain_algorithm=ecdsa_p256
+  - combination: board=esp32c6_devkit_c_1_n8 app_type=wasm wendy_net=true cloud_tunnel=true chain_algorithm=ecdsa_p256
     chip: esp32c6
     idf_version: "6.0.3"
     idf_preview: false
