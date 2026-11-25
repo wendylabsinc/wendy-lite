@@ -119,6 +119,25 @@ repository root, for example `tools/configure.py board=seeed_xiao app_type=nativ
 `tools/configurator/solve.py` takes the same arguments, but it only writes
 `sdkconfig.defaults.wendy`.
 
+### Format version
+
+`format_version` at the top of `master_config.yaml` is the version of the file
+format, `"MAJOR.MINOR"`. The current version is `"1.0"`.
+
+```yaml
+format_version: "1.0"
+```
+
+The Wendy CLI reads every `1.x` version. It refuses a version with another
+major number, for example `"2.0"`, and asks the user to update the CLI or to
+choose another Wendy Lite version with `--version`. Thus:
+
+- Increase the minor number when the change stays readable by an older CLI
+  that reads `1.x`.
+- Increase the major number when an older CLI would reject the file or give
+  another result, for example with a new rule kind, a new top-level key or a
+  new condition operator.
+
 ### Attributes
 
 An attribute is one value of the configuration. For example: the board, the
@@ -167,6 +186,8 @@ can:
   configurator then stops with an error.
 - give a warning (`warn`, a map with an `id` and a `message`). The
   configurator shows the message and continues. The `id` is not used yet.
+  The Wendy CLI shows the warning on the answer that gives it, see
+  [Warnings](#warnings).
 
 A rule can continue the rule before it with `else-if` or `else`, as in a
 programming language.
@@ -411,6 +432,29 @@ the user answers the `wendy_net` question.
 The answers and the only allowed values are the input values. They go to
 `CONFIG_WENDY_BUILD_PROFILE`. `solve.py` with the same values as `NAME=VALUE`
 arguments gives the same `sdkconfig.defaults.wendy`.
+
+### Warnings
+
+The CLI shows a `warn` rule on the answer that makes its condition true, before
+the user chooses it. The same search as for the allowed answers tells, for each
+answer, which warnings are true in every allowed configuration with that
+answer. Such a warning goes with the answer, unless it is true with every
+answer: then an earlier answer or a given value decided it.
+
+For example, `w1` reads `chain_algorithm` and `psram_size`. `psram_size` has no
+priority, so it comes after `chain_algorithm`, and a board rule sets it. With a
+board without PSRAM, the `ml_dsa` answer of `chain_algorithm` gives `w1`, and the
+`ecdsa_p256` answer does not.
+
+- In a list, the answer has a `⚠` after its label. The warning is under the
+  list while the answer is highlighted.
+- In a yes or no question, the warning is above the question:
+  `⚠ If you answer Yes: <message>`.
+- After the answer, the CLI shows the warning again.
+
+At the end of the questions, the CLI shows the warnings that no answer gave,
+for example the warnings of `--build-attr` values. The CLI shows each warning
+once. A warning does not stop the build.
 
 ### Previous answers
 
