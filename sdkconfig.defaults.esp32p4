@@ -118,3 +118,7 @@ CONFIG_BT_NIMBLE_EXT_ADV_V2=y
 CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES=2
 CONFIG_BT_NIMBLE_EXT_ADV_MAX_SIZE=31
 CONFIG_BT_NIMBLE_ENABLE_PERIODIC_ADV=n
+
+# PSRAM: verify the ML-DSA device chain (WDY-4140). Old boards/*.cfg builds
+# only; the configurator sets it from chain_algorithm (master_config.yaml).
+CONFIG_MBEDTLS_SSL_TLS1_3_SIG_MLDSA65=y

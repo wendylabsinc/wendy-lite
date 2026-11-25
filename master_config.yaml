@@ -16,7 +16,7 @@ attributes:
   flash_size:
     type: size
     enum: [4MiB, 8MiB, 16MiB, 32MiB]
-  spram_size:
+  psram_size:
     type: size
   app_type:
     type: string
@@ -27,71 +27,74 @@ attributes:
     type: boolean
   cloud_tunnel:
     type: boolean
+  chain_algorithm:
+    type: string
+    enum: [ecdsa_p256, ml_dsa]
 rules:
   - if: board == "custom"
     set:
-      spram_size: 0
+      psram_size: 0
       wendy_net: false
   - if: board == "esp32c5_devkit_c_1_n8r8"
     set:
       chip: esp32c5
       flash_size: 8MiB
-      spram_size: 8MiB
+      psram_size: 8MiB
   - if: board == "esp32c6_devkit_c_1_n8"
     set:
       chip: esp32c6
       flash_size: 8MiB
-      spram_size: 0
+      psram_size: 0
   - if: board == "esp32c6_devkit_m_1"
     set:
       chip: esp32c6
       flash_size: 4MiB
-      spram_size: 0
+      psram_size: 0
       wendy_net: false
   - if: board == "esp32c61_devkit_c_1"
     set:
       chip: esp32c61
       flash_size: 4MiB
-      spram_size: 0
+      psram_size: 0
       wendy_net: false
   - if: board == "m5_stamp_s3"
     set:
       chip: esp32s3
       flash_size: 8MiB
-      spram_size: 0
+      psram_size: 0
       wendy_net: false
   - if: board == "dfr1172_firebeetle_2"
     set:
       chip: esp32p4
       flash_size: 16MiB
-      spram_size: 32MiB
+      psram_size: 32MiB
       wendy_net: true
   - if: board == "seeed_xiao"
     set:
       chip: esp32s3
       flash_size: 8MiB
-      spram_size: 8MiB
+      psram_size: 8MiB
   - if: board == "esp32s3_devkit_c_1_n8"
     set:
       chip: esp32s3
       flash_size: 8MiB
-      spram_size: 0
+      psram_size: 0
       wendy_net: false
   - if: board == "esp32s31_korvo_1"
     set:
       chip: esp32s31
       flash_size: 16MiB
-      spram_size: 16MiB
+      psram_size: 16MiB
   - if: board == "esp32s31_function_coreboard_1"
     set:
       chip: esp32s31
       flash_size: 16MiB
-      spram_size: 16MiB
+      psram_size: 16MiB
   - if: board == "waveshare_esp32p4_lcd_4b"
     set:
       chip: esp32p4
       flash_size: 32MiB
-      spram_size: 32MiB
+      psram_size: 32MiB
       wendy_net: true
 
   # select the ESP-IDF version
@@ -234,7 +237,8 @@ rules:
       # Start the enrollment task when Wi-Fi connects and enrollment is configured.
       CONFIG_WENDY_CLOUD=y
 
-      # esp-pqc verifies ML-DSA-65 identities/timestamps and ML-DSA-65/87 CAs.
+      # esp-pqc mbedTLS. The chain_algorithm rule below sets ML-DSA-65
+      # verification (identities/timestamps and ML-DSA-65/87 CAs).
       # Device keys and relay grants remain P-256; PQ key exchange is not required.
       CONFIG_LIBOQS_ENABLED=y
       CONFIG_LIBOQS_ENABLE_SIG_ML_DSA=y
@@ -243,8 +247,10 @@ rules:
       CONFIG_LIBOQS_MLD_VERIFY_ONLY=y
       CONFIG_LIBOQS_MINIMAL_COMMON=y
       CONFIG_MBEDTLS_USE_BUNDLED_PQC=y
-      CONFIG_MBEDTLS_SSL_TLS1_3_SIG_MLDSA65=y
       CONFIG_MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_GROUP_X25519MLKEM768=n
+
+      # Device identity, enrollment and mTLS (pki-core).
+      CONFIG_WENDY_PKI=y
 
       # PKI uses TLS 1.3 through the bundled esp-pqc mbedTLS component.
       CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y
@@ -558,6 +564,23 @@ rules:
   - else:
     sdkconfig: |
       CONFIG_WENDY_CLOUD_TUNNEL=n
+
+  # Device certificate chain. ml_dsa: the firmware verifies ML-DSA-65 and
+  # tells the host at enrollment that it can take the ML-DSA chain
+  # (mldsa_verification_supported). ecdsa_p256: the host gives the P-256
+  # chain. The esp-pqc default is y: ecdsa_p256 must set n.
+  - if: chain_algorithm == "ml_dsa"
+    sdkconfig: |
+      CONFIG_MBEDTLS_SSL_TLS1_3_SIG_MLDSA65=y
+  - else:
+    sdkconfig: |
+      CONFIG_MBEDTLS_SSL_TLS1_3_SIG_MLDSA65=n
+  # The ML-DSA device chain is about 32 KB and is held in RAM while it is
+  # read: without PSRAM, it starves the board (WDY-4140).
+  - if: chain_algorithm == "ml_dsa" && psram_size == 0
+    warn:
+      id: w1
+      message: This device does not have enough RAM to manage ML-DSA certificates correctly. We recommend a board with PSRAM to run ML-DSA.
 
   # raw board-specific sdkconfig setting
   # sdkconfig.defaults.esp32p4, Wendy Net part. After the wendy_net rule: its
@@ -928,3 +951,11 @@ display:
       true: Enabled
       false: Disabled
     default: true
+  chain_algorithm:
+    title: Certificate chain algorithm
+    help: The signature algorithm of the device certificate chain.
+    priority: 8
+    values:
+      ecdsa_p256: ECDSA P-256 (classical)
+      ml_dsa: ML-DSA (post-quantum)
+    default: ecdsa_p256

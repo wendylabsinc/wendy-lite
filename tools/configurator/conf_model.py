@@ -28,6 +28,11 @@ rules
     condition as a combination that is not allowed. When its condition is
     true after the solve, the solution is not allowed.
 
+    "warn" (with a condition, no "set", no "sdkconfig" and no "valid") is a
+    map with an "id" and a "message". When its condition is true after the
+    solve, the solution has the warning. A warning does not stop the
+    configuration. The id is not used yet.
+
 An attribute depends on each attribute in the condition of a rule that
 sets it. The solver evaluates the rules in the order of this graph.
 """
@@ -402,6 +407,17 @@ def _rule_name(index: int, keyword: str | None, text: Any) -> str:
 
 
 @dataclass
+class RuleWarning:
+    """The warn map of a rule."""
+
+    id: str
+    message: str
+
+
+_WARN_KEYS = ("id", "message")
+
+
+@dataclass
 class Rule:
     index: int
     keyword: str | None  # "if", "else-if", "else", or None (no condition)
@@ -410,6 +426,7 @@ class Rule:
     sets: dict[str, Any]
     sdkconfig: list[str]
     forbidden: bool = False  # valid: false: the condition is not allowed
+    warning: RuleWarning | None = None  # warn: the condition gives this warning
 
     @property
     def name(self) -> str:
@@ -501,6 +518,18 @@ def _parse_sdkconfig(node: Any) -> list[str]:
     return [line.strip() for chunk in chunks for line in chunk.splitlines() if line.strip()]
 
 
+def _parse_warning(node: Any) -> RuleWarning:
+    if not isinstance(node, dict):
+        raise ConfError("warn must be a map with id and message")
+    unknown = set(node) - set(_WARN_KEYS)
+    if unknown:
+        raise ConfError(f"warn: unknown key(s): {', '.join(sorted(map(str, unknown)))}")
+    for key in _WARN_KEYS:
+        if not isinstance(node.get(key), str) or not node[key].strip():
+            raise ConfError(f"warn: {key} must be a text")
+    return RuleWarning(node["id"].strip(), node["message"].strip())
+
+
 def _all(operands: list[Node]) -> Node:
     return operands[0] if len(operands) == 1 else BoolOp("&&", operands)
 
@@ -514,13 +543,13 @@ def _parse_rule(
     chain is open. Return the rule and the chain after it.
     """
     if not isinstance(node, dict):
-        raise ConfError(f"rules[{index}]: expected a map with if, else-if or else, set, {SDKCONFIG} or valid")
+        raise ConfError(f"rules[{index}]: expected a map with if, else-if or else, set, {SDKCONFIG}, valid or warn")
     keywords = [k for k in _KEYWORDS if k in node]
     keyword = keywords[0] if keywords else None
     if_text = node.get(keyword) if keyword in ("if", "else-if") else None
 
     with _where(_rule_name(index, keyword, if_text)):
-        unknown = set(node) - {*_KEYWORDS, "set", SDKCONFIG, "valid"}
+        unknown = set(node) - {*_KEYWORDS, "set", SDKCONFIG, "valid", "warn"}
         if unknown:
             raise ConfError(f"unknown key(s): {', '.join(sorted(map(str, unknown)))}")
         if len(keywords) > 1:
@@ -544,6 +573,13 @@ def _parse_rule(
                 raise ConfError("else takes no condition (write else: alone, or use else-if)")
             assert chain is not None
             condition = _all([Not(c) for c in chain])
+
+        if "warn" in node:
+            if condition is None:
+                raise ConfError("warn needs an if, else-if or else")
+            if "set" in node or SDKCONFIG in node or "valid" in node:
+                raise ConfError(f"warn cannot have set, {SDKCONFIG} or valid")
+            return Rule(index, keyword, if_text, condition, {}, [], warning=_parse_warning(node["warn"])), new_chain
 
         if "valid" in node:
             if node["valid"] is not False:
@@ -722,6 +758,7 @@ class Solution:
     sdkconfig: list[str]
     applied: list[Rule]  # rules with a true condition, file order
     forbidden: list[Rule]  # valid: false rules with a true condition, file order
+    warnings: list[Rule]  # warn rules with a true condition, file order
 
     @property
     def allowed(self) -> bool:
@@ -753,8 +790,8 @@ def evaluate(
 
     # A rule is evaluated at the first of its targets in the graph order.
     # All the attributes in its condition come before, so they are final.
-    # A valid: false rule has no target: it is evaluated after the loop.
-    setters = [rule for rule in model.rules if not rule.forbidden]
+    # A valid: false or warn rule has no target: it is evaluated after the loop.
+    setters = [rule for rule in model.rules if rule.targets()]
     applied = []
     for rule in sorted(setters, key=lambda r: min(rank[t] for t in r.targets())):
         if not rule.applies(values):
@@ -774,10 +811,11 @@ def evaluate(
 
     # A value never changes after it is set, so these are the final values.
     forbidden = [rule for rule in model.rules if rule.forbidden and rule.applies(values)]
+    warnings = [rule for rule in model.rules if rule.warning is not None and rule.applies(values)]
 
     applied.sort(key=lambda r: r.index)
     lines = [line for rule in applied for line in rule.sdkconfig]
-    return Solution(values, sources, lines, applied, forbidden)
+    return Solution(values, sources, lines, applied, forbidden, warnings)
 
 
 def sdkconfig_requirements(graph: dict[str, list[str]]) -> dict[str, list[str]]:

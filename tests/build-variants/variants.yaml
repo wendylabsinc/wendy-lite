@@ -27,8 +27,12 @@ variants:
   # camera and microphone (sensor_link_av off). A native app, each other
   # feature on (Wendy Net, Wendy Cloud tunnel) when the chip has a board that
   # allows it, then the largest flash and PSRAM.
+  #
+  # Certificate chain: each variant with PSRAM has chain_algorithm=ml_dsa,
+  # each variant without PSRAM has ecdsa_p256 (ml_dsa without PSRAM gives a
+  # warning). The ESP32-C5 has both: see the ECDSA P-256 variant below.
 
-  - combination: board=esp32c6_devkit_c_1_n8 app_type=native wendy_net=true cloud_tunnel=true
+  - combination: board=esp32c6_devkit_c_1_n8 app_type=native wendy_net=true cloud_tunnel=true chain_algorithm=ecdsa_p256
     chip: esp32c6
     idf_version: "6.0.3"
     idf_preview: false
@@ -36,21 +40,21 @@ variants:
     native_apps: true
     aliases: []
 
-  - combination: board=custom chip=esp32c61 flash_size=32MiB cloud_tunnel=true
+  - combination: board=custom chip=esp32c61 flash_size=32MiB cloud_tunnel=true chain_algorithm=ecdsa_p256
     chip: esp32c61
     idf_version: "6.0.3"
     idf_preview: false
     tested: true
     aliases: []
 
-  - combination: board=esp32c5_devkit_c_1_n8r8 app_type=native wendy_net=true cloud_tunnel=true
+  - combination: board=esp32c5_devkit_c_1_n8r8 app_type=native wendy_net=true cloud_tunnel=true chain_algorithm=ml_dsa
     chip: esp32c5
     idf_version: "6.0.3"
     idf_preview: false
     tested: true
     aliases: []
 
-  - combination: board=waveshare_esp32p4_lcd_4b app_type=native cloud_tunnel=true
+  - combination: board=waveshare_esp32p4_lcd_4b app_type=native cloud_tunnel=true chain_algorithm=ml_dsa
     chip: esp32p4
     idf_version: "6.0.3"
     idf_preview: false
@@ -58,7 +62,7 @@ variants:
     native_apps: true
     aliases: []
 
-  - combination: board=seeed_xiao app_type=native wendy_net=true sensor_link_av=false cloud_tunnel=true
+  - combination: board=seeed_xiao app_type=native wendy_net=true sensor_link_av=false cloud_tunnel=true chain_algorithm=ml_dsa
     chip: esp32s3
     idf_version: "6.0.3"
     idf_preview: false
@@ -66,10 +70,20 @@ variants:
     native_apps: true
     aliases: []
 
-  - combination: board=esp32s31_function_coreboard_1 wendy_net=true cloud_tunnel=true
+  - combination: board=esp32s31_function_coreboard_1 wendy_net=true cloud_tunnel=true chain_algorithm=ml_dsa
     chip: esp32s31
     idf_version: "6.1"
     idf_preview: true
+    tested: true
+    aliases: []
+
+  # ECDSA P-256 chain on a board with PSRAM. The ESP32-C5 variant above, with
+  # chain_algorithm=ecdsa_p256.
+
+  - combination: board=esp32c5_devkit_c_1_n8r8 app_type=native wendy_net=true cloud_tunnel=true chain_algorithm=ecdsa_p256
+    chip: esp32c5
+    idf_version: "6.0.3"
+    idf_preview: false
     tested: true
     aliases: []
 
@@ -78,14 +92,14 @@ variants:
   # Korvo-1 always has them (board rule), and also has the display: the
   # ESP32-S31 variant above, on the Korvo-1.
 
-  - combination: board=seeed_xiao wendy_net=true sensor_link_av=true cloud_tunnel=true
+  - combination: board=seeed_xiao wendy_net=true sensor_link_av=true cloud_tunnel=true chain_algorithm=ml_dsa
     chip: esp32s3
     idf_version: "6.0.3"
     idf_preview: false
     tested: true
     aliases: []
 
-  - combination: board=esp32s31_korvo_1 wendy_net=true cloud_tunnel=true
+  - combination: board=esp32s31_korvo_1 wendy_net=true cloud_tunnel=true chain_algorithm=ml_dsa
     chip: esp32s31
     idf_version: "6.1"
     idf_preview: true
@@ -94,7 +108,7 @@ variants:
 
   # Wendy Cloud tunnel off. The ESP32-C6 variant above, with cloud_tunnel=false.
 
-  - combination: board=esp32c6_devkit_c_1_n8 app_type=native wendy_net=true cloud_tunnel=false
+  - combination: board=esp32c6_devkit_c_1_n8 app_type=native wendy_net=true cloud_tunnel=false chain_algorithm=ecdsa_p256
     chip: esp32c6
     idf_version: "6.0.3"
     idf_preview: false
@@ -103,18 +117,18 @@ variants:
 
   # Wendy Net off. The ESP32-C6 variant above, with wendy_net=false.
 
-  - combination: board=esp32c6_devkit_c_1_n8 app_type=native wendy_net=false cloud_tunnel=true
+  - combination: board=esp32c6_devkit_c_1_n8 app_type=native wendy_net=false cloud_tunnel=true chain_algorithm=ecdsa_p256
     chip: esp32c6
     idf_version: "6.0.3"
     idf_preview: false
     tested: true
     aliases:
-      - board=custom chip=esp32c6 flash_size=8MiB app_type=native cloud_tunnel=true
+      - board=custom chip=esp32c6 flash_size=8MiB app_type=native cloud_tunnel=true chain_algorithm=ecdsa_p256
 
   # WASM app. The ESP32-C6 variant above, with app_type=wasm. With Wendy Net,
   # a rule turns the Wendy Cloud tunnel off (constrained C6 Wendy Net profile).
 
-  - combination: board=esp32c6_devkit_c_1_n8 app_type=wasm wendy_net=true
+  - combination: board=esp32c6_devkit_c_1_n8 app_type=wasm wendy_net=true chain_algorithm=ecdsa_p256
     chip: esp32c6
     idf_version: "6.0.3"
     idf_preview: false

@@ -55,6 +55,9 @@ version of idf_version. Otherwise configure.py prints an error and does not
 run idf.py. configure.py does not select ESP-IDF: activate the correct
 version first.
 
+A warning ("warn" rule of master_config.yaml) does not stop configure.py: it
+prints "warning: <message>" after the solve and again after idf.py.
+
 The configurator code is in tools/configurator/.
 """
 
@@ -129,6 +132,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nrun in {project}:\n  {shlex.join(command)}\n")
         sys.stdout.flush()
         rc = subprocess.call(command, cwd=project)
+        # The idf.py output is long: show the warnings of the solve again.
+        solve.print_warnings(solution)
         return rc if rc >= 0 else 128 - rc
 
     return solve.run_cli(body)

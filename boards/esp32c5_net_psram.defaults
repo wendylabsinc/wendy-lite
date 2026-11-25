@@ -56,3 +56,7 @@ CONFIG_WENDY_NET_MAX_LISTENERS=4
 CONFIG_WENDY_NET_BUFFER_SIZE=4096
 CONFIG_WENDY_NET_DATAGRAM_MAX=65507
 CONFIG_WENDY_NET_BUFFERS_IN_PSRAM=y
+
+# PSRAM: verify the ML-DSA device chain (WDY-4140). Old boards/*.cfg builds
+# only; the configurator sets it from chain_algorithm (master_config.yaml).
+CONFIG_MBEDTLS_SSL_TLS1_3_SIG_MLDSA65=y

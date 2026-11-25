@@ -16,7 +16,8 @@ value.
 
 Each full combination gets the checks of solve.py:
 
-    OK           the configuration is allowed
+    OK           the configuration is allowed (it can have warnings: "warn"
+                 rules; the summary counts them)
     not allowed  a "valid: false" rule matches: the combination is skipped
     error        a conflict or a missing value: a problem in the master
                  configuration
@@ -206,7 +207,7 @@ def walk_all(model: Model, display: set[str]) -> Results:
     # is at or before it: their conditions read only attributes before it.
     # A full evaluation with partial inputs is not exact: "!wendy_net" is
     # true while wendy_net is undefined.
-    setters = [rule for rule in model.rules if not rule.forbidden]
+    setters = [rule for rule in model.rules if rule.targets()]  # not valid: false or warn
     first = [min(rank[t] for t in rule.targets()) for rule in setters]
     prefix = {
         name: Model(model.path, model.attributes, [r for r, f in zip(setters, first) if f <= rank[name]])
@@ -288,6 +289,8 @@ def print_report(model: Model, results: Results, variants: list[Variant], show_a
         f"  {results.count} combinations: {len(results.ok)} OK, "
         f"{len(results.not_allowed)} not allowed, {len(results.errors)} errors"
     )
+    warned = sum(1 for _, solution in results.ok if solution.warnings)
+    print(f"  {warned} OK combinations with a warning (a warning does not stop the configuration)")
     with_aliases = sum(1 for v in variants if v.aliases)
     print(f"  {len(variants)} variants (different results), {with_aliases} with aliases")
 

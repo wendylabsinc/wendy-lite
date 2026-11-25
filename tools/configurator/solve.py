@@ -22,6 +22,10 @@ If the condition of a "valid: false" rule is true for the solved values,
 the combination is not allowed: list the rule and the values in its
 condition, do not write the file and exit with code 1.
 
+If the condition of a "warn" rule is true for the solved values, list the
+warning, write the file and print "warning: <message>" on stderr. A warning
+does not change the exit code.
+
 tools/configure.py uses the same code (add_arguments, solve, run_cli).
 
 Examples:
@@ -82,6 +86,8 @@ def print_model(model: Model, width: int) -> None:
         print(f"  [{rule.index}] {head}")
         if rule.forbidden:
             print("        not allowed")
+        if rule.warning is not None:
+            print(f"        warning {rule.warning.id}: {rule.warning.message}")
         for name, value in rule.sets.items():
             print(f"        {name} = {model.attributes[name].format(value)}")
         for line in rule.sdkconfig:
@@ -117,6 +123,14 @@ def print_solution(model: Model, solution: Solution, missing: dict[str, Missing]
     if solution.allowed:
         print("  (none)")
 
+    _section("Warnings")
+    for rule in solution.warnings:
+        assert rule.warning is not None
+        print(f"  {rule.name}")
+        print(f"      {rule.warning.id}: {rule.warning.message}")
+    if not solution.warnings:
+        print("  (none)")
+
     _section("Missing values")
     for name, m in missing.items():
         line = f"  {name:<{width}}  needed by {', '.join(m.needed_by)}"
@@ -133,6 +147,15 @@ def print_build_profile(text: str) -> None:
         print(f"  {line}")
     if not text:
         print("  (empty)")
+
+
+def print_warnings(solution: Solution) -> None:
+    """Print each warning of the solution on stderr."""
+    sys.stdout.flush()
+    for rule in solution.warnings:
+        assert rule.warning is not None
+        print(f"warning: {rule.warning.message}", file=sys.stderr)
+    sys.stderr.flush()
 
 
 def write_sdkconfig(
@@ -192,7 +215,8 @@ def solve(
     solve. extra_required adds more attributes, mapped to what needs them.
     The combination must be allowed (no "valid: false" rule matches).
     Raise ConfError when one is missing or when the combination is not
-    allowed; the file is then not written.
+    allowed; the file is then not written. The warnings ("warn" rules) do not
+    stop the solve: they are printed on stderr after the file is written.
 
     extra_lines are sdkconfig lines that do not come from the master
     configuration (configure.py: CONFIG_WENDY_VERSION). They go after the
@@ -253,6 +277,7 @@ def solve(
     lines = [conf_model.build_profile_line(profile), *(extra_lines or []), *rule_lines]
     write_sdkconfig(args.output, lines, args.conf, args.values, args.assignments, extra_header)
     print(f"wrote {args.output} ({len(lines)} {SDKCONFIG} lines)")
+    print_warnings(solution)
     return solution
 
 

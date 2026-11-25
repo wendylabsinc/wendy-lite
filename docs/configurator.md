@@ -151,6 +151,9 @@ attributes:
     type: boolean
   cloud_tunnel:
     type: boolean
+  chain_algorithm:
+    type: string
+    enum: [ecdsa_p256, ml_dsa]
 ```
 
 ### Rules
@@ -162,6 +165,8 @@ can:
 - add Kconfig lines to the `sdkconfig` (`sdkconfig`)
 - mark the combination of values as not allowed (`valid: false`). The
   configurator then stops with an error.
+- give a warning (`warn`, a map with an `id` and a `message`). The
+  configurator shows the message and continues. The `id` is not used yet.
 
 A rule can continue the rule before it with `else-if` or `else`, as in a
 programming language.
@@ -173,14 +178,29 @@ For example, this rule sets the hardware of a board:
     set:
       chip: esp32c6
       flash_size: 8MiB
-      spram_size: 0
+      psram_size: 0
 ```
+
+This rule gives a warning when the ML-DSA certificate chain is selected on a
+board without PSRAM:
+
+```yaml
+  - if: chain_algorithm == "ml_dsa" && psram_size == 0
+    warn:
+      id: w1
+      message: This device does not have enough RAM to manage ML-DSA certificates correctly. We recommend a board with PSRAM to run ML-DSA.
+```
+
+A `valid: false` or `warn` rule cannot have `set` or `sdkconfig`. It is
+evaluated with the final values, after all the other rules. `solve.py` lists
+the warnings in its `Warnings` section and prints `warning: <message>` on
+stderr. `configure.py` prints the warnings again after `idf.py set-target`.
 
 ### Inputs and dependencies
 
 The rules make a dependency graph. An attribute depends on the attributes in
 the condition of each rule that sets it. In the example above, `chip`,
-`flash_size` and `spram_size` depend on `board`.
+`flash_size` and `psram_size` depend on `board`.
 
 - An attribute that no rule sets is an **input**. It depends on no other
   attribute, and the user must give its value. For example, `board` and
@@ -345,9 +365,9 @@ display:
 The type of the attribute gives the type of the question: a list for an enum,
 yes or no for a boolean, and a text for an attribute without enum.
 
-An attribute that is not in `display` is internal, for example `spram_size`
+An attribute that is not in `display` is internal, for example `psram_size`
 or `idf_version`. The CLI never shows an internal attribute. An entry with no
-keys (`spram_size:` alone) makes the attribute visible. When an internal
+keys (`psram_size:` alone) makes the attribute visible. When an internal
 attribute has only one allowed value, the CLI takes it and does not show it.
 When the CLI must ask for an internal attribute, it stops with an error: the
 attribute must be added to `display`.
@@ -420,7 +440,8 @@ conditions cannot tell apart.
 
 Each combination gets the checks of `solve.py`. There are three results:
 
-- **OK**: the configuration is allowed.
+- **OK**: the configuration is allowed. It can have warnings (`warn` rules):
+  the summary gives the number of OK combinations with a warning.
 - **Not allowed**: a `valid: false` rule matches. The combination is skipped.
 - **Error**: a conflict or a missing value. This is a problem in
   `master_config.yaml`, and it must be corrected.
@@ -452,28 +473,33 @@ The script prints the variants with aliases. `--all` prints all the variants.
 
 CI does not compile all the variants. The variants that CI compiles are in
 [tests/build-variants/variants.yaml](../tests/build-variants/variants.yaml).
-This file is written by hand. It has five sections:
+This file is written by hand. It has six sections:
 
 1. One variant for each chip: the most capable one, without the SensorLink
    camera and microphone (`sensor_link_av` off). A native app, each other
    feature on, then the largest flash and PSRAM. Exception: the Korvo-1
    always has the SensorLink camera and microphone.
-2. The XIAO variant of section 1, with the SensorLink camera and microphone
+2. The ESP32-C5 variant of section 1, with the ECDSA P-256 certificate chain.
+3. The XIAO variant of section 1, with the SensorLink camera and microphone
    (`sensor_link_av` on).
-3. The ESP32-C6 variant of section 1, with the Wendy Cloud tunnel off.
-4. The ESP32-C6 variant of section 1, with Wendy Net off.
-5. The ESP32-C6 variant of section 1, with a WASM app.
+4. The ESP32-C6 variant of section 1, with the Wendy Cloud tunnel off.
+5. The ESP32-C6 variant of section 1, with Wendy Net off.
+6. The ESP32-C6 variant of section 1, with a WASM app.
+
+Certificate chain: each variant with PSRAM has `chain_algorithm=ml_dsa`, each
+variant without PSRAM has `chain_algorithm=ecdsa_p256`. The ESP32-C5 has both
+(sections 1 and 2).
 
 Each variant has these keys:
 
 ```yaml
-  - combination: board=esp32c6_devkit_c_1_n8 app_type=native wendy_net=false cloud_tunnel=true
+  - combination: board=esp32c6_devkit_c_1_n8 app_type=native wendy_net=false cloud_tunnel=true chain_algorithm=ecdsa_p256
     chip: esp32c6
     idf_version: "6.0.3"
     idf_preview: false
     tested: true
     aliases:
-      - board=custom chip=esp32c6 flash_size=8MiB app_type=native cloud_tunnel=true
+      - board=custom chip=esp32c6 flash_size=8MiB app_type=native cloud_tunnel=true chain_algorithm=ecdsa_p256
 ```
 
 - `combination`: the combination that CI compiles.
