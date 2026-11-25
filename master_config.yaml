@@ -630,17 +630,13 @@ rules:
       CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC=y
       CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 
-  # boards/esp32c5_net_psram.defaults, without its PSRAM lines: the board
-  # rule above sets them, and CONFIG_WENDY_WASM_USE_PSRAM follows
-  # CONFIG_SPIRAM (Kconfig default).
-  - if: board == "esp32c5_devkit_c_1_n8r8" && app_type == "wasm" && wendy_net
+  # boards/esp32c5_net_psram.defaults, Wendy Net part, for each app type:
+  # mesh tuning measured on the ESP32-C5-DevKitC-1 N8R8. The board rule above
+  # sets the PSRAM lines. The router size follows CONFIG_SPIRAM (Kconfig
+  # defaults: full router, 8 links, 3 BLE channels, 16 SDU buffers).
+  - if: board == "esp32c5_devkit_c_1_n8r8" && wendy_net
     sdkconfig: |
-      # Native peer overlay for the ESP32-C5-DevKitC-1 N8R8 (8 MiB quad PSRAM).
-      CONFIG_WENDY_NET_MAX_LINKS=8
-      CONFIG_WENDY_NET_BLE_CHANNELS=3
-      CONFIG_WENDY_NET_BLE_SDU_BUFFERS=16
       CONFIG_BT_NIMBLE_MAX_CONNECTIONS=4
-      CONFIG_WENDY_NET_CONSTRAINED_PROFILE=n
       CONFIG_WENDY_NET_RECLAIM_PAYLOADS_FOR_TLS=y
 
       # Retained four-link policy: keep controller-facing NimBLE data internal while
@@ -663,18 +659,19 @@ rules:
       CONFIG_LWIP_MAX_SOCKETS=24
       CONFIG_SPI_FLASH_AUTO_SUSPEND=y
 
+  # boards/esp32c5_net_psram.defaults, WASM guest part. CONFIG_WENDY_NET_* here
+  # is the WASM guest socket API (wendy_net component), not the Wendy Net mesh.
+  # The WASM stack, heap and pool come from the base settings; the socket
+  # count (4) and CONFIG_WENDY_NET_BUFFERS_IN_PSRAM are Kconfig defaults.
+  - if: board == "esp32c5_devkit_c_1_n8r8" && app_type == "wasm" && wendy_net
+    sdkconfig: |
       # Optional guest: preserve 2 MiB mesh headroom beside a 5 MiB linear-memory cap.
       CONFIG_WENDY_WASM_MAX_MEMORY_PAGES=80
-      CONFIG_WENDY_WASM_STACK_SIZE=8192
-      CONFIG_WENDY_WASM_HEAP_SIZE=0
-      CONFIG_WENDY_WASM_POOL_SIZE=0
       CONFIG_WAMR_ENABLE_AOT=y
       CONFIG_WENDY_WASM_AOT_XIP=y
-      CONFIG_WENDY_NET_MAX_SOCKETS=4
       CONFIG_WENDY_NET_MAX_LISTENERS=4
       CONFIG_WENDY_NET_BUFFER_SIZE=4096
       CONFIG_WENDY_NET_DATAGRAM_MAX=65507
-      CONFIG_WENDY_NET_BUFFERS_IN_PSRAM=y
 
   # boards/esp32c6_net.defaults
   - if: board == "esp32c6_devkit_c_1_n8" && app_type == "wasm" && wendy_net
