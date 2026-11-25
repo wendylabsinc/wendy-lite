@@ -629,12 +629,10 @@ rules:
       CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
       CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC=y
       CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
-  - if: board == "esp32c5_devkit_c_1_n8r8" && app_type == "wasm"
-    sdkconfig: |
-      CONFIG_WENDY_WASM_USE_PSRAM=y
 
   # boards/esp32c5_net_psram.defaults, without its PSRAM lines: the board
-  # rules above set them.
+  # rule above sets them, and CONFIG_WENDY_WASM_USE_PSRAM follows
+  # CONFIG_SPIRAM (Kconfig default).
   - if: board == "esp32c5_devkit_c_1_n8r8" && app_type == "wasm" && wendy_net
     sdkconfig: |
       # Native peer overlay for the ESP32-C5-DevKitC-1 N8R8 (8 MiB quad PSRAM).
@@ -731,14 +729,21 @@ rules:
       CONFIG_WENDY_NET_BUFFER_SIZE=256
       CONFIG_WENDY_NET_DATAGRAM_MAX=16384
 
-  # boards/seeed_xiao_esp32s3_native.defaults
-  - if: board == "seeed_xiao" && app_type == "native"
+  # Seeed XIAO ESP32S3: 8 MiB octal PSRAM, for each app type.
+  - if: board == "seeed_xiao"
     sdkconfig: |
-      # 8MB octal PSRAM
       CONFIG_SPIRAM=y
       CONFIG_SPIRAM_MODE_OCT=y
       CONFIG_SPIRAM_SPEED_80M=y
+      # Reserve internal memory for DMA and networking/PKI task stacks.
+      CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
+      CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=98304
 
+  # boards/seeed_xiao_esp32s3_native.defaults, without its PSRAM lines: the
+  # board rule above sets them.
+  - if: board == "seeed_xiao" && app_type == "native"
+    sdkconfig: |
       # Compile native peer carriers; management enables them explicitly.
       CONFIG_LWIP_IPV6=y
       CONFIG_LWIP_IPV6_FORWARD=n
@@ -749,10 +754,7 @@ rules:
       CONFIG_BT_NIMBLE_L2CAP_COC_MAX_NUM=4
       CONFIG_BT_NIMBLE_MSYS_1_BLOCK_SIZE=256
 
-      # Reserve internal memory for sensor DMA and networking/PKI task stacks.
-      CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
-      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
-      CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=98304
+      # Wi-Fi buffers: keep internal memory for sensor DMA.
       CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=4
       CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
       CONFIG_ESP_WIFI_RX_BA_WIN=4
