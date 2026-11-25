@@ -611,13 +611,11 @@ rules:
       CONFIG_BT_NIMBLE_EXT_ADV_MAX_SIZE=31
       CONFIG_BT_NIMBLE_ENABLE_PERIODIC_ADV=n
 
-  # boards/esp32c5_net_psram.defaults
-  - if: board == "esp32c5_devkit_c_1_n8r8" && app_type == "wasm" && wendy_net
+  # ESP32-C5-DevKitC-1 N8R8: 8 MiB quad PSRAM, for each app type. Missing
+  # PSRAM is tolerated at boot (CONFIG_SPIRAM_IGNORE_NOTFOUND): inspect the
+  # boot log.
+  - if: board == "esp32c5_devkit_c_1_n8r8"
     sdkconfig: |
-      # Native peer overlay for an ESP32-C5 with verified 8 MiB quad PSRAM.
-      # Append after the board, WASM and boards/wendy_net.defaults.
-      # Missing PSRAM is tolerated at boot, but the full service/WASM capacity
-      # measurements require it; inspect the boot log before using this profile.
       CONFIG_SPIRAM=y
       CONFIG_SPIRAM_MODE_QUAD=y
       CONFIG_SPIRAM_SPEED_40M=y
@@ -625,13 +623,21 @@ rules:
       CONFIG_SPIRAM_MEMTEST=y
       CONFIG_SPIRAM_IGNORE_NOTFOUND=y
       CONFIG_SPIRAM_USE_MALLOC=y
-      # Preserve internal RAM for DMA and task stacks. TLS allocations belong in
-      # external RAM even when individual certificate/crypto objects are small.
+      # Preserve internal RAM for DMA and task stacks. TLS allocations
+      # (also the ML-DSA chain) belong in external RAM.
       CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=64
       CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
       CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC=y
+      CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+  - if: board == "esp32c5_devkit_c_1_n8r8" && app_type == "wasm"
+    sdkconfig: |
       CONFIG_WENDY_WASM_USE_PSRAM=y
 
+  # boards/esp32c5_net_psram.defaults, without its PSRAM lines: the board
+  # rules above set them.
+  - if: board == "esp32c5_devkit_c_1_n8r8" && app_type == "wasm" && wendy_net
+    sdkconfig: |
+      # Native peer overlay for the ESP32-C5-DevKitC-1 N8R8 (8 MiB quad PSRAM).
       CONFIG_WENDY_NET_MAX_LINKS=8
       CONFIG_WENDY_NET_BLE_CHANNELS=3
       CONFIG_WENDY_NET_BLE_SDU_BUFFERS=16
@@ -646,7 +652,6 @@ rules:
       CONFIG_BT_NIMBLE_L2CAP_COC_SDU_BUFF_COUNT=2
       CONFIG_BT_NIMBLE_LOW_SPEED_MODE=y
       CONFIG_WENDY_NET_BLE_RX_SDU_SLOTS=2
-      CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
       CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
       CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
       CONFIG_ESP_WIFI_STATIC_TX_BUFFER=y
