@@ -23,6 +23,13 @@
 #include "wendy_core.h"
 #include "wendy_core_wdt.h"
 #include "wendy_conf.h"
+#include "wendy_pki_crypto.h"
+#if CONFIG_WENDY_PKI
+#include "wendy_pki_clock_observation.h"
+#endif
+#if CONFIG_WENDY_NET_PEER
+#include "wendy_net_peer.h"
+#endif
 
 #if CONFIG_WENDY_WASM
 #include "wendy_wasm.h"
@@ -61,10 +68,11 @@ static const char *TAG = "wendy_core";
 
 static EventGroupHandle_t s_events;
 static bool s_boot_ble_enabled = true;
-esp_err_t wendy_core_set_boot_radios(bool ble, bool wifi)
+#if CONFIG_WENDY_NET_SELECT_RADIO_AT_BOOT
+/* Select the radios that wendy_core_init() starts, from the saved Wendy Net
+ * settings. Called by wendy_core_init() only, before BLE and Wi-Fi start. */
+static esp_err_t set_boot_radios(bool ble, bool wifi)
 {
-    if (s_events)
-        return ESP_ERR_INVALID_STATE;
 #if CONFIG_WENDY_WIFI_ENABLED
     esp_err_t result = wendy_wifi_set_boot_radio_enabled(wifi);
     if (result != ESP_OK)
@@ -80,6 +88,7 @@ esp_err_t wendy_core_set_boot_radios(bool ble, bool wifi)
     s_boot_ble_enabled = ble;
     return ESP_OK;
 }
+#endif
 
 /* ── Reboot boot-params ─────────────────────────────────────────────────
  *
@@ -931,6 +940,18 @@ esp_err_t wendy_core_init(void)
      * instead, as the very first thing user code does. */
     wendy_core_wdt_feed();
 
+    /* PKI boot steps. Capture the boot clock first, before any other
+     * initialization. Each call is safe to repeat: the firmware main makes
+     * the clock capture itself, as its first step, because it starts
+     * SensorLink before wendy_core_init(). */
+#if CONFIG_WENDY_PKI
+    wendy_pki_clock_observe_boot();
+#endif
+    if (wendy_pki_memory_init() || wendy_pki_crypto_init()) {
+        ESP_LOGE(TAG, "PKI memory or crypto initialization failed");
+        return ESP_FAIL;
+    }
+
     capture_boot_params();
 
     esp_err_t stdio_err = wendy_stdio_init();
@@ -1004,6 +1025,26 @@ esp_err_t wendy_core_init(void)
 
     /* Initialize hardware */
     init_hal();
+
+#if CONFIG_WENDY_NET_PEER
+    /* Load the saved radio policy before starting the radios and register
+     * the Wendy Net delegate before WendyCom accepts management commands. */
+    {
+        bool boot_ble, boot_wifi;
+        err = wendy_net_peer_boot_radios(&boot_ble, &boot_wifi);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Wendy Net boot radios: %s", esp_err_to_name(err));
+            return WENDY_CORE_ERR_NET_STARTUP;
+        }
+#if CONFIG_WENDY_NET_SELECT_RADIO_AT_BOOT
+        err = set_boot_radios(boot_ble, boot_wifi);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "boot radio selection: %s", esp_err_to_name(err));
+            return WENDY_CORE_ERR_NET_STARTUP;
+        }
+#endif
+    }
+#endif
 
     /* Initialize main com infrastructure */
     static const struct wcom_app_delegate app_delegate = {
@@ -1082,10 +1123,36 @@ esp_err_t wendy_core_init(void)
     }
 
     const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
-    ESP_LOGI(TAG, "heap: internal free %zu, largest block %zu, min free %zu, psram free %zu",
+#if CONFIG_BT_ENABLED
+    const char *bluetooth_built_in = "yes";
+#else
+    const char *bluetooth_built_in = "no";
+#endif
+    ESP_LOGI(TAG, "heap: internal free %zu, largest block %zu, min free %zu, psram free %zu, Bluetooth built in: %s",
              heap_caps_get_free_size(internal), heap_caps_get_largest_free_block(internal),
              heap_caps_get_minimum_free_size(internal),
-             heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+             heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT), bluetooth_built_in);
+#if CONFIG_BT_ENABLED
+    /* Name the trade-off instead of taking it silently: see "Boards without
+     * PSRAM" in the README. */
+    if (!heap_caps_get_total_size(MALLOC_CAP_SPIRAM))
+        ESP_LOGW(TAG, "no PSRAM and Bluetooth built in: when active, Bluetooth shares internal RAM with TLS; "
+                      "boards/no-ble.defaults gives that RAM to Wi-Fi and TLS");
+#endif
+
+    /* Last, as when the firmware main made these calls after
+     * wendy_core_init(): the Bluetooth power command (also when the boot
+     * policy omits BLE), then Wendy Net. */
+#if CONFIG_WENDY_BLE
+    wendy_ble_power_init();
+#endif
+#if CONFIG_WENDY_NET_PEER
+    err = wendy_net_peer_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Wendy Net start: %s", esp_err_to_name(err));
+        return WENDY_CORE_ERR_NET_STARTUP;
+    }
+#endif
 
     return ESP_OK;
 }

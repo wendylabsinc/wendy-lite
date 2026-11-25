@@ -74,11 +74,15 @@ struct wendy_pki_connection
      * corrections, carrier leases and caller I/O deadlines. */
     int64_t session_deadline_us;
     /* Broker control connection only. Monotonic time of the planned stop, for
-     * certificate renewal or the end of the broker chain (0 = none), and the
-     * hourly time fetch (NULL = none). */
+     * certificate renewal or the end of the broker chain (0 = none). The
+     * maintenance callback returns the delay to the next check in microseconds. */
     int64_t renew_deadline_us;
     int64_t (*refresh_time)(void);
     int64_t refresh_deadline_us;
+    /* Why the broker control connection ended, for its log line; control_error
+     * keeps the mbedTLS code of a TLS failure. */
+    const char *control_failure;
+    int control_error;
     /* Set before the handshake when the clock is verified. Firmware mbedTLS has
      * no date checks, so the verify callback checks the dates of the peer chain
      * and records the earliest end date of that chain. */

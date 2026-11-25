@@ -88,17 +88,22 @@ int main(void)
     assert(wendy_net_memory_open(&owner, 65536, false));
     assert(wendy_net_memory_open(&caller, 65536, false));
     run((struct attempt){.read_result = MBEDTLS_ERR_SSL_WANT_READ}, READ_ALL_IDLE_TIMEOUT);
-    run((struct attempt){.read_result = MBEDTLS_ERR_SSL_WANT_WRITE}, -1);
+    run((struct attempt){.read_result = MBEDTLS_ERR_SSL_WANT_WRITE}, READ_ALL_TIMEOUT);
     run((struct attempt){.read_result = MBEDTLS_ERR_SSL_WANT_READ, .boundary_hint = true},
         READ_ALL_IDLE_TIMEOUT);
-    run((struct attempt){.read_result = MBEDTLS_ERR_SSL_WANT_WRITE, .boundary_hint = true}, -1);
-    run((struct attempt){.read_result = MBEDTLS_ERR_SSL_WANT_READ, .wait_result = -1}, -1);
-    run((struct attempt){.read_result = MBEDTLS_ERR_SSL_WANT_READ, .partial = true}, -1);
-    run((struct attempt){.read_result = MBEDTLS_ERR_SSL_WANT_READ, .reset_on_wait = true}, -1);
-    run((struct attempt){.read_result = MBEDTLS_ERR_SSL_WANT_READ, .spurious = true}, -1);
-    run((struct attempt){.read_result = 0}, -1);
-    run((struct attempt){.read_result = MBEDTLS_ERR_NET_CONN_RESET}, -1);
-    run((struct attempt){.read_result = MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY}, -1);
+    run((struct attempt){.read_result = MBEDTLS_ERR_SSL_WANT_WRITE, .boundary_hint = true},
+        READ_ALL_TIMEOUT);
+    run((struct attempt){.read_result = MBEDTLS_ERR_SSL_WANT_READ, .wait_result = -1},
+        READ_ALL_SOCKET);
+    run((struct attempt){.read_result = MBEDTLS_ERR_SSL_WANT_READ, .partial = true},
+        READ_ALL_TIMEOUT);
+    run((struct attempt){.read_result = MBEDTLS_ERR_SSL_WANT_READ, .reset_on_wait = true},
+        READ_ALL_RESET);
+    run((struct attempt){.read_result = MBEDTLS_ERR_SSL_WANT_READ, .spurious = true},
+        READ_ALL_CLOSED);
+    run((struct attempt){.read_result = 0}, READ_ALL_CLOSED);
+    run((struct attempt){.read_result = MBEDTLS_ERR_NET_CONN_RESET}, MBEDTLS_ERR_NET_CONN_RESET);
+    run((struct attempt){.read_result = MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY}, READ_ALL_CLOSED);
     wendy_net_memory_close(&owner);
     wendy_net_memory_close(&caller);
     assert(wendy_net_memory_drained(&owner) && wendy_net_memory_drained(&caller));
