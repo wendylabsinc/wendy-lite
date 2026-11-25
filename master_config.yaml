@@ -611,10 +611,10 @@ rules:
       CONFIG_BT_NIMBLE_EXT_ADV_MAX_SIZE=31
       CONFIG_BT_NIMBLE_ENABLE_PERIODIC_ADV=n
 
-  # ESP32-C5-DevKitC-1 N8R8: 8 MiB quad PSRAM, for each app type. Missing
-  # PSRAM is tolerated at boot (CONFIG_SPIRAM_IGNORE_NOTFOUND): inspect the
-  # boot log.
-  - if: board == "esp32c5_devkit_c_1_n8r8"
+  # ESP32-C5 with PSRAM (quad: the only PSRAM mode of the C5), for each app
+  # type. Missing PSRAM is tolerated at boot (CONFIG_SPIRAM_IGNORE_NOTFOUND):
+  # inspect the boot log.
+  - if: chip == "esp32c5" && psram_size > 0
     sdkconfig: |
       CONFIG_SPIRAM=y
       CONFIG_SPIRAM_MODE_QUAD=y
@@ -631,10 +631,11 @@ rules:
       CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 
   # boards/esp32c5_net_psram.defaults, Wendy Net part, for each app type:
-  # mesh tuning measured on the ESP32-C5-DevKitC-1 N8R8. The board rule above
-  # sets the PSRAM lines. The router size follows CONFIG_SPIRAM (Kconfig
-  # defaults: full router, 8 links, 3 BLE channels, 16 SDU buffers).
-  - if: board == "esp32c5_devkit_c_1_n8r8" && wendy_net
+  # mesh tuning for an ESP32-C5 with PSRAM, measured on the
+  # ESP32-C5-DevKitC-1 N8R8 (8 MiB PSRAM). The rule above sets the PSRAM
+  # lines. The router size follows CONFIG_SPIRAM (Kconfig defaults: full
+  # router, 8 links, 3 BLE channels, 16 SDU buffers).
+  - if: chip == "esp32c5" && psram_size > 0 && wendy_net
     sdkconfig: |
       CONFIG_BT_NIMBLE_MAX_CONNECTIONS=4
       CONFIG_WENDY_NET_RECLAIM_PAYLOADS_FOR_TLS=y
@@ -663,7 +664,8 @@ rules:
   # is the WASM guest socket API (wendy_net component), not the Wendy Net mesh.
   # The WASM stack, heap and pool come from the base settings; the socket
   # count (4) and CONFIG_WENDY_NET_BUFFERS_IN_PSRAM are Kconfig defaults.
-  - if: board == "esp32c5_devkit_c_1_n8r8" && app_type == "wasm" && wendy_net
+  # The 5 MiB guest cap with 2 MiB left for the mesh needs 8 MiB of PSRAM.
+  - if: chip == "esp32c5" && psram_size >= 8MiB && app_type == "wasm" && wendy_net
     sdkconfig: |
       # Optional guest: preserve 2 MiB mesh headroom beside a 5 MiB linear-memory cap.
       CONFIG_WENDY_WASM_MAX_MEMORY_PAGES=80
