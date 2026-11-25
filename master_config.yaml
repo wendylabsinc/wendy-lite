@@ -951,3 +951,39 @@ display:
       ecdsa_p256: ECDSA P-256 (classical)
       ml_dsa: ML-DSA (post-quantum)
     default: ecdsa_p256
+
+# Simulator: the input values of the Wendy Lite simulator firmware, one map
+# per profile of `wendy vm create --profile <profile>` (WendyOS). A profile is
+# a values file of tools/configure.py: the rules set the other attributes, and
+# no question may be left. tests/build-variants/check_variants.py checks that
+# each profile is allowed, complete, and gives no warning.
+#
+# esp-emu emulates an ESP32-C6, so the board is a custom ESP32-C6: a board of
+# this file can add pins or peripherals that esp-emu does not have. 8MiB of
+# flash gives the WASM runtime its partition table and native apps their OTA
+# slots, and stays below the 16 MiB that the CLI accepts. A simulator has no
+# camera or microphone and is never enrolled: SensorLink and the Cloud tunnel
+# are off. The ESP32-C6 has no PSRAM: the certificate chain is ECDSA P-256
+# (ML-DSA gives a warning without PSRAM).
+#
+# The Wendy CLI (go/internal/cli/litebuild in WendyOS) reads this section. It
+# stops with an error when the profile is missing or leaves a question.
+simulator:
+  wendy-lite:
+    board: custom
+    chip: esp32c6
+    flash_size: 8MiB
+    app_type: wasm
+    sensor_link_av: false
+    wendy_net: false
+    cloud_tunnel: false
+    chain_algorithm: ecdsa_p256
+  wendy-lite-native:
+    board: custom
+    chip: esp32c6
+    flash_size: 8MiB
+    app_type: native
+    sensor_link_av: false
+    wendy_net: false
+    cloud_tunnel: false
+    chain_algorithm: ecdsa_p256

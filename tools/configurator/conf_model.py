@@ -1,8 +1,8 @@
 """Configurator model: attributes, rules, dependency graph and solver.
 
 The master configuration (master_config.yaml, in the repository root) has
-two parts that this code reads. A third part, "display", tells the Wendy CLI
-how to ask the questions (titles, labels, order). This code accepts it and
+three parts that this code reads. A fourth part, "display", tells the Wendy
+CLI how to ask the questions (titles, labels, order). This code accepts it and
 ignores it; the Go configurator (go/internal/cli/litebuild in WendyOS) reads
 it.
 
@@ -33,6 +33,13 @@ rules
     solve, the solution has the warning. A warning does not stop the
     configuration. The id is not used yet.
 
+simulator
+    A map from each simulator profile of the Wendy CLI (wendy vm create
+    --profile <profile> in WendyOS) to its input values, as in a values
+    file. A profile cannot leave a value empty. This code checks the names
+    and the values but does not solve the profiles:
+    tests/build-variants/check_variants.py does.
+
 An attribute depends on each attribute in the condition of a rule that
 sets it. The solver evaluates the rules in the order of this graph.
 """
@@ -40,7 +47,7 @@ sets it. The solver evaluates the rules in the order of this graph.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import graphlib
 import json
 import operator
@@ -51,6 +58,7 @@ import yaml
 
 SDKCONFIG = "sdkconfig"
 DISPLAY = "display"  # top-level section for the Wendy CLI questions, not read here
+SIMULATOR = "simulator"  # top-level section with the simulator profiles
 TYPES = ("string", "size", "boolean")
 FORMAT_VERSIONS = ("1.0",)  # format_version values that this code reads
 VALUES_FILE = "values file"
@@ -61,6 +69,7 @@ BUILD_PROFILE = "CONFIG_WENDY_BUILD_PROFILE"
 _SIZE_UNITS = {"KiB": 1024, "MiB": 1024 ** 2, "GiB": 1024 ** 3}
 _SIZE_RE = re.compile(r"^\s*(\d+)\s*(KiB|MiB|GiB)?\s*$")
 _NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")  # simulator profile names
 # Boolean texts (command line, values file). Conditions use only true and false.
 _TRUE_TEXTS = {"true", "yes", "on", "1"}
 _FALSE_TEXTS = {"false", "no", "off", "0"}
@@ -448,6 +457,8 @@ class Model:
     attributes: dict[str, Attribute]
     rules: list[Rule]
     format_version: str | None = None
+    # simulator profile -> input values (normalized)
+    simulator: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
@@ -612,6 +623,43 @@ def _parse_rule(
     return Rule(index, keyword, if_text, condition, sets, lines), new_chain
 
 
+def _input_value(attributes: dict[str, Attribute], name: Any, raw: Any, source: str) -> Any:
+    """Check a 'name: value' entry of a values file or a simulator profile.
+
+    Return the normalized value, or None for an empty value.
+    """
+    if name == SDKCONFIG:
+        raise ConfError(f"{SDKCONFIG} cannot be given in a {source}")
+    attr = attributes.get(name)
+    if attr is None:
+        raise ConfError(f'unknown attribute "{name}"')
+    return None if raw is None else attr.normalize(raw)
+
+
+def _parse_simulator(node: Any, attributes: dict[str, Attribute]) -> dict[str, dict[str, Any]]:
+    """Read the simulator section: a map profile -> input values."""
+    profiles: dict[str, dict[str, Any]] = {}
+    if node is None:
+        return profiles
+    with _where(SIMULATOR):
+        if not isinstance(node, dict):
+            raise ConfError("expected a map of 'profile: {name: value}' entries")
+        for profile, values_node in node.items():
+            if not isinstance(profile, str) or not _PROFILE_RE.match(profile):
+                raise ConfError(f"{profile!r} is not a valid profile name (lowercase letters, digits and '-')")
+            with _where(profile):
+                if not isinstance(values_node, dict) or not values_node:
+                    raise ConfError("expected a non-empty map of 'name: value' entries")
+                values: dict[str, Any] = {}
+                for name, raw in values_node.items():
+                    value = _input_value(attributes, name, raw, "simulator profile")
+                    if value is None:
+                        raise ConfError(f"{name} has no value")
+                    values[name] = value
+                profiles[profile] = values
+    return profiles
+
+
 def load(path: str) -> Model:
     """Read and check the master configuration."""
     data = read_yaml(path)
@@ -619,7 +667,7 @@ def load(path: str) -> Model:
         if not isinstance(data, dict):
             raise ConfError("expected a map with attributes and rules")
         # display: how the Wendy CLI asks the questions. The solver ignores it.
-        unknown = set(data) - {"format_version", "attributes", "rules", DISPLAY}
+        unknown = set(data) - {"format_version", "attributes", "rules", DISPLAY, SIMULATOR}
         if unknown:
             raise ConfError(f"unknown key(s): {', '.join(sorted(map(str, unknown)))}")
         format_version = None
@@ -640,7 +688,8 @@ def load(path: str) -> Model:
         for i, n in enumerate(rules_node):
             rule, chain = _parse_rule(i, n, attributes, chain)
             rules.append(rule)
-    return Model(path, attributes, rules, format_version)
+        simulator = _parse_simulator(data.get(SIMULATOR), attributes)
+    return Model(path, attributes, rules, format_version, simulator)
 
 
 def load_values(model: Model, path: str) -> dict[str, Any]:
@@ -656,13 +705,9 @@ def load_values(model: Model, path: str) -> dict[str, Any]:
         if not isinstance(data, dict):
             raise ConfError("expected a map of 'name: value' entries")
         for name, raw in data.items():
-            if name == SDKCONFIG:
-                raise ConfError(f"{SDKCONFIG} cannot be given in a values file")
-            attr = model.attributes.get(name)
-            if attr is None:
-                raise ConfError(f'unknown attribute "{name}"')
-            if raw is not None:
-                values[name] = attr.normalize(raw)
+            value = _input_value(model.attributes, name, raw, VALUES_FILE)
+            if value is not None:
+                values[name] = value
     return values
 
 

@@ -19,6 +19,10 @@ configuration (master_config.yaml). For each variant:
 
 The variants with tested: false are checked too.
 
+Each simulator profile of the master configuration (section simulator, the
+values of wendy vm create in the Wendy CLI) must be OK too, and must give no
+warning.
+
 Exit code: 1 when there is a problem, else 0.
 
 Examples:
@@ -111,6 +115,27 @@ def _difference(main: Solution, alias: Solution) -> list[str]:
     return lines
 
 
+def _status_text(status: str, text: str) -> str:
+    """The text of a check_combination result that is not OK."""
+    return text if status == NOT_ALLOWED else f"{status}: {text}"  # text: "not allowed: ..."
+
+
+def check_simulator(model: Model) -> list[tuple[str, list[str]]]:
+    """Solve each simulator profile of the master configuration. Return the problems."""
+    graph = conf_model.build_graph(model)
+    required = all_combinations.required_attributes(model, graph)
+    problems = []
+    for profile, values in model.simulator.items():
+        status, result = check_combination(model, graph, required, values)
+        if status != OK:
+            problems.append((f"simulator {profile}", [_status_text(status, result)]))
+        elif result.warnings:
+            problems.append(
+                (f"simulator {profile}", [f"warning {r.warning.id}: {r.warning.message}" for r in result.warnings])
+            )
+    return problems
+
+
 def check_entries(model: Model, entries: list[Entry]) -> list[tuple[str, list[str]]]:
     """Solve each combination and alias of the variants file. Return the problems."""
     graph = conf_model.build_graph(model)
@@ -124,14 +149,11 @@ def check_entries(model: Model, entries: list[Entry]) -> list[tuple[str, list[st
         inputs = {name: value for name, value in values.items() if value is not None}
         return check_combination(model, graph, required, inputs)
 
-    def status_text(status: str, text: str) -> str:
-        return text if status == NOT_ALLOWED else f"{status}: {text}"  # text: "not allowed: ..."
-
     problems = []
     for entry in entries:
         status, main = solve_text(entry.combination)
         if status != OK:
-            problems.append((entry.combination, [f"combination, {status_text(status, main)}"]))
+            problems.append((entry.combination, [f"combination, {_status_text(status, main)}"]))
             continue
         wrong = []
         for name, raw in entry.fields.items():
@@ -151,7 +173,7 @@ def check_entries(model: Model, entries: list[Entry]) -> list[tuple[str, list[st
         for alias in entry.aliases:
             status, value = solve_text(alias)
             if status != OK:
-                problems.append((alias, [f"alias of {entry.combination}, {status_text(status, value)}"]))
+                problems.append((alias, [f"alias of {entry.combination}, {_status_text(status, value)}"]))
             elif result_key(value) != result_key(main):
                 problems.append(
                     (alias, [f"alias of {entry.combination}: not the same result", *_difference(main, value)])
@@ -187,8 +209,14 @@ def main(argv: list[str] | None = None) -> int:
             note = f"{aliases} alias{'es' if aliases != 1 else ''}" + ("" if entry.tested else ", not tested")
             note += ", native apps" if entry.native_apps else ""
             print(f"  {entry.combination}  ({note})")
+        print(f"\n== Simulator profiles in {args.conf}")
+        for profile, values in model.simulator.items():
+            text = " ".join(f"{name}={model.attributes[name].format(v)}" for name, v in values.items())
+            print(f"  {profile}: {text}")
+        if not model.simulator:
+            print("  (none)")
 
-        problems = check_entries(model, entries)
+        problems = check_entries(model, entries) + check_simulator(model)
         print("\n== Problems")
         for combination, lines in problems:
             print(f"  {combination}")
@@ -197,7 +225,10 @@ def main(argv: list[str] | None = None) -> int:
         if not problems:
             print("  (none)")
         aliases = sum(len(e.aliases) for e in entries)
-        print(f"\n{len(entries)} variants, {aliases} aliases: {len(problems)} problems")
+        profiles = len(model.simulator)
+        print(
+            f"\n{len(entries)} variants, {aliases} aliases, {profiles} simulator profiles: {len(problems)} problems"
+        )
         return 1 if problems else 0
 
     return solve.run_cli(body)

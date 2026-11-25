@@ -109,6 +109,9 @@ two parts:
 - the **rules**: the links between the attributes, and between the attributes
   and the Kconfig settings
 
+Two more sections are for the Wendy CLI: `display` (see [Display](#display))
+and `simulator` (see [Simulator profiles](#simulator-profiles)).
+
 The user gives the values of some attributes. The rules calculate the other
 attributes. From all the attribute values, the configurator makes the
 `sdkconfig` lines of the build.
@@ -465,6 +468,51 @@ an older run stays in the file until a run answers the same question again.
 When `master_config.yaml` changes, the CLI ignores the attributes and the values
 that are no longer valid.
 
+### Simulator profiles
+
+`wendy vm create --profile <profile>` builds the firmware of a Wendy Lite
+simulator. The section `simulator` of `master_config.yaml` gives the input
+values of each profile: `wendy-lite` (WASM app) and `wendy-lite-native`
+(native app).
+
+```yaml
+simulator:
+  wendy-lite-native:
+    board: custom
+    chip: esp32c6
+    flash_size: 8MiB
+    app_type: native
+    sensor_link_av: false
+    wendy_net: false
+    cloud_tunnel: false
+    chain_algorithm: ecdsa_p256
+```
+
+A profile is a map `name: value`, as in a values file, and no value can be
+empty. The CLI asks no question for a simulator. Thus a profile gives a value
+to each visible attribute, and the rules give the internal attributes. A
+profile must give an allowed configuration with no missing value, and no
+warning.
+
+The simulator runs in esp-emu, which emulates an ESP32-C6 without PSRAM. Thus
+each profile has these values:
+
+- `board: custom` and `chip: esp32c6`. A board of `master_config.yaml` can add
+  pins or peripherals that esp-emu does not have.
+- `flash_size: 8MiB`. This gives the WASM runtime its partition table and
+  native apps their OTA slots. The CLI accepts a firmware image of 16 MiB or
+  less.
+- `chain_algorithm: ecdsa_p256`. ML-DSA gives warning `w1` without PSRAM.
+- `sensor_link_av: false` and `cloud_tunnel: false`. A simulator has no camera
+  or microphone, and it is never enrolled.
+
+`conf_model.py` checks the profile names (lowercase letters, digits and `-`),
+the attribute names and the values. `check_variants.py` solves each profile
+(see [Build variants in CI](#build-variants-in-ci)).
+
+The Wendy CLI (`go/internal/cli/litebuild` in WendyOS) reads this section. It
+stops with an error when the profile is missing or leaves a question.
+
 ## Check all the combinations
 
 [tools/configurator/all_combinations.py](../tools/configurator/all_combinations.py)
@@ -571,7 +619,9 @@ runs on each pull request, on each push to `main`, and manually:
      no error, each alias gives the same firmware as its combination,
      `chip`, `idf_version` and `idf_preview` are the values of the
      combination, and a variant with `native_apps: true` gives `app_type`
-     native.
+     native. The script also solves each simulator profile of
+     `master_config.yaml` (see [Simulator profiles](#simulator-profiles)): it
+     must be allowed and give no warning.
 2. Then there is one build job for each variant with `tested: true`. The jobs
    run in parallel. A job compiles the combination in the `espressif/idf`
    container of its `idf_version`: `tools/configure.py <combination>`, then
