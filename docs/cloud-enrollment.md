@@ -115,13 +115,17 @@ require USB enrollment recovery. The separate Lite operator anchor described
 below can rotate through authenticated renewal.
 
 During identity maintenance, firmware with Wendy Net and ML-DSA verification
-can fetch the current peer CA snapshot from
-`GET /v1/{tenant}/peer-ca-certificates` on its CSR service. The request uses
-the device's enrolled certificate. Classical Lite adds the returned regular
-Device Identity and Operator Authority CAs to its own Lite Device CA for peer
-verification. Regular Lite uses the returned Lite CA path as intermediate
-candidates under its existing trust anchors. Failed fetches preserve the last
-saved snapshot. A successful empty list clears extras of that kind.
+refreshes peer CA certificates through the tenant's existing EST `/cacerts` endpoint.
+USB enrollment saves the resolved URL, including a custom `--ca-certs-url`.
+Boards with an older enrollment can derive it from a recognized Wendy CSR hostname.
+The board authenticates the EST server using its configured HTTPS roots.
+
+Classical Lite keeps its own Lite Device CA and selects the tenant's published
+regular Device Identity and Operator Authority CAs, including overlapping
+generations. Regular Lite requests the parent-signed Lite CA path and uses it
+as untrusted intermediate material under its existing anchors. The firmware
+validates a complete bounded response before replacing the saved snapshot.
+A failed refresh keeps the last snapshot and leaves identity renewal independent.
 
 If an enrolled board reports `Invalid or missing device CA bundle` after a
 firmware update and both LAN TLS and Cloud stop working, first check the firmware

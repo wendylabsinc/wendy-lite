@@ -889,106 +889,115 @@ done:
 /* Accessed under identity_lock. */
 static int64_t peer_ca_refresh_at;
 
-static int peer_ca_array(const cJSON *array, uint8_t *out, size_t capacity, size_t *size)
+static void peer_ca_heap(const char *stage)
 {
-    *size = 0;
-    if (!cJSON_IsArray(array) || cJSON_GetArraySize(array) >= WENDY_CERT_BUNDLE_MAX_CERTS)
-        return -1;
-    const cJSON *item;
-    cJSON_ArrayForEach(item, array) {
-        if (!cJSON_IsString(item) || !item->valuestring)
-            return -1;
-        const uint8_t *encoded = (const uint8_t *)item->valuestring;
-        size_t length = strlen(item->valuestring), decoded = 0;
-        int result = mbedtls_base64_decode(out ? out + *size : NULL, capacity - *size,
-                                          &decoded, encoded, length);
-        if (result != (out ? 0 : MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) ||
-            !decoded || decoded > capacity - *size)
-            return -1;
-        if (out) {
-            const uint8_t *certificate;
-            size_t offset = 0, certificate_size;
-            if (wendy_cert_der_next(out + *size, decoded, &offset, &certificate, &certificate_size) != 1 ||
-                offset != decoded)
-                return -1;
-        }
-        *size += decoded;
-    }
-    return 0;
+#ifdef ESP_PLATFORM
+    unsigned caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    ESP_LOGI(TAG, "EST refresh %s: internal free=%u largest=%u minimum=%u", stage,
+             (unsigned)heap_caps_get_free_size(caps),
+             (unsigned)heap_caps_get_largest_free_block(caps),
+             (unsigned)heap_caps_get_minimum_free_size(caps));
+#else
+    (void)stage;
+#endif
 }
 
-static int apply_peer_ca_snapshot(const cJSON *reply, const WendyConfEnrollment *cfg,
+static int fetch_peer_ca_snapshot(const WendyConfEnrollment *cfg,
                                   const struct wendy_conf_enrollment_data *data,
-                                  struct wendy_conf_span chain, const uint8_t *key, size_t key_size,
-                                  const char *principal, bool classical)
+                                  struct wendy_conf_span chain, bool classical)
 {
-    const cJSON *roots = cJSON_GetObjectItemCaseSensitive(reply, "additional_roots");
-    const cJSON *issuers = cJSON_GetObjectItemCaseSensitive(reply, "additional_intermediates");
-    if (!cJSON_IsArray(roots) || !cJSON_IsArray(issuers) ||
-        cJSON_GetArraySize(classical ? issuers : roots))
-        return -1;
+    struct pki_est_cert own = {0}, signed_lite = {0};
+    struct pki_est_classical_scope scope = {0};
+    struct pki_est_stream stream = {0};
+    uint8_t *snapshot = NULL;
+    char url[321];
+    int result = -1;
 
-    /* A classical peer keeps its own validated Lite Device CA even when
-     * there are no extra pins. The CSR endpoint only supplies the extras. */
-    const uint8_t *anchor = NULL;
-    size_t anchor_size = 0, offset = 0;
-    if (classical &&
-        (wendy_cert_der_next(chain.data, chain.size, &offset, &anchor, &anchor_size) != 1 ||
-         wendy_cert_der_next(chain.data, chain.size, &offset, &anchor, &anchor_size) != 1 ||
-         offset != chain.size || anchor_size > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE))
-        return -1;
-
-    const cJSON *extras = classical ? roots : issuers;
-    size_t size;
-    if (peer_ca_array(extras, NULL, WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE - anchor_size, &size))
-        return -1;
-    size_t total = anchor_size + size;
-    uint8_t *der = total ? malloc(total) : NULL;
-    if (total && !der)
-        return -1;
-    if (anchor_size)
-        memcpy(der, anchor, anchor_size);
-    int result = peer_ca_array(extras, der ? der + anchor_size : NULL, size, &size);
-    if (!result && classical) {
-        result = wendy_pki_verify_roots(der, total);
-        if (!result) {
-            time_t expires;
-            result = wendy_pki_verify_identity(chain.data, chain.size, der, total, key, key_size,
-                                               principal, time(NULL), &expires, NULL);
-        }
-    } else if (!result && total) {
-        result = wendy_pki_verify_lite_issuers(der, total, data->device_roots.data,
-                                               data->device_roots.size, cfg->tenant_id, time(NULL));
+    if (classical) {
+        const uint8_t *part;
+        size_t offset = 0;
+        if (wendy_cert_der_next(chain.data, chain.size, &offset, &part, &own.size) != 1 ||
+            wendy_cert_der_next(chain.data, chain.size, &offset, &part, &own.size) != 1 ||
+            offset != chain.size)
+            return -1;
+        own.der = (uint8_t *)part; /* Borrow the validated local identity's anchor. */
     }
-    if (!result && wendy_conf_store_mesh_trust(data->generation, !classical, der, total) != ESP_OK)
-        result = -1;
-    free(der);
+    if (pki_est_url(url, sizeof url, cfg->est_url, cfg->csr_url, cfg->tenant_id, true))
+        return -1;
+    peer_ca_heap("before download");
+    if (pki_http_get_est(url, true, data->https_roots, &stream))
+        goto done;
+    peer_ca_heap("after Lite download");
+    if (pki_est_lite_order(&stream, cfg->tenant_id, classical ? &own : NULL,
+                           classical ? &scope : NULL))
+        goto done;
+
+    if (classical) {
+        /* Retain just the signed Lite CA to verify its published parent
+         * against the separately streamed regular tenant bundle. */
+        signed_lite = stream.certs[0];
+        stream.certs[0].der = NULL;
+        pki_est_free(&stream);
+        stream.keep = pki_est_keep_regular;
+        stream.context = &scope;
+        if (pki_est_url(url, sizeof url, cfg->est_url, cfg->csr_url, cfg->tenant_id, false) ||
+            pki_http_get_est(url, false, data->https_roots, &stream))
+            goto done;
+        peer_ca_heap("after regular download");
+        if (pki_est_regular_pins(&stream, &signed_lite, &scope, time(NULL)))
+            goto done;
+        free(signed_lite.der);
+        signed_lite.der = NULL;
+    }
+
+    if (stream.count >= WENDY_CERT_BUNDLE_MAX_CERTS ||
+        own.size + stream.stored > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE)
+        goto done;
+    size_t size = own.size + stream.stored, offset = own.size, count = stream.count;
+    snapshot = malloc(size);
+    if (!snapshot)
+        goto done;
+    if (own.size)
+        memcpy(snapshot, own.der, own.size);
+    for (size_t i = 0; i < stream.count; i++) {
+        memcpy(snapshot + offset, stream.certs[i].der, stream.certs[i].size);
+        offset += stream.certs[i].size;
+        free(stream.certs[i].der);
+        stream.certs[i].der = NULL;
+    }
+    pki_est_free(&stream);
+    if (!classical && wendy_pki_verify_lite_issuers(snapshot, size, data->device_roots.data,
+                                                   data->device_roots.size, cfg->tenant_id, time(NULL)))
+        goto done;
+    peer_ca_heap("before persistence");
+    if (wendy_conf_store_mesh_trust(data->generation, !classical, snapshot, size) != ESP_OK)
+        goto done;
+    ESP_LOGI(TAG, "EST peer CA snapshot current: %u certs, %u DER bytes",
+             (unsigned)count, (unsigned)size);
+    result = 0;
+done:
+    free(signed_lite.der);
+    free(snapshot);
+    pki_est_free(&stream);
+    peer_ca_heap(result ? "deferred" : "committed");
     return result;
 }
 
 static void refresh_peer_cas(const WendyConfEnrollment *cfg, const struct wendy_conf_enrollment_data *data,
-                             struct wendy_conf_span chain, const uint8_t *key, size_t key_size,
-                             const char *principal, bool classical, bool renewed)
+                             struct wendy_conf_span chain, bool classical, bool renewed)
 {
     if (!renewed && esp_timer_get_time() < peer_ca_refresh_at)
         return;
-    char url[sizeof cfg->csr_url + sizeof "/peer-ca-certificates"];
-    snprintf(url, sizeof url, "%s/peer-ca-certificates", cfg->csr_url);
-    uint8_t *response = NULL;
-    size_t size = 0;
-    int result = pki_http_get_peer_cas(url, key, key_size, chain, data->https_roots, &response, &size);
-    cJSON *reply = result ? NULL : cJSON_ParseWithLength((const char *)response, size);
-    free(response);
-    if (reply)
-        result = apply_peer_ca_snapshot(reply, cfg, data, chain, key, key_size, principal, classical);
-    else
-        result = -1;
-    cJSON_Delete(reply);
+    char url[321];
+    if (pki_est_url(url, sizeof url, cfg->est_url, cfg->csr_url, cfg->tenant_id, true)) {
+        /* An old self-hosted enrollment may lack an explicit EST address. */
+        peer_ca_refresh_at = esp_timer_get_time() + PEER_CA_REFRESH_US;
+        return;
+    }
+    int result = fetch_peer_ca_snapshot(cfg, data, chain, classical);
     peer_ca_refresh_at = esp_timer_get_time() + (result ? PEER_CA_RETRY_US : PEER_CA_REFRESH_US);
     if (result)
-        ESP_LOGW(TAG, "peer CA refresh failed; keeping existing peer certificates");
-    else
-        ESP_LOGI(TAG, "peer CA snapshot current");
+        ESP_LOGW(TAG, "EST peer CA refresh deferred; keeping existing peer certificates");
 }
 #endif
 
@@ -1344,7 +1353,7 @@ static void control_refresh_time(void)
                                                    data.device_roots.size, key, key_size, principal,
                                                    time(NULL), &expires, &leaf))
                         refresh_peer_cas(&cfg, &data, (struct wendy_conf_span){cert, cert_size},
-                                         key, key_size, principal, leaf.classical_lite, false);
+                                         leaf.classical_lite, false);
                     if (key)
                         erase(key, key_size);
                     free(key);
@@ -1473,8 +1482,7 @@ static esp_err_t connect_identity(wendy_pki_connection **connection)
 #if PKI_REFRESH_PEER_CAS
     if (fresh.data || !have_pending) {
         struct wendy_conf_span active = fresh.data ? fresh : (struct wendy_conf_span){stored, stored_size};
-        refresh_peer_cas(&cfg, &data, active, key, key_size, principal,
-                         leaf.classical_lite, fresh.data != NULL);
+        refresh_peer_cas(&cfg, &data, active, leaf.classical_lite, fresh.data != NULL);
     }
 #endif
     /* Maintenance ends here: the time is verified and the identity is valid. */

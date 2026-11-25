@@ -30,6 +30,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #if ESP_PLATFORM
@@ -2396,22 +2397,116 @@ static int write_all(wendy_pki_connection *c, const void *b, size_t n, int64_t d
     }
     return 0;
 }
-static int http_request(const char *url, bool get, const char *type, const char *token, const void *body,
+struct est_http_body {
+    struct response response;
+    struct pki_est_stream *stream;
+    char field[32], value[96];
+    size_t field_size, value_size;
+    bool in_value, headers_complete, content_type, algorithm, lite;
+};
+
+static int est_header_finish(struct est_http_body *body)
+{
+    const char *value = body->value;
+    while (*value == ' ' || *value == '\t')
+        value++;
+    size_t length = strlen(value);
+    while (length && (value[length - 1] == ' ' || value[length - 1] == '\t'))
+        length--;
+    if (!strcasecmp(body->field, "content-type")) {
+        static const char type[] = "application/pkcs7-mime";
+        size_t media_length = strcspn(value, "; \t");
+        if (body->content_type || media_length != sizeof type - 1 ||
+            strncasecmp(value, type, sizeof type - 1))
+            return -1;
+        const char *parameters = value + media_length;
+        while (*parameters == ' ' || *parameters == '\t')
+            parameters++;
+        if (*parameters && *parameters != ';')
+            return -1;
+        body->content_type = true;
+    } else if (!strcasecmp(body->field, "x-wendy-chain-algorithm")) {
+        static const char algorithm[] = "ECDSA_P256";
+        if (body->algorithm || length != sizeof algorithm - 1 ||
+            memcmp(value, algorithm, sizeof algorithm - 1))
+            return -1;
+        body->algorithm = true;
+    }
+    return 0;
+}
+
+static int est_header_field(http_parser *parser, const char *bytes, size_t size)
+{
+    struct est_http_body *body = parser->data;
+    if (body->headers_complete)
+        return 0; /* Trailer fields cannot alter the selected format. */
+    if (body->in_value) {
+        if (est_header_finish(body))
+            return -1;
+        body->in_value = false;
+        body->field_size = body->value_size = 0;
+        body->value[0] = 0;
+    }
+    size_t capacity = sizeof body->field - 1;
+    size_t count = size > capacity - body->field_size ? capacity - body->field_size : size;
+    memcpy(body->field + body->field_size, bytes, count);
+    body->field_size += count;
+    body->field[body->field_size] = 0;
+    return 0;
+}
+
+static int est_header_value(http_parser *parser, const char *bytes, size_t size)
+{
+    struct est_http_body *body = parser->data;
+    if (body->headers_complete)
+        return 0;
+    body->in_value = true;
+    if (strcasecmp(body->field, "content-type") &&
+        strcasecmp(body->field, "x-wendy-chain-algorithm"))
+        return 0;
+    if (size >= sizeof body->value - body->value_size || memchr(bytes, 0, size))
+        return -1;
+    memcpy(body->value + body->value_size, bytes, size);
+    body->value_size += size;
+    body->value[body->value_size] = 0;
+    return 0;
+}
+
+static int est_headers_complete(http_parser *parser)
+{
+    struct est_http_body *body = parser->data;
+    body->headers_complete = true;
+    if (parser->status_code != 200 || est_header_finish(body) || !body->content_type ||
+        body->algorithm != body->lite) {
+        /* on_headers_complete reserves 1 and 2 for successful upgrades. */
+        return -1;
+    }
+    return 0;
+}
+
+static int est_http_feed(http_parser *parser, const char *bytes, size_t size)
+{
+    struct est_http_body *body = parser->data;
+    return body->headers_complete ? pki_est_feed(body->stream, (const uint8_t *)bytes, size) : -1;
+}
+
+static int http_request(const char *url, const char *type, const char *token, const void *body,
                      size_t body_size, const uint8_t *key, size_t key_size,
                      struct wendy_conf_span cert, struct wendy_conf_span roots, uint8_t **response,
                      size_t *response_size, char **lite_authority_header,
-                     const struct wendy_pki_stream *stream)
+                     const struct wendy_pki_stream *stream, struct est_http_body *est)
 {
     if (lite_authority_header) *lite_authority_header = NULL;
     struct http_parser_url u;
     http_parser_url_init(&u);
-    if (!url || strlen(url) > 279 || http_parser_parse_url(url, strlen(url), 0, &u))
+    if (!url || strlen(url) > 320 || http_parser_parse_url(url, strlen(url), 0, &u))
         return -1;
     if (!(u.field_set & (1 << UF_SCHEMA)) || u.field_data[UF_SCHEMA].len != 5 ||
         memcmp(url + u.field_data[UF_SCHEMA].off, "https", 5) || !(u.field_set & (1 << UF_HOST)) ||
-        u.field_set & ((1 << UF_USERINFO) | (1 << UF_FRAGMENT) | (1 << UF_QUERY)))
+        (u.field_set & ((1 << UF_USERINFO) | (1 << UF_FRAGMENT))) ||
+        (!est && (u.field_set & (1 << UF_QUERY))))
         return -1;
-    char host[254], path[280];
+    char host[254], path[321];
     size_t hn = u.field_data[UF_HOST].len;
     if (hn == 0 || hn >= sizeof host)
         return -1;
@@ -2419,7 +2514,11 @@ static int http_request(const char *url, bool get, const char *type, const char 
     host[hn] = 0;
     if (!(u.field_set & (1 << UF_PATH)))
         return -1;
-    snprintf(path, sizeof path, "%.*s", u.field_data[UF_PATH].len, url + u.field_data[UF_PATH].off);
+    size_t path_offset = u.field_data[UF_PATH].off;
+    size_t path_size = strlen(url + path_offset);
+    if (path_size >= sizeof path)
+        return -1;
+    memcpy(path, url + path_offset, path_size + 1);
     if (strpbrk(host, "\r\n") || strpbrk(path, "\r\n") || (token && strpbrk(token, "\r\n")))
         return -1;
     wendy_pki_connection *c = NULL;
@@ -2427,7 +2526,7 @@ static int http_request(const char *url, bool get, const char *type, const char 
     int connected =
         stream ? open_tls(host, target_port, NULL, 0, (struct wendy_conf_span){0}, roots, &c, NULL,
                           NULL, NULL, stream, false, false, NULL, NULL, NULL, NULL, NULL, false)
-               : get ? pki_tls_connect_dated(host, target_port, key, key_size, cert, roots, &c)
+               : est ? pki_tls_connect_dated(host, target_port, key, key_size, cert, roots, &c)
                      : pki_tls_connect(host, target_port, key, key_size, cert, roots, &c);
     if (connected)
         return -1;
@@ -2436,8 +2535,8 @@ static int http_request(const char *url, bool get, const char *type, const char 
     snprintf(authority, sizeof authority, strchr(host, ':') ? "[%s]:%u" : "%s:%u", host, port);
     int answer = -1;
     char headers[1400];
-    int n = get ? snprintf(headers, sizeof headers,
-                           "GET %s HTTP/1.1\r\nHost: %s\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
+    int n = est ? snprintf(headers, sizeof headers,
+                           "GET %s HTTP/1.1\r\nHost: %s\r\nAccept: application/pkcs7-mime\r\nConnection: close\r\n\r\n",
                            path, authority)
                 : snprintf(headers, sizeof headers,
                      "POST %s HTTP/1.1\r\nHost: %s\r\nContent-Type: %s\r\nContent-Length: "
@@ -2446,7 +2545,8 @@ static int http_request(const char *url, bool get, const char *type, const char 
                      token ? token : "", token ? "\r\n" : "");
     /* Small chunks avoid a large realloc and its simultaneous old/new copies.
      * Flatten only after TLS has released certificate and record storage. */
-    struct response r = {.capture_lite_authority = lite_authority_header != NULL};
+    struct response buffered = {.capture_lite_authority = lite_authority_header != NULL};
+    struct response *r = est ? &est->response : &buffered;
     const char *failure_stage = "request headers";
     int read_error = 0;
     enum http_errno parse_error = HPE_OK;
@@ -2460,13 +2560,15 @@ static int http_request(const char *url, bool get, const char *type, const char 
         goto done;
     http_parser parser;
     http_parser_init(&parser, HTTP_RESPONSE);
-    parser.data = &r;
-    http_parser_settings settings = {.on_body = on_body, .on_message_complete = on_complete,
-        .on_header_field = on_header_field, .on_header_value = on_header_value,
-        .on_headers_complete = on_headers_complete};
+    parser.data = r; /* The EST state embeds its response as its first field. */
+    http_parser_settings settings = {.on_body = est ? est_http_feed : on_body,
+        .on_message_complete = on_complete,
+        .on_header_field = est ? est_header_field : on_header_field,
+        .on_header_value = est ? est_header_value : on_header_value,
+        .on_headers_complete = est ? est_headers_complete : on_headers_complete};
     failure_stage = "response read";
     char buffer[2048];
-    while (!r.complete)
+    while (!r->complete)
     {
         int got = connection_read(c, (unsigned char *)buffer, sizeof buffer);
         if (got == 0) goto done; // TCP EOF without close_notify is a truncated TLS response.
@@ -2479,12 +2581,12 @@ static int http_request(const char *url, bool get, const char *type, const char 
             continue;
         }
         total += got;
-        if (total > PKI_MAX_RESPONSE + 8192)
+        if (total > (est ? PKI_EST_MAX_BODY : PKI_MAX_RESPONSE) + 8192)
             goto done;
         size_t used = http_parser_execute(&parser, &settings, buffer, got);
         parse_error = HTTP_PARSER_ERRNO(&parser);
         status = parser.status_code;
-        if (used != (size_t)got || HTTP_PARSER_ERRNO(&parser) != HPE_OK || (!got && !r.complete)) {
+        if (used != (size_t)got || HTTP_PARSER_ERRNO(&parser) != HPE_OK || (!got && !r->complete)) {
             failure_stage = "response parse";
             goto done;
         }
@@ -2496,15 +2598,20 @@ static int http_request(const char *url, bool get, const char *type, const char 
     }
     wendy_pki_close(c);
     c = NULL;
-    failure_stage = "response assembly";
-    if (response_flatten(&r))
+    if (est) {
+        failure_stage = "EST response completeness";
+        answer = pki_est_complete(est->stream) ? 0 : -1;
         goto done;
-    *response = r.bytes;
-    *response_size = r.size;
-    r.bytes = NULL;
+    }
+    failure_stage = "response assembly";
+    if (response_flatten(r))
+        goto done;
+    *response = r->bytes;
+    *response_size = r->size;
+    r->bytes = NULL;
     if (lite_authority_header) {
-        *lite_authority_header = r.lite_authority;
-        r.lite_authority = NULL;
+        *lite_authority_header = r->lite_authority;
+        r->lite_authority = NULL;
     }
     answer = 0;
 done:
@@ -2512,7 +2619,7 @@ done:
         ESP_LOGW("wendy_pki",
                  "PKI HTTP failed at %s: status=%u parser=%s tls=%d wire=%u body=%u capacity=%u",
                  failure_stage, status, http_errno_name(parse_error), read_error, (unsigned)total,
-                 (unsigned)r.size, (unsigned)r.capacity);
+                 (unsigned)r->size, (unsigned)r->capacity);
 #if ESP_PLATFORM
         /* Taken while the partial body is still held: a read that stalls until
          * its deadline with no parser or allocation error is otherwise
@@ -2530,26 +2637,26 @@ done:
                 snprintf(first_issuance_response_failure, sizeof first_issuance_response_failure,
                     "%s: parser=%s tls=%d wire=%u body=%u capacity=%u", failure_stage,
                     http_errno_name(parse_error), read_error, (unsigned)total,
-                    (unsigned)r.size, (unsigned)r.capacity);
+                    (unsigned)r->size, (unsigned)r->capacity);
             if (first_issuance_response_failure[0])
                 ESP_LOGW("wendy_pki", "First issuance response failure: %s",
                          first_issuance_response_failure);
             pthread_mutex_unlock(&response_failure_lock);
         }
     }
-    free(r.lite_authority);
-    response_free_chunks(&r);
-    free(r.bytes);
+    free(r->lite_authority);
+    response_free_chunks(r);
+    free(r->bytes);
     wendy_pki_close(c);
     return answer;
 }
 
-int pki_http_get_peer_cas(const char *url, const uint8_t *key, size_t key_size,
-                          struct wendy_conf_span cert, struct wendy_conf_span roots,
-                          uint8_t **response, size_t *response_size)
+int pki_http_get_est(const char *url, bool lite, struct wendy_conf_span roots,
+                     struct pki_est_stream *body)
 {
-    return http_request(url, true, NULL, NULL, NULL, 0, key, key_size, cert, roots,
-                        response, response_size, NULL, NULL);
+    struct est_http_body est = {.stream = body, .lite = lite};
+    return http_request(url, NULL, NULL, NULL, 0, NULL, 0, (struct wendy_conf_span){0},
+                        roots, NULL, NULL, NULL, NULL, &est);
 }
 
 int pki_http_post_enrollment(const char *url, const char *type, const char *token, const void *body,
@@ -2557,8 +2664,8 @@ int pki_http_post_enrollment(const char *url, const char *type, const char *toke
                              struct wendy_conf_span cert, struct wendy_conf_span roots,
                              uint8_t **response, size_t *response_size, char **authority)
 {
-    return http_request(url, false, type, token, body, body_size, key, key_size, cert, roots, response,
-                     response_size, authority, NULL);
+    return http_request(url, type, token, body, body_size, key, key_size, cert, roots, response,
+                     response_size, authority, NULL, NULL);
 }
 /* The stream transports HTTPS ciphertext. It supplies no trust, clock,
  * hostname or client identity; normal HTTPS verification remains in open_tls. */
@@ -2568,8 +2675,8 @@ int pki_http_post_stream(const char *url, const char *type, const void *body, si
 {
     if (!stream)
         return -1;
-    return http_request(url, false, type, NULL, body, body_size, NULL, 0, (struct wendy_conf_span){0}, roots,
-                     response, response_size, NULL, stream);
+    return http_request(url, type, NULL, body, body_size, NULL, 0, (struct wendy_conf_span){0}, roots,
+                     response, response_size, NULL, stream, NULL);
 }
 
 int pki_http_post(const char *url, const char *type, const char *token, const void *body,

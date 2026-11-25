@@ -51,6 +51,8 @@ typedef struct _WendyConfEnrollment {
     /* Parent-signed Lite Device CA path, excluding the platform root.
  Candidate issuers for mesh verification; these are never trust anchors. */
     pb_callback_t lite_device_intermediates;
+    /* HTTPS CA discovery URL. The firmware selects the query for its identity. */
+    char est_url[257];
 } WendyConfEnrollment;
 
 typedef struct _WendyConf {
@@ -80,11 +82,11 @@ extern "C" {
 /* Initializer values for message structs */
 #define WendyConfWifiNetwork_init_default        {{{NULL}, NULL}, {{NULL}, NULL}, 0, 0, _WendyConfWifiSecurity_MIN}
 #define WendyConfWifi_init_default               {0, {WendyConfWifiNetwork_init_default}}
-#define WendyConfEnrollment_init_default         {"", "", "", "", "", "", 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, 0, {{NULL}, NULL}}
+#define WendyConfEnrollment_init_default         {"", "", "", "", "", "", 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, 0, {{NULL}, NULL}, ""}
 #define WendyConf_init_default                   {{{NULL}, NULL}, false, WendyConfWifi_init_default, false, WendyConfEnrollment_init_default}
 #define WendyConfWifiNetwork_init_zero           {{{NULL}, NULL}, {{NULL}, NULL}, 0, 0, _WendyConfWifiSecurity_MIN}
 #define WendyConfWifi_init_zero                  {0, {WendyConfWifiNetwork_init_zero}}
-#define WendyConfEnrollment_init_zero            {"", "", "", "", "", "", 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, 0, {{NULL}, NULL}}
+#define WendyConfEnrollment_init_zero            {"", "", "", "", "", "", 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, 0, {{NULL}, NULL}, ""}
 #define WendyConf_init_zero                      {{{NULL}, NULL}, false, WendyConfWifi_init_zero, false, WendyConfEnrollment_init_zero}
 
 /* Field tags (for use in manual encoding/decoding) */
@@ -107,6 +109,7 @@ extern "C" {
 #define WendyConfEnrollment_https_roots_tag      11
 #define WendyConfEnrollment_provision_trust_tag  12
 #define WendyConfEnrollment_lite_device_intermediates_tag 13
+#define WendyConfEnrollment_est_url_tag          14
 #define WendyConf_device_name_tag                1
 #define WendyConf_wifi_tag                       2
 #define WendyConf_enrollment_tag                 4
@@ -140,7 +143,8 @@ X(a, CALLBACK, SINGULAR, BYTES,    device_roots,      9) \
 X(a, CALLBACK, SINGULAR, BYTES,    tsa_roots,        10) \
 X(a, CALLBACK, SINGULAR, BYTES,    https_roots,      11) \
 X(a, STATIC,   SINGULAR, BOOL,     provision_trust,  12) \
-X(a, CALLBACK, SINGULAR, BYTES,    lite_device_intermediates,  13)
+X(a, CALLBACK, SINGULAR, BYTES,    lite_device_intermediates,  13) \
+X(a, STATIC,   SINGULAR, STRING,   est_url,          14)
 #define WendyConfEnrollment_CALLBACK pb_default_field_callback
 #define WendyConfEnrollment_DEFAULT NULL
 

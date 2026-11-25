@@ -97,6 +97,7 @@ static WendyConfEnrollment config = {
     .device_id = "00000000-0000-4000-8000-000000000004",
     .token = "test-token",
     .csr_url = "https://csr.example/v1/2558fd76-afc7-466e-9613-6b715296a526",
+    .est_url = "https://est.example/.well-known/est/2558fd76-afc7-466e-9613-6b715296a526/cacerts",
     .time_url = "https://time.example",
     .broker_host = "broker.example",
     .broker_port = 5055,
@@ -450,29 +451,13 @@ char *cJSON_PrintUnformatted(const cJSON *o) { return strdup("{}"); }
 cJSON *cJSON_ParseWithLength(const char *s, size_t n)
 {
     cJSON *o = calloc(1, sizeof *o);
-    if (n == 4 && !memcmp(s, "peer", 4))
-        o->array = 1;
-    else
-        o->valuestring = distinct_issued_certificate ? "issued" : "stored";
+    o->valuestring = distinct_issued_certificate ? "issued" : "stored";
     return o;
 }
 cJSON *cJSON_GetObjectItemCaseSensitive(const cJSON *o, const char *k)
 {
     if (!strcmp(k, "certificate"))
         return (cJSON *)o;
-#if PKI_REFRESH_PEER_CAS
-    static cJSON item = {.valuestring = "MAED"};
-    static cJSON root_array = {.array = 1};
-    static cJSON intermediate_array = {.array = 1};
-    if (o->array && !strcmp(k, "additional_roots")) {
-        root_array.child = peer_ca_reply == 1 ? &item : NULL;
-        return &root_array;
-    }
-    if (o->array && !strcmp(k, "additional_intermediates") && peer_ca_reply != 4) {
-        intermediate_array.child = peer_ca_reply == 2 ? &item : NULL;
-        return &intermediate_array;
-    }
-#endif
     return NULL;
 }
 int cJSON_IsString(const cJSON *o) { return o && o->valuestring; }
@@ -1257,18 +1242,40 @@ static void test_peer_roots_selection(void)
 }
 
 #if PKI_REFRESH_PEER_CAS
-int pki_http_get_peer_cas(const char *url, const uint8_t *key, size_t key_size,
-                          struct wendy_conf_span cert, struct wendy_conf_span roots,
-                          uint8_t **response, size_t *response_size)
+int pki_http_get_est(const char *url, bool lite, struct wendy_conf_span roots,
+                     struct pki_est_stream *stream)
 {
-    assert(strstr(url, "/peer-ca-certificates") && key && key_size);
-    assert(cert.data && cert.size && roots.data);
     if (!peer_ca_reply)
         return -1;
+    assert(strstr(url, "/cacerts") && roots.data);
+    assert((strstr(url, "?chain_algorithm=ECDSA_P256&full_chain=true") != NULL) == lite);
     peer_ca_fetches++;
-    *response = (uint8_t *)strdup("peer");
-    *response_size = 4;
-    return *response ? 0 : -1;
+    if (peer_ca_reply == 4)
+        return -1;
+    unsigned count = lite ? 1 : 4;
+    for (unsigned i = 0; i < count; i++) {
+        uint8_t *cert = malloc(3);
+        assert(cert);
+        memcpy(cert, (unsigned char[]){0x30, 1, (uint8_t)(i + 1)}, 3);
+        stream->certs[stream->count++] = (struct pki_est_cert){cert, 3};
+        stream->stored += 3;
+    }
+    return 0;
+}
+
+int pki_est_lite_order(struct pki_est_stream *stream, const char *tenant,
+                       const struct pki_est_cert *own, struct pki_est_classical_scope *scope)
+{
+    assert(stream->count && !strcmp(tenant, config.tenant_id));
+    assert((own != NULL) == (scope != NULL));
+    return 0;
+}
+int pki_est_keep_regular(const uint8_t *der, size_t size, void *context) { return 1; }
+int pki_est_regular_pins(struct pki_est_stream *stream, const struct pki_est_cert *signed_lite,
+                         const struct pki_est_classical_scope *scope, time_t now)
+{
+    assert(stream->count == 4 && signed_lite->size == 3 && scope);
+    return 0;
 }
 
 static void test_peer_ca_refresh(void)
@@ -1296,24 +1303,20 @@ static void test_peer_ca_refresh(void)
     assert(wendy_pki_maintain() == ESP_OK && peer_ca_fetches == 3);
     assert(renewal_calls == 1 && mesh_store_attempts == 2 && stored_peer_ca_size == 3);
 
-    peer_ca_reply = 3;
+    peer_ca_reply = 2;
     monotonic_us += PEER_CA_RETRY_US;
     assert(wendy_pki_maintain() == ESP_OK && peer_ca_fetches == 4);
-    assert(renewal_calls == 1 && mesh_store_attempts == 3 && !stored_peer_ca_size);
+    assert(renewal_calls == 1 && mesh_store_attempts == 3 && stored_peer_ca_size == 3);
 
     reset();
     snapshot_generation = usb_data.generation = 7;
     issued_classical = true;
+    usb_data.https_roots = (struct wendy_conf_span){usb_roots, sizeof usb_roots};
     struct wendy_conf_span chain = {fake_classical_chain, sizeof fake_classical_chain};
     peer_ca_reply = 1;
-    cJSON reply = {.array = 1};
     clock_now = signed_now + 20;
-    assert(!apply_peer_ca_snapshot(&reply, &config, &usb_data, chain, key_der, key_der_size, "", true));
-    assert(stored_peer_ca_size == 6);
-    usb_data.generation = snapshot_generation;
-    peer_ca_reply = 3;
-    assert(!apply_peer_ca_snapshot(&reply, &config, &usb_data, chain, key_der, key_der_size, "", true));
-    assert(stored_peer_ca_size == 3);
+    assert(!fetch_peer_ca_snapshot(&config, &usb_data, chain, true));
+    assert(peer_ca_fetches == 2 && stored_peer_ca_size == 15);
 }
 #endif
 
