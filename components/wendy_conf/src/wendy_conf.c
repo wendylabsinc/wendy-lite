@@ -754,8 +754,15 @@ esp_err_t wendy_conf_store_mesh_trust(uint64_t generation, bool intermediates,
         result = ESP_ERR_NO_MEM;
         goto done;
     }
-    memcpy(record->tenant, s_cache.conf.enrollment.tenant_id, 36);
-    memcpy(record->device, s_cache.conf.enrollment.device_id, 36);
+    _Static_assert(sizeof record->tenant <= sizeof s_cache.conf.enrollment.tenant_id &&
+                   sizeof record->device <= sizeof s_cache.conf.enrollment.device_id,
+                   "mesh trust UUID fields must fit the enrollment schema");
+    const size_t tenant_length = sizeof record->tenant - 1;
+    const size_t device_length = sizeof record->device - 1;
+    memcpy(record->tenant, s_cache.conf.enrollment.tenant_id, tenant_length);
+    record->tenant[tenant_length] = '\0';
+    memcpy(record->device, s_cache.conf.enrollment.device_id, device_length);
+    record->device[device_length] = '\0';
     if (size)
         memcpy(record->der, der, size);
     nvs_handle_t h;
