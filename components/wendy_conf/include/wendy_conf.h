@@ -149,6 +149,7 @@ bool wendy_conf_has_enrollment(void);
  */
 void wendy_conf_get_enrolled_ids(char tenant[37], char device[65]);
 #define WENDY_CONF_MAX_TRUST_BUNDLE 16384
+#define WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE 32768
 #define WENDY_CONF_MAX_ENROLLMENT_DATA 65536
 struct wendy_conf_enrollment_data {
     struct wendy_conf_span signed_time, device_roots, tsa_roots, https_roots;
@@ -161,8 +162,9 @@ struct wendy_conf_enrollment_data {
 };
 /* All snapshot functions require non-NULL outputs, replace their contents,
  * and return empty data on failure. Free a previous snapshot before reuse.
- * Callers free storage. The historical name is a thin DER snapshot wrapper;
- * every trust span carries an explicit concatenated-DER byte length. */
+ * Callers free storage, which has a trailing NUL after the final nonempty
+ * span. The historical name is a thin DER snapshot wrapper; every trust span
+ * carries an explicit concatenated-DER byte length. */
 esp_err_t wendy_conf_copy_enrollment(WendyConfEnrollment *, struct wendy_conf_enrollment_data *);
 /* DER snapshot callers free data->storage. Trust spans contain concatenated DER.
  * All spans survive configuration writes. PEM is decoded from mapped flash at
@@ -174,6 +176,12 @@ esp_err_t wendy_conf_copy_enrollment_der(WendyConfEnrollment *config,
  * for service TLS using the already established system clock. */
 esp_err_t wendy_conf_copy_device_trust(WendyConfEnrollment *config,
                                      struct wendy_conf_enrollment_data *data);
+/* A separate owned allocation preserves the device-root snapshot layout. */
+esp_err_t wendy_conf_copy_lite_intermediates(uint64_t generation, uint8_t **der, size_t *size);
+/* Replace the mesh-only trust snapshot for the current enrolled identity. */
+/* An empty intermediate snapshot supersedes any provisioned issuer candidates. */
+esp_err_t wendy_conf_store_mesh_trust(uint64_t generation, bool intermediates,
+                                    const uint8_t *der, size_t size);
 /* Time-only owned snapshot: TSA roots, optional bootstrap seed and HTTPS
  * roots. Excludes device CA bytes. Generation pins the exact configuration,
  * so refresh can reject any intervening write without reparsing device CAs. */

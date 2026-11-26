@@ -61,7 +61,6 @@ void wendy_cloud_wake(void)
 #if !CONFIG_WENDY_CLOUD_TUNNEL
 /* Each check holds the identity lock, and a LAN accept waits for that lock. A
  * device with no internet retries forever, so a retry must not come too often. */
-#define CLOUD_CHECK_PERIOD_MS (60 * 60 * 1000)
 #define CLOUD_CHECK_RETRY_MS (60 * 1000)
 #endif
 
@@ -130,7 +129,7 @@ static void cloud_task(void *unused)
         s_state = WENDY_CLOUD_STATE_DISCONNECTED;
         if (!s_stop)
             xSemaphoreTake(wake,
-                           pdMS_TO_TICKS(checked ? CLOUD_CHECK_PERIOD_MS : CLOUD_CHECK_RETRY_MS));
+                           pdMS_TO_TICKS(checked ? wendy_pki_maintenance_wait_ms() : CLOUD_CHECK_RETRY_MS));
 #endif
     }
     s_state = WENDY_CLOUD_STATE_IDLE;

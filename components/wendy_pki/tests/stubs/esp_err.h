@@ -11,5 +11,7 @@ typedef int esp_err_t;
 
 #define ESP_ERR_NOT_SUPPORTED 7
 #define ESP_ERR_NVS_INVALID_LENGTH 8
+#define ESP_ERR_NVS_PART_NOT_FOUND 9
+#define ESP_ERR_NVS_NOT_INITIALIZED 10
 
 #define ESP_ERR_TIMEOUT 0x107
