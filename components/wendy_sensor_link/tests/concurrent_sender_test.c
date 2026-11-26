@@ -45,7 +45,7 @@ static struct {
     int client;
     bool open;
     unsigned starts, stops, frames;
-    void (*done)(uint32_t);
+    wendy_core_sensor_done_t done;
 } streams[2];
 
 void sensor_link_test_warning(const char *tag, const char *format, ...) {}
@@ -201,26 +201,26 @@ void wendy_core_register_sensor_link_source(const struct wcom_sensor_link_delega
     delegate = source;
 }
 void wcom_exec(struct wcom_operation *operation) { operation->func(operation); }
-WendyComResult wcom_sensor_stream_begin(int client, uint32_t channel)
+enum wendy_core_sensor_result wendy_core_sensor_stream_begin(int client, uint32_t channel)
 {
     pthread_mutex_lock(&state_lock);
     assert(channel < 2 && !streams[channel].open);
     streams[channel].open = true;
     streams[channel].client = client;
     pthread_mutex_unlock(&state_lock);
-    return WendyComResult_WENDY_COM_RESULT_OK;
+    return WENDY_CORE_SENSOR_OK;
 }
-WendyComResult wcom_sensor_stream_end(int client, uint32_t channel)
+void wendy_core_sensor_stream_end(int client, uint32_t channel, wendy_core_sensor_done_t done)
 {
     pthread_mutex_lock(&state_lock);
     assert(streams[channel].open && streams[channel].client == client);
     streams[channel].open = false;
     pthread_cond_broadcast(&state_changed);
     pthread_mutex_unlock(&state_lock);
-    return WendyComResult_WENDY_COM_RESULT_OK;
+    done(client, channel, WENDY_CORE_SENSOR_OK);
 }
-WendyComResult wendy_core_sensor_stream_try_push(int client, uint32_t channel, const void *data,
-                                  size_t size, uint64_t timestamp, void (*done)(uint32_t))
+void wendy_core_sensor_stream_push(int client, uint32_t channel, const void *data,
+                                   size_t size, uint64_t timestamp, wendy_core_sensor_done_t done)
 {
     pthread_mutex_lock(&state_lock);
     assert(streams[channel].open && !streams[channel].done && streams[channel].client == client);
@@ -230,7 +230,6 @@ WendyComResult wendy_core_sensor_stream_try_push(int client, uint32_t channel, c
     ++streams[channel].frames;
     pthread_cond_broadcast(&state_changed);
     pthread_mutex_unlock(&state_lock);
-    return WendyComResult_WENDY_COM_RESULT_OK;
 }
 
 static void wait_state(unsigned channel, bool pending)
@@ -260,11 +259,12 @@ static void wait_cancel(unsigned channel)
 static void complete(unsigned channel)
 {
     pthread_mutex_lock(&state_lock);
-    void (*done)(uint32_t) = streams[channel].done;
+    wendy_core_sensor_done_t done = streams[channel].done;
+    int client = streams[channel].client;
     assert(done);
     streams[channel].done = NULL;
     pthread_mutex_unlock(&state_lock);
-    done(channel);
+    done(client, channel, WENDY_CORE_SENSOR_OK);
 }
 static enum wcom_sensor_link_result subscribe(int client, uint32_t channel)
 {

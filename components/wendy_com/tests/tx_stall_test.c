@@ -67,7 +67,7 @@ static const struct wcom_stream_ops wire_ops = {
     .can_read = cannot_read, .can_write = can_write,
 };
 
-static void frame_done(uint32_t channel)
+static void frame_done(uint32_t channel, void *ctx)
 {
     assert(channel == 0 && !_streams[0].frame.busy);
     frame_completions++;
@@ -111,7 +111,7 @@ static void push_frame(size_t size)
     static uint8_t data[256 * 1024];
     assert(size <= sizeof(data));
     assert(wcom_sensor_stream_begin(current_client, 0) == WendyComResult_WENDY_COM_RESULT_OK);
-    assert(wcom_sensor_stream_push(current_client, 0, data, size, now_us, frame_done)
+    assert(wcom_sensor_stream_push(current_client, 0, data, size, now_us, frame_done, NULL)
            == WendyComResult_WENDY_COM_RESULT_OK);
 }
 

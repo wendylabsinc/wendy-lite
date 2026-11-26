@@ -34,10 +34,11 @@ struct wendy_sensor_link_stats {
 
 /* Lifetime counters for channel 0 (camera) or 1 (microphone), copied under a
  * lock. Available before initialization, initially all zero. Capture time
- * includes failed attempts and timeouts. A completion returns ownership of an
- * accepted buffer; it can mean transmission, cancellation, or a later refusal,
- * and is not a successful-delivery count. Queue rejections count immediate
- * core-queue refusals and do not increment submitted/completed counters. */
+ * includes failed attempts and timeouts. A frame counts as submitted and
+ * completed, with its bytes, when its done reports that the transport took
+ * it; the buffer then came back after transmission or cancellation, so this
+ * is not a successful-delivery count. Queue rejections count frames refused
+ * by wendy_core or the com task and do not increment the other counters. */
 esp_err_t wendy_sensor_link_get_stats(uint32_t channel_id, struct wendy_sensor_link_stats *stats);
 
 #ifdef __cplusplus

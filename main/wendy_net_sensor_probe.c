@@ -17,18 +17,19 @@ struct probe_stream {
     atomic_bool stop, pending;
     uint8_t sample[4];
 };
-/* The delegate, completion and finish operation all run on the com task. The
- * producer owns its context until it queues finish, then never touches it. */
+/* The delegate and finish operation run on the com task; frame_done runs
+ * there too, or on the producer when the push is refused. The producer owns
+ * its context until it queues finish, then never touches it. */
 static struct probe_stream *active;
-static void frame_done(uint32_t channel)
+static void frame_done(int client, uint32_t channel, enum wendy_core_sensor_result result)
 {
     if (active && channel == TEMPERATURE_CHANNEL)
         atomic_store(&active->pending, false);
 }
+/* Queued after the end operation, so the stream is closed when this runs. */
 static void finish(struct wcom_operation *operation)
 {
     struct probe_stream *stream = (struct probe_stream *)operation;
-    (void)wcom_sensor_stream_end(stream->client, TEMPERATURE_CHANNEL);
     if (active == stream)
         active = NULL;
     free(stream);
@@ -36,8 +37,11 @@ static void finish(struct wcom_operation *operation)
 static void produce(void *argument)
 {
     struct probe_stream *stream = argument;
-    wendy_core_sensor_stream_begin(stream->client, TEMPERATURE_CHANNEL);
-    while (!atomic_load(&stream->stop)) {
+    enum wendy_core_sensor_result begun =
+        wendy_core_sensor_stream_begin(stream->client, TEMPERATURE_CHANNEL);
+    if (begun != WENDY_CORE_SENSOR_OK)
+        ESP_LOGW("net_sensor_probe", "stream begin refused: %d", begun);
+    while (begun == WENDY_CORE_SENSOR_OK && !atomic_load(&stream->stop)) {
         float celsius;
         if (temperature_sensor_get_celsius(sensor, &celsius) == ESP_OK) {
             uint32_t bits;
@@ -45,16 +49,16 @@ static void produce(void *argument)
             for (unsigned i = 0; i < 4; i++)
                 stream->sample[i] = (uint8_t)(bits >> (8 * i));
             atomic_store(&stream->pending, true);
-            if (wendy_core_sensor_stream_try_push(
-                    stream->client, TEMPERATURE_CHANNEL, stream->sample, sizeof stream->sample,
-                    esp_timer_get_time(), frame_done) != WendyComResult_WENDY_COM_RESULT_OK)
-                atomic_store(&stream->pending, false);
+            wendy_core_sensor_stream_push(stream->client, TEMPERATURE_CHANNEL, stream->sample,
+                                          sizeof stream->sample, esp_timer_get_time(), frame_done);
             while (atomic_load(&stream->pending))
                 vTaskDelay(pdMS_TO_TICKS(10));
         }
         for (unsigned i = 0; i < 10 && !atomic_load(&stream->stop); i++)
             vTaskDelay(pdMS_TO_TICKS(100));
     }
+    if (begun == WENDY_CORE_SENSOR_OK)
+        wendy_core_sensor_stream_end(stream->client, TEMPERATURE_CHANNEL, NULL);
     stream->finish.func = finish;
     wcom_exec(&stream->finish);
     vTaskDelete(NULL);

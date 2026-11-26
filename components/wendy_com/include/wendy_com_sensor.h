@@ -27,6 +27,10 @@ extern "C" {
 /// Returns BAD_STATE if client_id is not connected.
 WendyComResult wcom_sensor_stream_begin(int client_id, uint32_t channel_id);
 
+/// Called once the caller can reuse or free the frame's buffer. ctx is the
+/// value given to wcom_sensor_stream_push().
+typedef void (*wcom_sensor_frame_done_t)(uint32_t channel_id, void *ctx);
+
 /// Send one frame on an open stream: a video frame, a buffer of audio samples
 /// or a batch of sensor readings, in the format the channel's descriptor
 /// announces. On WENDY_COM_RESULT_OK the frame is queued and data must stay
@@ -42,7 +46,7 @@ WendyComResult wcom_sensor_stream_begin(int client_id, uint32_t channel_id);
 WendyComResult wcom_sensor_stream_push(int client_id, uint32_t channel_id,
                                        const void *data, size_t size,
                                        uint64_t ts_us,
-                                       void (*done)(uint32_t channel_id));
+                                       wcom_sensor_frame_done_t done, void *ctx);
 
 /// Close the stream. A waiting frame is released immediately. A chunk already
 /// queued to the transport finishes before its buffer is released, and no

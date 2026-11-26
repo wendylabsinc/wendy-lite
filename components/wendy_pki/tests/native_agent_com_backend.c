@@ -120,7 +120,7 @@ static enum wcom_sensor_link_result manifest(struct wcom_sensor_descriptor *sens
     sensors->format.sensor.sample_bytes = 4;
     return WCOM_SENSOR_LINK_OK;
 }
-static void sample_done(uint32_t channel)
+static void sample_done(uint32_t channel, void *ctx)
 {
     assert(channel == 7);
     frame_done++;
@@ -131,7 +131,7 @@ static enum wcom_sensor_link_result subscribe_samples(int client, const uint32_t
     assert(count == 1 && channels[0] == 7);
     subscriptions++;
     assert(wcom_sensor_stream_begin(client, 7) == WendyComResult_WENDY_COM_RESULT_OK);
-    assert(wcom_sensor_stream_push(client, 7, samples, sizeof samples, 123456, sample_done) ==
+    assert(wcom_sensor_stream_push(client, 7, samples, sizeof samples, 123456, sample_done, NULL) ==
            WendyComResult_WENDY_COM_RESULT_OK);
     return WCOM_SENSOR_LINK_OK;
 }

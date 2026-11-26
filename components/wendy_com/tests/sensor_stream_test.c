@@ -17,10 +17,15 @@
 #define OK WendyComResult_WENDY_COM_RESULT_OK
 #define BUSY WendyComResult_WENDY_COM_RESULT_BUSY
 #define BAD_STATE WendyComResult_WENDY_COM_RESULT_BAD_STATE
+#define CORE_OK WENDY_CORE_SENSOR_OK
+#define CORE_BUSY WENDY_CORE_SENSOR_BUSY
+#define CORE_BAD_ARG WENDY_CORE_SENSOR_BAD_ARG
 #define FRAME_SIZE (32 * 1024)
 
 static const uint32_t channels[] = {0, 1, 99, UINT32_MAX};
 static unsigned completions[4], end_completions[4], chunks[4], frame_seq[4];
+static enum wendy_core_sensor_result last_result[4], last_end_result[4];
+static int last_client[4];
 static size_t received[4];
 static uint8_t payload[4][FRAME_SIZE];
 static bool connected[] = {false, true, true};
@@ -103,7 +108,20 @@ void wcom_send(int link_id, struct wcom_tx_chunk *chunk)
 }
 
 static void frame_done(uint32_t channel) { completions[channel_index(channel)]++; }
-static void end_done(uint32_t channel) { end_completions[channel_index(channel)]++; }
+static void wcom_frame_done(uint32_t channel, void *ctx) { assert(!ctx); frame_done(channel); }
+static void core_done(int client, uint32_t channel, enum wendy_core_sensor_result result)
+{
+    size_t i = channel_index(channel);
+    completions[i]++;
+    last_result[i] = result;
+    last_client[i] = client;
+}
+static void end_done(int client, uint32_t channel, enum wendy_core_sensor_result result)
+{
+    size_t i = channel_index(channel);
+    end_completions[i]++;
+    last_end_result[i] = result;
+}
 
 static bool decode_payload(pb_istream_t *stream, const pb_field_t *field, void **arg)
 {
@@ -193,7 +211,12 @@ static void drain(void)
 static void open_stream(size_t i, int client) { assert(wcom_sensor_stream_begin(client, channels[i]) == OK); }
 static void push(size_t i, int client)
 {
-    assert(wcom_sensor_stream_push(client, channels[i], payload[i], FRAME_SIZE, UINT64_MAX, frame_done) == OK);
+    assert(wcom_sensor_stream_push(client, channels[i], payload[i], FRAME_SIZE, UINT64_MAX,
+                                   wcom_frame_done, NULL) == OK);
+}
+static void core_push(size_t i, int client)
+{
+    wendy_core_sensor_stream_push(client, channels[i], payload[i], FRAME_SIZE, UINT64_MAX, core_done);
 }
 
 static void control_done(int link_id, const struct wcom_tx_chunk *chunk, bool success)
@@ -265,13 +288,13 @@ static void test_cancel_deferred(void)
 static void test_busy(void)
 {
     assert(wcom_sensor_stream_begin(0, 0) == BAD_STATE);
-    assert(wcom_sensor_stream_push(1, 0, payload[0], FRAME_SIZE, 0, frame_done) == BAD_STATE);
+    assert(wcom_sensor_stream_push(1, 0, payload[0], FRAME_SIZE, 0, wcom_frame_done, NULL) == BAD_STATE);
     for (size_t i = 0; i < 4; i++) open_stream(i, 1);
     assert(wcom_sensor_stream_begin(1, 0) == BUSY);
     assert(wcom_sensor_stream_begin(2, 10) == BUSY);
-    assert(wcom_sensor_stream_push(1, 0, NULL, 1, 0, frame_done) == BAD_STATE);
+    assert(wcom_sensor_stream_push(1, 0, NULL, 1, 0, wcom_frame_done, NULL) == BAD_STATE);
     for (size_t i = 0; i < 4; i++) push(i, 1);
-    assert(wcom_sensor_stream_push(1, 0, payload[0], FRAME_SIZE, 0, frame_done) == BUSY);
+    assert(wcom_sensor_stream_push(1, 0, payload[0], FRAME_SIZE, 0, wcom_frame_done, NULL) == BUSY);
     assert(!completions[0]);
     drain();
     for (size_t i = 0; i < 4; i++) {
@@ -341,49 +364,109 @@ static void test_link_failure(void)
 
 static void test_core_queue(void)
 {
-    for (size_t i = 0; i < 4; i++) wendy_core_sensor_stream_begin(1, channels[i]);
-    // Begin and push use distinct pools and preserve queue order.
+    // Each stream takes a slot of its own; a fifth stream finds none.
+    for (size_t i = 0; i < 4; i++) assert(wendy_core_sensor_stream_begin(1, channels[i]) == CORE_OK);
+    assert(wendy_core_sensor_stream_begin(2, 10) == CORE_BUSY);
+    assert(wendy_core_sensor_stream_begin(1, 0) == CORE_BUSY); // Already holds a slot.
+    assert(wendy_core_sensor_stream_begin(-1, 0) == CORE_BAD_ARG);
+    // Begin and push use distinct ops and preserve queue order.
     for (size_t i = 0; i < 4; i++)
         assert(wendy_core_sensor_stream_try_push(1, channels[i], payload[i], FRAME_SIZE, UINT64_MAX, frame_done) == OK);
+    // Only this stream's own push op is still queued.
     assert(wendy_core_sensor_stream_try_push(1, 0, payload[0], FRAME_SIZE, UINT64_MAX, frame_done) == BUSY);
+    assert(wendy_core_sensor_stream_try_push(1, 0, NULL, FRAME_SIZE, UINT64_MAX, frame_done) == BAD_STATE);
+    assert(wendy_core_sensor_stream_try_push(2, 10, payload[0], FRAME_SIZE, UINT64_MAX, frame_done) == BAD_STATE);
     assert(!completions[0]);
-    wendy_core_sensor_stream_push(1, 0, payload[0], FRAME_SIZE, UINT64_MAX, frame_done);
-    assert(completions[0] == 1); // Compatibility wrapper returns refused buffer.
+    // push() reports a refusal through done, before it returns.
+    core_push(0, 1);
+    assert(completions[0] == 1 && last_result[0] == CORE_BUSY && last_client[0] == 1);
+    wendy_core_sensor_stream_push(1, 0, payload[0], 0, UINT64_MAX, core_done);
+    assert(completions[0] == 2 && last_result[0] == CORE_BAD_ARG);
     run_ops(); drain();
-    for (size_t i = 0; i < 4; i++) assert(completions[i] == (i == 0 ? 2 : 1));
-    // Same-stream excess is rejected by the com task, with one callback each.
+    for (size_t i = 0; i < 4; i++) assert(completions[i] == (i == 0 ? 3 : 1));
+
+    // The com task refuses a second frame while the first is on the transport.
     received[0] = chunks[0] = 0; frame_seq[0] = 1;
-    for (size_t i = 0; i < 4; i++)
-        wendy_core_sensor_stream_push(1, 0, payload[0], FRAME_SIZE, UINT64_MAX, frame_done);
+    core_push(0, 1);
     run_ops();
-    assert(completions[0] == 5);
-    drain(); assert(completions[0] == 6);
-    for (size_t i = 0; i < 4; i++) wendy_core_sensor_stream_end(1, channels[i], end_done);
+    core_push(0, 1);
     run_ops();
-    for (size_t i = 0; i < 4; i++) { assert(end_completions[i] == 1); open_stream(i, 1); }
+    assert(completions[0] == 4 && last_result[0] == CORE_BUSY);
+    drain();
+    assert(completions[0] == 5 && last_result[0] == CORE_OK && received[0] == FRAME_SIZE);
+
+    // end() closes the stream at once; the slot returns once the com task ran it.
+    wendy_core_sensor_stream_end(1, channels[3], end_done);
+    core_push(3, 1);
+    assert(completions[3] == 2 && last_result[3] == CORE_BAD_ARG);
+    assert(wendy_core_sensor_stream_begin(1, channels[3]) == CORE_BUSY);
+    assert(wendy_core_sensor_stream_begin(2, 0) == CORE_BUSY);
+    assert(!end_completions[3]);
+    run_ops();
+    assert(end_completions[3] == 1 && last_end_result[3] == CORE_OK);
+
+    // The freed slot serves a second client on a channel id already in use;
+    // its frame reports to its own stream.
+    assert(wendy_core_sensor_stream_begin(2, 0) == CORE_OK);
+    run_ops();
+    received[0] = chunks[0] = 0; frame_seq[0] = 0;
+    core_push(0, 2);
+    drain();
+    assert(completions[0] == 6 && last_result[0] == CORE_OK && last_client[0] == 2);
+
+    // A chunk already on the transport keeps the slot until its frame is done.
+    received[0] = chunks[0] = 0; frame_seq[0] = 1;
+    core_push(0, 2);
+    run_ops();
+    assert(wire_first);
+    wendy_core_sensor_stream_end(2, 0, end_done);
+    run_ops();
+    assert(end_completions[0] == 1 && last_end_result[0] == CORE_OK && completions[0] == 6);
+    assert(wendy_core_sensor_stream_begin(2, 0) == CORE_BUSY);
+    assert(wendy_core_sensor_stream_begin(2, 10) == CORE_BUSY);
+    pump_message();
+    assert(completions[0] == 7 && last_result[0] == CORE_OK && received[0] < FRAME_SIZE);
+    assert(!wire_first);
+    assert(wendy_core_sensor_stream_begin(2, 0) == CORE_OK);
+    run_ops();
+
+    // Every stream ends once and the transport streams are closed.
+    wendy_core_sensor_stream_end(2, 0, end_done);
+    for (size_t i = 0; i < 3; i++) wendy_core_sensor_stream_end(1, channels[i], end_done);
+    run_ops();
+    assert(end_completions[0] == 3 && end_completions[1] == 1 && end_completions[2] == 1);
+    wendy_core_sensor_stream_end(1, 0, end_done);
+    assert(end_completions[0] == 4 && last_end_result[0] == CORE_BAD_ARG);
+    for (size_t i = 0; i < 4; i++) open_stream(i, 1);
 }
 
 static void *producer(void *arg)
 {
     size_t i = *(size_t *)arg;
-    assert(wendy_core_sensor_stream_try_push(1, channels[i], payload[i], FRAME_SIZE, UINT64_MAX, frame_done) == OK);
+    assert(wendy_core_sensor_stream_begin(1, channels[i]) == CORE_OK);
+    wendy_core_sensor_stream_push(1, channels[i], payload[i], FRAME_SIZE, UINT64_MAX, core_done);
     return NULL;
 }
 
 static void test_core_parallel(void)
 {
-    for (size_t i = 0; i < 4; i++) open_stream(i, 1);
+    // Producers claim slots and push at the same time; each round frees them.
     for (unsigned round = 0; round < 100; round++) {
         pthread_t threads[4];
         size_t indices[] = {0, 1, 2, 3};
         for (size_t i = 0; i < 4; i++) {
             received[i] = chunks[i] = 0;
-            frame_seq[i] = round;
+            frame_seq[i] = 0;
             assert(pthread_create(&threads[i], NULL, producer, &indices[i]) == 0);
         }
         for (size_t i = 0; i < 4; i++) assert(pthread_join(threads[i], NULL) == 0);
         run_ops(); drain();
-        for (size_t i = 0; i < 4; i++) assert(completions[i] == round + 1);
+        for (size_t i = 0; i < 4; i++) {
+            assert(completions[i] == round + 1 && last_result[i] == CORE_OK);
+            wendy_core_sensor_stream_end(1, channels[i], end_done);
+        }
+        run_ops();
+        for (size_t i = 0; i < 4; i++) assert(end_completions[i] == round + 1);
     }
 }
 

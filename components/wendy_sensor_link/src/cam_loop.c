@@ -14,8 +14,7 @@
 #include "cam_capture.h"
 #include "mic.h"
 #include "wendy_core.h"
-#include "wendy_com.h"
-#include "wendy_com_sensor.h"
+#include "wendy_core_sensor.h"
 #include "wendy_sensor_link.h"
 
 static const char *TAG = "cam_loop";
@@ -38,13 +37,6 @@ struct sender {
     bool stopping;
     int active_client_id;
     uint32_t active_channel_id;
-    struct {
-        struct wcom_operation op;
-        int client_id;
-        uint32_t channel_id;
-        bool begin;
-        WendyComResult result;
-    } control;
 };
 
 static struct sender s_senders[SENDER_COUNT];
@@ -56,9 +48,7 @@ static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static struct wendy_sensor_link_stats s_stats[2];
 static struct {
     uint64_t started_us;
-    uint64_t completion_us;
-    bool submitting;
-    bool completed;
+    size_t size;
 } s_inflight[2];
 
 esp_err_t wendy_sensor_link_get_stats(uint32_t channel_id, struct wendy_sensor_link_stats *stats)
@@ -101,40 +91,33 @@ static struct sender *sender_for_channel(uint32_t channel_id)
     return &s_senders[channel_id];
 }
 
-static void stream_control_exec(struct wcom_operation *op)
+static void stream_end_cb(int client_id, uint32_t channel_id, enum wendy_core_sensor_result result)
 {
-    struct sender *sender = (struct sender *)((char *)op - offsetof(struct sender, control.op));
-    sender->control.result = sender->control.begin
-        ? wcom_sensor_stream_begin(sender->control.client_id, sender->control.channel_id)
-        : wcom_sensor_stream_end(sender->control.client_id, sender->control.channel_id);
-    xEventGroupSetBits(sender->events, CONTROL_DONE_BIT);
+    if (channel_id < SENDER_COUNT) {
+        xEventGroupSetBits(sender_for_channel(channel_id)->events, CONTROL_DONE_BIT);
+    }
 }
 
-static WendyComResult stream_control(struct sender *sender, int client_id, uint32_t channel_id, bool begin)
+/* Waits until the com task has closed the stream, so a later begin of the
+ * same stream cannot be refused because this one is still open. */
+static void stream_end(struct sender *sender, int client_id, uint32_t channel_id)
 {
-    sender->control.op.func = stream_control_exec;
-    sender->control.client_id = client_id;
-    sender->control.channel_id = channel_id;
-    sender->control.begin = begin;
     xEventGroupClearBits(sender->events, CONTROL_DONE_BIT);
-    wcom_exec(&sender->control.op);
+    wendy_core_sensor_stream_end(client_id, channel_id, stream_end_cb);
     xEventGroupWaitBits(sender->events, CONTROL_DONE_BIT, pdTRUE, pdFALSE, portMAX_DELAY);
-    return sender->control.result;
 }
 
-static void frame_done_cb(uint32_t channel_id)
+static void frame_done_cb(int client_id, uint32_t channel_id, enum wendy_core_sensor_result result)
 {
     if (channel_id < 2) {
         uint64_t now = esp_timer_get_time();
         taskENTER_CRITICAL(&s_lock);
-        uint64_t elapsed = now - s_inflight[channel_id].started_us;
-        if (s_inflight[channel_id].submitting) {
-            // A fast com task may return the buffer before try_push returns.
-            // Commit both counters together once acceptance is known.
-            s_inflight[channel_id].completed = true;
-            s_inflight[channel_id].completion_us = elapsed;
+        if (result == WENDY_CORE_SENSOR_OK) {
+            ++s_stats[channel_id].frames_submitted;
+            s_stats[channel_id].bytes_submitted += s_inflight[channel_id].size;
+            record_completion(channel_id, now - s_inflight[channel_id].started_us);
         } else {
-            record_completion(channel_id, elapsed);
+            ++s_stats[channel_id].queue_rejected;
         }
         taskEXIT_CRITICAL(&s_lock);
         xEventGroupSetBits(sender_for_channel(channel_id)->events, FRAME_DONE_BIT);
@@ -147,29 +130,10 @@ static void submit_frame(int client_id, uint32_t channel_id, const void *data,
     uint64_t now = esp_timer_get_time();
     taskENTER_CRITICAL(&s_lock);
     s_inflight[channel_id].started_us = now;
-    s_inflight[channel_id].submitting = true;
-    s_inflight[channel_id].completed = false;
+    s_inflight[channel_id].size = size;
     taskEXIT_CRITICAL(&s_lock);
-
-    WendyComResult result = wendy_core_sensor_stream_try_push(client_id, channel_id,
-                                                             data, size, timestamp, frame_done_cb);
-    taskENTER_CRITICAL(&s_lock);
-    if (result == WendyComResult_WENDY_COM_RESULT_OK) {
-        ++s_stats[channel_id].frames_submitted;
-        s_stats[channel_id].bytes_submitted += size;
-        if (s_inflight[channel_id].completed) {
-            record_completion(channel_id, s_inflight[channel_id].completion_us);
-        }
-    } else {
-        ++s_stats[channel_id].queue_rejected;
-    }
-    s_inflight[channel_id].submitting = false;
-    taskEXIT_CRITICAL(&s_lock);
-    if (result != WendyComResult_WENDY_COM_RESULT_OK) {
-        // try_push never calls done on immediate refusal. Let the producer
-        // reclaim this buffer without recording an accepted-frame completion.
-        xEventGroupSetBits(sender_for_channel(channel_id)->events, FRAME_DONE_BIT);
-    }
+    // done runs exactly once, on refusal too, and hands the buffer back.
+    wendy_core_sensor_stream_push(client_id, channel_id, data, size, timestamp, frame_done_cb);
 }
 
 static void cam_loop_task(void *arg)
@@ -213,7 +177,10 @@ static void cam_loop_task(void *arg)
             continue;
         }
 #endif
-        if (stream_control(sender, client_id, channel_id, true) != WendyComResult_WENDY_COM_RESULT_OK) {
+        enum wendy_core_sensor_result begun = wendy_core_sensor_stream_begin(client_id, channel_id);
+        if (begun != WENDY_CORE_SENSOR_OK) {
+            ESP_LOGW(TAG, "stream begin refused for client %d channel %" PRIu32 ": %d",
+                     client_id, channel_id, begun);
             if (channel_id == 1) {
                 mic_stop();
             }
@@ -318,7 +285,7 @@ static void cam_loop_task(void *arg)
 
         // Cancel at the transport before waiting for borrowed buffers. A
         // queued chunk finishes first; unsent chunks need not drain in full.
-        stream_control(sender, client_id, channel_id, false);
+        stream_end(sender, client_id, channel_id);
         if (pending_jpeg) {
             // The last frame sent may still be in flight; wait for its done
             // callback before handing the buffer back.

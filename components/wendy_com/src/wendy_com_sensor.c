@@ -53,7 +53,8 @@ struct sensor_frame {
     size_t size;
     size_t offset;
     size_t message_limit;
-    void (*done)(uint32_t channel_id);
+    wcom_sensor_frame_done_t done;
+    void *done_ctx;
 };
 
 // A closed stream keeps its slot until the transport releases its frame.
@@ -182,18 +183,20 @@ static WendyComResult _send_chunk(struct sensor_frame *frame)
 // active until end/disconnect, so a completed frame does not reset sequencing.
 static void _finish_frame(struct sensor_frame *frame)
 {
-    void (*done)(uint32_t channel_id) = frame->done;
+    wcom_sensor_frame_done_t done = frame->done;
+    void *done_ctx = frame->done_ctx;
     uint32_t channel_id = frame->channel_id;
     frame->busy = false;
     frame->queued = false;
     frame->done = NULL;
+    frame->done_ctx = NULL;
     frame->data = NULL;
 #if CONFIG_WENDY_SENSOR_LINK_XIAO_ESP32S3
     free(frame->wire);
     frame->wire = NULL;
 #endif
     if (done)
-        done(channel_id);
+        done(channel_id, done_ctx);
 }
 
 static void _schedule_link(int link_id)
@@ -316,7 +319,7 @@ WendyComResult wcom_sensor_stream_begin(int client_id, uint32_t channel_id)
 WendyComResult wcom_sensor_stream_push(int client_id, uint32_t channel_id,
                                        const void *data, size_t size,
                                        uint64_t ts_us,
-                                       void (*done)(uint32_t channel_id))
+                                       wcom_sensor_frame_done_t done, void *ctx)
 {
     struct sensor_stream *stream = _find_stream(client_id, channel_id);
     if (!stream || !stream->active || !data || size == 0)
@@ -350,6 +353,7 @@ WendyComResult wcom_sensor_stream_push(int client_id, uint32_t channel_id,
         .data = data,
         .size = size,
         .done = done,
+        .done_ctx = ctx,
     };
     _schedule_link(link_id);
     return WendyComResult_WENDY_COM_RESULT_OK;

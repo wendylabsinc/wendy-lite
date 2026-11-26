@@ -32,8 +32,8 @@ static bool camera_buffer_held, stream_open;
 static int stream_client;
 static uint32_t stream_channel;
 static unsigned stream_begins, stream_ends, frame_pushes;
-static WendyComResult begin_result = WendyComResult_WENDY_COM_RESULT_OK;
-static void (*frame_done)(uint32_t channel_id);
+static enum wendy_core_sensor_result begin_result = WENDY_CORE_SENSOR_OK;
+static wendy_core_sensor_done_t frame_done;
 static void (*while_frame_pending)(void);
 static unsigned stop_phase;
 static bool stop_by_disconnect;
@@ -221,35 +221,36 @@ void vTaskDelay(TickType_t ticks)
 
 void wcom_exec(struct wcom_operation *operation) { operation->func(operation); }
 
-WendyComResult wcom_sensor_stream_begin(int client, uint32_t channel)
+enum wendy_core_sensor_result wendy_core_sensor_stream_begin(int client, uint32_t channel)
 {
     assert(!stream_open && !frame_done);
     stream_begins++;
-    if (begin_result != WendyComResult_WENDY_COM_RESULT_OK) return begin_result;
+    if (begin_result != WENDY_CORE_SENSOR_OK) return begin_result;
     stream_open = true;
     stream_client = client;
     stream_channel = channel;
-    return WendyComResult_WENDY_COM_RESULT_OK;
+    return WENDY_CORE_SENSOR_OK;
 }
 
-WendyComResult wcom_sensor_stream_end(int client, uint32_t channel)
+void wendy_core_sensor_stream_end(int client, uint32_t channel, wendy_core_sensor_done_t done)
 {
-    assert(stream_open);
+    assert(stream_open && done);
     assert(client == stream_client && channel == stream_channel);
     stream_open = false;
     stream_ends++;
-    return WendyComResult_WENDY_COM_RESULT_OK;
+    done(client, channel, WENDY_CORE_SENSOR_OK);
 }
 
-WendyComResult wendy_core_sensor_stream_try_push(int client, uint32_t channel, const void *data,
-                                  size_t size, uint64_t timestamp,
-                                  void (*done)(uint32_t))
+void wendy_core_sensor_stream_push(int client, uint32_t channel, const void *data,
+                                   size_t size, uint64_t timestamp, wendy_core_sensor_done_t done)
 {
     assert(stream_open && !frame_done && done);
     assert(client == stream_client && channel == stream_channel);
     if (reject_push) {
+        // A refusal hands the buffer back through done, before push returns.
         assert(unsubscribe(client, channel) == WCOM_SENSOR_LINK_OK);
-        return WendyComResult_WENDY_COM_RESULT_BUSY;
+        done(client, channel, WENDY_CORE_SENSOR_BUSY);
+        return;
     }
     if (channel == 0) {
         assert(data == jpeg_frame && size == sizeof(jpeg_frame));
@@ -267,12 +268,12 @@ WendyComResult wendy_core_sensor_stream_try_push(int client, uint32_t channel, c
         assert(unsubscribe(client, channel) == WCOM_SENSOR_LINK_OK);
         frame_done = NULL;
         mock_now += completion_latency_us;
-        done(channel);
+        done(client, channel, WENDY_CORE_SENSOR_OK);
+        // Counted as soon as done reports the frame, even before push returns.
         struct wendy_sensor_link_stats stats;
         assert(wendy_sensor_link_get_stats(channel, &stats) == ESP_OK);
-        assert(stats.frames_submitted == 0 && stats.frames_completed == 0);
+        assert(stats.frames_submitted == 1 && stats.frames_completed == 1);
     }
-    return WendyComResult_WENDY_COM_RESULT_OK;
 }
 
 static void run_sender_until_idle(uint32_t channel)
@@ -439,10 +440,10 @@ static void stop_with_frame_in_flight(void)
     }
     assert(stop_phase == 2);
     assert(stream_ends == 1 && !stream_open);
-    void (*done)(uint32_t) = frame_done;
+    wendy_core_sensor_done_t done = frame_done;
     frame_done = NULL;
     mock_now += completion_latency_us;
-    done(stream_channel);
+    done(stream_client, stream_channel, WENDY_CORE_SENSOR_OK);
 }
 
 static void test_stats(bool rejected, bool inline_done, bool capture_failed)
@@ -510,7 +511,7 @@ static void test_microphone_catch_up(size_t queued)
 static void test_stream_begin_failure(void)
 {
     initialize();
-    begin_result = WendyComResult_WENDY_COM_RESULT_BUSY;
+    begin_result = WENDY_CORE_SENSOR_BUSY;
     assert(subscribe(7, 1) == WCOM_SENSOR_LINK_OK);
     run_sender_until_idle(1);
     assert(stream_begins == 1 && !stream_ends && !frame_pushes);

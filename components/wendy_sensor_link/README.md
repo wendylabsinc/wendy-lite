@@ -37,10 +37,10 @@ Its audio goes through `esp_codec_dev`, which cannot report queued samples, so
 each frame carries one 20 ms block.
 
 `wendy_sensor_link_get_stats()` snapshots lifetime counters for each channel.
-It reports accepted submissions, submitted bytes, buffer-return completions,
-immediate queue refusals, capture errors, and capture/completion duration totals
-and maxima. A completion includes cancellation or a later transport refusal;
-it does not establish successful delivery. Capture duration includes time spent
+It reports the frames and bytes the transport took (counted when their buffer
+comes back), refused frames, capture errors, and capture/completion duration
+totals and maxima. A completion includes cancellation; it does not establish
+successful delivery. Capture duration includes time spent
 on failed reads and timeouts. Counters start at zero and are not reset when a
 client disconnects.
 
