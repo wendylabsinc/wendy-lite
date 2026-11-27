@@ -81,6 +81,7 @@ target_include_directories(wendy_com_permissions_test PRIVATE stubs ../../wendy_
     ../include ../../wendy_pki/include ../../wendy_conf/include ../../wendy_stdio/include ../../nanopb)
 target_compile_definitions(wendy_com_permissions_test PRIVATE CONFIG_WENDY_COM_TASK_PRIORITY=1
     CONFIG_WENDY_COM_TASK_CORE_AFFINITY=0)
+# The link's eventfd wakeups and drains intentionally discard their counts.
 target_compile_options(wendy_com_permissions_test PRIVATE -UNDEBUG -Wall -Wextra -Werror
-    -Wno-unused-parameter -Wno-unused-function)
+    -Wno-unused-parameter -Wno-unused-function -Wno-unused-result)
 add_test(NAME wendy_com_permissions COMMAND wendy_com_permissions_test)
