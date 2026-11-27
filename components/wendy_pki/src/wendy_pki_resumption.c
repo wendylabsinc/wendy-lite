@@ -213,18 +213,19 @@ static int parse_ticket(void *context, mbedtls_ssl_session *session,
 {
     wendy_pki_connection *c = context;
     const char *protocol = mbedtls_ssl_get_alpn_protocol(&c->ssl);
-    if (!c->resumption || ticket_size != 32 || !protocol || strcmp(protocol, CARRIER_ALPN))
+    if (!c->resumption || ticket_size != 32 || !protocol || strcmp(protocol, CARRIER_ALPN) ||
+        pki_issuer_recovery_active(&pki_issuer_process_recovery, esp_timer_get_time()))
         return MBEDTLS_ERR_SSL_SESSION_TICKET_EXPIRED;
     /* Mbed TLS parses the PSK before calling our certificate/issuer selector.
      * Predict that selector's exact binary ALPN now, so a valid alias ticket
      * neither falsely misses against the temporary canonical choice nor
      * resumes under a different alias. The ordinary selector still runs. */
     size_t protocol_size = c->ssl.MBEDTLS_PRIVATE(wendy_alpn_chosen_length);
-    if (c->issuers &&
-        !pki_issuer_recovery_active(&pki_issuer_process_recovery, esp_timer_get_time())) {
-        size_t selected = pki_issuer_select(c->issuers, c->ssl.MBEDTLS_PRIVATE(in_msg),
-                                            c->ssl.MBEDTLS_PRIVATE(in_hslen));
-        if (selected) { protocol = c->issuers->hint; protocol_size = selected; }
+    bool leaf;
+    size_t selected = pki_tls_server_issuer_alias(c, &leaf);
+    if (selected) {
+        protocol = c->issuers->hint;
+        protocol_size = selected;
     }
     c->resumption->candidate = false;
     struct server_session_load load = {.connection=c, .session=session,
@@ -247,7 +248,7 @@ void pki_resumption_prepare(wendy_pki_connection *c, const char *protocol)
         c->public_chain->count > 8 || !c->public_chain->load_trust)
         return;
     struct {
-        uint8_t domain[32], roots[32], chain[8][32];
+        uint8_t domain[32], roots[32], peer_issuers[32], chain[8][32];
         char tenant[37], device[37];
         uint64_t generation;
         uint8_t count;
@@ -256,6 +257,9 @@ void pki_resumption_prepare(wendy_pki_connection *c, const char *protocol)
     memcpy(binding.domain, server ? "wendy BLE device server tickets/1"
                                   : "wendy BLE device client tickets/1", 32);
     memcpy(binding.roots, c->public_chain->trust_hash, 32);
+    if (c->lite_issuer_size &&
+        wendy_pki_sha256(c->lite_issuer_der, c->lite_issuer_size, binding.peer_issuers))
+        return;
     memcpy(binding.chain, c->public_chain->hashes, c->public_chain->count * 32);
     memcpy(binding.tenant, c->mesh_tenant, 37);
     memcpy(binding.device, c->mesh_device, 37);
@@ -364,6 +368,8 @@ void pki_resumption_client_start(wendy_pki_connection *c, const char *expected)
     if (!r || r->client_started ||
         c->config.MBEDTLS_PRIVATE(endpoint) != MBEDTLS_SSL_IS_CLIENT) return;
     r->client_started = true;
+    if (pki_issuer_recovery_active(&pki_issuer_process_recovery, esp_timer_get_time()))
+        return;
     if (!expected || !wendy_identity_uuid((const unsigned char *)expected, strlen(expected))) {
         TICKET_LOG("BLE ticket not offered: expected peer UUID unavailable");
         return;

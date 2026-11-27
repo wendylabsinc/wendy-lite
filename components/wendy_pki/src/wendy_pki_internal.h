@@ -58,6 +58,7 @@ struct wendy_pki_connection
     struct pki_issuer_state *issuers;
     mbedtls_x509_crt *lite_peer_issuers;
     uint8_t *lite_issuer_der;
+    size_t lite_issuer_size;
     wendy_net_memory_scope_t allocation_scope;
     wendy_net_memory_reservation_t raw_roots_reservation;
     bool mesh_roots_prefixed;

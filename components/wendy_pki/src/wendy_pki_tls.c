@@ -259,6 +259,7 @@ static void release_lite_issuers(wendy_pki_connection *c)
     }
     free(c->lite_issuer_der);
     c->lite_issuer_der = NULL;
+    c->lite_issuer_size = 0;
 }
 
 static int seed_lite_issuers(wendy_pki_connection *c, struct pki_tls_owned_identity *owned)
@@ -270,6 +271,7 @@ static int seed_lite_issuers(wendy_pki_connection *c, struct pki_tls_owned_ident
         return -1;
     mbedtls_x509_crt_init(c->lite_peer_issuers);
     c->lite_issuer_der = owned->lite_issuer_der;
+    c->lite_issuer_size = owned->lite_issuer_size;
     owned->lite_issuer_der = NULL;
     if (pki_parse_certificate_bundle(c->lite_peer_issuers, c->lite_issuer_der,
                                      owned->lite_issuer_size, true))
@@ -485,6 +487,20 @@ static void issuer_omit_status(wendy_pki_connection *c)
             all |= 1u << i;
     c->issuers->omit = all && (c->issuers->omit_mask & all) == all;
 }
+size_t pki_tls_server_issuer_alias(wendy_pki_connection *c, bool *leaf)
+{
+    *leaf = false;
+    if (!c->issuers ||
+        pki_issuer_recovery_active(&pki_issuer_process_recovery, esp_timer_get_time()))
+        return 0;
+    const uint8_t *hello = c->ssl.MBEDTLS_PRIVATE(in_msg);
+    size_t size = c->ssl.MBEDTLS_PRIVATE(in_hslen);
+    const char *protocol = mbedtls_ssl_get_alpn_protocol(&c->ssl);
+    size_t selected = protocol ? pki_leaf_select(c->issuers, protocol, hello, size) : 0;
+    *leaf = selected != 0;
+    return selected ? selected : pki_issuer_select(c->issuers, hello, size);
+}
+
 static int select_server_issuers(mbedtls_ssl_context *ssl)
 {
     wendy_pki_connection *c = ssl->MBEDTLS_PRIVATE(p_bio);
@@ -492,10 +508,8 @@ static int select_server_issuers(mbedtls_ssl_context *ssl)
         struct pki_issuer_state *s = c->issuers;
         const uint8_t *hello = ssl->MBEDTLS_PRIVATE(in_msg);
         size_t size = ssl->MBEDTLS_PRIVATE(in_hslen);
-        bool recovering = pki_issuer_recovery_active(&pki_issuer_process_recovery, esp_timer_get_time());
-        const char *protocol = mbedtls_ssl_get_alpn_protocol(ssl);
-        size_t leaf = recovering || !protocol ? 0 : pki_leaf_select(s, protocol, hello, size);
-        size_t selected = leaf ? leaf : recovering ? 0 : pki_issuer_select(s, hello, size);
+        bool leaf;
+        size_t selected = pki_tls_server_issuer_alias(c, &leaf);
         if (selected) {
             ssl->MBEDTLS_PRIVATE(alpn_chosen) = s->hint;
             ssl->MBEDTLS_PRIVATE(wendy_alpn_chosen_length) = selected;
@@ -3233,12 +3247,6 @@ int pki_tls_net_begin(const struct wendy_pki_stream *stream, bool server, const 
                            roots, owned, principal, owned->verify_at, application, streamed);
     static const char *const carrier_alpn[] = {"wendy-local-mesh-ble/2", NULL};
     static const char *const app_alpn[] = {"wendy-app-mesh-tls/1", NULL};
-    if (!result) {
-        memcpy(c->mesh_tenant, tenant, 37);
-        memcpy(c->mesh_device, device, 37);
-        if (!application)
-            pki_resumption_prepare(c, "wendy-local-mesh-ble/2");
-    }
     if (!result)
         result = configure_mesh_alpn_for_tenant(c, application ? app_alpn : carrier_alpn, tenant, true);
     if (!result)
@@ -3246,6 +3254,8 @@ int pki_tls_net_begin(const struct wendy_pki_stream *stream, bool server, const 
     if (!result) {
         memcpy(c->mesh_tenant, tenant, 37);
         memcpy(c->mesh_device, device, 37);
+        if (!application)
+            pki_resumption_prepare(c, carrier_alpn[0]);
         *out = c;
     } else
         wendy_pki_close(c);

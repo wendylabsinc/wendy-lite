@@ -1,10 +1,13 @@
 #pragma once
 #include <stdbool.h>
+#include <stddef.h>
 struct wendy_pki_mesh_peer;
 struct wendy_pki_connection;
 /* Carrier device-role TLS only. VIP and operator protocols retain independent
  * domains; a cached PSK is never a logical app-stream recovery capability. */
 void pki_resumption_prepare(struct wendy_pki_connection *, const char *protocol);
+/* Shared with the server certificate callback to predict the exact ALPN for tickets. */
+size_t pki_tls_server_issuer_alias(struct wendy_pki_connection *, bool *leaf);
 void pki_resumption_before_step(struct wendy_pki_connection *);
 int pki_resumption_finish(struct wendy_pki_connection *, const char *expected_peer,
                            const char *protocol);
