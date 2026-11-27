@@ -32,6 +32,16 @@ int main(void)
     assert(traffic.output.size == WNA_IO_BYTES);
     wna_buffer_consume(&traffic.output, 123);
     assert(wna_write(&traffic, bytes, 123) == 123 && traffic.output.size == WNA_IO_BYTES);
+    uint8_t storage[2048], payload[2048];
+    memset(payload, 0x5a, sizeof payload);
+    struct wna_channel extended = {.output = {.storage = storage, .capacity = sizeof storage}};
+    assert(wna_write(&extended, payload, sizeof payload) == sizeof payload);
+    assert(wna_write(&extended, payload, 1) == -3);
+    wna_buffer_consume(&extended.output, 513);
+    memset(payload, 0xa5, 513);
+    assert(wna_write(&extended, payload, 513) == 513);
+    assert(storage[0] == 0x5a && storage[1534] == 0x5a);
+    assert(!memcmp(storage + 1535, payload, 513));
     wna_lend(&handshake);
     handshake.cancel = true;
     assert(wna_next(&handshake, 1001, true, true) == WNA_NONE);

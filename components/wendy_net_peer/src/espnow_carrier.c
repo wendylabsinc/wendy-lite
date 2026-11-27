@@ -2,12 +2,17 @@
 #include "actor_driver.h"
 #include "wendy_net_espnow_hosted.h"
 #include "wendy_net_ble_protocol.h"
+#include "wendy_net_alloc.h"
 #include "wendy_wifi.h"
+#include "wendy_net_task.h"
 
+#include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "lwip/inet.h"
@@ -32,6 +37,9 @@
 #endif
 
 enum { IP_MTU = 1280, HEADER_SIZE = 5, QUEUE_DEPTH = 4, AD_SIZE = 40 };
+/* Larger data queues live in PSRAM. Keep the constrained profile's small
+ * actor-driven queues, including its original internal memory requirement. */
+enum { WORKER_QUEUE_DEPTH = 24, WORKER_RX_BUDGET = 8, SEND_TIMEOUT_MS = 2000 };
 enum { IPV6_HEADER_SIZE = 40, TCP_HEADER_SIZE = 20 };
 enum { PRESENCE = 1, IPV6 = 2 };
 static const uint8_t broadcast[6] = {255, 255, 255, 255, 255, 255};
@@ -48,13 +56,51 @@ static struct {
     const void *link;
     uint8_t mac[6], rate;
 } link_rates[CONFIG_WENDY_NET_MAX_LINKS];
-static QueueHandle_t rx, tx;
-static atomic_uint generation, receiving;
-static atomic_bool transmitting;
+static portMUX_TYPE rate_lock = portMUX_INITIALIZER_UNLOCKED;
+static QueueHandle_t rx, tx, data_rx, advertisements;
+static TaskHandle_t worker;
+static wendy_net_memory_reservation_t data_queue_memory, advertise_queue_memory;
+static atomic_uint generation, producers, send_deadline_ms;
+static atomic_bool worker_stop, worker_stopped, radio_paused, accepting_connections;
 static unsigned running_generation, interface_index;
 static int listener = -1;
-static bool backend_started, radio_paused;
-static int64_t advertise_at, send_deadline;
+static bool backend_started;
+static int64_t advertise_at;
+
+static void run_radio(void *context);
+
+/* Callbacks and lwIP output can race a carrier restart. Hold a reference to
+ * the current queue generation until their last queue or task access. */
+static unsigned acquire_generation(void)
+{
+    unsigned current = atomic_load(&generation);
+    if (!(current & 1u))
+        return 0;
+    atomic_fetch_add(&producers, 1);
+    if (current == atomic_load(&generation))
+        return current;
+    atomic_fetch_sub(&producers, 1);
+    return 0;
+}
+
+static void release_generation(void)
+{
+    atomic_fetch_sub(&producers, 1);
+}
+
+static void wake_data_path(void)
+{
+    if (worker)
+        xTaskNotifyGive(worker);
+    else
+        wnad_wake();
+}
+
+static uint32_t send_timeout_at(int64_t now)
+{
+    uint32_t deadline = (uint32_t)(now / 1000) + SEND_TIMEOUT_MS;
+    return deadline ? deadline : 1;
+}
 
 static void address_from_mac(uint8_t out[16], const uint8_t mac[6])
 {
@@ -80,30 +126,36 @@ void wn_espnow_set_link_rate(const void *link, const char *address, unsigned rat
     if (!wn_espnow_rate_valid(rate) || inet_pton(AF_INET6, address, ip) != 1 ||
         !mac_from_address(mac, ip))
         return;
+    portENTER_CRITICAL(&rate_lock);
     for (unsigned i = 0; i < CONFIG_WENDY_NET_MAX_LINKS; i++) {
         if (!link_rates[i].link || link_rates[i].link == link) {
             link_rates[i].link = link;
             memcpy(link_rates[i].mac, mac, sizeof mac);
             link_rates[i].rate = (uint8_t)rate;
-            return;
+            break;
         }
     }
+    portEXIT_CRITICAL(&rate_lock);
 }
 
 void wn_espnow_clear_link_rate(const void *link)
 {
+    portENTER_CRITICAL(&rate_lock);
     for (unsigned i = 0; i < CONFIG_WENDY_NET_MAX_LINKS; i++)
         if (link_rates[i].link == link)
             link_rates[i].link = NULL;
+    portEXIT_CRITICAL(&rate_lock);
 }
 
 static unsigned rate_for(const uint8_t mac[6])
 {
     unsigned rate = 0;
+    portENTER_CRITICAL(&rate_lock);
     for (unsigned i = 0; i < CONFIG_WENDY_NET_MAX_LINKS; i++)
         if (link_rates[i].link && !memcmp(link_rates[i].mac, mac, 6) &&
             (!rate || link_rates[i].rate < rate))
             rate = link_rates[i].rate;
+    portEXIT_CRITICAL(&rate_lock);
     return rate ? rate : 1;
 }
 
@@ -122,28 +174,31 @@ static void enqueue_received(const uint8_t source[6], const uint8_t destination[
     memcpy(packet.bytes, bytes, size);
     packet.size = (uint16_t)size;
     packet.generation = current;
-    if (xQueueSend(rx, &packet, 0) == pdTRUE)
+    if (!bcast && worker) {
+        if (xQueueSend(data_rx, &packet, 0) == pdTRUE)
+            wake_data_path();
+    } else if (xQueueSend(rx, &packet, 0) == pdTRUE) {
         wnad_wake();
+    }
 }
 
 static void queue_received(const uint8_t source[6], const uint8_t destination[6],
                            const uint8_t *bytes, size_t size)
 {
-    unsigned current = atomic_load(&generation);
-    if (!(current & 1))
+    unsigned current = acquire_generation();
+    if (!current)
         return;
-    atomic_fetch_add(&receiving, 1);
-    /* A callback that raced with stop must not use a retired queue, even if
-     * another generation has already started. */
-    if (atomic_load(&generation) == current)
-        enqueue_received(source, destination, bytes, size, current);
-    atomic_fetch_sub(&receiving, 1);
+    enqueue_received(source, destination, bytes, size, current);
+    release_generation();
 }
 
 static void completed_send(void)
 {
-    atomic_store(&transmitting, false);
-    wnad_wake();
+    if (!acquire_generation())
+        return;
+    atomic_store(&send_deadline_ms, 0);
+    wake_data_path();
+    release_generation();
 }
 
 #if CONFIG_IDF_TARGET_ESP32P4
@@ -269,8 +324,7 @@ static err_t send_ip(struct netif *netif, struct pbuf *p, const ip6_addr_t *dest
 {
     (void)netif;
     struct frame packet;
-    unsigned current = atomic_load(&generation);
-    if (!(current & 1) || p->tot_len > IP_MTU ||
+    if (p->tot_len > IP_MTU ||
         !mac_from_address(packet.mac, (const uint8_t *)destination->addr))
         return ERR_RTE;
     memcpy(packet.bytes, prefix, sizeof prefix);
@@ -278,11 +332,14 @@ static err_t send_ip(struct netif *netif, struct pbuf *p, const ip6_addr_t *dest
     if (pbuf_copy_partial(p, packet.bytes + HEADER_SIZE, p->tot_len, 0) != p->tot_len)
         return ERR_BUF;
     packet.size = HEADER_SIZE + p->tot_len;
-    packet.generation = current;
-    if (xQueueSend(tx, &packet, 0) != pdTRUE)
-        return ERR_MEM;
-    wnad_wake();
-    return ERR_OK;
+    packet.generation = acquire_generation();
+    if (!packet.generation)
+        return ERR_RTE;
+    bool queued = xQueueSend(tx, &packet, 0) == pdTRUE;
+    if (queued)
+        wake_data_path();
+    release_generation();
+    return queued ? ERR_OK : ERR_MEM;
 }
 
 static err_t init_interface(struct netif *netif)
@@ -348,6 +405,11 @@ bool wn_espnow_supported(void)
     return true;
 }
 
+bool wn_espnow_worker_active(void)
+{
+    return worker && listener >= 0;
+}
+
 unsigned wn_espnow_rate_limit(unsigned configured)
 {
 #if CONFIG_IDF_TARGET_ESP32P4
@@ -355,6 +417,55 @@ unsigned wn_espnow_rate_limit(unsigned configured)
         return 1;
 #endif
     return wn_espnow_rate_valid(configured) ? configured : 1;
+}
+
+static void release_worker_queues(void)
+{
+    if (tx)
+        vQueueDeleteWithCaps(tx);
+    if (data_rx)
+        vQueueDeleteWithCaps(data_rx);
+    if (advertisements)
+        vQueueDelete(advertisements);
+    tx = data_rx = advertisements = NULL;
+    wendy_net_memory_release(&data_queue_memory);
+    wendy_net_memory_release(&advertise_queue_memory);
+}
+
+static bool start_queues(void)
+{
+    rx = xQueueCreate(QUEUE_DEPTH, sizeof(struct frame));
+    if (!rx)
+        return false;
+    bool can_move_io = true;
+#if CONFIG_WENDY_NET_CONSTRAINED_PROFILE
+    can_move_io = false;
+#endif
+    if (can_move_io && heap_caps_get_total_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)) {
+        wendy_net_memory_t *ledger = wendy_net_runtime_memory_ledger();
+        size_t data_bytes = 2 * (sizeof(StaticQueue_t) + WORKER_QUEUE_DEPTH * sizeof(struct frame));
+        if (wendy_net_memory_reserve(ledger, &data_queue_memory, data_bytes,
+                                     WENDY_NET_MEMORY_EXTERNAL) &&
+            wendy_net_memory_reserve(ledger, &advertise_queue_memory,
+                                     sizeof(StaticQueue_t) + sizeof(struct frame),
+                                     WENDY_NET_MEMORY_INTERNAL)) {
+            unsigned caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+            tx = xQueueCreateWithCaps(WORKER_QUEUE_DEPTH, sizeof(struct frame), caps);
+            data_rx = xQueueCreateWithCaps(WORKER_QUEUE_DEPTH, sizeof(struct frame), caps);
+            advertisements = xQueueCreate(1, sizeof(struct frame));
+            atomic_store(&worker_stop, false);
+            atomic_store(&worker_stopped, false);
+            if (tx && data_rx && advertisements &&
+                wendy_net_task_create(run_radio, "espnow-io", 6144, NULL, 7, &worker) == pdPASS) {
+                ESP_LOGI("wendy_espnow", "Data worker started");
+                return true;
+            }
+        }
+        release_worker_queues();
+        ESP_LOGW("wendy_espnow", "Data worker unavailable, using the small actor queues");
+    }
+    tx = xQueueCreate(QUEUE_DEPTH, sizeof(struct frame));
+    return tx != NULL;
 }
 
 esp_err_t wn_espnow_start(unsigned channel)
@@ -380,13 +491,13 @@ esp_err_t wn_espnow_start(unsigned channel)
         goto fail;
     }
     backend_started = true;
-    rx = xQueueCreate(QUEUE_DEPTH, sizeof(struct frame));
-    tx = xQueueCreate(QUEUE_DEPTH, sizeof(struct frame));
-    if (!rx || !tx) {
+    if (!start_queues()) {
         err = ESP_ERR_NO_MEM;
         goto fail;
     }
-    atomic_store(&transmitting, false);
+    atomic_store(&send_deadline_ms, 0);
+    atomic_store(&radio_paused, false);
+    atomic_store(&accepting_connections, false);
     struct tcpip_api_call_data call;
     if (tcpip_api_call(add_interface, &call) != ERR_OK) {
         err = ESP_FAIL;
@@ -401,9 +512,8 @@ esp_err_t wn_espnow_start(unsigned channel)
         err = ESP_FAIL;
         goto fail;
     }
-    running_generation = atomic_fetch_add(&generation, 1) + 1;
     advertise_at = esp_random() % 1000000;
-    radio_paused = false;
+    running_generation = atomic_fetch_add(&generation, 1) + 1;
     return ESP_OK;
 
 fail:
@@ -413,11 +523,22 @@ fail:
 
 void wn_espnow_stop(void)
 {
-    memset(link_rates, 0, sizeof link_rates);
     if (running_generation) {
         atomic_fetch_add(&generation, 1);
         running_generation = 0;
     }
+    while (atomic_load(&producers))
+        vTaskDelay(1);
+    bool had_worker = worker != NULL;
+    if (had_worker) {
+        atomic_store(&worker_stop, true);
+        xTaskNotifyGive(worker);
+        while (!atomic_load(&worker_stopped))
+            vTaskDelay(1);
+        wendy_net_task_delete(worker);
+        worker = NULL;
+    }
+    memset(link_rates, 0, sizeof link_rates);
     if (listener >= 0) {
         close(listener);
         listener = -1;
@@ -433,12 +554,12 @@ void wn_espnow_stop(void)
 #endif
         radio_stop();
     backend_started = false;
-    atomic_store(&transmitting, false);
-    while (atomic_load(&receiving))
-        vTaskDelay(1);
+    atomic_store(&send_deadline_ms, 0);
     if (rx)
         vQueueDelete(rx);
-    if (tx)
+    if (had_worker)
+        release_worker_queues();
+    else if (tx)
         vQueueDelete(tx);
     rx = tx = NULL;
     wendy_wifi_espnow_release();
@@ -450,15 +571,20 @@ bool wn_espnow_channel_live(unsigned channel)
         return false;
     enum wendy_wifi_espnow_state state = wendy_wifi_espnow_state(channel);
     int64_t now = esp_timer_get_time();
-    radio_paused = state == WENDY_WIFI_ESPNOW_SCANNING;
-    if (radio_paused) {
-        /* The radio may finish an outstanding send after the scan. Keep the
-         * interface and its TCP sockets open across the off-channel dwell. */
-        send_deadline = now + INT64_C(2000000);
+    bool paused = state != WENDY_WIFI_ESPNOW_READY;
+    bool was_paused = atomic_exchange(&radio_paused, paused);
+    unsigned deadline = atomic_load(&send_deadline_ms);
+    if (state == WENDY_WIFI_ESPNOW_SCANNING) {
+        /* Keep TCP live through the off-channel dwell. A concurrent send
+         * completion clears the deadline and takes precedence. */
+        if (deadline)
+            (void)atomic_compare_exchange_strong(&send_deadline_ms, &deadline,
+                                                 send_timeout_at(now));
         return true;
     }
-    return state == WENDY_WIFI_ESPNOW_READY &&
-           (!atomic_load(&transmitting) || now < send_deadline);
+    if (was_paused && !paused && worker)
+        wake_data_path();
+    return !paused && (!deadline || (int32_t)(deadline - (uint32_t)(now / 1000)) > 0);
 }
 
 int wn_espnow_listener(void)
@@ -532,14 +658,84 @@ static void deliver_ip(const struct frame *packet, bool accepting)
         pbuf_free(p);
 }
 
+static bool submit_frame(const struct frame *packet, unsigned current, int64_t now)
+{
+    if (packet->generation != current || atomic_load(&generation) != current ||
+        atomic_load(&radio_paused))
+        return false;
+    atomic_store(&send_deadline_ms, send_timeout_at(now));
+    if (radio_send(packet) == ESP_OK)
+        return true;
+    atomic_store(&send_deadline_ms, 0);
+    return false;
+}
+
+static void run_radio(void *context)
+{
+    (void)context;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (atomic_load(&worker_stop))
+            break;
+        unsigned current = atomic_load(&generation);
+        if (!(current & 1u))
+            continue;
+        struct frame packet;
+        for (unsigned i = 0; i < WORKER_RX_BUDGET &&
+             atomic_load(&generation) == current && xQueueReceive(data_rx, &packet, 0) == pdTRUE;
+             ++i) {
+            if (packet.generation == current && memcmp(packet.mac, station, 6))
+                deliver_ip(&packet, atomic_load(&accepting_connections));
+        }
+        if (!atomic_load(&radio_paused) && !atomic_load(&send_deadline_ms) &&
+            (xQueueReceive(advertisements, &packet, 0) == pdTRUE ||
+             xQueueReceive(tx, &packet, 0) == pdTRUE) &&
+            !submit_frame(&packet, current, esp_timer_get_time()) && uxQueueMessagesWaiting(tx))
+            xTaskNotifyGive(xTaskGetCurrentTaskHandle());
+        if (uxQueueMessagesWaiting(data_rx)) {
+            xTaskNotifyGive(xTaskGetCurrentTaskHandle());
+            vTaskDelay(1);
+        }
+    }
+    /* The actor can now tear down the radio, netif and queues. No code below
+     * uses any session-owned state, even if task reaping runs later. */
+    atomic_store(&worker_stopped, true);
+    vTaskSuspend(NULL);
+}
+
+static bool discovery_identity(struct wn_ble_scope *scope, uint8_t uuid[16],
+                               const char *tenant, const char *device)
+{
+    static struct {
+        char tenant[37], device[65];
+        struct wn_ble_scope scope;
+        uint8_t uuid[16];
+        bool valid;
+    } cache;
+    if (!wn_espnow_worker_active())
+        return !wn_ble_default_scope_init(scope, tenant) && !wn_uuid_parse(device, uuid);
+    if (!cache.valid || strcmp(cache.tenant, tenant) || strcmp(cache.device, device)) {
+        cache.valid = !wn_ble_default_scope_init(&cache.scope, tenant) &&
+                      !wn_uuid_parse(device, cache.uuid);
+        if (!cache.valid)
+            return false;
+        strlcpy(cache.tenant, tenant, sizeof cache.tenant);
+        strlcpy(cache.device, device, sizeof cache.device);
+    }
+    *scope = cache.scope;
+    memcpy(uuid, cache.uuid, sizeof cache.uuid);
+    return true;
+}
+
 void wn_espnow_poll(const char *tenant, const char *device, bool accepting,
                    struct wn_selection *selection, int64_t now)
 {
     if (listener < 0)
         return;
+    atomic_store(&accepting_connections, accepting);
     struct wn_ble_scope scope;
     uint8_t uuid[16];
-    if (wn_ble_default_scope_init(&scope, tenant) || wn_uuid_parse(device, uuid))
+    if (!discovery_identity(&scope, uuid, tenant, device))
         return;
     struct frame packet;
     for (unsigned i = 0; i < QUEUE_DEPTH && xQueueReceive(rx, &packet, 0) == pdTRUE; i++) {
@@ -559,7 +755,7 @@ void wn_espnow_poll(const char *tenant, const char *device, bool accepting,
             wn_candidate_seen(selection, &hint, now / 1000);
         }
     }
-    if (radio_paused || atomic_load(&transmitting))
+    if (atomic_load(&radio_paused) || (!worker && atomic_load(&send_deadline_ms)))
         return;
     if (now >= advertise_at) {
         advertise_at = now + 900000 + esp_random() % 200001;
@@ -572,18 +768,19 @@ void wn_espnow_poll(const char *tenant, const char *device, bool accepting,
         packet.bytes[AD_SIZE - 1] = accepting;
         packet.size = AD_SIZE;
         packet.generation = running_generation;
-    } else if (xQueueReceive(tx, &packet, 0) != pdTRUE) {
+        if (worker) {
+            xQueueOverwrite(advertisements, &packet);
+            wake_data_path();
+            return;
+        }
+    } else if (worker || xQueueReceive(tx, &packet, 0) != pdTRUE) {
         return;
     }
-    if (packet.generation != running_generation)
-        return;
-    send_deadline = now + INT64_C(2000000);
-    atomic_store(&transmitting, true);
-    if (radio_send(&packet) != ESP_OK)
-        atomic_store(&transmitting, false);
+    (void)submit_frame(&packet, running_generation, now);
 }
 #else
 bool wn_espnow_supported(void) { return false; }
+bool wn_espnow_worker_active(void) { return false; }
 unsigned wn_espnow_rate_limit(unsigned configured) { (void)configured; return 1; }
 void wn_espnow_set_link_rate(const void *link, const char *address, unsigned rate)
 { (void)link; (void)address; (void)rate; }
