@@ -13,6 +13,10 @@
 #if CONFIG_WENDY_NET_PEER
 #include "wendy_pki_native_prepare.h"
 #endif
+#if (CONFIG_WENDY_NET_PEER && CONFIG_MBEDTLS_SSL_TLS1_3_SIG_MLDSA65) || defined(WENDY_PKI_PEER_CA_HOST_TEST)
+#define PKI_REFRESH_PEER_CAS 1
+#include <mbedtls/base64.h>
+#endif
 #if CONFIG_WENDY_NET_PEER
 #include "http_parser.h"
 #endif
@@ -60,6 +64,15 @@ static bool mesh_time_recent(void)
     return mesh_verified_seconds > 0 && age >= 0 && age < INT64_C(300000000) &&
            wendy_conf_snapshot_current(mesh_verified_generation);
 }
+
+static void select_peer_device_roots(const WendyConfEnrollment *cfg,
+                                     struct wendy_conf_enrollment_data *data)
+{
+    /* A mesh trust update is independent of the original provisioning source. */
+    if (!cfg->provision_trust && !data->device_roots.size)
+        data->device_roots = (struct wendy_conf_span){wendy_pki_device_roots_start, ROOT_SIZE(device)};
+}
+
 #if CONFIG_WENDY_NET_PEER
 /* Under identity_lock. Cache only a complete successful bundle-policy check;
  * every call hashes its exact bytes and binds the configuration generation.
@@ -241,16 +254,24 @@ static int public_trust_load(void *context, uint8_t **bytes, size_t *size)
     struct wendy_conf_enrollment_data data = {0};
     int result = -1;
     pthread_mutex_lock(&identity_lock);
-    if (identity_use_allowed() && wendy_conf_is_current() &&
-        wendy_conf_copy_device_trust(&cfg, &data) == ESP_OK &&
-        data.generation == source->generation && data.device_roots.size) {
-        memmove(data.storage, data.device_roots.data, data.device_roots.size);
-        data.storage[data.device_roots.size] = 0;
-        *bytes = data.storage;
-        *size = data.device_roots.size;
-        data.storage = NULL;
-        result = 0;
-    }
+    if (!identity_use_allowed() || !wendy_conf_is_current() ||
+        wendy_conf_copy_device_trust(&cfg, &data) != ESP_OK ||
+        data.generation != source->generation)
+        goto done;
+    select_peer_device_roots(&cfg, &data);
+    if (!data.device_roots.size)
+        goto done;
+    if (!data.storage)
+        data.storage = malloc(data.device_roots.size + 1);
+    if (!data.storage)
+        goto done;
+    memmove(data.storage, data.device_roots.data, data.device_roots.size);
+    data.storage[data.device_roots.size] = 0;
+    *bytes = data.storage;
+    *size = data.device_roots.size;
+    data.storage = NULL;
+    result = 0;
+done:
     free(data.storage);
     erase(cfg.token, sizeof cfg.token);
     pthread_mutex_unlock(&identity_lock);
@@ -443,6 +464,7 @@ esp_err_t wendy_pki_reset(const char *expected_device_id, const char *nonce_hex)
     result = wendy_conf_clear_enrollment();
     if (result != ESP_OK) goto done;
     const char *keys[] = {"key", "certificate", "pending", "lite_ca", "pending_ca",
+                          "pending_roots", "pending_issuers",
                           "tenant",    "device",      "nonce",     "net_der_meta", "net_der_ranges",
                           "net_der_0", "net_der_1",   "net_der_2", "net_der_3",    "net_der_4",
                           "net_der_5", "net_der_6",   "net_der_7"};
@@ -861,6 +883,124 @@ done:
     mbedtls_x509write_csr_free(&csr); mbedtls_pk_free(&k);
     return pem;
 }
+#define PEER_CA_REFRESH_US (INT64_C(3600) * 1000000)
+#define PEER_CA_RETRY_US (INT64_C(60) * 1000000)
+#if PKI_REFRESH_PEER_CAS
+/* Accessed under identity_lock. */
+static int64_t peer_ca_refresh_at;
+
+static void peer_ca_heap(const char *stage)
+{
+#ifdef ESP_PLATFORM
+    unsigned caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    ESP_LOGI(TAG, "EST refresh %s: internal free=%u largest=%u minimum=%u", stage,
+             (unsigned)heap_caps_get_free_size(caps),
+             (unsigned)heap_caps_get_largest_free_block(caps),
+             (unsigned)heap_caps_get_minimum_free_size(caps));
+#else
+    (void)stage;
+#endif
+}
+
+static int fetch_peer_ca_snapshot(const WendyConfEnrollment *cfg,
+                                  const struct wendy_conf_enrollment_data *data,
+                                  struct wendy_conf_span chain, bool classical)
+{
+    struct pki_est_cert own = {0}, signed_lite = {0};
+    struct pki_est_classical_scope scope = {0};
+    struct pki_est_stream stream = {0};
+    uint8_t *snapshot = NULL;
+    char url[321];
+    int result = -1;
+
+    if (classical) {
+        const uint8_t *part;
+        size_t offset = 0;
+        if (wendy_cert_der_next(chain.data, chain.size, &offset, &part, &own.size) != 1 ||
+            wendy_cert_der_next(chain.data, chain.size, &offset, &part, &own.size) != 1 ||
+            offset != chain.size)
+            return -1;
+        own.der = (uint8_t *)part; /* Borrow the validated local identity's anchor. */
+    }
+    if (pki_est_url(url, sizeof url, cfg->est_url, cfg->csr_url, cfg->tenant_id, true))
+        return -1;
+    peer_ca_heap("before download");
+    if (pki_http_get_est(url, true, data->https_roots, &stream))
+        goto done;
+    peer_ca_heap("after Lite download");
+    if (pki_est_lite_order(&stream, cfg->tenant_id, classical ? &own : NULL,
+                           classical ? &scope : NULL))
+        goto done;
+
+    if (classical) {
+        /* Retain just the signed Lite CA to verify its published parent
+         * against the separately streamed regular tenant bundle. */
+        signed_lite = stream.certs[0];
+        stream.certs[0].der = NULL;
+        pki_est_free(&stream);
+        stream.keep = pki_est_keep_regular;
+        stream.context = &scope;
+        if (pki_est_url(url, sizeof url, cfg->est_url, cfg->csr_url, cfg->tenant_id, false) ||
+            pki_http_get_est(url, false, data->https_roots, &stream))
+            goto done;
+        peer_ca_heap("after regular download");
+        if (pki_est_regular_pins(&stream, &signed_lite, &scope, time(NULL)))
+            goto done;
+        free(signed_lite.der);
+        signed_lite.der = NULL;
+    }
+
+    if (stream.count >= WENDY_CERT_BUNDLE_MAX_CERTS ||
+        own.size + stream.stored > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE)
+        goto done;
+    size_t size = own.size + stream.stored, offset = own.size, count = stream.count;
+    snapshot = malloc(size);
+    if (!snapshot)
+        goto done;
+    if (own.size)
+        memcpy(snapshot, own.der, own.size);
+    for (size_t i = 0; i < stream.count; i++) {
+        memcpy(snapshot + offset, stream.certs[i].der, stream.certs[i].size);
+        offset += stream.certs[i].size;
+        free(stream.certs[i].der);
+        stream.certs[i].der = NULL;
+    }
+    pki_est_free(&stream);
+    if (!classical && wendy_pki_verify_lite_issuers(snapshot, size, data->device_roots.data,
+                                                   data->device_roots.size, cfg->tenant_id, time(NULL)))
+        goto done;
+    peer_ca_heap("before persistence");
+    if (wendy_conf_store_mesh_trust(data->generation, !classical, snapshot, size) != ESP_OK)
+        goto done;
+    ESP_LOGI(TAG, "EST peer CA snapshot current: %u certs, %u DER bytes",
+             (unsigned)count, (unsigned)size);
+    result = 0;
+done:
+    free(signed_lite.der);
+    free(snapshot);
+    pki_est_free(&stream);
+    peer_ca_heap(result ? "deferred" : "committed");
+    return result;
+}
+
+static void refresh_peer_cas(const WendyConfEnrollment *cfg, const struct wendy_conf_enrollment_data *data,
+                             struct wendy_conf_span chain, bool classical, bool renewed)
+{
+    if (!renewed && esp_timer_get_time() < peer_ca_refresh_at)
+        return;
+    char url[321];
+    if (pki_est_url(url, sizeof url, cfg->est_url, cfg->csr_url, cfg->tenant_id, true)) {
+        /* An old self-hosted enrollment may lack an explicit EST address. */
+        peer_ca_refresh_at = esp_timer_get_time() + PEER_CA_REFRESH_US;
+        return;
+    }
+    int result = fetch_peer_ca_snapshot(cfg, data, chain, classical);
+    peer_ca_refresh_at = esp_timer_get_time() + (result ? PEER_CA_RETRY_US : PEER_CA_REFRESH_US);
+    if (result)
+        ESP_LOGW(TAG, "EST peer CA refresh deferred; keeping existing peer certificates");
+}
+#endif
+
 static int issue(nvs_handle_t h, const WendyConfEnrollment *cfg,
                  const struct wendy_conf_enrollment_data *data, const uint8_t *key, size_t key_size,
                  struct wendy_conf_span old, const char *principal, struct wendy_conf_span *issued,
@@ -1181,36 +1321,82 @@ static time_t renewal_date(const struct wendy_pki_validity *leaf, time_t expires
 {
     return leaf->not_before + (expires - leaf->not_before) / 2;
 }
+/* Under identity_lock. A due refresh that could not start gets the retry
+ * delay, rather than making the cloud task loop on a busy identity. */
+static int64_t maintenance_wait_us(void)
+{
+#if PKI_REFRESH_PEER_CAS
+    if (peer_ca_refresh_at) {
+        int64_t remaining = peer_ca_refresh_at - esp_timer_get_time();
+        if (remaining <= 0)
+            return PEER_CA_RETRY_US;
+        if (remaining < PEER_CA_REFRESH_US)
+            return remaining;
+    }
+#endif
+    return PEER_CA_REFRESH_US;
+}
+
 /* The relay grant check has no clock tolerance, so a long control connection
  * still needs a correct clock. The cloud task calls this between heartbeats. A
- * failure has no effect on the connection: the next call retries. Skip when
- * another identity user is active, to limit parallel sockets, or when the
- * clock was verified recently, for example by the mesh actor. */
-static void control_refresh_time(void)
+ * recent mesh time can be reused for a due CA refresh. Skip while another
+ * identity user is active to limit parallel sockets. */
+static int64_t control_refresh_time(void)
 {
     if (pthread_mutex_trylock(&identity_lock))
-        return;
-    if (identity_use_allowed() && !mesh_time_recent()) {
+        return PEER_CA_RETRY_US;
+    bool recent = mesh_time_recent();
+    bool peer_ca_due = false;
+#if PKI_REFRESH_PEER_CAS
+    peer_ca_due = esp_timer_get_time() >= peer_ca_refresh_at;
+#endif
+    if (identity_use_allowed() && (!recent || peer_ca_due)) {
         WendyConfEnrollment cfg = WendyConfEnrollment_init_zero;
         struct wendy_conf_enrollment_data data = {0};
         nvs_handle_t h;
         if (wendy_conf_copy_enrollment(&cfg, &data) == ESP_OK) {
             if (!validate_config_and_trust(&cfg, &data) && open_identity(&h) == ESP_OK) {
                 int64_t started = esp_timer_get_time();
-                int failed = refresh_time(h, cfg.time_url, &data);
+                bool reuse_time = recent && data.generation == mesh_verified_generation;
+                int failed = reuse_time ? 0 : refresh_time(h, cfg.time_url, &data);
+#if PKI_REFRESH_PEER_CAS
+                if (!failed && peer_ca_due) {
+                    uint8_t *key = NULL, *cert = NULL;
+                    size_t key_size = 0, cert_size = 0;
+                    char principal[160];
+                    snprintf(principal, sizeof principal, "spiffe://wendy.sh/tenant/%s/device/%s",
+                             cfg.tenant_id, cfg.device_id);
+                    struct wendy_pki_validity leaf = {0};
+                    time_t expires;
+                    if (!load_certificate(h, "certificate", &cert, &cert_size) &&
+                        !load_blob(h, "key", &key, &key_size) &&
+                        !wendy_pki_verify_identity(cert, cert_size, data.device_roots.data,
+                                                   data.device_roots.size, key, key_size, principal,
+                                                   time(NULL), &expires, &leaf))
+                        refresh_peer_cas(&cfg, &data, (struct wendy_conf_span){cert, cert_size},
+                                         leaf.classical_lite, false);
+                    if (key)
+                        erase(key, key_size);
+                    free(key);
+                    free(cert);
+                }
+#endif
                 nvs_close(h);
-                ESP_LOGI(TAG, "hourly time fetch %s: ms=%u free=%u largest=%u minimum=%u",
-                         failed ? "failed" : "done",
-                         (unsigned)((esp_timer_get_time() - started) / 1000),
-                         (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-                         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
-                         (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
+                if (!reuse_time)
+                    ESP_LOGI(TAG, "hourly time fetch %s: ms=%u free=%u largest=%u minimum=%u",
+                             failed ? "failed" : "done",
+                             (unsigned)((esp_timer_get_time() - started) / 1000),
+                             (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+                             (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
             }
             free(data.storage);
         }
         erase(cfg.token, sizeof cfg.token);
     }
+    int64_t delay = maintenance_wait_us();
     pthread_mutex_unlock(&identity_lock);
+    return delay;
 }
 static esp_err_t connect_identity(wendy_pki_connection **connection)
 {
@@ -1311,11 +1497,18 @@ static esp_err_t connect_identity(wendy_pki_connection **connection)
         } else {
             ESP_LOGI(TAG, "pki-core issued identity for %s", cfg.device_id);
             renew_at = renewal_date(&issued_leaf, expires);
+            leaf = issued_leaf;
             /* A renewal without the authority header installs no pin. */
             have_authority = nvs_get_blob(h, "lite_ca", NULL, &authority_size) == ESP_OK &&
                              authority_size > 0 && authority_size <= PKI_MAX_RESPONSE;
         }
     }
+#if PKI_REFRESH_PEER_CAS
+    if (fresh.data || !have_pending) {
+        struct wendy_conf_span active = fresh.data ? fresh : (struct wendy_conf_span){stored, stored_size};
+        refresh_peer_cas(&cfg, &data, active, leaf.classical_lite, fresh.data != NULL);
+    }
+#endif
     /* Maintenance ends here: the time is verified and the identity is valid. */
     if (!connection)
     {
@@ -1354,6 +1547,7 @@ static esp_err_t connect_identity(wendy_pki_connection **connection)
     }
     (*connection)->renew_deadline_us = esp_timer_get_time() + stop_in * INT64_C(1000000);
     (*connection)->refresh_time = control_refresh_time;
+    (*connection)->refresh_deadline_us = esp_timer_get_time() + maintenance_wait_us();
     char stop_text[24];
     format_lifetime(stop_text, stop_in);
     ESP_LOGI(TAG, "broker control connection: planned stop in %s (%s)", stop_text, stop_reason);
@@ -1394,6 +1588,14 @@ esp_err_t wendy_pki_maintain(void)
              (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
     pthread_mutex_unlock(&identity_lock);
     return result;
+}
+
+uint32_t wendy_pki_maintenance_wait_ms(void)
+{
+    pthread_mutex_lock(&identity_lock);
+    uint32_t delay = (uint32_t)((maintenance_wait_us() + 999) / 1000);
+    pthread_mutex_unlock(&identity_lock);
+    return delay;
 }
 
 #if CONFIG_WENDY_NET_PEER
@@ -1490,9 +1692,7 @@ static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
     if (crypto_status || copied != ESP_OK || !valid_config(&cfg))
         goto done;
     if (consume_native) {
-        if (!cfg.provision_trust)
-            data.device_roots =
-                (struct wendy_conf_span){wendy_pki_device_roots_start, ROOT_SIZE(device)};
+        select_peer_device_roots(&cfg, &data);
         stage = "CA validation";
 #if CONFIG_WENDY_NET_PEER
         if (check_device_roots(&data))
@@ -1605,6 +1805,10 @@ static esp_err_t accept_identity_peer(int fd, wendy_pki_connection **connection,
             .input_reservation = input_reservation,
             .reserve_records_first = true,
             .preparation_owner = preparation_held ? &preparation_cookie : NULL};
+        if (wendy_conf_copy_lite_intermediates(data.generation, &owned.lite_issuer_der,
+                                               &owned.lite_issuer_size) != ESP_OK &&
+            !wendy_conf_snapshot_current(data.generation))
+            goto done;
         data.device_roots = (struct wendy_conf_span){data.storage, roots_size};
         data.storage = NULL;
         key = NULL;
@@ -1825,6 +2029,23 @@ bool wendy_pki_operator_snapshot_current(const struct wendy_pki_mesh_identity *c
 {
     return wendy_pki_mesh_identity_current(clock, esp_timer_get_time());
 }
+static int verify_provisioned_lite_path(const uint8_t *leaf, size_t leaf_size,
+    struct wendy_conf_span issuers, struct wendy_conf_span roots, const char *tenant, time_t now,
+    const struct wendy_pki_certificate_time *policy, struct wendy_pki_mesh_peer *peer)
+{
+    const uint8_t *parts[WENDY_CERT_BUNDLE_MAX_CERTS] = {leaf};
+    size_t lengths[WENDY_CERT_BUNDLE_MAX_CERTS] = {leaf_size};
+    size_t offset = 0, count = 1;
+    while (offset < issuers.size) {
+        if (count == WENDY_CERT_BUNDLE_MAX_CERTS ||
+            wendy_cert_der_next(issuers.data, issuers.size, &offset, &parts[count], &lengths[count]) != 1)
+            return -1;
+        count++;
+    }
+    return wendy_pki_mesh_chain_policy(parts, lengths, count, roots.data, roots.size,
+                                      tenant, now, policy, peer);
+}
+
 static int public_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
                                   const uint8_t *const *der, const size_t *sizes, size_t count,
                                   void *peer, bool operator)
@@ -1841,9 +2062,7 @@ static int public_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
     int result = -1;
     if (wendy_conf_copy_device_trust(&config, &trust) != ESP_OK)
         goto done;
-    if (!config.provision_trust)
-        trust.device_roots =
-            (struct wendy_conf_span){wendy_pki_device_roots_start, ROOT_SIZE(device)};
+    select_peer_device_roots(&config, &trust);
     if (trust.generation != clock->config_generation || strcmp(config.tenant_id, clock->tenant) ||
         strcmp(config.device_id, clock->device) ||
         wendy_pki_sha256(trust.device_roots.data, trust.device_roots.size, hash) ||
@@ -1855,6 +2074,15 @@ static int public_verify_snapshot(const struct wendy_pki_mesh_identity *clock,
                         trust.device_roots.size, clock->tenant, now, &policy, peer)
                       : wendy_pki_mesh_chain_policy(der, sizes, count, trust.device_roots.data,
                         trust.device_roots.size, clock->tenant, now, &policy, peer);
+    if (result && !operator) {
+        uint8_t *issuers;
+        size_t issuer_size;
+        if (wendy_conf_copy_lite_intermediates(trust.generation, &issuers, &issuer_size) == ESP_OK && issuer_size)
+            result = verify_provisioned_lite_path(der[0], sizes[0],
+                (struct wendy_conf_span){issuers, issuer_size}, trust.device_roots, clock->tenant,
+                now, &policy, peer);
+        free(issuers);
+    }
     if (!wendy_conf_snapshot_current(trust.generation) || wendy_pki_reset_in_progress())
         result = -1;
 done:
@@ -1947,9 +2175,7 @@ static esp_err_t mesh_connect(const char *host, unsigned port, const char *route
         if (snapshot != ESP_OK || !valid_config(&cfg) ||
             !wendy_conf_snapshot_current(data.generation))
             goto done;
-        if (!cfg.provision_trust)
-            data.device_roots =
-                (struct wendy_conf_span){wendy_pki_device_roots_start, ROOT_SIZE(device)};
+        select_peer_device_roots(&cfg, &data);
         /* Prime the complete bundle-policy check before app flows occupy the
          * heap. Return the optional record hole while doing this once; later
          * management handshakes reuse only the exact generation/hash match.
@@ -2062,6 +2288,12 @@ static esp_err_t mesh_connect(const char *host, unsigned port, const char *route
         if (async && certificate_source.count) {
             async->source = certificate_source;
             owned.der_context = &async->source;
+        }
+        if (wendy_conf_copy_lite_intermediates(data.generation, &owned.lite_issuer_der,
+                                               &owned.lite_issuer_size) != ESP_OK &&
+            !wendy_conf_snapshot_current(data.generation)) {
+            pki_public_chain_free(owned.public_chain);
+            goto done;
         }
         data.storage = NULL;
         key = NULL;

@@ -24,15 +24,6 @@ static bool resetting;
 
 int64_t esp_timer_get_time(void) { return 1000; }
 
-struct wire;
-static struct wire *uart_wire;
-static ssize_t read_wire(void *ctx, void *data, size_t size);
-static ssize_t write_wire(void *ctx, const void *data, size_t size);
-
-ssize_t wendy_com_uart_read(wendy_com_uart_t *uart, void *data, size_t size)
-{ return uart_wire ? read_wire(uart_wire, data, size) : -1; }
-ssize_t wendy_com_uart_write(wendy_com_uart_t *uart, const void *data, size_t size)
-{ return uart_wire ? write_wire(uart_wire, data, size) : -1; }
 int wendy_com_uart_get_fd(wendy_com_uart_t *uart) { return uart->fd; }
 int64_t wendy_com_uart_auto_close_delay(wendy_com_uart_t *uart) { return -1; }
 void wcom_stdio_pump_client_disconnected(int id) {}
@@ -93,6 +84,11 @@ static ssize_t write_wire(void *ctx, const void *data, size_t size)
     wire->output_size += size;
     return size;
 }
+static struct wire *uart_wire;
+ssize_t wendy_com_uart_read(wendy_com_uart_t *uart, void *data, size_t size)
+{ return read_wire(uart_wire, data, size); }
+ssize_t wendy_com_uart_write(wendy_com_uart_t *uart, const void *data, size_t size)
+{ return write_wire(uart_wire, data, size); }
 static int wire_fd(void *ctx) { return -1; }
 static bool ready(void *ctx) { return true; }
 static const struct wcom_stream_ops ops = {
@@ -339,10 +335,20 @@ int main(void)
     wcom_remove_link(tls_link);
     expected_permission = WCOM_LINK_PERMISSION_FULL;
     wendy_com_uart_t uart = {.fd = descriptors[0]};
+    uart_wire = &wire;
     int local = wcom_add_uart_link(&uart, NULL);
     assert(wcom_link_is_local(local) && wcom_link_get_permission(local) == WCOM_LINK_PERMISSION_FULL);
-    uart_wire = &wire;
     handshake(&wire, local);
+    WendyComMessage config = wifi;
+    /* The retired trust-only mode must not open a configuration write. */
+    config.msg.command.params.conf_push_begin.mode = (WendyComConfPushMode)2;
+    initial_management = management_calls;
+    assert(exchange(&wire, local, 0, &config).msg.response.result == WendyComResult_WENDY_COM_RESULT_BAD_STATE);
+    assert(management_calls == initial_management);
+    config.msg.command.params.conf_push_begin.mode = WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE;
+    assert(exchange(&wire, local, 0, &config).msg.response.result == WendyComResult_WENDY_COM_RESULT_OK);
+    assert(!last_wifi_only);
+    assert(command(&wire, local, 0, WendyComCommand_conf_push_end_tag) == WendyComResult_WENDY_COM_RESULT_OK);
     static const struct wcom_hosted_companion_delegate radio = {
         .on_get = radio_get, .on_begin = radio_begin, .on_write = radio_write,
         .on_end = radio_end, .on_abort = radio_abort,

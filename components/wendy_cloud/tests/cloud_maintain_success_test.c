@@ -10,6 +10,7 @@ struct step {
     bool stop_in_check;
     unsigned failures_after;
     TickType_t wait;
+    TickType_t maintenance_wait;
 };
 enum { HOUR = 3600000, MINUTE = 60000 };
 
@@ -76,6 +77,10 @@ esp_err_t wendy_pki_maintain(void)
         atomic_store(&s_stop, true);
     return current()->result;
 }
+uint32_t wendy_pki_maintenance_wait_ms(void)
+{
+    return current()->maintenance_wait ? current()->maintenance_wait : HOUR;
+}
 static void run(const struct step *plan, size_t count)
 {
     steps = plan;
@@ -97,6 +102,7 @@ int main(void)
      * has a limit, and a success clears it. */
     const struct step lifecycle[] = {
         {.result = ESP_OK, .wait = HOUR},
+        {.result = ESP_OK, .wait = MINUTE, .maintenance_wait = MINUTE},
         {.result = ESP_FAIL, .failures_after = 1, .wait = MINUTE},
         {.result = ESP_ERR_INVALID_STATE, .failures_after = 2, .wait = MINUTE},
         {.result = ESP_FAIL, .failures_after = 3, .wait = MINUTE},
@@ -104,7 +110,7 @@ int main(void)
         {.result = ESP_OK, .wait = HOUR},
     };
     run(lifecycle, sizeof lifecycle / sizeof *lifecycle);
-    assert(waits == 6);
+    assert(waits == 7);
 
     /* A stop during a check does not wait for the next check, and it does not
      * count as a failure. */

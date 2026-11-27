@@ -8,13 +8,17 @@
 extern "C" {
 #endif
 
+/// Wendy Net boot policy or peer initialization failed. The core logs the cause.
+#define WENDY_CORE_ERR_NET_STARTUP ((esp_err_t)0x10000000)
+
 /// This is the heart of Wendy Lite. It brings up all main peripherals and the
-/// Wendy communication channel. Register a sensor-link delegate via
-/// wendy_core_register_sensor_link_source() first if the board has sensor
+/// Wendy communication channel: PKI, BLE and Wi-Fi (with the radios that the
+/// saved Wendy Net settings select), the services and, when
+/// CONFIG_WENDY_NET_PEER is on, Wendy Net. The firmware and the native apps
+/// start the same way through this function. Register a sensor-link delegate
+/// via wendy_core_register_sensor_link_source() first if the board has sensor
 /// sources to expose. Called once from app_main(). */
 esp_err_t wendy_core_init(void);
-/* Before core_init only. Shared IP/native listeners remain with WiFi disabled. */
-esp_err_t wendy_core_set_boot_radios(bool ble, bool wifi);
 
 #ifdef __cplusplus
 }

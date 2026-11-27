@@ -29,7 +29,14 @@ enum scenario {
     RESET_ON_TIMEOUT,
     WAIT_ERROR_AT_RENEW,
     HANDOFF,
-    LONG_RUN
+    LONG_RUN,
+    KEYSET_CLOSED,
+    KEYSET_ALERT,
+    KEYSET_BAD_RECORD,
+    KEYSET_BAD_COUNT,
+    KEYSET_TIMEOUT,
+    KEYSET_CONN_RESET,
+    KEYSET_RECV_FAILED
 };
 static enum scenario scenario;
 static int64_t now, fetch_cost;
@@ -45,9 +52,40 @@ bool wendy_pki_reset_in_progress(void)
 {
     return reset;
 }
+/* Failures before a valid key set has arrived. */
+static int keyset_read(unsigned char *out, size_t size)
+{
+    static const unsigned char bad_count[] = {'W', 'R', 3, 4, 3};
+    switch (scenario) {
+    case KEYSET_CLOSED:
+        return 0;
+    case KEYSET_ALERT:
+        return MBEDTLS_ERR_SSL_FATAL_ALERT_MESSAGE;
+    case KEYSET_CONN_RESET:
+        return MBEDTLS_ERR_NET_CONN_RESET;
+    case KEYSET_RECV_FAILED:
+        return MBEDTLS_ERR_NET_RECV_FAILED;
+    case KEYSET_BAD_RECORD:
+        assert(size == 4);
+        memcpy(out, "WR\x03\x09", 4);
+        return 4;
+    case KEYSET_BAD_COUNT:
+        if (key_offset >= sizeof bad_count)
+            return MBEDTLS_ERR_SSL_WANT_READ;
+        if (size > sizeof bad_count - key_offset)
+            size = sizeof bad_count - key_offset;
+        memcpy(out, bad_count + key_offset, size);
+        key_offset += size;
+        return (int)size;
+    default:
+        return MBEDTLS_ERR_SSL_WANT_READ;
+    }
+}
 static int control_read(mbedtls_ssl_context *ssl, unsigned char *out, size_t size)
 {
     (void)ssl;
+    if (scenario >= KEYSET_CLOSED)
+        return keyset_read(out, size);
     if (key_offset < sizeof key_set) {
         size_t count = sizeof key_set - key_offset;
         if (count > size)
@@ -120,6 +158,53 @@ static int control_select(int nfds, fd_set *rd, fd_set *wr, fd_set *ex, struct t
         reset = true;
     return scenario == WAIT_ERROR_AT_RENEW ? -1 : 0;
 }
+/* The broker log line names why the control connection ended. */
+static const char *expected_cause(enum scenario which)
+{
+    switch (which) {
+    case EARLY_TIMEOUT:
+    case PARTIAL_AT_RENEW:
+    case WRITE_STALL_AT_RENEW:
+    case KEYSET_TIMEOUT:
+        return "timed out";
+    case EOF_AT_RENEW:
+    case KEYSET_CLOSED:
+        return "closed by the broker";
+    case BAD_HEADER_AT_RENEW:
+    case KEYSET_BAD_RECORD:
+        return "unexpected record";
+    case RESET_AT_RENEW:
+    case RESET_ON_TIMEOUT:
+        return "device reset";
+    case WAIT_ERROR_AT_RENEW:
+        return "socket error";
+    case KEYSET_ALERT:
+        return "TLS error";
+    case KEYSET_BAD_COUNT:
+        return "invalid key set";
+    case KEYSET_CONN_RESET:
+        return "connection reset";
+    case KEYSET_RECV_FAILED:
+        return "socket receive error";
+    default:
+        return NULL;
+    }
+}
+static void run_keyset(enum scenario which)
+{
+    scenario = which;
+    now = 0;
+    heartbeats = replies = waits = read_phase = 0;
+    key_offset = 0;
+    reset = partial_sent = false;
+    wendy_pki_connection connection = {.fd = 10, .renew_deadline_us = 240000000};
+    struct wendy_lite_trust trust;
+    assert(wendy_pki_relay_upgrade(&connection, &trust) == WENDY_PKI_RELAY_FAILED);
+    assert(connection.control_failure && !strcmp(connection.control_failure, expected_cause(which)));
+    assert(which != KEYSET_ALERT || connection.control_error == MBEDTLS_ERR_SSL_FATAL_ALERT_MESSAGE);
+    assert(which != KEYSET_RECV_FAILED || connection.control_error == MBEDTLS_ERR_NET_RECV_FAILED);
+    assert(which != KEYSET_TIMEOUT || now >= 10000000);
+}
 static void run(enum scenario which, int expected)
 {
     scenario = which;
@@ -133,6 +218,8 @@ static void run(enum scenario which, int expected)
     assert(wendy_pki_relay_upgrade(&connection, &trust) == expected);
     assert(trust.count == 1 && trust.keys[0].id_size == 1 && trust.keys[0].id[0] == 'k');
     assert(connection.fd == (which == HANDOFF ? -1 : 10));
+    if (expected == WENDY_PKI_RELAY_FAILED)
+        assert(connection.control_failure && !strcmp(connection.control_failure, expected_cause(which)));
     if (which == HANDOFF) {
         assert(trust.session[0] == 7 && trust.grant_hash[0] == 7 && !waits);
     } else {
@@ -141,15 +228,21 @@ static void run(enum scenario which, int expected)
         assert(now == (which == EARLY_TIMEOUT ? 30000000 : 240000000));
     }
 }
-static void count_fetch(void)
+static int64_t count_fetch(void)
 {
     /* The pong of the current heartbeat went out first. */
     assert(replies == heartbeats);
     fetches++;
     now += fetch_cost;
+    return CONTROL_TIME_REFRESH_US;
+}
+static int64_t retry_fetch(void)
+{
+    count_fetch();
+    return INT64_C(60000000);
 }
 /* One heartbeat every 29 s, then silence. */
-static void run_long(int64_t renew, unsigned count, int64_t cost, void (*hook)(void), int expected,
+static void run_long(int64_t renew, unsigned count, int64_t cost, int64_t (*hook)(void), int expected,
                      unsigned expected_fetches)
 {
     scenario = LONG_RUN;
@@ -176,6 +269,7 @@ int main(void)
     run_long(0, 125, five_s, count_fetch, WENDY_PKI_RELAY_FAILED, 1);
     run_long(0, 249, five_s, count_fetch, WENDY_PKI_RELAY_FAILED, 1);
     run_long(0, 250, five_s, count_fetch, WENDY_PKI_RELAY_FAILED, 2);
+    run_long(0, 128, 0, retry_fetch, WENDY_PKI_RELAY_FAILED, 2);
     run_long(0, 130, 0, NULL, WENDY_PKI_RELAY_FAILED, 0);
     /* The heartbeat at 3625 s crosses the renewal date: no fetch, only the stop. */
     run_long(INT64_C(3610000000), 125, five_s, count_fetch, WENDY_PKI_RELAY_RENEW, 0);
@@ -191,6 +285,13 @@ int main(void)
     run(RESET_ON_TIMEOUT, WENDY_PKI_RELAY_FAILED);
     run(WAIT_ERROR_AT_RENEW, WENDY_PKI_RELAY_FAILED);
     run(HANDOFF, 10);
-    puts("PASS open control connection, hourly time fetch, planned stop, failure deadlines and "
-         "detached handoff");
+    run_keyset(KEYSET_CLOSED);
+    run_keyset(KEYSET_ALERT);
+    run_keyset(KEYSET_BAD_RECORD);
+    run_keyset(KEYSET_BAD_COUNT);
+    run_keyset(KEYSET_TIMEOUT);
+    run_keyset(KEYSET_CONN_RESET);
+    run_keyset(KEYSET_RECV_FAILED);
+    puts("PASS open control connection, hourly time fetch, planned stop, failure deadlines, "
+         "failure causes and detached handoff");
 }

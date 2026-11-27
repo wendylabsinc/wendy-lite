@@ -21,6 +21,9 @@ int pki_parsed_peer_expiry(const mbedtls_x509_crt *cert, time_t *expires);
 /* MBEDTLS_X509_BADCERT_EXPIRED and _FUTURE flags of a certificate at the given
  * time. A date that cannot be read counts as outside the validity period. */
 uint32_t pki_parsed_date_flags(const mbedtls_x509_crt *cert, time_t now);
+bool pki_certificate_self_issued(const mbedtls_x509_crt *cert);
+bool pki_lite_device_ca(const mbedtls_x509_crt *cert, const char *tenant);
+bool pki_lite_issuer_path(const mbedtls_x509_crt *chain, const char *tenant);
 
 struct wendy_pki_mesh_peer;
 /* Full independent proof verification; caller exclusively owns parsed anchors.
