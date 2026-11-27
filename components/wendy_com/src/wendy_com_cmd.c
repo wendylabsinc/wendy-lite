@@ -13,6 +13,7 @@
 
 static const char *TAG = "wcom_cmd";
 static const struct wcom_app_delegate *_app_delegate;
+static const struct wcom_hosted_companion_delegate *_hosted_companion_delegate;
 static const struct wcom_net_delegate *net_delegate;
 void wcom_cmd_set_net_delegate(const struct wcom_net_delegate *delegate)
 {
@@ -76,10 +77,21 @@ bool wcom_cmd_sensor_link_available(void)
     return _sensor_link_delegate && _sensor_link_delegate->on_sensor_link_get_manifest;
 }
 
-// At most one push (app or conf) may be in progress at a time.
-enum _push_kind { PUSH_NONE, PUSH_APP, PUSH_CONF };
+// App, configuration, and radio uploads share one owner.
+enum _push_kind { PUSH_NONE, PUSH_APP, PUSH_CONF, PUSH_COMPANION };
 static enum _push_kind _push_kind = PUSH_NONE;
 static int _pushing_client_id = 0;
+
+static void set_push_owner(enum _push_kind kind, int client_id)
+{
+    _push_kind = kind;
+    _pushing_client_id = client_id;
+}
+
+static bool push_owned_by(enum _push_kind kind, int client_id)
+{
+    return _push_kind == kind && _pushing_client_id == client_id;
+}
 
 
 WendyComResult wcom_cmd_ping(void)
@@ -99,8 +111,7 @@ WendyComResult wcom_cmd_reboot(bool app_auto_start, uint32_t app_auto_start_dela
 
 WendyComResult wcom_cmd_app_push_begin(int client_id, size_t size, WendyComAppType app_type)
 {
-    ESP_LOGI(TAG, "APP_PUSH_BEGIN client=%d size=%zu type=%s", client_id, size,
-             app_type == WendyComAppType_WENDY_COM_APP_TYPE_NATIVE ? "native" : "wasm");
+    ESP_LOGI(TAG, "APP_PUSH_BEGIN client=%d size=%zu type=%d", client_id, size, (int)app_type);
     // A future app format must not fall through to the WASM delegate or
     // acquire upload ownership on firmware that cannot interpret it.
     if (app_type != WendyComAppType_WENDY_COM_APP_TYPE_WASM &&
@@ -110,17 +121,52 @@ WendyComResult wcom_cmd_app_push_begin(int client_id, size_t size, WendyComAppTy
         ESP_LOGW(TAG, "APP_PUSH_BEGIN from client=%d while client=%d is pushing", client_id, _pushing_client_id);
         return WendyComResult_WENDY_COM_RESULT_BUSY;
     }
-    _push_kind = PUSH_APP;
-    _pushing_client_id = client_id;
-    if (_app_delegate && _app_delegate->on_app_push_begin)
-        return _app_delegate->on_app_push_begin(size, app_type);
-    return WendyComResult_WENDY_COM_RESULT_OK;
+    WendyComResult result = _app_delegate && _app_delegate->on_app_push_begin
+        ? _app_delegate->on_app_push_begin(size, app_type)
+        : WendyComResult_WENDY_COM_RESULT_OK;
+    if (result == WendyComResult_WENDY_COM_RESULT_OK)
+        set_push_owner(PUSH_APP, client_id);
+    return result;
+}
+
+WendyComResult wcom_cmd_get_hosted_companion(WendyComHostedCompanionInfo *out)
+{
+    return _hosted_companion_delegate
+        ? _hosted_companion_delegate->on_get(out)
+        : WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+}
+
+WendyComResult wcom_cmd_hosted_companion_ota_begin(int client_id, size_t size)
+{
+    if (!_hosted_companion_delegate)
+        return WendyComResult_WENDY_COM_RESULT_BAD_STATE;
+    if (_push_kind != PUSH_NONE)
+        return WendyComResult_WENDY_COM_RESULT_BUSY;
+    WendyComResult result = _hosted_companion_delegate->on_begin(size);
+    if (result == WendyComResult_WENDY_COM_RESULT_OK)
+        set_push_owner(PUSH_COMPANION, client_id);
+    return result;
+}
+
+WendyComResult wcom_cmd_hosted_companion_ota_write(int client_id, size_t offset, const uint8_t *data, size_t size)
+{
+    if (!push_owned_by(PUSH_COMPANION, client_id))
+        return WendyComResult_WENDY_COM_RESULT_BUSY;
+    return _hosted_companion_delegate->on_write(offset, data, size);
+}
+
+WendyComResult wcom_cmd_hosted_companion_ota_end(int client_id)
+{
+    if (!push_owned_by(PUSH_COMPANION, client_id))
+        return WendyComResult_WENDY_COM_RESULT_BUSY;
+    set_push_owner(PUSH_NONE, 0);
+    return _hosted_companion_delegate->on_end();
 }
 
 WendyComResult wcom_cmd_app_push_data(int client_id, size_t offset, const uint8_t *data, size_t size)
 {
     ESP_LOGI(TAG, "APP_PUSH_DATA client=%d offset=%zu size=%zu", client_id, offset, size);
-    if (_push_kind != PUSH_APP || client_id != _pushing_client_id) {
+    if (!push_owned_by(PUSH_APP, client_id)) {
         ESP_LOGW(TAG, "APP_PUSH_DATA from unexpected client=%d (expected=%d)", client_id, _pushing_client_id);
         return WendyComResult_WENDY_COM_RESULT_BUSY;
     }
@@ -132,12 +178,11 @@ WendyComResult wcom_cmd_app_push_data(int client_id, size_t offset, const uint8_
 WendyComResult wcom_cmd_app_push_end(int client_id)
 {
     ESP_LOGI(TAG, "APP_PUSH_END client=%d", client_id);
-    if (_push_kind != PUSH_APP || client_id != _pushing_client_id) {
+    if (!push_owned_by(PUSH_APP, client_id)) {
         ESP_LOGW(TAG, "APP_PUSH_END from unexpected client=%d (expected=%d)", client_id, _pushing_client_id);
         return WendyComResult_WENDY_COM_RESULT_BUSY;
     }
-    _push_kind = PUSH_NONE;
-    _pushing_client_id = 0;
+    set_push_owner(PUSH_NONE, 0);
     if (_app_delegate && _app_delegate->on_app_push_end)
         return _app_delegate->on_app_push_end();
     return WendyComResult_WENDY_COM_RESULT_OK;
@@ -155,8 +200,7 @@ WendyComResult wcom_cmd_conf_push_begin(int client_id, size_t size, WendyComConf
         ESP_LOGW(TAG, "CONF_PUSH_BEGIN from client=%d while client=%d is pushing", client_id, _pushing_client_id);
         return WendyComResult_WENDY_COM_RESULT_BUSY;
     }
-    _push_kind = PUSH_CONF;
-    _pushing_client_id = client_id;
+    set_push_owner(PUSH_CONF, client_id);
     if (_app_delegate && _app_delegate->on_conf_push_begin)
         return _app_delegate->on_conf_push_begin(size, mode, wifi_only);
     return WendyComResult_WENDY_COM_RESULT_OK;
@@ -165,7 +209,7 @@ WendyComResult wcom_cmd_conf_push_begin(int client_id, size_t size, WendyComConf
 WendyComResult wcom_cmd_conf_push_data(int client_id, size_t offset, const uint8_t *data, size_t size)
 {
     ESP_LOGI(TAG, "CONF_PUSH_DATA client=%d offset=%zu size=%zu", client_id, offset, size);
-    if (_push_kind != PUSH_CONF || client_id != _pushing_client_id) {
+    if (!push_owned_by(PUSH_CONF, client_id)) {
         ESP_LOGW(TAG, "CONF_PUSH_DATA from unexpected client=%d (expected=%d)", client_id, _pushing_client_id);
         return WendyComResult_WENDY_COM_RESULT_BUSY;
     }
@@ -177,12 +221,11 @@ WendyComResult wcom_cmd_conf_push_data(int client_id, size_t offset, const uint8
 WendyComResult wcom_cmd_conf_push_end(int client_id)
 {
     ESP_LOGI(TAG, "CONF_PUSH_END client=%d", client_id);
-    if (_push_kind != PUSH_CONF || client_id != _pushing_client_id) {
+    if (!push_owned_by(PUSH_CONF, client_id)) {
         ESP_LOGW(TAG, "CONF_PUSH_END from unexpected client=%d (expected=%d)", client_id, _pushing_client_id);
         return WendyComResult_WENDY_COM_RESULT_BUSY;
     }
-    _push_kind = PUSH_NONE;
-    _pushing_client_id = 0;
+    set_push_owner(PUSH_NONE, 0);
     if (_app_delegate && _app_delegate->on_conf_push_end)
         return _app_delegate->on_conf_push_end();
     return WendyComResult_WENDY_COM_RESULT_OK;
@@ -280,12 +323,13 @@ void wcom_cmd_client_disconnected(int client_id)
     if (_push_kind != PUSH_NONE && client_id == _pushing_client_id) {
         ESP_LOGW(TAG, "client %d disconnected while pushing, aborting push", client_id);
         enum _push_kind kind = _push_kind;
-        _push_kind = PUSH_NONE;
-        _pushing_client_id = 0;
+        set_push_owner(PUSH_NONE, 0);
         if (kind == PUSH_APP && _app_delegate && _app_delegate->on_app_push_abort)
             _app_delegate->on_app_push_abort();
         else if (kind == PUSH_CONF && _app_delegate && _app_delegate->on_conf_push_abort)
             _app_delegate->on_conf_push_abort();
+        else if (kind == PUSH_COMPANION)
+            _hosted_companion_delegate->on_abort();
     }
     wcom_stdio_pump_client_disconnected(client_id);
     // After wcom_sensor, not before: with the stream already dropped, a
@@ -294,6 +338,11 @@ void wcom_cmd_client_disconnected(int client_id)
     wcom_sensor_client_disconnected(client_id);
     if (_sensor_link_delegate && _sensor_link_delegate->on_sensor_link_disconnected)
         _sensor_link_delegate->on_sensor_link_disconnected(client_id);
+}
+
+void wcom_cmd_set_hosted_companion_delegate(const struct wcom_hosted_companion_delegate *delegate)
+{
+    _hosted_companion_delegate = delegate;
 }
 
 void wcom_cmd_set_app_delegate(const struct wcom_app_delegate *delegate)

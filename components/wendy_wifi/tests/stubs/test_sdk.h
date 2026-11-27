@@ -112,6 +112,7 @@ esp_err_t mdns_hostname_set(const char *hostname);
 void mdns_free(void);
 void wendy_server_start(void);
 esp_err_t wendy_cloud_start(void);
+void wendy_cloud_wake(void);
 struct wendy_conf_span { const uint8_t *data; size_t size; };
 const char *wendy_conf_get_resolved_device_name(void);
 struct wendy_conf_span wendy_conf_get_network_ssid(void);

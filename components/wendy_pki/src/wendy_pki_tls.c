@@ -1,3 +1,4 @@
+#include "wendy_conf.h"
 #include "artifact_crypto.h"
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -29,6 +30,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #if ESP_PLATFORM
@@ -242,14 +244,75 @@ static void issuer_available(struct pki_issuer_state *s, const uint8_t hash[32])
     if (s->available_count < 24)
         memcpy(s->available[s->available_count++], hash, 16);
 }
-static struct pki_issuer_state *prepare_issuer_hint(wendy_pki_connection *c)
+static void release_lite_issuers(wendy_pki_connection *c)
+{
+    if (c->lite_peer_issuers) {
+        mbedtls_x509_crt_free(c->lite_peer_issuers);
+        pki_owned_free(c->lite_peer_issuers);
+        c->lite_peer_issuers = NULL;
+    }
+    free(c->lite_issuer_der);
+    c->lite_issuer_der = NULL;
+}
+
+static int seed_lite_issuers(wendy_pki_connection *c, struct pki_tls_owned_identity *owned)
+{
+    if (!owned || !owned->lite_issuer_size)
+        return 0;
+    c->lite_peer_issuers = pki_owned_calloc(1, sizeof *c->lite_peer_issuers);
+    if (!c->lite_peer_issuers)
+        return -1;
+    mbedtls_x509_crt_init(c->lite_peer_issuers);
+    c->lite_issuer_der = owned->lite_issuer_der;
+    owned->lite_issuer_der = NULL;
+    if (pki_parse_certificate_bundle(c->lite_peer_issuers, c->lite_issuer_der,
+                                     owned->lite_issuer_size, true))
+        return -1;
+    return 0;
+}
+
+static void prepare_leaf_offers(wendy_pki_connection *c, struct pki_issuer_state *state,
+                                const char *tenant)
+{
+    const struct pki_presented_chain *source = c->presented_chain;
+    if (!source || !tenant)
+        return;
+    state->accepts_lite = c->lite_peer_issuers != NULL;
+    for (mbedtls_x509_crt *root = &c->roots; root && root->raw.len; root = root->next) {
+        if (pki_certificate_self_issued(root) && pki_lite_device_ca(root, tenant)) {
+            state->accepts_lite = true;
+            if (matching_issuer(&c->certificate, root))
+                state->classical = true;
+        }
+        if (pki_certificate_self_issued(root))
+            continue;
+        uint8_t hash[32];
+        if (wendy_pki_sha256(root->raw.p, root->raw.len, hash))
+            continue;
+        if (state->trusted_count < PKI_LEAF_OFFER_MAX)
+            memcpy(state->trusted_ca[state->trusted_count++], hash, 16);
+        if (matching_issuer(&c->certificate, root)) {
+            state->has_issuer = true;
+            memcpy(state->issuing_ca, hash, 16);
+        }
+    }
+    if (source->count > 1) {
+        state->has_issuer = true;
+        memcpy(state->issuing_ca, source->part[1].hash, 16);
+    }
+}
+
+static struct pki_issuer_state *prepare_issuer_hint(wendy_pki_connection *c, const char *tenant)
 {
     struct pki_presented_chain *source = c->presented_chain;
-    if (!source || source->count < 2 || source->count > 8)
+    if (!source || source->count > 8)
         return NULL;
     struct pki_issuer_state *state = pki_owned_calloc(1, sizeof *state);
     if (!state)
         return NULL;
+    prepare_leaf_offers(c, state, tenant);
+    if (state->classical || source->count < 2)
+        return state;
     for (unsigned i = 1; i < source->count; i++) {
         unsigned n = i - 1;
         for (mbedtls_x509_crt *root = &c->roots; root && root->raw.len; root = root->next) {
@@ -348,16 +411,23 @@ static size_t known_peer_issuers(void *context, const mbedtls_x509_crt *peer,
                                  mbedtls_x509_crt **candidates, size_t capacity)
 {
     wendy_pki_connection *c = context;
-    if (!c || !c->issuers || !peer)
+    if (!c || !peer)
         return 0;
+    size_t unique = 0;
+    if (c->lite_peer_issuers && matching_issuer(peer, c->lite_peer_issuers))
+        for (mbedtls_x509_crt *issuer = c->lite_peer_issuers; issuer && unique < capacity;
+             issuer = issuer->next)
+            candidates[unique++] = issuer;
+    if (!c->issuers)
+        return unique;
     size_t count = c->issuers->known_count;
-    if (count > capacity)
-        return 0;
+    if (count > capacity - unique)
+        return unique;
     /* Mbed TLS searches untrusted parents after their child in this list.
      * Cached issuing CAs can arrive after their common ancestors, so order
      * children before parents without changing any owned next pointer here. */
     bool used[16] = {0};
-    size_t unique = 0, processed = 0;
+    size_t processed = 0;
     while (processed < count) {
         size_t chosen = count;
         for (size_t i = 0; i < count; i++) {
@@ -416,11 +486,10 @@ static int select_server_issuers(mbedtls_ssl_context *ssl)
         struct pki_issuer_state *s = c->issuers;
         const uint8_t *hello = ssl->MBEDTLS_PRIVATE(in_msg);
         size_t size = ssl->MBEDTLS_PRIVATE(in_hslen);
-        size_t selected =
-            pki_issuer_recovery_active(&pki_issuer_process_recovery, esp_timer_get_time())
-                ? 0
-                : pki_issuer_select(s, hello, size);
-        s->hinted = selected != 0;
+        bool recovering = pki_issuer_recovery_active(&pki_issuer_process_recovery, esp_timer_get_time());
+        const char *protocol = mbedtls_ssl_get_alpn_protocol(ssl);
+        size_t leaf = recovering || !protocol ? 0 : pki_leaf_select(s, protocol, hello, size);
+        size_t selected = leaf ? leaf : recovering ? 0 : pki_issuer_select(s, hello, size);
         if (selected) {
             ssl->MBEDTLS_PRIVATE(alpn_chosen) = s->hint;
             ssl->MBEDTLS_PRIVATE(wendy_alpn_chosen_length) = selected;
@@ -429,7 +498,7 @@ static int select_server_issuers(mbedtls_ssl_context *ssl)
         /* Ordinary selected ALPN requests full chains, even when the client
          * also advertised auxiliary cached fingerprints. */
         for (unsigned i = 1; selected && c->presented_chain && i < c->presented_chain->count; i++)
-            if (pki_issuer_peer_has(hello, size, s->application, c->presented_chain->part[i].hash))
+            if (leaf || pki_issuer_peer_has(hello, size, s->application, c->presented_chain->part[i].hash))
                 s->omit_mask |= 1u << i;
         issuer_omit_status(c);
         if (!selected)
@@ -438,21 +507,43 @@ static int select_server_issuers(mbedtls_ssl_context *ssl)
     return 0;
 }
 
-static int configure_mesh_alpn(wendy_pki_connection *c, const char *const *protocols)
+static bool classical_identity(wendy_pki_connection *c, const char *tenant)
 {
-    if (pki_issuer_recovery_active(&pki_issuer_process_recovery, esp_timer_get_time()))
-        return mbedtls_ssl_conf_alpn_protocols(&c->config, protocols);
+    if (!tenant || !c->presented_chain)
+        return false;
+    for (mbedtls_x509_crt *root = &c->roots; root && root->raw.len; root = root->next)
+        if (pki_certificate_self_issued(root) && pki_lite_device_ca(root, tenant) &&
+            matching_issuer(&c->certificate, root))
+            return true;
+    return false;
+}
+
+static int configure_mesh_alpn_for_tenant(wendy_pki_connection *c, const char *const *protocols,
+                                         const char *tenant, bool mesh_link)
+{
+    bool recovering = pki_issuer_recovery_active(&pki_issuer_process_recovery, esp_timer_get_time());
+    if (c->lite_peer_issuers && !pki_lite_issuer_path(c->lite_peer_issuers, tenant))
+        release_lite_issuers(c);
+    bool classical = classical_identity(c, tenant);
+    bool constrained_native = false;
+#if CONFIG_WENDY_NET_CONSTRAINED_PROFILE
+    constrained_native = !mesh_link && tenant;
+#endif
     wendy_net_memory_scope_t previous = connection_scope(c);
-    c->issuers = prepare_issuer_hint(c);
+    c->issuers = recovering || (constrained_native && !classical) ? NULL : prepare_issuer_hint(c, tenant);
     wendy_net_memory_scope_leave(previous);
-    if (c->issuers) {
-        c->config.MBEDTLS_PRIVATE(f_wendy_peer_chain_begin) = peer_chain_begin;
+    if (c->lite_peer_issuers || c->issuers) {
         c->config.MBEDTLS_PRIVATE(f_wendy_untrusted_issuers) = known_peer_issuers;
         c->config.MBEDTLS_PRIVATE(p_wendy_peer_issuers) = c;
+    }
+    if (mesh_link && classical)
+        c->presented_chain->count = 1;
+    if (c->issuers) {
+        c->issuers->application = protocols[0];
+        c->config.MBEDTLS_PRIVATE(f_wendy_peer_chain_begin) = peer_chain_begin;
         if (pki_issuer_protocols(c->issuers, protocols[0]))
             return -1;
         if (c->config.MBEDTLS_PRIVATE(endpoint) == MBEDTLS_SSL_IS_CLIENT) {
-            c->issuers->hinted = true;
             int result = mbedtls_ssl_conf_alpn_protocols(&c->config, c->issuers->protocols);
             c->config.MBEDTLS_PRIVATE(wendy_alpn_lengths) = c->issuers->protocol_lengths;
             return result;
@@ -594,6 +685,7 @@ void wendy_pki_close(wendy_pki_connection *c)
     wendy_pki_handshake_release(c);
     mbedtls_ssl_free(&c->ssl);
     release_known_issuers(c->issuers);
+    release_lite_issuers(c);
     mbedtls_ssl_config_free(&c->config);
     mbedtls_x509_crt_free(&c->roots);
     mbedtls_x509_crt_free(&c->certificate);
@@ -801,15 +893,19 @@ static int handshake_step_direct(wendy_pki_connection *c, bool compact_server)
         state == MBEDTLS_SSL_CLIENT_CERTIFICATE) {
         const uint8_t *selected = (const uint8_t *)mbedtls_ssl_get_alpn_protocol(&c->ssl);
         size_t length = c->ssl.MBEDTLS_PRIVATE(wendy_alpn_chosen_length);
+        bool leaf = selected && pki_leaf_selected(issuers, selected, length);
         issuers->omit_mask = 0;
         for (unsigned i = 1; c->presented_chain && i < c->presented_chain->count; i++)
-            if (pki_issuer_ack_has(selected, length, issuers->application,
+            if (leaf || pki_issuer_ack_has(selected, length, issuers->application,
                                    c->presented_chain->part[i].hash))
                 issuers->omit_mask |= 1u << i;
         issuer_omit_status(c);
     }
     int result = mbedtls_ssl_handshake_step(&c->ssl);
-    if (result == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED && issuers && issuers->hinted) {
+    if (result == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED && issuers &&
+        pki_issuer_shortened(issuers->application,
+            (const uint8_t *)mbedtls_ssl_get_alpn_protocol(&c->ssl),
+            c->ssl.MBEDTLS_PRIVATE(wendy_alpn_chosen_length))) {
         uint32_t flags = mbedtls_ssl_get_verify_result(&c->ssl);
         /* Date, usage, identity, revocation and other policy flags exclude
          * recovery. Generic peer alerts and transport errors never arm it. */
@@ -823,13 +919,15 @@ static int handshake_step_direct(wendy_pki_connection *c, bool compact_server)
         c->ssl.MBEDTLS_PRIVATE(state) == MBEDTLS_SSL_CERTIFICATE_VERIFY)
         issuers->peer_presented_certificates = pki_certificate_message_count(
             c->ssl.MBEDTLS_PRIVATE(in_msg), c->ssl.MBEDTLS_PRIVATE(in_hslen));
-    if (!result && issuers &&
+    if (!result && (issuers || c->lite_peer_issuers) &&
         ((state == MBEDTLS_SSL_SERVER_CERTIFICATE &&
           c->config.MBEDTLS_PRIVATE(endpoint) == MBEDTLS_SSL_IS_CLIENT) ||
          (state == MBEDTLS_SSL_CLIENT_CERTIFICATE &&
           c->config.MBEDTLS_PRIVATE(endpoint) == MBEDTLS_SSL_IS_SERVER)) &&
-        c->ssl.MBEDTLS_PRIVATE(state) == MBEDTLS_SSL_CERTIFICATE_VERIFY)
+        c->ssl.MBEDTLS_PRIVATE(state) == MBEDTLS_SSL_CERTIFICATE_VERIFY) {
         release_known_issuers(issuers);
+        release_lite_issuers(c);
+    }
     return result;
 }
 
@@ -862,6 +960,7 @@ static void release_identity_input(struct pki_tls_owned_identity *owned)
     free(owned->key);
     free(owned->certificate);
     free(owned->trust);
+    free(owned->lite_issuer_der);
     pki_tls_input_return(owned->input_reservation, owned->input_reserve);
     pki_public_chain_free(owned->public_chain);
     memset(owned, 0, sizeof *owned);
@@ -1122,7 +1221,7 @@ static int configure_direct(wendy_pki_connection *c, int server, const uint8_t *
     }
     int r = wendy_pki_crypto_init();
     if (r) return configure_failed("crypto initialization", r);
-    if (!roots.data || !roots.size || roots.size > 16384 ||
+    if (!roots.data || !roots.size || roots.size > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE ||
         (verify_at && ((const uint8_t *)roots.data)[0] != 0x30))
         return configure_failed("CA bundle input", MBEDTLS_ERR_SSL_BAD_INPUT_DATA);
     r = mbedtls_ssl_config_defaults(&c->config,
@@ -1290,6 +1389,8 @@ static int configure_direct(wendy_pki_connection *c, int server, const uint8_t *
         c->public_chain = public;
         owned->public_chain = NULL;
     }
+    if (seed_lite_issuers(c, owned))
+        release_lite_issuers(c);
     release_identity_input(owned);
     /* Prefer one final-sized input allocation over a 16KiB buffer followed
      * by a simultaneous 24KiB replacement during certificate reassembly. */
@@ -1747,7 +1848,7 @@ static int open_tls(const char *host, unsigned port, const uint8_t *key, size_t 
         static const char *const router_protocols[] = {"wendy-local-mesh-ble/2", NULL};
         const char *const *protocols =
             !strcmp(protocol, "wendy-app-mesh-tls/1") ? app_protocols : router_protocols;
-        if (configure_mesh_alpn(c, protocols))
+        if (configure_mesh_alpn_for_tenant(c, protocols, tenant, true))
             goto fail;
         /* Mesh identity is the exact SPIFFE principal, checked below after
          * mandatory CA verification. It is independent of the dial address. */
@@ -2195,7 +2296,8 @@ int wendy_pki_mesh_verify_bundle(wendy_pki_connection *c, const uint8_t *const *
         mbedtls_x509_crt_init(&roots);
         int r = -1;
         if (c->public_chain->load_trust(c->public_chain->context, &trust_der, &size) ||
-            !trust_der || !size || size > 16384 || trust_der[0] != 0x30 ||
+            !trust_der || !size || size > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE ||
+            trust_der[0] != 0x30 ||
             wendy_pki_sha256(trust_der, size, hash) ||
             memcmp(hash, c->public_chain->trust_hash, 32))
             goto trust_done;
@@ -2299,22 +2401,116 @@ static int write_all(wendy_pki_connection *c, const void *b, size_t n, int64_t d
     }
     return 0;
 }
-static int http_post(const char *url, const char *type, const char *token, const void *body,
+struct est_http_body {
+    struct response response;
+    struct pki_est_stream *stream;
+    char field[32], value[96];
+    size_t field_size, value_size;
+    bool in_value, headers_complete, content_type, algorithm, lite;
+};
+
+static int est_header_finish(struct est_http_body *body)
+{
+    const char *value = body->value;
+    while (*value == ' ' || *value == '\t')
+        value++;
+    size_t length = strlen(value);
+    while (length && (value[length - 1] == ' ' || value[length - 1] == '\t'))
+        length--;
+    if (!strcasecmp(body->field, "content-type")) {
+        static const char type[] = "application/pkcs7-mime";
+        size_t media_length = strcspn(value, "; \t");
+        if (body->content_type || media_length != sizeof type - 1 ||
+            strncasecmp(value, type, sizeof type - 1))
+            return -1;
+        const char *parameters = value + media_length;
+        while (*parameters == ' ' || *parameters == '\t')
+            parameters++;
+        if (*parameters && *parameters != ';')
+            return -1;
+        body->content_type = true;
+    } else if (!strcasecmp(body->field, "x-wendy-chain-algorithm")) {
+        static const char algorithm[] = "ECDSA_P256";
+        if (body->algorithm || length != sizeof algorithm - 1 ||
+            memcmp(value, algorithm, sizeof algorithm - 1))
+            return -1;
+        body->algorithm = true;
+    }
+    return 0;
+}
+
+static int est_header_field(http_parser *parser, const char *bytes, size_t size)
+{
+    struct est_http_body *body = parser->data;
+    if (body->headers_complete)
+        return 0; /* Trailer fields cannot alter the selected format. */
+    if (body->in_value) {
+        if (est_header_finish(body))
+            return -1;
+        body->in_value = false;
+        body->field_size = body->value_size = 0;
+        body->value[0] = 0;
+    }
+    size_t capacity = sizeof body->field - 1;
+    size_t count = size > capacity - body->field_size ? capacity - body->field_size : size;
+    memcpy(body->field + body->field_size, bytes, count);
+    body->field_size += count;
+    body->field[body->field_size] = 0;
+    return 0;
+}
+
+static int est_header_value(http_parser *parser, const char *bytes, size_t size)
+{
+    struct est_http_body *body = parser->data;
+    if (body->headers_complete)
+        return 0;
+    body->in_value = true;
+    if (strcasecmp(body->field, "content-type") &&
+        strcasecmp(body->field, "x-wendy-chain-algorithm"))
+        return 0;
+    if (size >= sizeof body->value - body->value_size || memchr(bytes, 0, size))
+        return -1;
+    memcpy(body->value + body->value_size, bytes, size);
+    body->value_size += size;
+    body->value[body->value_size] = 0;
+    return 0;
+}
+
+static int est_headers_complete(http_parser *parser)
+{
+    struct est_http_body *body = parser->data;
+    body->headers_complete = true;
+    if (parser->status_code != 200 || est_header_finish(body) || !body->content_type ||
+        body->algorithm != body->lite) {
+        /* on_headers_complete reserves 1 and 2 for successful upgrades. */
+        return -1;
+    }
+    return 0;
+}
+
+static int est_http_feed(http_parser *parser, const char *bytes, size_t size)
+{
+    struct est_http_body *body = parser->data;
+    return body->headers_complete ? pki_est_feed(body->stream, (const uint8_t *)bytes, size) : -1;
+}
+
+static int http_request(const char *url, const char *type, const char *token, const void *body,
                      size_t body_size, const uint8_t *key, size_t key_size,
                      struct wendy_conf_span cert, struct wendy_conf_span roots, uint8_t **response,
                      size_t *response_size, char **lite_authority_header,
-                     const struct wendy_pki_stream *stream)
+                     const struct wendy_pki_stream *stream, struct est_http_body *est)
 {
     if (lite_authority_header) *lite_authority_header = NULL;
     struct http_parser_url u;
     http_parser_url_init(&u);
-    if (!url || strlen(url) > 279 || http_parser_parse_url(url, strlen(url), 0, &u))
+    if (!url || strlen(url) > 320 || http_parser_parse_url(url, strlen(url), 0, &u))
         return -1;
     if (!(u.field_set & (1 << UF_SCHEMA)) || u.field_data[UF_SCHEMA].len != 5 ||
         memcmp(url + u.field_data[UF_SCHEMA].off, "https", 5) || !(u.field_set & (1 << UF_HOST)) ||
-        u.field_set & ((1 << UF_USERINFO) | (1 << UF_FRAGMENT) | (1 << UF_QUERY)))
+        (u.field_set & ((1 << UF_USERINFO) | (1 << UF_FRAGMENT))) ||
+        (!est && (u.field_set & (1 << UF_QUERY))))
         return -1;
-    char host[254], path[280];
+    char host[254], path[321];
     size_t hn = u.field_data[UF_HOST].len;
     if (hn == 0 || hn >= sizeof host)
         return -1;
@@ -2322,7 +2518,11 @@ static int http_post(const char *url, const char *type, const char *token, const
     host[hn] = 0;
     if (!(u.field_set & (1 << UF_PATH)))
         return -1;
-    snprintf(path, sizeof path, "%.*s", u.field_data[UF_PATH].len, url + u.field_data[UF_PATH].off);
+    size_t path_offset = u.field_data[UF_PATH].off;
+    size_t path_size = strlen(url + path_offset);
+    if (path_size >= sizeof path)
+        return -1;
+    memcpy(path, url + path_offset, path_size + 1);
     if (strpbrk(host, "\r\n") || strpbrk(path, "\r\n") || (token && strpbrk(token, "\r\n")))
         return -1;
     wendy_pki_connection *c = NULL;
@@ -2330,7 +2530,8 @@ static int http_post(const char *url, const char *type, const char *token, const
     int connected =
         stream ? open_tls(host, target_port, NULL, 0, (struct wendy_conf_span){0}, roots, &c, NULL,
                           NULL, NULL, stream, false, false, NULL, NULL, NULL, NULL, NULL, false)
-               : pki_tls_connect(host, target_port, key, key_size, cert, roots, &c);
+               : est ? pki_tls_connect_dated(host, target_port, key, key_size, cert, roots, &c)
+                     : pki_tls_connect(host, target_port, key, key_size, cert, roots, &c);
     if (connected)
         return -1;
     char authority[264];
@@ -2338,14 +2539,18 @@ static int http_post(const char *url, const char *type, const char *token, const
     snprintf(authority, sizeof authority, strchr(host, ':') ? "[%s]:%u" : "%s:%u", host, port);
     int answer = -1;
     char headers[1400];
-    int n = snprintf(headers, sizeof headers,
+    int n = est ? snprintf(headers, sizeof headers,
+                           "GET %s HTTP/1.1\r\nHost: %s\r\nAccept: application/pkcs7-mime\r\nConnection: close\r\n\r\n",
+                           path, authority)
+                : snprintf(headers, sizeof headers,
                      "POST %s HTTP/1.1\r\nHost: %s\r\nContent-Type: %s\r\nContent-Length: "
                      "%zu\r\nConnection: close\r\n%s%s%s\r\n",
                      path, authority, type, body_size, token ? "Authorization: Bearer " : "",
                      token ? token : "", token ? "\r\n" : "");
     /* Small chunks avoid a large realloc and its simultaneous old/new copies.
      * Flatten only after TLS has released certificate and record storage. */
-    struct response r = {.capture_lite_authority = lite_authority_header != NULL};
+    struct response buffered = {.capture_lite_authority = lite_authority_header != NULL};
+    struct response *r = est ? &est->response : &buffered;
     const char *failure_stage = "request headers";
     int read_error = 0;
     enum http_errno parse_error = HPE_OK;
@@ -2355,17 +2560,19 @@ static int http_post(const char *url, const char *type, const char *token, const
         goto done;
     int64_t deadline = esp_timer_get_time() + network_budget_us(false, NULL);
     failure_stage = "request write";
-    if (write_all(c, headers, n, deadline) || write_all(c, body, body_size, deadline))
+    if (write_all(c, headers, n, deadline) || (body_size && write_all(c, body, body_size, deadline)))
         goto done;
     http_parser parser;
     http_parser_init(&parser, HTTP_RESPONSE);
-    parser.data = &r;
-    http_parser_settings settings = {.on_body = on_body, .on_message_complete = on_complete,
-        .on_header_field = on_header_field, .on_header_value = on_header_value,
-        .on_headers_complete = on_headers_complete};
+    parser.data = r; /* The EST state embeds its response as its first field. */
+    http_parser_settings settings = {.on_body = est ? est_http_feed : on_body,
+        .on_message_complete = on_complete,
+        .on_header_field = est ? est_header_field : on_header_field,
+        .on_header_value = est ? est_header_value : on_header_value,
+        .on_headers_complete = est ? est_headers_complete : on_headers_complete};
     failure_stage = "response read";
     char buffer[2048];
-    while (!r.complete)
+    while (!r->complete)
     {
         int got = connection_read(c, (unsigned char *)buffer, sizeof buffer);
         if (got == 0) goto done; // TCP EOF without close_notify is a truncated TLS response.
@@ -2378,12 +2585,12 @@ static int http_post(const char *url, const char *type, const char *token, const
             continue;
         }
         total += got;
-        if (total > PKI_MAX_RESPONSE + 8192)
+        if (total > (est ? PKI_EST_MAX_BODY : PKI_MAX_RESPONSE) + 8192)
             goto done;
         size_t used = http_parser_execute(&parser, &settings, buffer, got);
         parse_error = HTTP_PARSER_ERRNO(&parser);
         status = parser.status_code;
-        if (used != (size_t)got || HTTP_PARSER_ERRNO(&parser) != HPE_OK || (!got && !r.complete)) {
+        if (used != (size_t)got || HTTP_PARSER_ERRNO(&parser) != HPE_OK || (!got && !r->complete)) {
             failure_stage = "response parse";
             goto done;
         }
@@ -2395,15 +2602,20 @@ static int http_post(const char *url, const char *type, const char *token, const
     }
     wendy_pki_close(c);
     c = NULL;
-    failure_stage = "response assembly";
-    if (response_flatten(&r))
+    if (est) {
+        failure_stage = "EST response completeness";
+        answer = pki_est_complete(est->stream) ? 0 : -1;
         goto done;
-    *response = r.bytes;
-    *response_size = r.size;
-    r.bytes = NULL;
+    }
+    failure_stage = "response assembly";
+    if (response_flatten(r))
+        goto done;
+    *response = r->bytes;
+    *response_size = r->size;
+    r->bytes = NULL;
     if (lite_authority_header) {
-        *lite_authority_header = r.lite_authority;
-        r.lite_authority = NULL;
+        *lite_authority_header = r->lite_authority;
+        r->lite_authority = NULL;
     }
     answer = 0;
 done:
@@ -2411,7 +2623,7 @@ done:
         ESP_LOGW("wendy_pki",
                  "PKI HTTP failed at %s: status=%u parser=%s tls=%d wire=%u body=%u capacity=%u",
                  failure_stage, status, http_errno_name(parse_error), read_error, (unsigned)total,
-                 (unsigned)r.size, (unsigned)r.capacity);
+                 (unsigned)r->size, (unsigned)r->capacity);
 #if ESP_PLATFORM
         /* Taken while the partial body is still held: a read that stalls until
          * its deadline with no parser or allocation error is otherwise
@@ -2429,18 +2641,26 @@ done:
                 snprintf(first_issuance_response_failure, sizeof first_issuance_response_failure,
                     "%s: parser=%s tls=%d wire=%u body=%u capacity=%u", failure_stage,
                     http_errno_name(parse_error), read_error, (unsigned)total,
-                    (unsigned)r.size, (unsigned)r.capacity);
+                    (unsigned)r->size, (unsigned)r->capacity);
             if (first_issuance_response_failure[0])
                 ESP_LOGW("wendy_pki", "First issuance response failure: %s",
                          first_issuance_response_failure);
             pthread_mutex_unlock(&response_failure_lock);
         }
     }
-    free(r.lite_authority);
-    response_free_chunks(&r);
-    free(r.bytes);
+    free(r->lite_authority);
+    response_free_chunks(r);
+    free(r->bytes);
     wendy_pki_close(c);
     return answer;
+}
+
+int pki_http_get_est(const char *url, bool lite, struct wendy_conf_span roots,
+                     struct pki_est_stream *body)
+{
+    struct est_http_body est = {.stream = body, .lite = lite};
+    return http_request(url, NULL, NULL, NULL, 0, NULL, 0, (struct wendy_conf_span){0},
+                        roots, NULL, NULL, NULL, NULL, &est);
 }
 
 int pki_http_post_enrollment(const char *url, const char *type, const char *token, const void *body,
@@ -2448,8 +2668,8 @@ int pki_http_post_enrollment(const char *url, const char *type, const char *toke
                              struct wendy_conf_span cert, struct wendy_conf_span roots,
                              uint8_t **response, size_t *response_size, char **authority)
 {
-    return http_post(url, type, token, body, body_size, key, key_size, cert, roots, response,
-                     response_size, authority, NULL);
+    return http_request(url, type, token, body, body_size, key, key_size, cert, roots, response,
+                     response_size, authority, NULL, NULL);
 }
 /* The stream transports HTTPS ciphertext. It supplies no trust, clock,
  * hostname or client identity; normal HTTPS verification remains in open_tls. */
@@ -2459,8 +2679,8 @@ int pki_http_post_stream(const char *url, const char *type, const void *body, si
 {
     if (!stream)
         return -1;
-    return http_post(url, type, NULL, body, body_size, NULL, 0, (struct wendy_conf_span){0}, roots,
-                     response, response_size, NULL, stream);
+    return http_request(url, type, NULL, body, body_size, NULL, 0, (struct wendy_conf_span){0}, roots,
+                     response, response_size, NULL, stream, NULL);
 }
 
 int pki_http_post(const char *url, const char *type, const char *token, const void *body,
@@ -2558,7 +2778,7 @@ static int accept_peer(int fd, const uint8_t *key, size_t key_size, struct wendy
                   owned && owned->read_der))
         goto fail;
     static const char *const wendycom_alpn[] = {"wendy-com/2", NULL};
-    if (configure_mesh_alpn(c, wendycom_alpn))
+    if (configure_mesh_alpn_for_tenant(c, wendycom_alpn, owned ? tenant : NULL, false))
         goto fail;
     /* Parsed DER anchors borrow the owned trust bundle through handshake. */
     int r;
@@ -2677,60 +2897,122 @@ enum wendy_peer_role wendy_pki_get_peer_role(const wendy_pki_connection *connect
     return connection ? connection->peer_role : WENDY_PEER_ROLE_NONE;
 }
 
-enum { READ_ALL_IDLE_TIMEOUT = -2 };
+/* Nonzero results of read_all. A TLS failure returns its mbedTLS code. */
+enum {
+    READ_ALL_IDLE_TIMEOUT = -2,
+    READ_ALL_TIMEOUT = -3,
+    READ_ALL_CLOSED = -4,
+    READ_ALL_RESET = -5,
+    READ_ALL_SOCKET = -6,
+};
 static int read_all(wendy_pki_connection *c, uint8_t *out, size_t n, int64_t deadline)
 {
     size_t size = n;
     bool idle_read = true;
     while (n) {
         if (wendy_pki_reset_in_progress())
-            return -1;
+            return READ_ALL_RESET;
         if (esp_timer_get_time() >= deadline)
-            return n == size && idle_read ? READ_ALL_IDLE_TIMEOUT : -1;
+            return n == size && idle_read ? READ_ALL_IDLE_TIMEOUT : READ_ALL_TIMEOUT;
         int got = connection_read(c, out, n);
         if (got > 0) {
             out += got;
             n -= got;
         } else {
-            if (!got)
-                return -1;
+            if (!got || got == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY)
+                return READ_ALL_CLOSED;
+            /* A code in the READ_ALL range would read as one of them. */
+            if (got != MBEDTLS_ERR_SSL_WANT_READ && got != MBEDTLS_ERR_SSL_WANT_WRITE)
+                return got >= READ_ALL_SOCKET ? READ_ALL_SOCKET : got;
             /* A readiness hint can cross the deadline before the next loop.
              * Keep WANT_WRITE failures distinct from an empty idle read. */
             idle_read = got == MBEDTLS_ERR_SSL_WANT_READ;
             int waited = wait_socket(c, got, deadline);
             if (waited) {
+                if (wendy_pki_reset_in_progress())
+                    return READ_ALL_RESET;
                 if (waited == SOCKET_WAIT_TIMEOUT && got == MBEDTLS_ERR_SSL_WANT_READ && n == size)
                     return READ_ALL_IDLE_TIMEOUT;
-                return -1;
+                return waited == SOCKET_WAIT_TIMEOUT ? READ_ALL_TIMEOUT : READ_ALL_SOCKET;
             }
         }
     }
     return 0;
 }
 
+/* Records why a control read failed. Returns nonzero when it did. */
+static int control_read_failed(wendy_pki_connection *c, int result)
+{
+    switch (result) {
+    case 0:
+        return 0;
+    case READ_ALL_IDLE_TIMEOUT:
+    case READ_ALL_TIMEOUT:
+        c->control_failure = "timed out";
+        break;
+    case READ_ALL_CLOSED:
+        c->control_failure = "closed by the broker";
+        break;
+    case READ_ALL_RESET:
+        c->control_failure = "device reset";
+        break;
+    case READ_ALL_SOCKET:
+        c->control_failure = "socket error";
+        break;
+    case MBEDTLS_ERR_NET_RECV_FAILED:
+        c->control_failure = "socket receive error";
+        c->control_error = result;
+        break;
+    case MBEDTLS_ERR_NET_CONN_RESET:
+        c->control_failure = "connection reset";
+        break;
+    default:
+        c->control_failure = "TLS error";
+        c->control_error = result;
+        break;
+    }
+    return result;
+}
+
 #define CONTROL_TIME_REFRESH_US INT64_C(3600000000)
 int wendy_pki_relay_upgrade(wendy_pki_connection *c, struct wendy_lite_trust *trust)
 {
     memset(trust, 0, sizeof *trust);
+    c->control_failure = NULL;
+    c->control_error = 0;
     const char *stage = "grant key set";
     uint8_t header[4], count;
     int64_t deadline = esp_timer_get_time() + 10000000;
-    if (read_all(c, header, 4, deadline) || memcmp(header, "WR\x03\x04", 4) ||
-        read_all(c, &count, 1, deadline) || count < 1 || count > 2) goto fail;
+    if (control_read_failed(c, read_all(c, header, 4, deadline))) goto fail;
+    if (memcmp(header, "WR\x03\x04", 4)) {
+        c->control_failure = "unexpected record";
+        goto fail;
+    }
+    if (control_read_failed(c, read_all(c, &count, 1, deadline))) goto fail;
+    c->control_failure = "invalid key set";
+    if (count < 1 || count > 2) goto fail;
     trust->count = count;
     for (unsigned i = 0; i < count; i++) {
         struct wendy_lite_key *key = &trust->keys[i];
-        if (read_all(c, &key->id_size, 1, deadline) || key->id_size < 1 || key->id_size > 128 ||
-            read_all(c, key->id, key->id_size, deadline) || wendy_lite_key_id(key->id, key->id_size) ||
-            read_all(c, key->public_key, sizeof key->public_key, deadline)) goto fail;
+        if (control_read_failed(c, read_all(c, &key->id_size, 1, deadline))) goto fail;
+        c->control_failure = "invalid key set";
+        if (key->id_size < 1 || key->id_size > 128) goto fail;
+        if (control_read_failed(c, read_all(c, key->id, key->id_size, deadline))) goto fail;
+        c->control_failure = "invalid key set";
+        if (wendy_lite_key_id(key->id, key->id_size)) goto fail;
+        if (control_read_failed(c, read_all(c, key->public_key, sizeof key->public_key, deadline)))
+            goto fail;
+        c->control_failure = "invalid key set";
         if (i && trust->keys[0].id_size == key->id_size &&
             !memcmp(trust->keys[0].id, key->id, key->id_size)) goto fail;
     }
+    c->control_failure = NULL;
     /* The connection stays open while heartbeats work. The only voluntary stop
      * is the deadline that the connect path set, for certificate renewal or the
      * end of the broker chain. The peer cannot delay it. */
     int64_t renew = c->renew_deadline_us;
-    int64_t next_time = esp_timer_get_time() + CONTROL_TIME_REFRESH_US;
+    int64_t next_time = c->refresh_deadline_us ? c->refresh_deadline_us
+                                               : esp_timer_get_time() + CONTROL_TIME_REFRESH_US;
     bool first = true;
     for (;;) {
         stage = "heartbeat";
@@ -2743,11 +3025,14 @@ int wendy_pki_relay_upgrade(wendy_pki_connection *c, struct wendy_lite_trust *tr
                 ESP_LOGI("wendy_pki", "planned stop reached; stopping broker control connection");
                 return WENDY_PKI_RELAY_RENEW;
             }
+            control_read_failed(c, result);
             goto fail;
         }
+        c->control_failure = "unexpected record";
         if (memcmp(header, "WR\x03", 3))
             goto fail;
         if (header[3] == 1) {
+            c->control_failure = "heartbeat reply failed";
             if (write_all(c, "WR\x03\x02", 4, deadline)) goto fail;
             if (first) ESP_LOGI("wendy_pki", "broker control heartbeat received and answered");
             first = false;
@@ -2755,14 +3040,15 @@ int wendy_pki_relay_upgrade(wendy_pki_connection *c, struct wendy_lite_trust *tr
              * after this loop returns, so the two never run in parallel. */
             int64_t now = esp_timer_get_time();
             if (c->refresh_time && now >= next_time && (!renew || now < renew)) {
-                c->refresh_time();
-                next_time = esp_timer_get_time() + CONTROL_TIME_REFRESH_US;
+                int64_t delay = c->refresh_time();
+                next_time = esp_timer_get_time() + delay;
             }
         } else if (header[3] == 3) {
             stage = "relay handoff";
             deadline = esp_timer_get_time() + 10000000;
-            if (read_all(c, trust->session, 16, deadline) ||
-                read_all(c, trust->grant_hash, 32, deadline)) goto fail;
+            if (control_read_failed(c, read_all(c, trust->session, 16, deadline)) ||
+                control_read_failed(c, read_all(c, trust->grant_hash, 32, deadline))) goto fail;
+            c->control_failure = "socket handoff failed";
             int fd = detach_socket(c);
             if (fd < 0) goto fail;
             ESP_LOGI("wendy_pki", "broker control handed off to operator TLS");
@@ -2770,7 +3056,16 @@ int wendy_pki_relay_upgrade(wendy_pki_connection *c, struct wendy_lite_trust *tr
         } else goto fail;
     }
 fail:
-    ESP_LOGW("wendy_pki", "broker control failed at %s", stage);
+    if (!c->control_failure)
+        c->control_failure = "unexpected record";
+#if ESP_PLATFORM
+    ESP_LOGW("wendy_pki", "broker control failed at %s: %s (%d); free=%u largest=%u", stage,
+             c->control_failure, c->control_error, (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+#else
+    ESP_LOGW("wendy_pki", "broker control failed at %s: %s (%d)", stage, c->control_failure,
+             c->control_error);
+#endif
     return WENDY_PKI_RELAY_FAILED;
 }
 
@@ -2835,16 +3130,8 @@ int pki_tls_agent_begin(const struct wendy_pki_stream *stream, const char *tenan
     /* Native WendyCom is not an app/carrier ALPN and can accept a device or
      * operator. Do not use finish_mesh or reinterpret its peer as a UUID. */
     static const char *const wendycom_alpn[] = {"wendy-com/2", NULL};
-    if (!r) {
-#if CONFIG_WENDY_NET_CONSTRAINED_PROFILE
-        /* Native management shares the constrained mesh ledger. Keeping
-         * speculative issuer candidates can crowd out signature-verification
-         * scratch even for one client; request ordinary full presentations. */
-        r = mbedtls_ssl_conf_alpn_protocols(&c->config, wendycom_alpn);
-#else
-        r = configure_mesh_alpn(c, wendycom_alpn);
-#endif
-    }
+    if (!r)
+        r = configure_mesh_alpn_for_tenant(c, wendycom_alpn, tenant, false);
     release_identity_input(owned);
     if (r) {
         wendy_pki_close(c);
@@ -2927,7 +3214,7 @@ int pki_tls_net_begin(const struct wendy_pki_stream *stream, bool server, const 
     static const char *const carrier_alpn[] = {"wendy-local-mesh-ble/2", NULL};
     static const char *const app_alpn[] = {"wendy-app-mesh-tls/1", NULL};
     if (!result)
-        result = configure_mesh_alpn(c, application ? app_alpn : carrier_alpn);
+        result = configure_mesh_alpn_for_tenant(c, application ? app_alpn : carrier_alpn, tenant, true);
     if (!result)
         result = mbedtls_ssl_set_hostname(&c->ssl, NULL);
     if (!result) {

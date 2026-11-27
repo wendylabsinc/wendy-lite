@@ -119,6 +119,27 @@ unsigned pki_certificate_message_count(const uint8_t *p, size_t left)
  * consumers; explicit TLS lengths carry the bounded binary suffix on wire. */
 static const uint8_t issuer_marker[] = {0, 'W', 'C', 'I', 1};
 static const uint8_t cached_marker[] = "wendy-net-cached\0";
+static const uint8_t leaf_marker[] = {0, 'W', 'C', 'L', 1};
+enum leaf_kind { CLASSICAL_CLIENT = 1, REGULAR_CLIENT = 2 };
+
+static int leaf_offer_kind(const char *app, const uint8_t *name, size_t length,
+                           const uint8_t **issuer)
+{
+    size_t base = strlen(app);
+    if (!name || length != base + sizeof leaf_marker + 17 || memcmp(name, app, base) ||
+        memcmp(name + base, leaf_marker, sizeof leaf_marker))
+        return 0;
+    *issuer = name + base + sizeof leaf_marker + 1;
+    return name[base + sizeof leaf_marker];
+}
+
+static bool trusted_ca(const struct pki_issuer_state *s, const uint8_t issuer[16])
+{
+    for (unsigned i = 0; i < s->trusted_count; i++)
+        if (!memcmp(s->trusted_ca[i], issuer, 16))
+            return true;
+    return false;
+}
 static bool decode_issuer_protocol(const uint8_t *name, size_t n, const char *app,
                                    const uint8_t **hashes, unsigned *count)
 {
@@ -176,7 +197,7 @@ static void visit_client_protocols(const uint8_t *p, size_t left, alpn_visitor v
 }
 int pki_issuer_protocols(struct pki_issuer_state *s, const char *app)
 {
-    if (!s || !app || !s->chain_count || s->chain_count > PKI_ISSUER_CHAIN_MAX)
+    if (!s || !app || s->chain_count > PKI_ISSUER_CHAIN_MAX)
         return -1;
     size_t base = strlen(app), prefix = base + sizeof issuer_marker;
     size_t full = prefix + s->chain_count * 16;
@@ -189,6 +210,19 @@ int pki_issuer_protocols(struct pki_issuer_state *s, const char *app)
     s->hint[full] = 0;
     s->hint_length = full;
     unsigned n = 0;
+    unsigned leaf_count = s->classical ? s->trusted_count : s->accepts_lite && s->has_issuer;
+    size_t leaf_length = base + sizeof leaf_marker + 17;
+    for (unsigned i = 0; i < leaf_count && leaf_length < PKI_LEAF_NAME_SIZE; i++) {
+        uint8_t *offer = s->leaf_offers[i];
+        memcpy(offer, app, base);
+        memcpy(offer + base, leaf_marker, sizeof leaf_marker);
+        offer[base + sizeof leaf_marker] = s->classical ? CLASSICAL_CLIENT : REGULAR_CLIENT;
+        memcpy(offer + base + sizeof leaf_marker + 1,
+               s->classical ? s->trusted_ca[i] : s->issuing_ca, 16);
+        offer[leaf_length] = 0;
+        s->protocols[n] = (const char *)offer;
+        s->protocol_lengths[n++] = leaf_length;
+    }
     for (unsigned count = s->chain_count; count; count--) {
         s->protocols[n] = s->hint;
         s->protocol_lengths[n++] = prefix + count * 16;
@@ -222,6 +256,66 @@ int pki_issuer_protocols(struct pki_issuer_state *s, const char *app)
     }
     s->protocols[n] = NULL;
     return 0;
+}
+
+struct leaf_selection {
+    struct pki_issuer_state *state;
+    const char *application;
+    size_t length;
+};
+
+static void select_leaf(void *context, const uint8_t *name, size_t length)
+{
+    struct leaf_selection *selection = context;
+    struct pki_issuer_state *s = selection->state;
+    if (selection->length || length >= sizeof s->hint)
+        return;
+    const uint8_t *issuer;
+    switch (leaf_offer_kind(selection->application, name, length, &issuer)) {
+    case CLASSICAL_CLIENT:
+        if (s->classical || !s->accepts_lite || !s->has_issuer ||
+            memcmp(s->issuing_ca, issuer, 16))
+            return;
+        break;
+    case REGULAR_CLIENT:
+        if (!s->classical || !trusted_ca(s, issuer))
+            return;
+        break;
+    default:
+        return;
+    }
+    memcpy(s->hint, name, length);
+    s->hint[length] = 0;
+    s->hint_length = length;
+    selection->length = length;
+}
+
+size_t pki_leaf_select(struct pki_issuer_state *s, const char *app, const uint8_t *hello, size_t size)
+{
+    struct leaf_selection selection = {.state = s, .application = app};
+    visit_client_protocols(hello, size, select_leaf, &selection);
+    return selection.length;
+}
+
+bool pki_leaf_selected(const struct pki_issuer_state *s, const uint8_t *name, size_t length)
+{
+    const uint8_t *issuer;
+    int kind = leaf_offer_kind(s->application, name, length, &issuer);
+    if (s->classical)
+        return kind == CLASSICAL_CLIENT && trusted_ca(s, issuer);
+    return kind == REGULAR_CLIENT && s->accepts_lite && s->has_issuer &&
+           !memcmp(s->issuing_ca, issuer, 16);
+}
+
+bool pki_issuer_shortened(const char *app, const uint8_t *name, size_t length)
+{
+    if (!name)
+        return false;
+    const uint8_t *hashes;
+    unsigned count;
+    int leaf = leaf_offer_kind(app, name, length, &hashes);
+    return leaf == CLASSICAL_CLIENT || leaf == REGULAR_CLIENT ||
+           decode_issuer_protocol(name, length, app, &hashes, &count);
 }
 struct issuer_selection {
     struct pki_issuer_state *state;
