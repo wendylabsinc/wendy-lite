@@ -1,0 +1,46 @@
+name: Shared gRPC API contracts
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shared-grpc-api-contracts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shared-grpc-api-contracts:
+    name: Shared gRPC API contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Verify shared contract pin is on service-protos main
+        run: bash tools/shared-grpc-api-contracts.sh --check-pin
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go/console/go.mod
+          cache: false
+      - uses: bufbuild/buf-action@37ac33d8960807670a6e9719080e885197b09cc6 # v1.7.0
+        with:
+          version: '1.75.0'
+          setup_only: true
+          pr_comment: false
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          version: '34.0'
+          repo-token: ${{ github.token }}
+      - name: Install pinned generators
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+          python3 -m venv "$RUNNER_TEMP/proto-venv"
+          "$RUNNER_TEMP/proto-venv/bin/python" -m pip install protobuf==7.34.0
+      - name: Check shared C and Go bindings
+        run: |
+          "$RUNNER_TEMP/proto-venv/bin/python" tools/update_protobuf.py --check-shared-contracts

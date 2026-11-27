@@ -15,6 +15,9 @@ PB_BIND(wendy_lite_sensorlink_AudioFormat, wendy_lite_sensorlink_AudioFormat, AU
 PB_BIND(wendy_lite_sensorlink_SensorFormat, wendy_lite_sensorlink_SensorFormat, AUTO)
 
 
+PB_BIND(wendy_lite_sensorlink_SensorSource, wendy_lite_sensorlink_SensorSource, AUTO)
+
+
 PB_BIND(wendy_lite_sensorlink_SensorDescriptor, wendy_lite_sensorlink_SensorDescriptor, AUTO)
 
 
@@ -37,10 +40,3 @@ PB_BIND(wendy_lite_sensorlink_Ping, wendy_lite_sensorlink_Ping, AUTO)
 
 
 PB_BIND(wendy_lite_sensorlink_Envelope, wendy_lite_sensorlink_Envelope, 2)
-
-
-
-
-
-
-

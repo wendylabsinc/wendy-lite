@@ -1,6 +1,6 @@
 set(native_driver_sources)
 if(CONFIG_WENDY_NET_PEER)
- list(APPEND native_driver_sources "src/app.c" "src/native_agent.c" "src/agent_bridge.c" "src/agent_pipe.c" "src/peer.c" "src/actor.c" "src/actor_driver.c" "src/selection.c" "src/ble_protocol.c" "src/carrier.c" "src/packet_queue.c" "src/netif_effect.c" "src/mdns_effect.c" "src/time_control.c" "src/nan_protocol.c" "src/settings.c")
+ list(APPEND native_driver_sources "src/app.c" "src/native_agent.c" "src/agent_bridge.c" "src/agent_pipe.c" "src/peer.c" "src/actor.c" "src/actor_driver.c" "src/selection.c" "src/ble_protocol.c" "src/carrier.c" "src/packet_queue.c" "src/netif_effect.c" "src/mdns_effect.c" "src/time_control.c" "src/nan_protocol.c" "src/settings.c" "src/espnow_carrier.c")
 else()
  list(APPEND native_driver_sources "src/native_staging.c")
 endif()
@@ -17,4 +17,8 @@ endif()
 # of the optional WASM runtime during IDF's early component discovery.
 if(CONFIG_WENDY_NET AND NOT CMAKE_BUILD_EARLY_EXPANSION)
  idf_component_optional_requires(PRIVATE wendy_net)
+endif()
+
+if(CONFIG_IDF_TARGET_ESP32P4 AND NOT CMAKE_BUILD_EARLY_EXPANSION)
+ idf_component_optional_requires(PRIVATE espressif__esp_hosted)
 endif()

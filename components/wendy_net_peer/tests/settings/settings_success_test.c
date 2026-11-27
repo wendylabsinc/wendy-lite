@@ -7,6 +7,10 @@ static unsigned writes, changes, registrations;
 static bool have_record, fail_write;
 static struct record stored;
 static const struct wcom_net_delegate *delegate;
+bool wn_espnow_supported(void)
+{
+    return CONFIG_WENDY_WIFI_ENABLED;
+}
 #if CONFIG_WENDY_NET_BLE
 static unsigned selected_profile;
 void wble_mesh_set_profile(unsigned profile)
@@ -69,7 +73,7 @@ void nvs_close(nvs_handle_t h)
 }
 esp_err_t nvs_get_blob(nvs_handle_t h, const char *key, void *out, size_t *size)
 {
-    assert(h == 1 && !strcmp(key, "config") && *size == sizeof stored);
+    assert(h == 1 && (!strcmp(key, "config") || !strcmp(key, "config2") || !strcmp(key, "config3")) && *size == sizeof stored);
     if (!have_record)
         return ESP_ERR_NVS_NOT_FOUND;
     memcpy(out, &stored, sizeof stored);
@@ -77,7 +81,7 @@ esp_err_t nvs_get_blob(nvs_handle_t h, const char *key, void *out, size_t *size)
 }
 esp_err_t nvs_set_blob(nvs_handle_t h, const char *key, const void *in, size_t size)
 {
-    assert(h == 2 && !strcmp(key, "config") && size == sizeof stored);
+    assert(h == 2 && !strcmp(key, "config3") && size == sizeof stored);
     if (fail_write)
         return ESP_FAIL;
     memcpy(&stored, in, size);
@@ -232,7 +236,7 @@ int main(void)
     bool wifi_before = config.infrastructure_wifi;
     config.ble_profile = WendyComBleProfile_WENDY_COM_BLE_CODED_S8;
     assert(delegate->set(&config, &status, &token) == WendyComResult_WENDY_COM_RESULT_OK && token &&
-           !status.restarting && (stored.flags >> 4) == 2);
+           !status.restarting && ((stored.flags >> 4) & 3u) == 2);
     applied(token, true);
     loaded = false;
     assert(wn_settings_init() == ESP_OK);
@@ -251,6 +255,45 @@ int main(void)
     assert(selected_profile == 2);
     applied(token, true);
     assert(wn_settings_restart_due() && selected_profile == 2);
+#endif
+#if CONFIG_WENDY_WIFI_ENABLED
+    /* A carrier-only toggle stays in the actor after the reply fence. */
+    boot_selected = false;
+    atomic_store(&restarting, false);
+    atomic_store(&restart_ready, false);
+    config = wn_settings_get();
+    config.espnow = true;
+    config.espnow_channel = 11;
+    assert(config.espnow_rate == WendyComEspnowRate_WENDY_COM_ESPNOW_RATE_12_MBPS);
+    config.espnow_rate = WendyComEspnowRate_WENDY_COM_ESPNOW_RATE_24_MBPS;
+#if WENDY_NET_NON_TRANSIT
+    assert(delegate->set(&config, &status, &token) ==
+           WendyComResult_WENDY_COM_RESULT_NET_ONE_CARRIER_ONLY);
+    config.ble = config.infrastructure_wifi = false;
+    assert(delegate->set(&config, &status, &token) == WendyComResult_WENDY_COM_RESULT_OK);
+    applied(token, true);
+#else
+    unsigned before_espnow = changes;
+    assert(delegate->set(&config, &status, &token) == WendyComResult_WENDY_COM_RESULT_OK && token);
+    assert(!wn_settings_try_espnow(&config));
+    delegate->reply_complete(token);
+    wn_settings_poll(true);
+    now += 250000;
+    wn_settings_poll(true);
+    assert(changes == before_espnow && wn_settings_try_espnow(&config));
+#endif
+    assert(config.espnow && config.espnow_channel == 11);
+    config.has_espnow = config.has_espnow_channel = config.has_espnow_links = false;
+    config.has_espnow_rate = false;
+    config.espnow_rate = WendyComEspnowRate_WENDY_COM_ESPNOW_RATE_DEFAULT;
+    config.espnow = false;
+    config.espnow_channel = config.espnow_links = 0;
+    assert(delegate->set(&config, &status, &token) == WendyComResult_WENDY_COM_RESULT_OK && !token);
+    assert(status.desired.espnow && status.desired.espnow_channel == 11);
+    assert(status.desired.espnow_rate == WendyComEspnowRate_WENDY_COM_ESPNOW_RATE_24_MBPS);
+    config = status.desired;
+    config.espnow_rate = (WendyComEspnowRate)9;
+    assert(delegate->set(&config, &status, &token) == WendyComResult_WENDY_COM_RESULT_BAD_STATE && !token);
 #endif
     puts(
         "native settings: bounded receipt, persistence, typed capabilities and runtime radio selection PASS");

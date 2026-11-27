@@ -1,5 +1,8 @@
 # nanopb field options — string sizes must be bounded for static allocation on MCU
 
+# Keep the generated include flat when the protobuf import uses its canonical path.
+wendylite/v1/wendy_com_msg.proto exclude:"wendylite/v1/sensorlink.proto" include:"sensorlink.pb.h"
+
 WendyComAppPushDataParams.data   type:FT_CALLBACK
 WendyComConfPushDataParams.data  type:FT_CALLBACK
 WendyComConsoleData.data         type:FT_CALLBACK

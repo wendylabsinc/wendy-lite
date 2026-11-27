@@ -97,6 +97,55 @@ applied settings, connection state, active links and mesh memory use. Peers are
 discovered automatically over mDNS and BLE and authenticated before use; there
 is no per-neighbour leaf configuration.
 
+### ESP-NOW
+
+The C5 and C6 profiles can also use ESP-NOW v2. The FireBeetle P4 native
+profile uses its C6 companion with the Wendy ESP-Hosted bridge. Enable ESP-NOW
+and select the same 2.4 GHz channel on the participating devices:
+
+```sh
+wendy --device wendy-lite:PORT device wendy-net configure \
+  --participate=true --espnow=true --espnow-channel=11
+```
+
+On the standalone C6, also set `--ble=false --infrastructure-wifi=false` in
+the same command. Its one-connection total still applies. On PSRAM profiles,
+`--espnow-links` limits locally initiated ESP-NOW links to at most three.
+Incoming and outgoing links share the existing `--max-links` budget with BLE
+and infrastructure Wi-Fi. Use `--espnow=false` to disable the carrier.
+
+Set `--espnow-rate` to `1`, `2`, `6`, `12`, or `24` Mbit/s to cap the preferred
+unicast PHY rate. The default is `12`. Discovery and initial connection setup
+use 1 Mbit/s on every device. Once the direct peers authenticate, they use the
+lower of their two preferences. An older peer or a P4 companion that lacks rate
+configuration keeps the link at 1 Mbit/s. Changing the preference reconnects
+ESP-NOW links so they can negotiate again.
+
+ESP-NOW discovery broadcasts about once per second. Devices listening on the
+channel can see the tenant and device identifiers in those advertisements.
+Peers establish the same Wendy mutual TLS used by other carriers over a private TCP interface. An
+associated Wi-Fi station and ESP-NOW share the radio channel. If the AP uses
+a different channel, status shows ESP-NOW suspended until the channel matches.
+If the configured AP is unreachable, ESP-NOW can start during Wi-Fi retry
+backoff. Later retry scans can pause radio traffic while the TCP session stays
+open. ESP-NOW error codes are firmware diagnostics and can change across builds.
+
+Firmware with ESP-NOW reads saved settings from older firmware. If you roll
+back to a build without ESP-NOW, it reads the settings last saved by the older
+firmware. Reapply any carrier changes you want to keep after a rollback.
+
+For the P4, build the C6 companion application from a trusted copy of the
+same ESP-Hosted 2.x release used on the host. The companion was built and tested
+with ESP-IDF 6.0.3. With ESP-IDF activated, run:
+
+```sh
+tools/espnow-companion/build.sh managed_components/espressif__esp_hosted /tmp/wendy-hosted-espnow
+```
+
+The companion image is `slave/build/network_adapter.bin` under the staging
+directory. Install that application on the companion through ESP-Hosted OTA
+or with the board's companion programming interface.
+
 Disable participation with:
 
 ```sh

@@ -4,6 +4,13 @@
 # stay CALLBACK, same as WendyConfWifiNetwork.ssid/password inside
 # WendyConfWifi's bounded array.
 
+# Keep the existing C names for the shared wendylite.v1 package.
+* package:"wendy.lite.sensorlink"
+
 wendy.lite.sensorlink.SensorManifest.sensors   max_count:16
 wendy.lite.sensorlink.Subscribe.channel_id     max_count:16
 wendy.lite.sensorlink.Unsubscribe.channel_id   max_count:16
+
+# Only forwarding agents attach source identity. Direct firmware has no use for
+# it, and storing it would enlarge every descriptor in the fixed manifest array.
+wendy.lite.sensorlink.SensorDescriptor.source  type:FT_IGNORE
