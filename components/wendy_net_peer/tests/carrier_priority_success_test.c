@@ -92,7 +92,7 @@ static int hold_frame(void *ctx, const void *p, size_t n, bool control)
     }
     assert(paused->frame == p && paused->size == n);
     paused->calls++;
-    return paused->ready ? 0 : 1;
+    return paused->ready ? 0 : WNC_RECEIVE_DEFERRED;
 }
 int main(void)
 {

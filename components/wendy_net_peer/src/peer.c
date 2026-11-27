@@ -1108,7 +1108,7 @@ static int receive_frame(void *ctx, const void *data, size_t size, bool is_contr
     /* Defer the next control message while its predecessor is verified.
      * Babel/IP can still make progress under their own routing checks. */
     if (is_control && wnrs_receive_paused(s->router))
-        return 1;
+        return WNC_RECEIVE_DEFERRED;
     if (is_control) {
         return wnrs_control(s->router, data, size);
     }

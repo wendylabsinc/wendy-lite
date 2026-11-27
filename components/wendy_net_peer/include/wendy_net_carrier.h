@@ -75,6 +75,10 @@ int wnc_enqueue_priority(struct wnc_carrier *, const void *, size_t, bool contro
  * authenticated control stream. TCP retransmission remains end-to-end. */
 int wnc_enqueue_packet(struct wnc_carrier *, const void *, size_t, uint32_t id);
 /* Receive: zero consumed, positive retain/retry this frame, negative error. */
+/* The receiver returns zero after accepting a frame, or a negative value
+ * to fail the carrier. A positive result keeps the same frame queued for
+ * the next pump and pauses further reads until the receiver accepts it. */
+enum { WNC_RECEIVE_DEFERRED = 1 };
 typedef int (*wnc_receive)(void *, const void *, size_t, bool control);
 /* Service both directions once.1 progress,0 would block,negative error.
  * receive may enqueue replies; it must not call pump/deinit recursively.
