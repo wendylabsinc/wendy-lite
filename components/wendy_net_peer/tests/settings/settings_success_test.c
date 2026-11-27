@@ -146,9 +146,13 @@ int main(void)
            !token && !writes);
 #endif
     WendyComNetConfig config = status.desired;
+    /* Explicitly saving the defaults must survive a reboot or downgrade,
+     * without restarting the running carrier. */
+    assert(delegate->set(&config, &status, &token) == WendyComResult_WENDY_COM_RESULT_OK &&
+           !token && writes == 1 && (stored.flags & 1) && !wn_settings_pending());
     config.enabled = false;
     assert(delegate->set(&config, &status, &token) == WendyComResult_WENDY_COM_RESULT_OK && token &&
-           writes == 1);
+           writes == 2);
     uint32_t first = token;
     assert(wn_settings_pending() && !changes);
     now += 1000000;
@@ -163,12 +167,12 @@ int main(void)
     applied(first, true);
     assert(changes == 1 && !wn_settings_pending());
     assert(delegate->set(&config, &status, &token) == WendyComResult_WENDY_COM_RESULT_OK &&
-           !token && writes == 1);
+           !token && writes == 2);
     loaded = false;
-    assert(wn_settings_init() == ESP_OK && !wn_settings_get().enabled && writes == 1);
+    assert(wn_settings_init() == ESP_OK && !wn_settings_get().enabled && writes == 2);
     config.enabled = true;
     assert(delegate->set(&config, &status, &token) == WendyComResult_WENDY_COM_RESULT_OK && token &&
-           writes == 2);
+           writes == 3);
  /* Old callbacks cannot complete a later settings generation. */
     delegate->reply_complete(first);
     wn_settings_poll(true);

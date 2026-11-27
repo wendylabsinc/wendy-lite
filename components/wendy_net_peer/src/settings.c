@@ -33,7 +33,7 @@
 #define CONFIG_WENDY_NET_BLE_CHANNELS 1
 #endif
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
-static bool loaded;
+static bool loaded, have_saved_policy;
 static bool boot_selected, boot_ble, boot_wifi;
 static unsigned boot_profile;
 static atomic_bool restarting, restart_ready, awaiting_reply;
@@ -162,7 +162,8 @@ static WendyComResult set(const WendyComNetConfig *input, WendyComNetStatus *sta
         get(status);
         return WendyComResult_WENDY_COM_RESULT_BUSY;
     }
-    if (!same(&config, &saved)) {
+    bool changed = !same(&config, &saved);
+    if (changed || !have_saved_policy) {
         struct record r = {SETTINGS_MAGIC,
                            (config.enabled ? 1u : 0) | (config.ble ? 2u : 0) |
                                (config.infrastructure_wifi ? 4u : 0) |
@@ -179,7 +180,9 @@ static WendyComResult set(const WendyComNetConfig *input, WendyComNetStatus *sta
                 result = nvs_commit(h);
             nvs_close(h);
         }
-        if (result == ESP_OK) {
+        if (result == ESP_OK)
+            have_saved_policy = true;
+        if (result == ESP_OK && changed) {
             saved = config;
             atomic_store(&restarting,
                          boot_selected &&
@@ -275,6 +278,7 @@ esp_err_t wn_settings_init(void)
         saved.enabled = saved.ble || saved.infrastructure_wifi;
         (void)normalize(&saved);
         ready = load_saved(&saved);
+        have_saved_policy = ready == ESP_OK;
         if (ready != ESP_OK && ready != ESP_ERR_NVS_NOT_FOUND) {
             saved.enabled = false;
             ESP_LOGW("net-settings", "saved policy unavailable (%d); mesh starts disabled", ready);
