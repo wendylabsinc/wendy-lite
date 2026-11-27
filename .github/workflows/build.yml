@@ -425,11 +425,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mapfile -t binaries < <(jq -r '.binaries[] |
+          artifact_paths="$(jq -r '.binaries[] |
             ."name" as $name |
             "wendy_mcu_\($name)/wendy_mcu_\($name).bin",
             (select(.companion) | "wendy_mcu_\($name)_companion/wendy_mcu_\($name)_companion.bin")
-          ' catalog.json)
+          ' catalog.json)"
+          mapfile -t binaries <<< "$artifact_paths"
           # Delete existing nightly release and tag if present
           gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
           # Create new nightly pre-release at current commit. catalog.json ships

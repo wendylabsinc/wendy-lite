@@ -40,6 +40,7 @@ import re
 import shutil
 import subprocess
 import sys
+import yaml
 
 source, staging, here = (Path(arg).resolve(strict=True) for arg in sys.argv[1:4])
 hosted_version, build_id = sys.argv[4:]
@@ -66,6 +67,20 @@ subprocess.run(["git", "apply", "--no-index", str(here / "esp-hosted-sdio.patch"
                env={**os.environ, "GIT_CEILING_DIRECTORIES": str(staging.parent)})
 
 main = staging / "slave" / "main"
+# These registry dependencies are ranged upstream. Pin the resolved versions
+# so an upstream dependency release cannot change the image under one build ID.
+component_manifest = main / "idf_component.yml"
+component_data = yaml.safe_load(component_manifest.read_text())
+for name, version in {
+    "esp-qa/ping-cmd": "1.0.0",
+    "esp-qa/wifi-cmd": "0.2.12",
+    "espressif/iperf": "0.1.4",
+    "espressif/iperf-cmd": "0.1.4",
+    "espressif/mqtt": "1.1.0",
+}.items():
+    component_data["dependencies"][name] = {"version": f"={version}"}
+component_manifest.write_text(yaml.safe_dump(component_data, sort_keys=False))
+
 cmake = main / "CMakeLists.txt"
 app = main / "esp_hosted_coprocessor.c"
 cmake_source, app_source = cmake.read_text(), app.read_text()
@@ -95,3 +110,8 @@ PY
 cd "$staging/slave"
 idf.py set-target esp32c6
 idf.py build
+# Factory FireBeetle radios have 0x180000-byte OTA slots.
+if (( $(wc -c < build/network_adapter.bin) > 0x180000 )); then
+    echo "Companion image exceeds the factory FireBeetle OTA slot." >&2
+    exit 1
+fi

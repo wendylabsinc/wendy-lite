@@ -419,7 +419,7 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
 
     // Network configuration is limited to Wi-Fi-only UPDATE payloads. The
     // application validates the completed protobuf before any flash write.
-    // Enrollment, trust replacement, and time bootstrap remain physical-only.
+    // Enrollment, trust replacement, time bootstrap, and radio updates are physical-only.
     if (((cmd->which_params == WendyComCommand_conf_push_begin_tag &&
           cmd->params.conf_push_begin.mode != WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE) ||
          cmd->which_params == WendyComCommand_get_hosted_companion_tag ||

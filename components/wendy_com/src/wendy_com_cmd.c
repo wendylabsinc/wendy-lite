@@ -111,8 +111,7 @@ WendyComResult wcom_cmd_reboot(bool app_auto_start, uint32_t app_auto_start_dela
 
 WendyComResult wcom_cmd_app_push_begin(int client_id, size_t size, WendyComAppType app_type)
 {
-    ESP_LOGI(TAG, "APP_PUSH_BEGIN client=%d size=%zu type=%s", client_id, size,
-             app_type == WendyComAppType_WENDY_COM_APP_TYPE_NATIVE ? "native" : "wasm");
+    ESP_LOGI(TAG, "APP_PUSH_BEGIN client=%d size=%zu type=%d", client_id, size, (int)app_type);
     // A future app format must not fall through to the WASM delegate or
     // acquire upload ownership on firmware that cannot interpret it.
     if (app_type != WendyComAppType_WENDY_COM_APP_TYPE_WASM &&
