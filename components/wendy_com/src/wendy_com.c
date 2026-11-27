@@ -23,6 +23,11 @@ void wcom_set_app_delegate(const struct wcom_app_delegate *delegate)
     wcom_cmd_set_app_delegate(delegate);
 }
 
+void wcom_set_hosted_companion_delegate(const struct wcom_hosted_companion_delegate *delegate)
+{
+    wcom_cmd_set_hosted_companion_delegate(delegate);
+}
+
 void wcom_set_sensor_link_delegate(const struct wcom_sensor_link_delegate *delegate)
 {
     wcom_cmd_set_sensor_link_delegate(delegate);

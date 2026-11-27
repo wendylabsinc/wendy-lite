@@ -144,6 +144,30 @@ typedef struct _WendyComAppStopParams {
     char dummy_field;
 } WendyComAppStopParams;
 
+typedef struct _WendyComGetHostedCompanionParams {
+    char dummy_field;
+} WendyComGetHostedCompanionParams;
+
+/* ESP-Hosted radio install commands are accepted only over the host's physical link. */
+typedef struct _WendyComHostedCompanionOtaBeginParams {
+    uint32_t size;
+} WendyComHostedCompanionOtaBeginParams;
+
+typedef struct _WendyComHostedCompanionOtaWriteParams {
+    uint32_t offset;
+    pb_callback_t data;
+} WendyComHostedCompanionOtaWriteParams;
+
+typedef struct _WendyComHostedCompanionOtaEndParams {
+    char dummy_field;
+} WendyComHostedCompanionOtaEndParams;
+
+typedef struct _WendyComHostedCompanionInfo {
+    /* Version from the running co-processor's ESP-IDF application descriptor.
+ Empty for a radio whose ESP-Hosted protocol predates that descriptor RPC. */
+    char build_id[32];
+} WendyComHostedCompanionInfo;
+
 /* Params for WENDY_COM_CMD_CONF_PUSH_BEGIN */
 typedef struct _WendyComConfPushBeginParams {
     uint32_t size; /* total size of the encoded WendyConf blob */
@@ -353,6 +377,9 @@ typedef struct _WendyComEnrollmentChallenge {
     char device_id[65]; /* configured PKI identity; distinct from the USB hardware ID */
     char tenant_id[37];
     bool uuid_enrollment_supported; /* UUID discovery and enrollment identity reporting */
+    bool has_mldsa_peer_verification_supported;
+    bool mldsa_peer_verification_supported; /* peer verification independent of issuance profile */
+    bool mesh_trust_supported; /* provision tenant mesh trust during enrollment */
 } WendyComEnrollmentChallenge;
 
 /* Clear local enrollment after Cloud cleanup. Physical USB only; the hardware
@@ -450,6 +477,10 @@ typedef struct _WendyComCommand {
         WendyComNetTopologyParams net_topology;
         WendyComBluetoothPowerGetParams bluetooth_power_get;
         WendyComBluetoothPowerSetParams bluetooth_power_set;
+        WendyComGetHostedCompanionParams get_hosted_companion;
+        WendyComHostedCompanionOtaBeginParams hosted_companion_ota_begin;
+        WendyComHostedCompanionOtaWriteParams hosted_companion_ota_write;
+        WendyComHostedCompanionOtaEndParams hosted_companion_ota_end;
     } params;
 } WendyComCommand;
 
@@ -467,6 +498,7 @@ typedef struct _WendyComResponse {
         WendyComNetStatus net_status;
         WendyComNetTopologyPage net_topology;
         WendyComBluetoothPowerStatus bluetooth_power;
+        WendyComHostedCompanionInfo hosted_companion;
     } data;
 } WendyComResponse;
 
@@ -593,6 +625,11 @@ extern "C" {
 
 
 
+
+
+
+
+
 #define WendyComConfPushBeginParams_mode_ENUMTYPE WendyComConfPushMode
 
 
@@ -653,6 +690,11 @@ extern "C" {
 #define WendyComAppPushEndParams_init_default    {0}
 #define WendyComAppStartParams_init_default      {0}
 #define WendyComAppStopParams_init_default       {0}
+#define WendyComGetHostedCompanionParams_init_default {0}
+#define WendyComHostedCompanionOtaBeginParams_init_default {0}
+#define WendyComHostedCompanionOtaWriteParams_init_default {0, {{NULL}, NULL}}
+#define WendyComHostedCompanionOtaEndParams_init_default {0}
+#define WendyComHostedCompanionInfo_init_default {""}
 #define WendyComConfPushBeginParams_init_default {0, _WendyComConfPushMode_MIN}
 #define WendyComConfPushDataParams_init_default  {0, {{NULL}, NULL}}
 #define WendyComConfPushEndParams_init_default   {0}
@@ -673,7 +715,7 @@ extern "C" {
 #define WendyComNetTopologyPage_init_default     {{0}, {0}, 0, 0, 0, 0, 0, 0, false, WendyComNetStatus_init_default, false, WendyComNetTopologyRecord_init_default}
 #define WendyComGetDeviceInfoParams_init_default {0}
 #define WendyComEnrollmentChallengeParams_init_default {0}
-#define WendyComEnrollmentChallenge_init_default {"", 0, 0, 0, 0, 0, 0, false, 0, false, 0, "", "", 0}
+#define WendyComEnrollmentChallenge_init_default {"", 0, 0, 0, 0, 0, 0, false, 0, false, 0, "", "", 0, false, 0, 0}
 #define WendyComEnrollmentResetParams_init_default {"", ""}
 #define WendyComSyncTimeParams_init_default      {{{NULL}, NULL}, {{NULL}, NULL}}
 #define WendyComSyncTimeResult_init_default      {0, 0}
@@ -703,6 +745,11 @@ extern "C" {
 #define WendyComAppPushEndParams_init_zero       {0}
 #define WendyComAppStartParams_init_zero         {0}
 #define WendyComAppStopParams_init_zero          {0}
+#define WendyComGetHostedCompanionParams_init_zero {0}
+#define WendyComHostedCompanionOtaBeginParams_init_zero {0}
+#define WendyComHostedCompanionOtaWriteParams_init_zero {0, {{NULL}, NULL}}
+#define WendyComHostedCompanionOtaEndParams_init_zero {0}
+#define WendyComHostedCompanionInfo_init_zero    {""}
 #define WendyComConfPushBeginParams_init_zero    {0, _WendyComConfPushMode_MIN}
 #define WendyComConfPushDataParams_init_zero     {0, {{NULL}, NULL}}
 #define WendyComConfPushEndParams_init_zero      {0}
@@ -723,7 +770,7 @@ extern "C" {
 #define WendyComNetTopologyPage_init_zero        {{0}, {0}, 0, 0, 0, 0, 0, 0, false, WendyComNetStatus_init_zero, false, WendyComNetTopologyRecord_init_zero}
 #define WendyComGetDeviceInfoParams_init_zero    {0}
 #define WendyComEnrollmentChallengeParams_init_zero {0}
-#define WendyComEnrollmentChallenge_init_zero    {"", 0, 0, 0, 0, 0, 0, false, 0, false, 0, "", "", 0}
+#define WendyComEnrollmentChallenge_init_zero    {"", 0, 0, 0, 0, 0, 0, false, 0, false, 0, "", "", 0, false, 0, 0}
 #define WendyComEnrollmentResetParams_init_zero  {"", ""}
 #define WendyComSyncTimeParams_init_zero         {{{NULL}, NULL}, {{NULL}, NULL}}
 #define WendyComSyncTimeResult_init_zero         {0, 0}
@@ -756,6 +803,10 @@ extern "C" {
 #define WendyComAppPushBeginParams_app_type_tag  2
 #define WendyComAppPushDataParams_offset_tag     1
 #define WendyComAppPushDataParams_data_tag       2
+#define WendyComHostedCompanionOtaBeginParams_size_tag 1
+#define WendyComHostedCompanionOtaWriteParams_offset_tag 1
+#define WendyComHostedCompanionOtaWriteParams_data_tag 2
+#define WendyComHostedCompanionInfo_build_id_tag 1
 #define WendyComConfPushBeginParams_size_tag     1
 #define WendyComConfPushBeginParams_mode_tag     2
 #define WendyComConfPushDataParams_offset_tag    1
@@ -862,6 +913,8 @@ extern "C" {
 #define WendyComEnrollmentChallenge_device_id_tag 10
 #define WendyComEnrollmentChallenge_tenant_id_tag 11
 #define WendyComEnrollmentChallenge_uuid_enrollment_supported_tag 12
+#define WendyComEnrollmentChallenge_mldsa_peer_verification_supported_tag 13
+#define WendyComEnrollmentChallenge_mesh_trust_supported_tag 14
 #define WendyComEnrollmentResetParams_expected_device_id_tag 1
 #define WendyComEnrollmentResetParams_nonce_hex_tag 2
 #define WendyComSyncTimeParams_server_tag        1
@@ -908,6 +961,10 @@ extern "C" {
 #define WendyComCommand_net_topology_tag         24
 #define WendyComCommand_bluetooth_power_get_tag  25
 #define WendyComCommand_bluetooth_power_set_tag  26
+#define WendyComCommand_get_hosted_companion_tag 28
+#define WendyComCommand_hosted_companion_ota_begin_tag 29
+#define WendyComCommand_hosted_companion_ota_write_tag 30
+#define WendyComCommand_hosted_companion_ota_end_tag 31
 #define WendyComResponse_request_id_tag          1
 #define WendyComResponse_result_tag              2
 #define WendyComResponse_device_identity_tag     3
@@ -918,6 +975,7 @@ extern "C" {
 #define WendyComResponse_net_status_tag          8
 #define WendyComResponse_net_topology_tag        9
 #define WendyComResponse_bluetooth_power_tag     10
+#define WendyComResponse_hosted_companion_tag    12
 #define WendyComEvent_event_id_tag               1
 #define WendyComEvent_console_begin_tag          2
 #define WendyComEvent_console_data_tag           3
@@ -987,6 +1045,32 @@ X(a, CALLBACK, SINGULAR, BYTES,    data,              2)
 
 #define WendyComAppStopParams_CALLBACK NULL
 #define WendyComAppStopParams_DEFAULT NULL
+
+#define WendyComGetHostedCompanionParams_FIELDLIST(X, a) \
+
+#define WendyComGetHostedCompanionParams_CALLBACK NULL
+#define WendyComGetHostedCompanionParams_DEFAULT NULL
+
+#define WendyComHostedCompanionOtaBeginParams_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   size,              1)
+#define WendyComHostedCompanionOtaBeginParams_CALLBACK NULL
+#define WendyComHostedCompanionOtaBeginParams_DEFAULT NULL
+
+#define WendyComHostedCompanionOtaWriteParams_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   offset,            1) \
+X(a, CALLBACK, SINGULAR, BYTES,    data,              2)
+#define WendyComHostedCompanionOtaWriteParams_CALLBACK pb_default_field_callback
+#define WendyComHostedCompanionOtaWriteParams_DEFAULT NULL
+
+#define WendyComHostedCompanionOtaEndParams_FIELDLIST(X, a) \
+
+#define WendyComHostedCompanionOtaEndParams_CALLBACK NULL
+#define WendyComHostedCompanionOtaEndParams_DEFAULT NULL
+
+#define WendyComHostedCompanionInfo_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, STRING,   build_id,          1)
+#define WendyComHostedCompanionInfo_CALLBACK NULL
+#define WendyComHostedCompanionInfo_DEFAULT NULL
 
 #define WendyComConfPushBeginParams_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   size,              1) \
@@ -1190,7 +1274,9 @@ X(a, STATIC,   OPTIONAL, BOOL,     cloud_enrollment_supported,   8) \
 X(a, STATIC,   OPTIONAL, BOOL,     mldsa_verification_supported,   9) \
 X(a, STATIC,   SINGULAR, STRING,   device_id,        10) \
 X(a, STATIC,   SINGULAR, STRING,   tenant_id,        11) \
-X(a, STATIC,   SINGULAR, BOOL,     uuid_enrollment_supported,  12)
+X(a, STATIC,   SINGULAR, BOOL,     uuid_enrollment_supported,  12) \
+X(a, STATIC,   OPTIONAL, BOOL,     mldsa_peer_verification_supported,  13) \
+X(a, STATIC,   SINGULAR, BOOL,     mesh_trust_supported,  14)
 #define WendyComEnrollmentChallenge_CALLBACK NULL
 #define WendyComEnrollmentChallenge_DEFAULT NULL
 
@@ -1278,7 +1364,11 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (params,net_get,params.net_get),  22) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,net_set,params.net_set),  23) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,net_topology,params.net_topology),  24) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (params,bluetooth_power_get,params.bluetooth_power_get),  25) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (params,bluetooth_power_set,params.bluetooth_power_set),  26)
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,bluetooth_power_set,params.bluetooth_power_set),  26) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,get_hosted_companion,params.get_hosted_companion),  28) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,hosted_companion_ota_begin,params.hosted_companion_ota_begin),  29) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,hosted_companion_ota_write,params.hosted_companion_ota_write),  30) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (params,hosted_companion_ota_end,params.hosted_companion_ota_end),  31)
 #define WendyComCommand_CALLBACK NULL
 #define WendyComCommand_DEFAULT NULL
 #define WendyComCommand_params_ping_MSGTYPE WendyComPingParams
@@ -1306,6 +1396,10 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (params,bluetooth_power_set,params.bluetooth_
 #define WendyComCommand_params_net_topology_MSGTYPE WendyComNetTopologyParams
 #define WendyComCommand_params_bluetooth_power_get_MSGTYPE WendyComBluetoothPowerGetParams
 #define WendyComCommand_params_bluetooth_power_set_MSGTYPE WendyComBluetoothPowerSetParams
+#define WendyComCommand_params_get_hosted_companion_MSGTYPE WendyComGetHostedCompanionParams
+#define WendyComCommand_params_hosted_companion_ota_begin_MSGTYPE WendyComHostedCompanionOtaBeginParams
+#define WendyComCommand_params_hosted_companion_ota_write_MSGTYPE WendyComHostedCompanionOtaWriteParams
+#define WendyComCommand_params_hosted_companion_ota_end_MSGTYPE WendyComHostedCompanionOtaEndParams
 
 #define WendyComResponse_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   request_id,        1) \
@@ -1317,7 +1411,8 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (data,enrollment_challenge,data.enrollment_ch
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,sync_time,data.sync_time),   7) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,net_status,data.net_status),   8) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (data,net_topology,data.net_topology),   9) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (data,bluetooth_power,data.bluetooth_power),  10)
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,bluetooth_power,data.bluetooth_power),  10) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (data,hosted_companion,data.hosted_companion),  12)
 #define WendyComResponse_CALLBACK NULL
 #define WendyComResponse_DEFAULT NULL
 #define WendyComResponse_data_device_identity_MSGTYPE WendyComDeviceIdentity
@@ -1328,6 +1423,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (data,bluetooth_power,data.bluetooth_power), 
 #define WendyComResponse_data_net_status_MSGTYPE WendyComNetStatus
 #define WendyComResponse_data_net_topology_MSGTYPE WendyComNetTopologyPage
 #define WendyComResponse_data_bluetooth_power_MSGTYPE WendyComBluetoothPowerStatus
+#define WendyComResponse_data_hosted_companion_MSGTYPE WendyComHostedCompanionInfo
 
 #define WendyComEvent_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   event_id,          1) \
@@ -1410,6 +1506,11 @@ extern const pb_msgdesc_t WendyComAppPushDataParams_msg;
 extern const pb_msgdesc_t WendyComAppPushEndParams_msg;
 extern const pb_msgdesc_t WendyComAppStartParams_msg;
 extern const pb_msgdesc_t WendyComAppStopParams_msg;
+extern const pb_msgdesc_t WendyComGetHostedCompanionParams_msg;
+extern const pb_msgdesc_t WendyComHostedCompanionOtaBeginParams_msg;
+extern const pb_msgdesc_t WendyComHostedCompanionOtaWriteParams_msg;
+extern const pb_msgdesc_t WendyComHostedCompanionOtaEndParams_msg;
+extern const pb_msgdesc_t WendyComHostedCompanionInfo_msg;
 extern const pb_msgdesc_t WendyComConfPushBeginParams_msg;
 extern const pb_msgdesc_t WendyComConfPushDataParams_msg;
 extern const pb_msgdesc_t WendyComConfPushEndParams_msg;
@@ -1462,6 +1563,11 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComAppPushEndParams_fields &WendyComAppPushEndParams_msg
 #define WendyComAppStartParams_fields &WendyComAppStartParams_msg
 #define WendyComAppStopParams_fields &WendyComAppStopParams_msg
+#define WendyComGetHostedCompanionParams_fields &WendyComGetHostedCompanionParams_msg
+#define WendyComHostedCompanionOtaBeginParams_fields &WendyComHostedCompanionOtaBeginParams_msg
+#define WendyComHostedCompanionOtaWriteParams_fields &WendyComHostedCompanionOtaWriteParams_msg
+#define WendyComHostedCompanionOtaEndParams_fields &WendyComHostedCompanionOtaEndParams_msg
+#define WendyComHostedCompanionInfo_fields &WendyComHostedCompanionInfo_msg
 #define WendyComConfPushBeginParams_fields &WendyComConfPushBeginParams_msg
 #define WendyComConfPushDataParams_fields &WendyComConfPushDataParams_msg
 #define WendyComConfPushEndParams_fields &WendyComConfPushEndParams_msg
@@ -1506,6 +1612,7 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 
 /* Maximum encoded size of messages (where known) */
 /* WendyComAppPushDataParams_size depends on runtime parameters */
+/* WendyComHostedCompanionOtaWriteParams_size depends on runtime parameters */
 /* WendyComConfPushDataParams_size depends on runtime parameters */
 /* WendyComDeviceIdentity_size depends on runtime parameters */
 /* WendyComNetTopologyRecord_size depends on runtime parameters */
@@ -1540,11 +1647,15 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComConsoleDetachParams_size         6
 #define WendyComConsoleEnd_size                  0
 #define WendyComEnrollmentChallengeParams_size   2
-#define WendyComEnrollmentChallenge_size         188
+#define WendyComEnrollmentChallenge_size         192
 #define WendyComEnrollmentResetParams_size       80
 #define WendyComGetDeviceIdentityParams_size     0
 #define WendyComGetDeviceInfoParams_size         0
+#define WendyComGetHostedCompanionParams_size    0
 #define WendyComHandshake_size                   20
+#define WendyComHostedCompanionInfo_size         33
+#define WendyComHostedCompanionOtaBeginParams_size 6
+#define WendyComHostedCompanionOtaEndParams_size 0
 #define WendyComNetConfig_size                   50
 #define WendyComNetGetParams_size                0
 #define WendyComNetSetParams_size                52

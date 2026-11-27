@@ -17,3 +17,5 @@ WendyConfEnrollment.signed_time type:FT_CALLBACK
 WendyConfEnrollment.device_roots type:FT_CALLBACK
 WendyConfEnrollment.tsa_roots type:FT_CALLBACK
 WendyConfEnrollment.https_roots type:FT_CALLBACK
+WendyConfEnrollment.lite_device_intermediates type:FT_CALLBACK
+WendyConfEnrollment.est_url max_size:257

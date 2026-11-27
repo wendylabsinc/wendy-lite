@@ -2,8 +2,14 @@ idf_component_register(
     SRCS "src/wendy_core.c" "src/wendy_core_sensor.c" "src/wendy_core_wdt.c"
     INCLUDE_DIRS "include"
     REQUIRES wendy_conf wendy_stdio wendy_usj wendy_wifi wendy_ble nvs_flash esp_partition app_update
-    PRIV_REQUIRES esp_hal_wdt
+    PRIV_REQUIRES esp_hal_wdt wendy_pki wendy_net_peer
 )
+
+if(CONFIG_IDF_TARGET_ESP32P4 AND CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6 AND
+   CONFIG_WENDY_WIFI_ENABLED AND NOT CMAKE_BUILD_EARLY_EXPANSION)
+    idf_component_optional_requires(PRIVATE espressif__esp_hosted)
+    target_sources(${COMPONENT_LIB} PRIVATE "src/hosted_companion.c")
+endif()
 
 # COMPONENT_VERSION is set by the IDF Component Manager from the top-level
 # `version:` field of idf_component.yml. It is the empty string when the
