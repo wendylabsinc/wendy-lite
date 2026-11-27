@@ -24,6 +24,11 @@
 #include "wendy_core_wdt.h"
 #include "wendy_conf.h"
 
+#if CONFIG_IDF_TARGET_ESP32P4 && CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6 && CONFIG_WENDY_WIFI_ENABLED
+#define WENDY_HOSTED_COMPANION_UPDATE 1
+#include "hosted_companion.h"
+#endif
+
 #if CONFIG_WENDY_WASM
 #include "wendy_wasm.h"
 #include "wendy_hal.h"
@@ -1019,6 +1024,16 @@ esp_err_t wendy_core_init(void)
         .on_get_device_info     = com_get_device_info,
     };
     wcom_set_app_delegate(&app_delegate);
+#if WENDY_HOSTED_COMPANION_UPDATE
+    static const struct wcom_hosted_companion_delegate radio_delegate = {
+        .on_get = hosted_companion_get,
+        .on_begin = hosted_companion_begin,
+        .on_write = hosted_companion_write,
+        .on_end = hosted_companion_end,
+        .on_abort = hosted_companion_abort,
+    };
+    wcom_set_hosted_companion_delegate(&radio_delegate);
+#endif
     wcom_start();
     wendy_core_wdt_start();
 

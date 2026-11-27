@@ -69,7 +69,8 @@
             "name": "esp32p4_dfr1172_firebeetle_native",
             "target": "esp32p4",
             "board_cfg": "dfr1172_firebeetle_native",
-            "flash_size": "16MB"
+            "flash_size": "16MB",
+            "companion": "esp32c6"
         },
         {
             "name": "esp32p4_waveshare_lcd_4b_native",

@@ -24,8 +24,15 @@ static bool resetting;
 
 int64_t esp_timer_get_time(void) { return 1000; }
 
-ssize_t wendy_com_uart_read(wendy_com_uart_t *uart, void *data, size_t size) { return -1; }
-ssize_t wendy_com_uart_write(wendy_com_uart_t *uart, const void *data, size_t size) { return -1; }
+struct wire;
+static struct wire *uart_wire;
+static ssize_t read_wire(void *ctx, void *data, size_t size);
+static ssize_t write_wire(void *ctx, const void *data, size_t size);
+
+ssize_t wendy_com_uart_read(wendy_com_uart_t *uart, void *data, size_t size)
+{ return uart_wire ? read_wire(uart_wire, data, size) : -1; }
+ssize_t wendy_com_uart_write(wendy_com_uart_t *uart, const void *data, size_t size)
+{ return uart_wire ? write_wire(uart_wire, data, size) : -1; }
 int wendy_com_uart_get_fd(wendy_com_uart_t *uart) { return uart->fd; }
 int64_t wendy_com_uart_auto_close_delay(wendy_com_uart_t *uart) { return -1; }
 void wcom_stdio_pump_client_disconnected(int id) {}
@@ -201,6 +208,35 @@ static void check_device_commands(struct wire *wire, int id, uint8_t channel)
     assert(command(wire, id, channel, WendyComCommand_sensor_link_get_manifest_tag) == WendyComResult_WENDY_COM_RESULT_OK);
 }
 
+static unsigned radio_writes, radio_ends, radio_aborts;
+
+static WendyComResult radio_get(WendyComHostedCompanionInfo *out)
+{
+    strcpy(out->build_id, "factory");
+    return WendyComResult_WENDY_COM_RESULT_OK;
+}
+
+static WendyComResult radio_begin(size_t size)
+{
+    assert(size == 5);
+    return WendyComResult_WENDY_COM_RESULT_OK;
+}
+
+static WendyComResult radio_write(size_t offset, const uint8_t *data, size_t size)
+{
+    assert(offset == 0 && size == 5 && memcmp(data, "input", 5) == 0);
+    radio_writes++;
+    return WendyComResult_WENDY_COM_RESULT_OK;
+}
+
+static WendyComResult radio_end(void)
+{
+    radio_ends++;
+    return WendyComResult_WENDY_COM_RESULT_OK;
+}
+
+static void radio_abort(void) { radio_aborts++; }
+
 int main(void)
 {
     static struct wcom_state_change_handler observer = {.func = connected};
@@ -266,6 +302,11 @@ int main(void)
     resetting = false;
     assert(command(&wire, full, 0, WendyComCommand_conf_push_begin_tag) == WendyComResult_WENDY_COM_RESULT_BAD_STATE);
     assert(command(&wire, full, 0, WendyComCommand_enrollment_challenge_tag) == WendyComResult_WENDY_COM_RESULT_BAD_STATE);
+    assert(command(&wire, full, 0, WendyComCommand_get_hosted_companion_tag) == WendyComResult_WENDY_COM_RESULT_BAD_STATE);
+    assert(command(&wire, full, 0, WendyComCommand_hosted_companion_ota_begin_tag) == WendyComResult_WENDY_COM_RESULT_BAD_STATE);
+    assert(command(&wire, full, 0, WendyComCommand_hosted_companion_ota_write_tag) == WendyComResult_WENDY_COM_RESULT_BAD_STATE);
+    assert(command(&wire, full, 0, WendyComCommand_hosted_companion_ota_end_tag) == WendyComResult_WENDY_COM_RESULT_BAD_STATE);
+    assert(management_calls == initial_management + 1);
     WendyComMessage wifi = WendyComMessage_init_zero;
     wifi.which_msg = WendyComMessage_command_tag;
     wifi.msg.command.which_params = WendyComCommand_conf_push_begin_tag;
@@ -300,7 +341,38 @@ int main(void)
     wendy_com_uart_t uart = {.fd = descriptors[0]};
     int local = wcom_add_uart_link(&uart, NULL);
     assert(wcom_link_is_local(local) && wcom_link_get_permission(local) == WCOM_LINK_PERMISSION_FULL);
+    uart_wire = &wire;
+    handshake(&wire, local);
+    static const struct wcom_hosted_companion_delegate radio = {
+        .on_get = radio_get, .on_begin = radio_begin, .on_write = radio_write,
+        .on_end = radio_end, .on_abort = radio_abort,
+    };
+    assert(command(&wire, local, 0, WendyComCommand_hosted_companion_ota_begin_tag) == WendyComResult_WENDY_COM_RESULT_BAD_STATE);
+    wcom_cmd_set_hosted_companion_delegate(&radio);
+    assert(command(&wire, local, 0, WendyComCommand_get_hosted_companion_tag) == WendyComResult_WENDY_COM_RESULT_OK);
+
+    WendyComMessage begin = WendyComMessage_init_zero;
+    begin.which_msg = WendyComMessage_command_tag;
+    begin.msg.command.which_params = WendyComCommand_hosted_companion_ota_begin_tag;
+    begin.msg.command.params.hosted_companion_ota_begin.size = 5;
+    assert(exchange(&wire, local, 0, &begin).msg.response.result == WendyComResult_WENDY_COM_RESULT_OK);
+    assert(command(&wire, local, 0, WendyComCommand_app_push_begin_tag) == WendyComResult_WENDY_COM_RESULT_BUSY);
+    assert(command(&wire, local, 0, WendyComCommand_app_push_end_tag) == WendyComResult_WENDY_COM_RESULT_BUSY);
+    assert(command(&wire, local, 0, WendyComCommand_conf_push_begin_tag) == WendyComResult_WENDY_COM_RESULT_BUSY);
+    assert(wcom_cmd_hosted_companion_ota_end(-1) == WendyComResult_WENDY_COM_RESULT_BUSY);
+
+    WendyComMessage chunk = WendyComMessage_init_zero;
+    chunk.which_msg = WendyComMessage_command_tag;
+    chunk.msg.command.which_params = WendyComCommand_hosted_companion_ota_write_tag;
+    chunk.msg.command.params.hosted_companion_ota_write.data.funcs.encode = encode_input;
+    assert(exchange(&wire, local, 0, &chunk).msg.response.result == WendyComResult_WENDY_COM_RESULT_OK);
+    assert(radio_writes == 1);
+    assert(command(&wire, local, 0, WendyComCommand_hosted_companion_ota_end_tag) == WendyComResult_WENDY_COM_RESULT_OK);
+    assert(radio_ends == 1);
+    assert(exchange(&wire, local, 0, &begin).msg.response.result == WendyComResult_WENDY_COM_RESULT_OK);
     wcom_remove_link(local);
+    assert(radio_aborts == 1);
+    uart_wire = NULL;
     close(descriptors[0]); close(descriptors[1]);
     assert(disconnected_calls > 0);
     return 0;

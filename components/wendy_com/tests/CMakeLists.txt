@@ -66,3 +66,22 @@ foreach(target sensor_stream_test sensor_stream_coalesced_test)
     endforeach()
     add_test(NAME ${target}_mixed_links COMMAND ${target} independent_links mixed)
 endforeach()
+
+add_executable(hosted_companion_test ../../wendy_core/tests/hosted_companion_test.c
+    ../../wendy_core/src/hosted_companion.c)
+target_include_directories(hosted_companion_test PRIVATE ../../wendy_core/src
+    ../../wendy_core/tests/hosted_stubs ../../wendy_pki/tests/stubs ../include ../../nanopb)
+target_compile_options(hosted_companion_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+add_test(NAME hosted_companion COMMAND hosted_companion_test)
+
+add_executable(wendy_com_permissions_test permissions_test.c
+    ../src/wendy_com_msg.pb.c ../src/sensorlink.pb.c
+    ../../nanopb/pb_common.c ../../nanopb/pb_encode.c ../../nanopb/pb_decode.c)
+target_include_directories(wendy_com_permissions_test PRIVATE stubs ../../wendy_pki/tests/stubs
+    ../include ../../wendy_pki/include ../../wendy_conf/include ../../wendy_stdio/include ../../nanopb)
+target_compile_definitions(wendy_com_permissions_test PRIVATE CONFIG_WENDY_COM_TASK_PRIORITY=1
+    CONFIG_WENDY_COM_TASK_CORE_AFFINITY=0)
+# The link's eventfd wakeups and drains intentionally discard their counts.
+target_compile_options(wendy_com_permissions_test PRIVATE -UNDEBUG -Wall -Wextra -Werror
+    -Wno-unused-parameter -Wno-unused-function -Wno-unused-result)
+add_test(NAME wendy_com_permissions COMMAND wendy_com_permissions_test)
