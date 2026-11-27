@@ -9,8 +9,7 @@ one neighbour and does not forward traffic for other devices.
 Wendy Net is **on by default** when the firmware supports a carrier. It joins
 after enrollment when a peer is reachable. ESP32-C6 defaults to Wi-Fi when
 available. Multi-carrier profiles use their compiled Wi-Fi and BLE carriers.
-Saved settings take precedence. Use matching WendyOS and Lite firmware for the
-current binary protocol.
+Saved settings take precedence.
 
 Devices automatically reuse known certificate authorities during connection
 setup. Only the leaf and missing intermediates need transmitting; no manual
