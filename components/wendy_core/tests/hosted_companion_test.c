@@ -7,7 +7,7 @@
 
 static bool connected;
 static uint32_t version;
-static esp_err_t descriptor_result = ESP_OK, end_result = ESP_OK;
+static esp_err_t descriptor_result = ESP_OK, end_result = ESP_OK, write_result = ESP_OK;
 static unsigned descriptors, begins, writes, ends, activations;
 
 bool wendy_hosted_peer_fw_version(uint32_t *out)
@@ -28,7 +28,7 @@ esp_err_t esp_hosted_slave_ota_write(uint8_t *data, uint32_t size)
 {
     assert(data && size);
     writes++;
-    return ESP_OK;
+    return write_result;
 }
 esp_err_t esp_hosted_slave_ota_end(void) { ends++; return end_result; }
 esp_err_t esp_hosted_slave_ota_activate(void) { activations++; return ESP_OK; }
@@ -71,18 +71,30 @@ int main(void)
     assert(hosted_companion_end() == WendyComResult_WENDY_COM_RESULT_OK);
     assert(ends == 3 && activations == 1);
 
+    // A failed RPC leaves the radio's write offset unknown.
+    assert(hosted_companion_begin(sizeof image) == WendyComResult_WENDY_COM_RESULT_OK);
+    assert(hosted_companion_write(0, image, 1) == WendyComResult_WENDY_COM_RESULT_OK);
+    write_result = ESP_FAIL;
+    assert(hosted_companion_write(1, image + 1, 2) == WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR);
+    assert(!hosted_companion_pending());
+    write_result = ESP_OK;
+    assert(hosted_companion_write(1, image + 1, 2) == WendyComResult_WENDY_COM_RESULT_BAD_STATE);
+    assert(hosted_companion_end() == WendyComResult_WENDY_COM_RESULT_BAD_STATE);
+    assert(ends == 4 && activations == 1);
+
     version = 0;  // Factory C6 advertises a valid transport without a version tag.
     assert(hosted_companion_get(&info) == WendyComResult_WENDY_COM_RESULT_OK);
     assert(!info.build_id[0] && descriptors == 2);
     assert(hosted_companion_begin(sizeof image) == WendyComResult_WENDY_COM_RESULT_OK);
     assert(hosted_companion_write(0, image, sizeof image) == WendyComResult_WENDY_COM_RESULT_OK);
     assert(hosted_companion_end() == WendyComResult_WENDY_COM_RESULT_OK);
-    assert(ends == 4 && activations == 1);
+    assert(ends == 5 && activations == 1);
 
     assert(hosted_companion_begin(sizeof image) == WendyComResult_WENDY_COM_RESULT_OK);
     assert(hosted_companion_write(0, image, 1) == WendyComResult_WENDY_COM_RESULT_OK);
-    hosted_companion_abort();
-    assert(ends == 4 && activations == 1 && !hosted_companion_pending());
+    write_result = ESP_FAIL;
+    assert(hosted_companion_write(1, image + 1, 2) == WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR);
+    assert(ends == 5 && activations == 1 && !hosted_companion_pending());
     assert(hosted_companion_begin(sizeof image) == WendyComResult_WENDY_COM_RESULT_BAD_STATE);
-    assert(begins == 5);
+    assert(begins == 6);
 }

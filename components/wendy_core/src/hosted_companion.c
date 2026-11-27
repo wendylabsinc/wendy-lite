@@ -11,7 +11,7 @@ enum ota_protocol { OTA_UNAVAILABLE, OTA_LEGACY, OTA_STAGED_NO_DESCRIPTOR, OTA_S
 /* Added to the transport by the ESP-Hosted patch in wendy_wifi. */
 bool wendy_hosted_peer_fw_version(uint32_t *version);
 
-/* Accessed by the WendyCom app-push delegate under its single upload owner. */
+/* Accessed by the WendyCom companion delegate under its single upload owner. */
 static size_t expected_size, written;
 static enum ota_protocol update_protocol;
 static bool interrupted_legacy_update;
@@ -75,12 +75,17 @@ bool hosted_companion_pending(void)
 
 WendyComResult hosted_companion_write(size_t offset, const uint8_t *data, size_t size)
 {
+    if (!hosted_companion_pending())
+        return WendyComResult_WENDY_COM_RESULT_BAD_STATE;
     if (!size || offset != written || size > expected_size - written)
         return WendyComResult_WENDY_COM_RESULT_BAD_APP_SIZE;
     // ESP-Hosted copies into an RPC payload without changing the source bytes.
     esp_err_t err = esp_hosted_slave_ota_write((uint8_t *)data, size);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Could not write companion OTA: %s", esp_err_to_name(err));
+        // The radio may have written the chunk before its reply was lost.
+        // End this session so a retry cannot append the same bytes twice.
+        hosted_companion_abort();
         return WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
     }
     written += size;
