@@ -1,4 +1,5 @@
 #include "wendy_pki_verify.h"
+#include "wendy_conf.h"
 #include "wendy_cert_bundle.h"
 #include <assert.h>
 #include <stdio.h>
@@ -72,7 +73,12 @@ int main(int argc, char **argv)
     assert(nonce_n == 32);
     assert(wendy_pki_verify_roots(root, root_n) == 0);
     assert(wendy_pki_verify_roots(NULL, 0) != 0);
-    assert(wendy_pki_verify_roots(root, 16385) != 0);
+    const size_t oversized_n = WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE + 1;
+    uint8_t *oversized = calloc(1, oversized_n);
+    assert(oversized);
+    memcpy(oversized, root, root_n);
+    assert(wendy_pki_verify_roots(oversized, oversized_n) != 0);
+    free(oversized);
     assert(wendy_pki_verify_roots((const uint8_t *)"garbage", 7) != 0);
     unsigned char *bad_root = malloc(root_n + 1);
     memcpy(bad_root, root, root_n);

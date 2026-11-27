@@ -5,6 +5,7 @@
 #include "wendy_pki_tls_input.h"
 #include "wendy_pki_issuers.h"
 #include "wendy_pki_public_index.h"
+#include "wendy_pki_est.h"
 #include "wendy_conf.h"
 #include "wendy_pki_mesh.h"
 #include <mbedtls/ssl.h>
@@ -54,6 +55,8 @@ struct wendy_pki_connection
     mbedtls_pk_context key;
     int fd;
     struct pki_issuer_state *issuers;
+    mbedtls_x509_crt *lite_peer_issuers;
+    uint8_t *lite_issuer_der;
     wendy_net_memory_scope_t allocation_scope;
     wendy_net_memory_reservation_t raw_roots_reservation;
     bool mesh_roots_prefixed;
@@ -71,10 +74,15 @@ struct wendy_pki_connection
      * corrections, carrier leases and caller I/O deadlines. */
     int64_t session_deadline_us;
     /* Broker control connection only. Monotonic time of the planned stop, for
-     * certificate renewal or the end of the broker chain (0 = none), and the
-     * hourly time fetch (NULL = none). */
+     * certificate renewal or the end of the broker chain (0 = none). The
+     * maintenance callback returns the delay to the next check in microseconds. */
     int64_t renew_deadline_us;
-    void (*refresh_time)(void);
+    int64_t (*refresh_time)(void);
+    int64_t refresh_deadline_us;
+    /* Why the broker control connection ended, for its log line; control_error
+     * keeps the mbedTLS code of a TLS failure. */
+    const char *control_failure;
+    int control_error;
     /* Set before the handshake when the clock is verified. Firmware mbedTLS has
      * no date checks, so the verify callback checks the dates of the peer chain
      * and records the earliest end date of that chain. */
@@ -161,6 +169,8 @@ int pki_http_post(const char *url, const char *type, const char *token, const vo
  * enrollment token is sent. The caller releases its stream after return. */
 int pki_http_post_stream(const char *, const char *, const void *, size_t, struct wendy_conf_span,
                          const struct wendy_pki_stream *, uint8_t **, size_t *);
+int pki_http_get_est(const char *url, bool lite, struct wendy_conf_span roots,
+                     struct pki_est_stream *body);
 /* Only enrollment/renewal may consume this authenticated response header.
  * The caller owns both the response body and optional allocated header. */
 int pki_http_post_enrollment(const char *url, const char *type, const char *token, const void *body,
@@ -217,6 +227,8 @@ struct pki_tls_owned_identity {
      * to the connection. Capacity includes that terminator. */
     uint8_t *trust;
     size_t trust_capacity;
+    uint8_t *lite_issuer_der;
+    size_t lite_issuer_size;
     /* Nonzero requests full verification of the consumed parsed identity. */
     time_t verify_at;
     time_t certificate_floor;

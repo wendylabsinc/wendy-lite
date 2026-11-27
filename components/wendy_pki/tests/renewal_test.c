@@ -3,17 +3,27 @@
  * TLS/cache/snapshot interoperability fixtures. */
 #include "wendy_cert_bundle.h"
 #include <string.h>
+static const char legacy_classical_pem[] =
+    "-----BEGIN CERTIFICATE-----\nMAEB\n-----END CERTIFICATE-----\n"
+    "-----BEGIN CERTIFICATE-----\nMAEC\n-----END CERTIFICATE-----\n";
+static const uint8_t fake_classical_chain[] = {0x30, 1, 1, 0x30, 1, 2};
 static int test_bundle_measure(const uint8_t *p, size_t n, size_t *out)
 {
     if (!p || !n)
         return -1;
-    *out = n;
+    *out = n == sizeof legacy_classical_pem - 1 && !memcmp(p, legacy_classical_pem, n)
+        ? sizeof fake_classical_chain : n;
     return 0;
 }
 static int test_bundle_import(const uint8_t *p, size_t n, uint8_t *out, size_t cap, size_t *written)
 {
     if (!p || !out || n > cap)
         return -1;
+    if (n == sizeof legacy_classical_pem - 1 && !memcmp(p, legacy_classical_pem, n)) {
+        memcpy(out, fake_classical_chain, sizeof fake_classical_chain);
+        *written = sizeof fake_classical_chain;
+        return 0;
+    }
     memmove(out, p, n);
     *written = n;
     return 0;
@@ -46,6 +56,12 @@ const uint8_t wendy_pki_tsa_roots_start[] = {0};
 const uint8_t wendy_pki_https_roots_start[] = {0};
 static struct wendy_conf_enrollment_data usb_data;
 static const uint8_t usb_roots[] = {1};
+#if PKI_REFRESH_PEER_CAS
+static int peer_ca_reply, peer_ca_fetches, mesh_issuer_validation, mesh_store_attempts;
+static esp_err_t mesh_store_error;
+static bool issued_classical, have_legacy_classical_pem;
+static size_t stored_peer_ca_size;
+#endif
 static int bad_roots;
 int wendy_pki_verify_roots(const uint8_t *pem, size_t size)
 {
@@ -90,6 +106,7 @@ static WendyConfEnrollment config = {
     .device_id = "00000000-0000-4000-8000-000000000004",
     .token = "test-token",
     .csr_url = "https://csr.example/v1/2558fd76-afc7-466e-9613-6b715296a526",
+    .est_url = "https://est.example/.well-known/est/2558fd76-afc7-466e-9613-6b715296a526/cacerts",
     .time_url = "https://time.example",
     .broker_host = "broker.example",
     .broker_port = 5055,
@@ -153,6 +170,7 @@ esp_err_t nvs_erase_key(nvs_handle_t h, const char *name)
     if (!strcmp(name, "pending")) pending_certificate = false;
     else if (!strcmp(name, "lite_ca")) lite_authority[0] = 0;
     else if (!strcmp(name, "pending_ca")) { pending_authority[0] = 0; pending_authority_size = 0; }
+    else if (!strcmp(name, "pending_roots") || !strcmp(name, "pending_issuers")) return ESP_ERR_NVS_NOT_FOUND;
     else if (!strcmp(name, "certificate")) have_certificate = false;
     else if (!strcmp(name, "key")) have_key = false;
     else if (!strcmp(name, "tenant") || !strcmp(name, "device")) have_binding = false;
@@ -172,6 +190,12 @@ esp_err_t nvs_get_blob(nvs_handle_t h, const char *name, void *out, size_t *size
         data = key_der;
         n = key_der_size;
     }
+#if PKI_REFRESH_PEER_CAS
+    else if (!strcmp(name, "certificate") && have_certificate && have_legacy_classical_pem) {
+        data = legacy_classical_pem;
+        n = sizeof legacy_classical_pem - 1;
+    }
+#endif
     else if ((!strcmp(name, "certificate") && have_certificate) ||
              (!strcmp(name, "pending") && pending_certificate))
     {
@@ -260,12 +284,40 @@ esp_err_t wendy_conf_copy_device_trust(WendyConfEnrollment *out,
     return wendy_conf_copy_enrollment(out, data);
 }
 
+esp_err_t wendy_conf_copy_lite_intermediates(uint64_t generation, uint8_t **der, size_t *size)
+{
+    *der = NULL;
+    *size = 0;
+    return ESP_OK;
+}
+
 const char *wendy_conf_get_device_id(void) { return "441bf6804824"; }
 bool wendy_conf_is_current(void) { return !config_cleared; }
 bool wendy_conf_snapshot_current(uint64_t generation)
 {
     return !config_cleared && generation == snapshot_generation;
 }
+#if PKI_REFRESH_PEER_CAS
+int wendy_pki_verify_lite_issuers(const uint8_t *der, size_t size, const uint8_t *roots,
+    size_t roots_size, const char *tenant, time_t now)
+{
+    assert(size == 3 && der[0] == 0x30 && roots && roots_size && !strcmp(config.tenant_id, tenant));
+    return mesh_issuer_validation;
+}
+
+esp_err_t wendy_conf_store_mesh_trust(uint64_t generation, bool intermediates,
+    const uint8_t *der, size_t size)
+{
+    assert(generation == snapshot_generation && intermediates != issued_classical);
+    assert((size && der && der[0] == 0x30) || (!size && !der && intermediates));
+    mesh_store_attempts++;
+    if (mesh_store_error != ESP_OK)
+        return mesh_store_error;
+    snapshot_generation++;
+    stored_peer_ca_size = size;
+    return ESP_OK;
+}
+#endif
 esp_err_t wendy_conf_clear_enrollment(void)
 {
     clear_calls++;
@@ -294,11 +346,23 @@ int wendy_pki_verify_identity(const uint8_t *pem, size_t size, const uint8_t *ro
                               struct wendy_pki_validity *leaf)
 {
     identity_checks++;
-    assert(roots == (config.provision_trust ? usb_roots : wendy_pki_device_roots_start));
+    assert(roots == (config.provision_trust ? usb_roots : wendy_pki_device_roots_start)
+#if PKI_REFRESH_PEER_CAS
+           || (issued_classical && (roots_size == 3 || roots_size == 6) && roots[0] == 0x30)
+#endif
+    );
     assert(size == 6);
-    if (!memcmp(pem, "issued", 6)) {
-        if (leaf)
+    if (!memcmp(pem, "issued", 6)
+#if PKI_REFRESH_PEER_CAS
+        || !memcmp(pem, fake_classical_chain, sizeof fake_classical_chain)
+#endif
+    ) {
+        if (leaf) {
             *leaf = (struct wendy_pki_validity){issued_not_before, issued_expiry};
+#if PKI_REFRESH_PEER_CAS
+            leaf->classical_lite = issued_classical;
+#endif
+        }
         *expires = issued_expiry;
         return invalid_certificate || now < issued_not_before || now >= issued_expiry ? -1 : 0;
     }
@@ -405,8 +469,15 @@ cJSON *cJSON_ParseWithLength(const char *s, size_t n)
     o->valuestring = distinct_issued_certificate ? "issued" : "stored";
     return o;
 }
-cJSON *cJSON_GetObjectItemCaseSensitive(const cJSON *o, const char *k) { return (cJSON *)o; }
+cJSON *cJSON_GetObjectItemCaseSensitive(const cJSON *o, const char *k)
+{
+    if (!strcmp(k, "certificate"))
+        return (cJSON *)o;
+    return NULL;
+}
 int cJSON_IsString(const cJSON *o) { return o && o->valuestring; }
+int cJSON_IsArray(const cJSON *o) { return o && o->array; }
+int cJSON_GetArraySize(const cJSON *o) { return o && o->child ? 1 : 0; }
 void cJSON_Delete(cJSON *o) { free(o); }
 
 static void reset(void)
@@ -425,6 +496,13 @@ static void reset(void)
     strcpy(lite_authority, "old-authority-pem");
     pending_authority[0] = 0;
     pending_authority_size = 0;
+#if PKI_REFRESH_PEER_CAS
+    peer_ca_reply = peer_ca_fetches = mesh_issuer_validation = mesh_store_attempts = 0;
+    peer_ca_refresh_at = INT64_MAX;
+    stored_peer_ca_size = 0;
+    mesh_store_error = ESP_OK;
+    issued_classical = have_legacy_classical_pem = false;
+#endif
     distinct_issued_certificate = stored_is_issued = pending_is_issued = false;
     issuance_received = fail_post_issue_time = false;
     issued_not_before = signed_now + 10;
@@ -916,7 +994,7 @@ static void test_control_time_fetch(void)
     monotonic_us = 1000000;
     stored_renews_in_1000_s();
     assert(wendy_pki_connect(&connection) == ESP_OK && timestamp_calls == 1);
-    void (*fetch)(void) = broker_connection.refresh_time;
+    int64_t (*fetch)(void) = broker_connection.refresh_time;
 
     /* The connect path has just verified the time. */
     fetch();
@@ -1157,6 +1235,128 @@ static void test_normal_boot_persistence(void)
         "normal carrier reconnect, certificate change, boot revision and clock persistence passed");
 }
 #endif
+static void test_peer_roots_selection(void)
+{
+    WendyConfEnrollment cfg = WendyConfEnrollment_init_zero;
+    struct wendy_conf_enrollment_data data = {0};
+    select_peer_device_roots(&cfg, &data);
+    assert(data.device_roots.data == wendy_pki_device_roots_start);
+    assert(data.device_roots.size == build_roots_size);
+
+    /* The physical or PKI update overrides peer trust even on a board whose
+     * enrollment continues to use its original compiled bundle. */
+    data.device_roots = (struct wendy_conf_span){usb_roots, sizeof usb_roots};
+    select_peer_device_roots(&cfg, &data);
+    assert(data.device_roots.data == usb_roots);
+    assert(data.device_roots.size == sizeof usb_roots);
+
+    cfg.provision_trust = true;
+    data.device_roots = (struct wendy_conf_span){0};
+    select_peer_device_roots(&cfg, &data);
+    assert(!data.device_roots.data && !data.device_roots.size);
+}
+
+#if PKI_REFRESH_PEER_CAS
+int pki_http_get_est(const char *url, bool lite, struct wendy_conf_span roots,
+                     struct pki_est_stream *stream)
+{
+    if (!peer_ca_reply)
+        return -1;
+    assert(strstr(url, "/cacerts") && roots.data);
+    assert((strstr(url, "?chain_algorithm=ECDSA_P256&full_chain=true") != NULL) == lite);
+    peer_ca_fetches++;
+    if (peer_ca_reply == 4)
+        return -1;
+    unsigned count = lite ? 1 : 4;
+    for (unsigned i = 0; i < count; i++) {
+        uint8_t *cert = malloc(3);
+        assert(cert);
+        memcpy(cert, (unsigned char[]){0x30, 1, (uint8_t)(i + 1)}, 3);
+        stream->certs[stream->count++] = (struct pki_est_cert){cert, 3};
+        stream->stored += 3;
+    }
+    return 0;
+}
+
+int pki_est_lite_order(struct pki_est_stream *stream, const char *tenant,
+                       const struct pki_est_cert *own, struct pki_est_classical_scope *scope)
+{
+    assert(stream->count && !strcmp(tenant, config.tenant_id));
+    assert((own != NULL) == (scope != NULL));
+    return 0;
+}
+int pki_est_keep_regular(const uint8_t *der, size_t size, void *context) { return 1; }
+int pki_est_regular_pins(struct pki_est_stream *stream, const struct pki_est_cert *signed_lite,
+                         const struct pki_est_classical_scope *scope, time_t now)
+{
+    assert(stream->count == 4 && signed_lite->size == 3 && scope);
+    return 0;
+}
+
+static void test_peer_ca_refresh(void)
+{
+    wendy_pki_connection *connection = NULL;
+    reset();
+    peer_ca_reply = 2;
+    peer_ca_refresh_at = 0;
+    distinct_issued_certificate = issuance_success = true;
+    snapshot_generation = 7;
+    mesh_store_error = ESP_ERR_NO_MEM;
+    assert(wendy_pki_connect(&connection) == ESP_OK);
+    assert(stored_is_issued && !pending_certificate);
+    assert(renewal_calls == 1 && peer_ca_fetches == 1 && mesh_store_attempts == 1);
+    assert(connection->refresh_deadline_us == monotonic_us + PEER_CA_RETRY_US);
+    assert(wendy_pki_maintenance_wait_ms() == PEER_CA_RETRY_US / 1000);
+    assert(connection->renew_deadline_us > RENEW_RETRY_S * INT64_C(1000000));
+
+    mesh_store_error = ESP_OK;
+    assert(wendy_pki_maintain() == ESP_OK && peer_ca_fetches == 1);
+    monotonic_us += PEER_CA_RETRY_US;
+    assert(wendy_pki_maintain() == ESP_OK && peer_ca_fetches == 2);
+    assert(renewal_calls == 1 && mesh_store_attempts == 2 && stored_peer_ca_size == 3);
+
+    peer_ca_reply = 4;
+    monotonic_us += PEER_CA_REFRESH_US;
+    assert(wendy_pki_maintain() == ESP_OK && peer_ca_fetches == 3);
+    assert(renewal_calls == 1 && mesh_store_attempts == 2 && stored_peer_ca_size == 3);
+
+    peer_ca_reply = 2;
+    monotonic_us += PEER_CA_RETRY_US;
+    assert(wendy_pki_maintain() == ESP_OK && peer_ca_fetches == 4);
+    assert(renewal_calls == 1 && mesh_store_attempts == 3 && stored_peer_ca_size == 3);
+
+    reset();
+    snapshot_generation = usb_data.generation = 7;
+    issued_classical = true;
+    usb_data.https_roots = (struct wendy_conf_span){usb_roots, sizeof usb_roots};
+    struct wendy_conf_span chain = {fake_classical_chain, sizeof fake_classical_chain};
+    peer_ca_reply = 1;
+    clock_now = signed_now + 20;
+    assert(!fetch_peer_ca_snapshot(&config, &usb_data, chain, true));
+    assert(peer_ca_fetches == 2 && stored_peer_ca_size == 15);
+}
+
+static void test_control_peer_ca_refresh_with_fresh_mesh_clock(void)
+{
+    reset();
+    snapshot_generation = 7;
+    issued_classical = have_legacy_classical_pem = true;
+    clock_now = signed_now + 20;
+    mesh_verified_seconds = clock_now;
+    mesh_verified_generation = snapshot_generation;
+    mesh_verified_monotonic_us = 0;
+    monotonic_us = INT64_C(60000000);
+    peer_ca_refresh_at = monotonic_us;
+    peer_ca_reply = 4;
+    assert(control_refresh_time() == PEER_CA_RETRY_US);
+    assert(peer_ca_fetches == 1 && !timestamp_calls && !mesh_store_attempts);
+    peer_ca_reply = 1;
+    monotonic_us += PEER_CA_RETRY_US;
+    assert(control_refresh_time() == PEER_CA_REFRESH_US);
+    assert(peer_ca_fetches == 3 && !timestamp_calls && stored_peer_ca_size == 15);
+}
+#endif
+
 int main(int argc, char **argv)
 {
 #if defined(WENDY_PKI_BOOT_PERSISTENCE_HOST_TEST)
@@ -1172,6 +1372,7 @@ int main(int argc, char **argv)
 #endif
     test_signed_clock_generation();
     test_mesh_certificate_clock();
+    test_peer_roots_selection();
     assert(argc == 2);
     FILE *f = fopen(argv[1], "rb");
     assert(f);
@@ -1179,6 +1380,10 @@ int main(int argc, char **argv)
     fclose(f);
     assert(key_der_size > 0);
     wendy_pki_connection *connection = NULL;
+#if PKI_REFRESH_PEER_CAS
+    test_peer_ca_refresh();
+    test_control_peer_ca_refresh_with_fresh_mesh_clock();
+#endif
 
     reset();
     assert(wendy_pki_connect(&connection) == ESP_OK);

@@ -1,6 +1,7 @@
 #ifndef WENDY_PKI_VERIFY_H
 #define WENDY_PKI_VERIFY_H
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <time.h>
 #include "wendy_peer_role.h"
@@ -14,6 +15,10 @@ int wendy_pki_lite_authority_from_header(const char *header, uint8_t **der, size
 int wendy_pki_verify_lite_operator(const uint8_t *der, size_t size, const char *tenant);
 /* Strict, bounded PEM CA bundle validation, independent of the boot clock. */
 int wendy_pki_verify_roots(const uint8_t *pem, size_t size);
+/* Distinguish a busy verifier or reported allocation failure from bad input. */
+#define WENDY_PKI_VERIFY_RETRY -2
+int wendy_pki_verify_lite_issuers(const uint8_t *der, size_t size,
+    const uint8_t *roots, size_t roots_size, const char *tenant, time_t now);
 /* Verify a nonce-bound RFC 3161 response. Nothing changes the system clock here.
  * The trust bundle must be pinned before enrollment. Returns 0 on success. */
 int wendy_pki_verify_time(const uint8_t *der, size_t size, const uint8_t nonce[32],
@@ -22,6 +27,7 @@ int wendy_pki_verify_time(const uint8_t *der, size_t size, const uint8_t nonce[3
 /* Leaf validity dates. They are authentic only when verification succeeds. */
 struct wendy_pki_validity {
     time_t not_before, not_after;
+    bool classical_lite;
 };
 /* Verify a leaf-first PEM chain, exact SPIFFE URI, and its P-256 private key.
  * *expires is set only on success. An optional *leaf receives the leaf dates

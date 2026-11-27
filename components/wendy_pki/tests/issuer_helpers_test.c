@@ -16,6 +16,38 @@ static void u16(uint8_t *out, size_t size)
     out[0] = (uint8_t)(size >> 8);
     out[1] = (uint8_t)size;
 }
+static size_t client_hello(uint8_t hello[1024], const struct pki_issuer_state *client)
+{
+    memset(hello, 0, 1024);
+    size_t at = 4 + 34;
+    hello[at++] = 0;
+    u16(hello + at, 2);
+    at += 2;
+    hello[at++] = 0x13;
+    hello[at++] = 1;
+    hello[at++] = 1;
+    hello[at++] = 0;
+    size_t extensions = at;
+    at += 2;
+    u16(hello + at, 16);
+    at += 2;
+    size_t extension_length = at;
+    at += 2;
+    size_t list_length = at;
+    at += 2;
+    for (unsigned i = 0; client->protocols[i]; i++) {
+        size_t n = client->protocol_lengths[i];
+        assert(n && n <= 255);
+        hello[at++] = (uint8_t)n;
+        memcpy(hello + at, client->protocols[i], n);
+        at += n;
+    }
+    u16(hello + list_length, at - list_length - 2);
+    u16(hello + extension_length, at - extension_length - 2);
+    u16(hello + extensions, at - extensions - 2);
+    header(hello, 1, at - 4);
+    return at;
+}
 int main(void)
 {
     struct pki_issuer_recovery recovery = {0};
@@ -35,6 +67,8 @@ int main(void)
         assert(!pki_issuer_failure_recoverable(excluded[i] | MBEDTLS_X509_BADCERT_NOT_TRUSTED));
     }
     const char *service = "wendy-local-mesh-ble/2";
+    assert(!pki_issuer_shortened(service, NULL, 0));
+    assert(!pki_issuer_shortened(service, (const uint8_t *)service, strlen(service)));
     struct pki_issuer_state client = {.chain_count = 3}, server = {0};
     for (unsigned i = 0; i < 3; i++) {
         uint8_t input = (uint8_t)i, hash[32];
@@ -43,34 +77,8 @@ int main(void)
     }
     assert(!pki_issuer_protocols(&client, service));
     /* Full own path and decreasing prefixes are opaque, length-framed names. */
-    uint8_t hello[512] = {0};
-    size_t at = 4 + 34;
-    hello[at++] = 0;
-    u16(hello + at, 2);
-    at += 2;
-    hello[at++] = 0x13;
-    hello[at++] = 1;
-    hello[at++] = 1;
-    hello[at++] = 0;
-    size_t extensions = at;
-    at += 2;
-    u16(hello + at, 16);
-    at += 2;
-    size_t extension_length = at;
-    at += 2;
-    size_t list_length = at;
-    at += 2;
-    for (unsigned i = 0; client.protocols[i]; i++) {
-        size_t n = client.protocol_lengths[i];
-        assert(n && n <= 255);
-        hello[at++] = (uint8_t)n;
-        memcpy(hello + at, client.protocols[i], n);
-        at += n;
-    }
-    u16(hello + list_length, at - list_length - 2);
-    u16(hello + extension_length, at - extension_length - 2);
-    u16(hello + extensions, at - extensions - 2);
-    header(hello, 1, at - 4);
+    uint8_t hello[1024];
+    size_t at = client_hello(hello, &client);
     assert(pki_client_hello_offers(hello, at, service));
     for (unsigned i = 0; i < 3; i++)
         assert(pki_issuer_peer_has(hello, at, service, client.chain[i]));
@@ -79,9 +87,32 @@ int main(void)
     memcpy(server.available, client.chain, 2 * 16);
     size_t selected = pki_issuer_select(&server, hello, at);
     assert(selected == strlen(service) + 5 + 2 * 16);
+    assert(pki_issuer_shortened(service, (const uint8_t *)server.hint, selected));
     assert(pki_issuer_ack_has((const uint8_t *)server.hint, selected, service, client.chain[0]));
     assert(pki_issuer_ack_has((const uint8_t *)server.hint, selected, service, client.chain[1]));
     assert(!pki_issuer_ack_has((const uint8_t *)server.hint, selected, service, client.chain[2]));
+    struct pki_issuer_state classical = {.classical = true, .trusted_count = 1};
+    struct pki_issuer_state regular = {.application = service, .accepts_lite = true, .has_issuer = true};
+    memcpy(classical.trusted_ca[0], client.chain[0], 16);
+    memcpy(regular.issuing_ca, client.chain[0], 16);
+    assert(!pki_issuer_protocols(&classical, service));
+    at = client_hello(hello, &classical);
+    selected = pki_leaf_select(&regular, service, hello, at);
+    assert(selected == strlen(service) + 22);
+    assert(pki_issuer_shortened(service, (const uint8_t *)regular.hint, selected));
+    assert(!pki_issuer_shortened(service, (const uint8_t *)regular.hint, selected - 1));
+    assert(pki_leaf_selected(&classical, (const uint8_t *)regular.hint, selected));
+    assert(pki_issuer_select(&regular, hello, at) == 0);
+    memcpy(regular.issuing_ca, client.chain[1], 16);
+    assert(!pki_leaf_select(&regular, service, hello, at));
+    assert(!pki_issuer_protocols(&regular, service));
+    at = client_hello(hello, &regular);
+    assert(!pki_leaf_select(&classical, service, hello, at));
+    classical.trusted_count++;
+    memcpy(classical.trusted_ca[1], client.chain[1], 16);
+    selected = pki_leaf_select(&classical, service, hello, at);
+    assert(selected == strlen(service) + 22);
+    assert(pki_leaf_selected(&regular, (const uint8_t *)classical.hint, selected));
     /* The wire count must survive later library compaction of parsed chains. */
     for (unsigned n = 1; n <= 4; n += 3) {
         uint8_t message[80] = {0};
