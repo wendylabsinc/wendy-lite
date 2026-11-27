@@ -36,6 +36,7 @@ func main() {
 	const tenant = "2558fd76-afc7-466e-9613-6b715296a526"
 	const serverID = "00000000-0000-4000-8000-000000000004"
 	const clientID = "00000000-0000-4000-8000-000000000005"
+	leafServer := os.Args[3] == "leaf-server"
 	dir, e := os.MkdirTemp("", "lite-resumption-")
 	must(e)
 	defer os.RemoveAll(dir)
@@ -51,9 +52,9 @@ func main() {
 	must(e)
 	parsedRoot, e := x509.ParseCertificate(rootDER)
 	must(e)
-	leaf := func(id string, serial int64) (tls.Certificate, []byte) {
+	leaf := func(id string, serial int64, issuer *x509.Certificate, issuerKey crypto.Signer) (tls.Certificate, []byte) {
 		var key crypto.Signer
-		if os.Args[2] == "mldsa65" && id == clientID && os.Args[3] != "pair" {
+		if os.Args[2] == "mldsa65" && id == clientID && os.Args[3] != "pair" && !leafServer {
 			key, e = mldsa.GenerateKey(mldsa.MLDSA65())
 		} else {
 			key, e = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -62,14 +63,36 @@ func main() {
 		uri, e := url.Parse("spiffe://wendy.sh/tenant/" + tenant + "/device/" + id)
 		must(e)
 		cert := &x509.Certificate{SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: id}, NotBefore: root.NotBefore, NotAfter: root.NotAfter, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}, DNSNames: []string{"localhost"}, URIs: []*url.URL{uri}}
-		der, e := x509.CreateCertificate(rand.Reader, cert, root, key.Public(), rootKey)
+		der, e := x509.CreateCertificate(rand.Reader, cert, issuer, key.Public(), issuerKey)
 		must(e)
 		keyDER, e := x509.MarshalPKCS8PrivateKey(key)
 		must(e)
-		return tls.Certificate{Certificate: [][]byte{der, rootDER}, PrivateKey: key}, keyDER
+		return tls.Certificate{Certificate: [][]byte{der, issuer.Raw}, PrivateKey: key}, keyDER
 	}
-	server, keyDER := leaf(serverID, 2)
-	client, clientKey := leaf(clientID, 3)
+	server, keyDER := leaf(serverID, 2, parsedRoot, rootKey)
+	clientIssuer, clientIssuerKey := parsedRoot, rootKey
+	if leafServer {
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		must(err)
+		// Same signing key and CA name across an EST renewal. Changing only
+		// the CA presentation must still invalidate its cached ticket.
+		for i, name := range []string{"peer-issuer.der", "renewed-peer-issuer.der"} {
+			ca := &x509.Certificate{SerialNumber: big.NewInt(10 + int64(i)),
+				Subject: pkix.Name{CommonName: tenant + " Lite Device CA"},
+				IsCA:    true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
+				NotBefore: root.NotBefore, NotAfter: root.NotAfter}
+			der, err := x509.CreateCertificate(rand.Reader, ca, parsedRoot, key.Public(), rootKey)
+			must(err)
+			clientIssuer, err = x509.ParseCertificate(der)
+			must(err)
+			must(os.WriteFile(filepath.Join(dir, name), der, 0600))
+		}
+		clientIssuerKey = key
+	}
+	client, clientKey := leaf(clientID, 3, clientIssuer, clientIssuerKey)
+	if leafServer {
+		client.Certificate = client.Certificate[:1]
+	}
 	for name, data := range map[string][]byte{"key.der": keyDER, "cert.der": append(server.Certificate[0], rootDER...), "root.der": rootDER} {
 		must(os.WriteFile(filepath.Join(dir, name), data, 0600))
 	}
@@ -114,7 +137,13 @@ func main() {
 		must(right.Wait())
 		return
 	}
-	cmd := exec.Command(os.Args[1], filepath.Join(dir, "key.der"), filepath.Join(dir, "cert.der"), filepath.Join(dir, "root.der"), strconv.Itoa(listener.Addr().(*net.TCPAddr).Port), tenant, serverID, clientID, os.Args[3])
+	args := []string{filepath.Join(dir, "key.der"), filepath.Join(dir, "cert.der"),
+		filepath.Join(dir, "root.der"), strconv.Itoa(listener.Addr().(*net.TCPAddr).Port),
+		tenant, serverID, clientID, os.Args[3]}
+	if leafServer {
+		args = append(args, filepath.Join(dir, "peer-issuer.der"), filepath.Join(dir, "renewed-peer-issuer.der"))
+	}
+	cmd := exec.Command(os.Args[1], args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	must(cmd.Start())
@@ -122,9 +151,12 @@ func main() {
 	config := &tls.Config{MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13, ServerName: "localhost", RootCAs: pool, Certificates: []tls.Certificate{client}, NextProtos: []string{"wendy-local-mesh-ble/2"}, ClientSessionCache: tls.NewLRUClientSessionCache(8)}
 	fingerprint := sha256.Sum256(rootDER)
 	alias := "wendy-local-mesh-ble/2\x00WCI\x01" + string(fingerprint[:16])
+	if leafServer {
+		alias = "wendy-local-mesh-ble/2\x00WCL\x01\x01" + string(fingerprint[:16])
+	}
 	config.NextProtos = []string{alias, "wendy-local-mesh-ble/2"}
 	rounds := 6
-	nativeClient := os.Args[3] != "server"
+	nativeClient := os.Args[3] != "server" && !leafServer
 	if nativeClient {
 		config = &tls.Config{MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13,
 			Certificates: []tls.Certificate{client}, ClientCAs: pool,
@@ -175,6 +207,9 @@ func main() {
 			conn = tls.Client(raw, roundConfig)
 		}
 		must(conn.Handshake())
+		if leafServer && conn.ConnectionState().NegotiatedProtocol != alias {
+			panic(fmt.Sprintf("round %d did not select the leaf-only ALPN", round))
+		}
 		if conn.ConnectionState().DidResume != (round%2 == 1) {
 			panic(fmt.Sprintf("round %d resumed=%t", round, conn.ConnectionState().DidResume))
 		}

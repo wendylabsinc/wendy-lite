@@ -100,8 +100,10 @@ static int public_roots(void *context, uint8_t **data, size_t *size)
 static void public_destroy(void *context) { pki_owned_free(context); }
 int main(int argc, char **argv)
 {
-    assert(argc == 9);
-    bool server = !strcmp(argv[8], "server") || !strcmp(argv[8], "pair-server");
+    assert(argc == 9 || argc == 11);
+    bool leaf_server = !strcmp(argv[8], "leaf-server");
+    assert(leaf_server == (argc == 11));
+    bool server = leaf_server || !strcmp(argv[8], "server") || !strcmp(argv[8], "pair-server");
     signal(SIGPIPE, SIG_IGN);
     assert(!mbedtls_platform_set_calloc_free(wendy_net_memory_scoped_calloc,
                                            wendy_net_memory_scoped_free));
@@ -142,9 +144,12 @@ int main(int argc, char **argv)
             assert(!wendy_pki_sha256(p->raw.p, p->raw.len, public->hashes[public->count++]));
         }
         struct pki_tls_owned_identity owned = {.key = key, .key_size = key_size,
-            .verify_at = time(NULL), .certificate_generation = round >= 4 ? 2 : 1, .mesh_certificate_policy = true,
+            .verify_at = time(NULL), .certificate_generation = !leaf_server && round >= 4 ? 2 : 1,
+            .mesh_certificate_policy = true,
             .read_der = read_der, .der_context = &source,
             .public_chain = public};
+        if (leaf_server)
+            owned.lite_issuer_der = load(argv[round < 4 ? 9 : 10], &owned.lite_issuer_size);
         const char *expected = argv[7];
         wendy_pki_connection *c = NULL;
         assert(!pki_tls_net_begin(&stream, server, argv[5], argv[6], &owned,

@@ -247,15 +247,17 @@ void pki_resumption_prepare(wendy_pki_connection *c, const char *protocol)
         !c->allocation_scope.owner || !c->public_chain || !c->public_chain->count ||
         c->public_chain->count > 8 || !c->public_chain->load_trust)
         return;
+    static const char server_domain[] = "wendy BLE device server tickets/1";
+    static const char client_domain[] = "wendy BLE device client tickets/1";
     struct {
-        uint8_t domain[32], roots[32], peer_issuers[32], chain[8][32];
+        uint8_t domain[sizeof server_domain], roots[32], peer_issuers[32], chain[8][32];
         char tenant[37], device[37];
         uint64_t generation;
         uint8_t count;
-    } binding = {0};
+    } binding;
+    memset(&binding, 0, sizeof binding);
     bool server = c->config.MBEDTLS_PRIVATE(endpoint) == MBEDTLS_SSL_IS_SERVER;
-    memcpy(binding.domain, server ? "wendy BLE device server tickets/1"
-                                  : "wendy BLE device client tickets/1", 32);
+    memcpy(binding.domain, server ? server_domain : client_domain, sizeof binding.domain);
     memcpy(binding.roots, c->public_chain->trust_hash, 32);
     if (c->lite_issuer_size &&
         wendy_pki_sha256(c->lite_issuer_der, c->lite_issuer_size, binding.peer_issuers))

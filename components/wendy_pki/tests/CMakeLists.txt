@@ -562,7 +562,7 @@ target_include_directories(resumption_interop_test PRIVATE ../src "${IDF_COMPONE
 target_link_libraries(resumption_interop_test PRIVATE pki)
 target_compile_definitions(resumption_interop_test PRIVATE WENDY_MESH_TEST_LOG=1)
 target_compile_options(resumption_interop_test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
-foreach(role client server pair)
+foreach(role client server pair leaf-server)
     add_test(NAME pki_ble_resumption_${role} COMMAND "${GO_EXECUTABLE}" run
         "${CMAKE_CURRENT_LIST_DIR}/resumption_interop_driver.go" "$<TARGET_FILE:resumption_interop_test>" mldsa65 ${role})
     set_tests_properties(pki_ble_resumption_${role} PROPERTIES TIMEOUT 90)
