@@ -1,4 +1,6 @@
+#include "wendy_conf.h"
 #include "wendy_pki_verify.h"
+#include "wendy_pki_est.h"
 #include "wendy_pki_alloc.h"
 #include "wendy_pki_work.h"
 #include "wendy_cert_bundle.h"
@@ -112,8 +114,10 @@ int pki_parse_certificate_bundle(mbedtls_x509_crt *cert, const uint8_t *data, si
 }
 static int verify_roots_direct(const uint8_t *data, size_t size)
 {
-    if (!data || !size || size > 16384 || wendy_pki_crypto_init())
+    if (!data || !size || size > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE)
         return -1;
+    if (wendy_pki_crypto_init())
+        return WENDY_PKI_VERIFY_RETRY;
     uint8_t *imported = NULL;
     if (data[0] != 0x30) {
         size_t bytes = 0;
@@ -121,7 +125,7 @@ static int verify_roots_direct(const uint8_t *data, size_t size)
             return -1;
         imported = pki_owned_malloc(bytes);
         if (!imported)
-            return -1;
+            return WENDY_PKI_VERIFY_RETRY;
         if (wendy_cert_bundle_import(data, size, imported, bytes, &bytes)) {
             pki_owned_free(imported);
             return -1;
@@ -143,6 +147,8 @@ static int verify_roots_direct(const uint8_t *data, size_t size)
         int valid = !parsed && cert.MBEDTLS_PRIVATE(ca_istrue) && !cert.next &&
                     !wendy_pki_certificate_policy(&cert, true);
         mbedtls_x509_crt_free(&cert);
+        if (parsed == MBEDTLS_ERR_X509_ALLOC_FAILED)
+            result = WENDY_PKI_VERIFY_RETRY;
         if (!valid)
             goto done;
     }
@@ -407,6 +413,48 @@ static bool valid_at(const mbedtls_x509_crt *cert, time_t now)
     return !cert_time(&cert->valid_from, &start) && !cert_time(&cert->valid_to, &end) &&
         start <= now && end > now;
 }
+
+bool pki_certificate_self_issued(const mbedtls_x509_crt *crt)
+{
+    return crt->subject_raw.len == crt->issuer_raw.len &&
+           !memcmp(crt->subject_raw.p, crt->issuer_raw.p, crt->subject_raw.len);
+}
+
+static bool lite_device_name(const mbedtls_x509_name *name, const char *tenant)
+{
+    static const char suffix[] = " Lite Device CA";
+    if (!tenant || strlen(tenant) < 36)
+        return false;
+    for (; name; name = name->next)
+        if (!MBEDTLS_OID_CMP(MBEDTLS_OID_AT_CN, &name->oid) &&
+            name->val.len == 36 + sizeof suffix - 1 && !memcmp(name->val.p, tenant, 36) &&
+            !memcmp(name->val.p + 36, suffix, sizeof suffix - 1))
+            return true;
+    return false;
+}
+
+bool pki_lite_device_ca(const mbedtls_x509_crt *crt, const char *tenant)
+{
+    return crt->MBEDTLS_PRIVATE(ca_istrue) && lite_device_name(&crt->subject, tenant);
+}
+
+bool pki_lite_issuer_path(const mbedtls_x509_crt *chain, const char *tenant)
+{
+    if (!chain || !pki_lite_device_ca(chain, tenant))
+        return false;
+    unsigned count = 0;
+    for (const mbedtls_x509_crt *issuer = chain; issuer; issuer = issuer->next) {
+        if (++count >= WENDY_CERT_BUNDLE_MAX_CERTS || !issuer->raw.len ||
+            !issuer->MBEDTLS_PRIVATE(ca_istrue) || pki_certificate_self_issued(issuer) ||
+            wendy_pki_certificate_policy(issuer, false))
+            return false;
+        const mbedtls_x509_crt *parent = issuer->next;
+        if (parent && (issuer->issuer_raw.len != parent->subject_raw.len ||
+            memcmp(issuer->issuer_raw.p, parent->subject_raw.p, parent->subject_raw.len)))
+            return false;
+    }
+    return true;
+}
 uint32_t pki_parsed_date_flags(const mbedtls_x509_crt *cert, time_t now)
 {
     time_t start, end;
@@ -504,6 +552,8 @@ static int verify_chain_parsed(mbedtls_x509_crt *leaf, mbedtls_x509_crt **certs,
         path[i]->next = saved_next[i];
     for (size_t i = 0; i < valid_count; i++)
         valid[i]->next = anchor_next[i];
+    if (verified == MBEDTLS_ERR_X509_ALLOC_FAILED)
+        return WENDY_PKI_VERIFY_RETRY;
     if (verified || flags)
         return -1;
     if (not_before)
@@ -519,17 +569,287 @@ static int verify_chain(mbedtls_x509_crt *leaf, mbedtls_x509_crt **certs, int co
     const struct wendy_pki_certificate_time *policy, time_t *not_before,
     time_t *issuer_not_before, time_t *expires)
 {
-    if (!roots || !size || size > 16384)
+    if (!roots || !size || size > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE)
         return -1;
     /* The caller's DER bundle remains immutable until this synchronous path
      * check ends. Borrow its payload while checking policy and signatures. */
     mbedtls_x509_crt anchors;
     mbedtls_x509_crt_init(&anchors);
-    int result = pki_parse_certificate_bundle(&anchors, roots, size, true)
-                     ? -1
-                     : verify_chain_parsed(leaf, certs, count, &anchors, now, policy, not_before, issuer_not_before, expires);
+    int parsed = pki_parse_certificate_bundle(&anchors, roots, size, true);
+    int result = parsed == MBEDTLS_ERR_X509_ALLOC_FAILED ? WENDY_PKI_VERIFY_RETRY : parsed ? -1 :
+        verify_chain_parsed(leaf, certs, count, &anchors, now, policy, not_before, issuer_not_before, expires);
     mbedtls_x509_crt_free(&anchors);
     return result;
+}
+
+/* A CMS certificate set is unordered. Link the one advertised Lite path by
+ * issuer name, then let the existing verifier check signatures and dates. */
+static bool same_name(const mbedtls_x509_buf *a, const mbedtls_x509_buf *b)
+{
+    return a->len == b->len && a->len && !memcmp(a->p, b->p, a->len);
+}
+
+static bool tenant_intermediate_label(const mbedtls_x509_crt *issuer,
+                                      struct pki_est_classical_scope *scope)
+{
+    static const char suffix[] = " Intermediate CA";
+    for (const mbedtls_x509_name *name = &issuer->subject; name; name = name->next) {
+        if (MBEDTLS_OID_CMP(MBEDTLS_OID_AT_CN, &name->oid))
+            continue;
+        size_t suffix_size = sizeof suffix - 1, size = name->val.len;
+        if (size <= suffix_size || size - suffix_size >= sizeof scope->label ||
+            memcmp(name->val.p + size - suffix_size, suffix, suffix_size) ||
+            memchr(name->val.p, 0, size))
+            return false;
+        memcpy(scope->label, name->val.p, size - suffix_size);
+        scope->label[size - suffix_size] = 0;
+        return true;
+    }
+    return false;
+}
+
+struct est_order_job {
+    struct pki_est_stream *stream;
+    const char *tenant;
+    const struct pki_est_cert *own;
+    struct pki_est_classical_scope *scope;
+    int result;
+};
+
+static void est_order(void *context)
+{
+    struct est_order_job *job = context;
+    struct pki_est_stream *s = job->stream;
+    mbedtls_x509_crt *parsed[WENDY_CERT_BUNDLE_MAX_CERTS] = {0}, *own = NULL;
+    struct pki_est_cert ordered[WENDY_CERT_BUNDLE_MAX_CERTS];
+    unsigned used = 0;
+    int leaf = -1;
+    if (s->count < 2 || s->count >= WENDY_CERT_BUNDLE_MAX_CERTS)
+        return;
+    for (size_t i = 0; i < s->count; i++) {
+        parsed[i] = parse_cert_borrowed(s->certs[i].der, s->certs[i].size);
+        if (!parsed[i] || pki_certificate_self_issued(parsed[i]) ||
+            !parsed[i]->MBEDTLS_PRIVATE(ca_istrue) || wendy_pki_certificate_policy(parsed[i], false))
+            goto done;
+        if (!pki_lite_device_ca(parsed[i], job->tenant))
+            continue;
+        der spki = {parsed[i]->pk_raw.p, NULL, parsed[i]->pk_raw.len, 0, 0}, key;
+        if (leaf >= 0 || parsed[i]->MBEDTLS_PRIVATE(max_pathlen) != 1 ||
+            take(&spki, 0x30, &key) || spki.n || !ec_public_key(key, false))
+            goto done;
+        leaf = (int)i;
+    }
+    if (leaf < 0)
+        goto done;
+    if (job->own) {
+        own = parse_cert_borrowed(job->own->der, job->own->size);
+        if (!own || !same_name(&parsed[leaf]->pk_raw, &own->pk_raw) ||
+            !same_name(&parsed[leaf]->subject_raw, &own->subject_raw))
+            goto done;
+    }
+    int current = leaf;
+    for (size_t i = 0; i < s->count; i++) {
+        ordered[i] = s->certs[current];
+        used |= 1U << current;
+        if (i + 1 == s->count)
+            break;
+        int parent = -1;
+        for (size_t j = 0; j < s->count; j++) {
+            if ((used & (1U << j)) ||
+                !same_name(&parsed[current]->issuer_raw, &parsed[j]->subject_raw))
+                continue;
+            if (parent >= 0)
+                goto done;
+            parent = (int)j;
+        }
+        if (parent < 0)
+            goto done;
+        if (i == 0 && job->scope) {
+            size_t size = parsed[parent]->subject_raw.len;
+            if (size > sizeof job->scope->issuer ||
+                !tenant_intermediate_label(parsed[parent], job->scope))
+                goto done;
+            memcpy(job->scope->issuer, parsed[parent]->subject_raw.p, size);
+            job->scope->issuer_size = size;
+        }
+        current = parent;
+    }
+    memcpy(s->certs, ordered, s->count * sizeof *ordered);
+    job->result = 0;
+done:
+    free_cert(own);
+    for (size_t i = 0; i < s->count; i++)
+        free_cert(parsed[i]);
+}
+
+int pki_est_lite_order(struct pki_est_stream *stream, const char *tenant,
+                       const struct pki_est_cert *own, struct pki_est_classical_scope *scope)
+{
+    struct est_order_job job = {stream, tenant, own, scope, -1};
+    return wendy_pki_work_run(est_order, &job) ? -1 : job.result;
+}
+
+static int est_regular_role(const mbedtls_x509_crt *cert, const struct pki_est_classical_scope *scope)
+{
+    if (cert->MBEDTLS_PRIVATE(max_pathlen) != 1 || cert->issuer_raw.len != scope->issuer_size ||
+        memcmp(cert->issuer_raw.p, scope->issuer, scope->issuer_size))
+        return 0;
+    size_t prefix = strlen(scope->label);
+    for (const mbedtls_x509_name *name = &cert->subject; name; name = name->next) {
+        if (MBEDTLS_OID_CMP(MBEDTLS_OID_AT_CN, &name->oid) || name->val.len <= prefix ||
+            memcmp(name->val.p, scope->label, prefix))
+            continue;
+        const uint8_t *suffix = name->val.p + prefix;
+        size_t size = name->val.len - prefix;
+        if ((size == sizeof " Identity CA" - 1 && !memcmp(suffix, " Identity CA", size)) ||
+            (size == sizeof " Device Identity CA" - 1 && !memcmp(suffix, " Device Identity CA", size)))
+            return 1;
+        if (size == sizeof " Operator Authority CA" - 1 && !memcmp(suffix, " Operator Authority CA", size))
+            return 2;
+    }
+    return 0;
+}
+
+int pki_est_keep_regular(const uint8_t *der, size_t size, void *context)
+{
+    mbedtls_x509_crt *cert = parse_cert_borrowed(der, size);
+    if (!cert)
+        return -1;
+    /* Retain issuer material until verification. A pathLen=0 CA from another
+     * branch is neither a candidate nor an issuer for these candidates. */
+    int keep = cert->MBEDTLS_PRIVATE(ca_istrue) &&
+        (cert->MBEDTLS_PRIVATE(max_pathlen) != 1 || est_regular_role(cert, context));
+    free_cert(cert);
+    return keep;
+}
+
+struct est_path {
+    mbedtls_x509_crt *parts[WENDY_CERT_BUNDLE_MAX_CERTS];
+    mbedtls_x509_crt *const *issuers;
+    mbedtls_x509_crt *roots;
+    unsigned issuer_count, remaining;
+    time_t now;
+};
+
+/* During tenant rotation two parent certificates can have the same subject
+ * and different keys. Try their actual signature paths, not whichever
+ * certificate the CMS set happened to put first. */
+static bool est_path_valid(struct est_path *path, unsigned count)
+{
+    if (!path->remaining)
+        return false;
+    path->remaining--;
+    mbedtls_x509_crt *tail = path->parts[count - 1];
+    for (mbedtls_x509_crt *root = path->roots; root; root = root->next) {
+        if (!same_name(&tail->issuer_raw, &root->subject_raw))
+            continue;
+        mbedtls_x509_crt anchor = *root;
+        anchor.next = NULL;
+        if (!verify_chain_parsed(path->parts[0], path->parts, (int)count, &anchor,
+                                 path->now, NULL, NULL, NULL, NULL))
+            return true;
+    }
+    if (count == WENDY_CERT_BUNDLE_MAX_CERTS)
+        return false;
+    for (unsigned i = 0; i < path->issuer_count; i++) {
+        mbedtls_x509_crt *issuer = path->issuers[i];
+        if (!same_name(&tail->issuer_raw, &issuer->subject_raw) || !valid_at(issuer, path->now))
+            continue;
+        unsigned j = 0;
+        while (j < count && path->parts[j] != issuer)
+            j++;
+        if (j != count)
+            continue;
+        path->parts[count] = issuer;
+        if (est_path_valid(path, count + 1))
+            return true;
+    }
+    return false;
+}
+
+static bool est_verified(mbedtls_x509_crt *leaf, mbedtls_x509_crt **issuers,
+                          unsigned issuer_count, mbedtls_x509_crt *roots, time_t now)
+{
+    struct est_path path = {.parts = {leaf}, .issuers = issuers, .roots = roots,
+        .issuer_count = issuer_count, .remaining = 32, .now = now};
+    return est_path_valid(&path, 1);
+}
+
+struct est_pins_job {
+    struct pki_est_stream *stream;
+    const struct pki_est_cert *signed_lite;
+    const struct pki_est_classical_scope *scope;
+    time_t now;
+    int result;
+};
+
+static void est_pins(void *context)
+{
+    struct est_pins_job *job = context;
+    struct pki_est_stream *s = job->stream;
+    mbedtls_x509_crt *certs[PKI_EST_MAX_CERTS] = {0};
+    mbedtls_x509_crt *issuers[WENDY_CERT_BUNDLE_MAX_CERTS], *roots = NULL;
+    mbedtls_x509_crt *lite = parse_cert_borrowed(job->signed_lite->der, job->signed_lite->size);
+    bool selected[PKI_EST_MAX_CERTS] = {0};
+    unsigned n = 0;
+    if (!lite)
+        goto done;
+    for (size_t i = 0; i < s->count; i++) {
+        mbedtls_x509_crt *cert = certs[i] = parse_cert_borrowed(s->certs[i].der, s->certs[i].size);
+        if (!cert || !cert->MBEDTLS_PRIVATE(ca_istrue))
+            goto done;
+        if (pki_certificate_self_issued(cert)) {
+            cert->next = roots;
+            roots = cert;
+        } else if (cert->MBEDTLS_PRIVATE(max_pathlen) != 1) {
+            if (n == WENDY_CERT_BUNDLE_MAX_CERTS)
+                goto done;
+            issuers[n++] = cert;
+        }
+    }
+    /* The bundle is authoritative because its tenant-specific HTTPS endpoint
+     * was authenticated. Its platform root is only used to verify this bundle. */
+    if (!est_verified(lite, issuers, n, roots, job->now))
+        goto done;
+    for (size_t i = 0; i < s->count; i++) {
+        mbedtls_x509_crt *cert = certs[i];
+        int role = est_regular_role(cert, job->scope);
+        if (!role || !valid_at(cert, job->now))
+            continue;
+        if (!est_verified(cert, issuers, n, roots, job->now))
+            goto done;
+        selected[i] = true;
+    }
+    /* A complete tenant bundle anchored by the enrolled Lite CA can withdraw
+     * either role, including revocation of its last CA without a successor. */
+    job->result = 0;
+done:
+    free_cert(lite);
+    for (size_t i = 0; i < s->count; i++) {
+        if (certs[i])
+            certs[i]->next = NULL;
+        free_cert(certs[i]);
+    }
+    if (!job->result) {
+        size_t count = 0, stored = 0;
+        for (size_t i = 0; i < s->count; i++) {
+            if (selected[i]) {
+                stored += s->certs[i].size;
+                s->certs[count++] = s->certs[i];
+            } else {
+                free(s->certs[i].der);
+            }
+        }
+        s->count = count;
+        s->stored = stored;
+    }
+}
+
+int pki_est_regular_pins(struct pki_est_stream *stream, const struct pki_est_cert *signed_lite,
+                         const struct pki_est_classical_scope *scope, time_t now)
+{
+    struct est_pins_job job = {stream, signed_lite, scope, now, -1};
+    return wendy_pki_work_run(est_pins, &job) ? -1 : job.result;
 }
 
 static int tsa_eku(der cert)
@@ -759,7 +1079,9 @@ int pki_verify_parsed_identity_policy(mbedtls_x509_crt *chain, mbedtls_pk_contex
     int verified = anchors
                        ? verify_chain_parsed(chain, certs, count, anchors, now, policy, not_before, NULL, &chain_expires)
                        : verify_chain(chain, certs, count, roots, roots_size, now, policy, not_before, NULL, &chain_expires);
-    if (!count || verified || chain->MBEDTLS_PRIVATE(ca_istrue) ||
+    if (verified)
+        return verified;
+    if (!count || chain->MBEDTLS_PRIVATE(ca_istrue) ||
         !has_eku(chain, MBEDTLS_OID_CLIENT_AUTH, MBEDTLS_OID_SIZE(MBEDTLS_OID_CLIENT_AUTH)) ||
         !has_eku(chain, MBEDTLS_OID_SERVER_AUTH, MBEDTLS_OID_SIZE(MBEDTLS_OID_SERVER_AUTH)) ||
         single_uri(chain, principal) || mbedtls_pk_check_pair(&chain->pk, key) ||
@@ -789,18 +1111,29 @@ static int verify_identity_direct(const uint8_t *pem, size_t size, const uint8_t
     mbedtls_x509_crt_init(&chain); mbedtls_pk_init(&private_key);
     int result = -1;
     der key_der = {key, key, key_size, key_size, 0}, key_sequence;
-    if (take(&key_der, 0x30, &key_sequence) || key_der.n ||
-        pki_parse_certificate_bundle(&chain, pem, size, true))
+    if (take(&key_der, 0x30, &key_sequence) || key_der.n)
         goto done;
+    int parsed = pki_parse_certificate_bundle(&chain, pem, size, true);
+    if (parsed) {
+        result = parsed == MBEDTLS_ERR_X509_ALLOC_FAILED ? WENDY_PKI_VERIFY_RETRY : -1;
+        goto done;
+    }
     // A date that does not parse stays 0; the chain check below rejects it.
     if (leaf && cert_time(&chain.valid_from, &leaf->not_before))
         leaf->not_before = 0;
     if (leaf && cert_time(&chain.valid_to, &leaf->not_after))
         leaf->not_after = 0;
-    if (mbedtls_pk_parse_key(&private_key, key, key_size, NULL, 0))
+    parsed = mbedtls_pk_parse_key(&private_key, key, key_size, NULL, 0);
+    if (parsed) {
+        result = parsed == MBEDTLS_ERR_PK_ALLOC_FAILED ? WENDY_PKI_VERIFY_RETRY : -1;
         goto done;
+    }
     result = pki_verify_parsed_identity(&chain, &private_key, roots, roots_size, NULL, principal,
                                         now, expires);
+    static const char prefix[] = "spiffe://wendy.sh/tenant/";
+    if (!result && leaf && chain.MBEDTLS_PRIVATE(sig_pk) == MBEDTLS_PK_SIGALG_ECDSA &&
+        !strncmp(principal, prefix, sizeof prefix - 1))
+        leaf->classical_lite = lite_device_name(&chain.issuer, principal + sizeof prefix - 1);
 done:
     mbedtls_pk_free(&private_key); mbedtls_x509_crt_free(&chain); return result;
 }
@@ -984,7 +1317,43 @@ static void roots_cpu(void *context)
 int wendy_pki_verify_roots(const uint8_t *data, size_t size)
 {
     struct roots_cpu j = {data, size, -1};
-    return wendy_pki_work_run(roots_cpu, &j) ? -1 : j.result;
+    return wendy_pki_work_run(roots_cpu, &j) ? WENDY_PKI_VERIFY_RETRY : j.result;
+}
+
+struct lite_issuer_check {
+    const uint8_t *der, *roots;
+    size_t size, roots_size;
+    const char *tenant;
+    time_t now;
+    int result;
+};
+
+static void verify_lite_issuers(void *context)
+{
+    struct lite_issuer_check *j = context;
+    mbedtls_x509_crt chain;
+    mbedtls_x509_crt_init(&chain);
+    int parsed = pki_parse_certificate_bundle(&chain, j->der, j->size, true);
+    if (parsed == MBEDTLS_ERR_X509_ALLOC_FAILED)
+        j->result = WENDY_PKI_VERIFY_RETRY;
+    else if (!parsed && pki_lite_issuer_path(&chain, j->tenant)) {
+        mbedtls_x509_crt *parts[WENDY_CERT_BUNDLE_MAX_CERTS];
+        int count = 0;
+        for (mbedtls_x509_crt *cert = &chain; cert; cert = cert->next)
+            parts[count++] = cert;
+        j->result = verify_chain(&chain, parts, count, j->roots, j->roots_size,
+                                  j->now, NULL, NULL, NULL, NULL);
+    }
+    mbedtls_x509_crt_free(&chain);
+}
+
+int wendy_pki_verify_lite_issuers(const uint8_t *der, size_t size,
+    const uint8_t *roots, size_t roots_size, const char *tenant, time_t now)
+{
+    if (!der || !size || size > WENDY_CONF_MAX_DEVICE_TRUST_BUNDLE || der[0] != 0x30)
+        return -1;
+    struct lite_issuer_check job = {der, roots, size, roots_size, tenant, now, -1};
+    return wendy_pki_work_run(verify_lite_issuers, &job) ? WENDY_PKI_VERIFY_RETRY : job.result;
 }
 struct time_cpu {
     const uint8_t *input, *nonce, *roots;
@@ -1027,7 +1396,7 @@ int wendy_pki_verify_identity(const uint8_t *cert, size_t size, const uint8_t *r
         *leaf = (struct wendy_pki_validity){0};
     struct identity_cpu j = {cert,     roots,     key, size,    roots_size,
                              key_size, principal, now, expires, leaf, -1};
-    return wendy_pki_work_run(identity_cpu, &j) ? -1 : j.result;
+    return wendy_pki_work_run(identity_cpu, &j) ? WENDY_PKI_VERIFY_RETRY : j.result;
 }
 
 int wendy_pki_operator_chain_policy(const uint8_t *const *data, const size_t *sizes, size_t count,

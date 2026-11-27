@@ -14,6 +14,15 @@ static inline void wcom_enrollment_capabilities(WendyComEnrollmentChallenge *cha
     challenge->cloud_enrollment_supported = false;
     challenge->has_mldsa_verification_supported = true;
     challenge->mldsa_verification_supported = false;
+    challenge->has_mldsa_peer_verification_supported = true;
+    challenge->mldsa_peer_verification_supported = false;
+#if CONFIG_WENDY_PKI && CONFIG_MBEDTLS_SSL_TLS1_3_SIG_MLDSA65
+    challenge->mldsa_peer_verification_supported = true;
+#if CONFIG_WENDY_NET_PEER
+    /* Enrollment configuration can include tenant mesh trust. */
+    challenge->mesh_trust_supported = true;
+#endif
+#endif
 #if CONFIG_WENDY_PKI
     challenge->enrollment_reset_supported = true;
     challenge->uuid_enrollment_supported = true;
