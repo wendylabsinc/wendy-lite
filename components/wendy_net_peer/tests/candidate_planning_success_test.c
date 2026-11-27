@@ -41,16 +41,24 @@ int main(void)
     /* Passive discovery never prevents an ordinarily authenticated accept. */
     assert(!wn_candidate_commit(&passive, (unsigned)incoming, lower));
     assert(!strcmp(passive.candidates[incoming].device, lower));
-    /* Production WendyOS BLE routers keep the higher UUID's outgoing
-     * connection. Check both arrival orders: the lower endpoint must keep
-     * incoming while the higher endpoint keeps outgoing. */
-    assert(wn_link_replaces(lower, higher, false, true));
-    assert(wn_link_replaces(higher, lower, true, false));
-    assert(!wn_link_replaces(lower, higher, true, false));
-    assert(!wn_link_replaces(higher, lower, false, true));
-    for (unsigned direction = 0; direction < 2; direction++) {
-        assert(!wn_link_replaces(lower, higher, direction, direction));
-        assert(!wn_link_replaces(higher, lower, direction, direction));
+    /* Cover both completion orders and both ends of the same connection.
+     * Linux uses the higher UUID on BLE and the lower UUID on LAN/NAN. */
+    const enum wn_medium media[] = {WN_BLE, WN_LAN, WN_NAN};
+    for (unsigned i = 0; i < sizeof media / sizeof media[0]; i++) {
+        enum wn_medium medium = media[i];
+        bool lower_retains_incoming = medium == WN_BLE;
+        assert(wn_link_replaces(medium, lower, higher,
+                                !lower_retains_incoming, lower_retains_incoming));
+        assert(!wn_link_replaces(medium, lower, higher,
+                                 lower_retains_incoming, !lower_retains_incoming));
+        assert(wn_link_replaces(medium, higher, lower,
+                                lower_retains_incoming, !lower_retains_incoming));
+        assert(!wn_link_replaces(medium, higher, lower,
+                                 !lower_retains_incoming, lower_retains_incoming));
+        for (unsigned incoming = 0; incoming < 2; incoming++) {
+            assert(!wn_link_replaces(medium, lower, higher, incoming, incoming));
+            assert(!wn_link_replaces(medium, higher, lower, incoming, incoming));
+        }
     }
     /* Full-router mode clears the single-active selector while retaining
      * several links. Repeated normal BLE reports still retain the learned

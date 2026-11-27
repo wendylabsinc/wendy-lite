@@ -142,10 +142,11 @@ void wn_candidate_release(struct wn_selection *selection, unsigned slot);
  * later declines a redundant path. Does not activate a route or clear retries. */
 int wn_candidate_authenticated(struct wn_selection *, unsigned, const char *verified_device);
 int wn_candidate_commit(struct wn_selection *selection, unsigned slot, const char *verified_device);
-/* After mTLS and the bidirectional hello, converge crossed connections to the
- * higher UUID's dial, matching WendyOS BLE routers. Same-direction duplicates keep the incumbent. */
-bool wn_link_replaces(const char *self, const char *verified_peer, bool incumbent_incoming,
-                      bool replacement_incoming);
+/* For crossed authenticated carriers, BLE keeps the higher UUID's dial
+ * and IP carriers keep the lower UUID's dial. Same-direction duplicates
+ * keep the incumbent. */
+bool wn_link_replaces(enum wn_medium medium, const char *self, const char *verified_peer,
+                      bool incumbent_incoming, bool replacement_incoming);
 
 struct wn_assembler {
     uint8_t packet[WN_MTU];
