@@ -21,12 +21,17 @@
 // The local transport can select a smaller per-frame budget.
 #define _IDEAL_MSG_SIZE (10 * 1024)
 
-// A SensorData with the payload reduced to its tag and length: the five
-// scalars (6 + 6 + 6 + 11 + 6) + payload tag and length (4) = 39 bytes at worst.
-#define _INNER_SIZE 40
+// A SensorData with the payload reduced to its tag and length, at worst: the
+// five scalars every chunk has (6 + 6 + 6 + 11 + 6), the timestamp uncertainty
+// a frame may carry (6) and the payload's tag and length (4).
+#define _INNER_WORST (6 + 6 + 6 + 11 + 6 + 6 + 4)
+#define _INNER_SIZE 46
 
-// The above, wrapped: sensor_data tag (1) + its length as a varint (5) = 45.
-#define _PREFIX_SIZE 48
+// The above, wrapped: sensor_data tag (1) + its length as a varint (5).
+#define _PREFIX_SIZE 52
+
+_Static_assert(_INNER_SIZE >= _INNER_WORST, "a chunk's SensorData scalars must fit");
+_Static_assert(_PREFIX_SIZE >= _INNER_SIZE + 1 + 5, "the wrapped scalars must fit the prefix");
 
 _Static_assert(_IDEAL_MSG_SIZE - sizeof(struct wcom_agent_msg_header) <= UINT16_MAX,
                "body_size in the frame header is 16 bits");
@@ -49,6 +54,9 @@ struct sensor_frame {
     uint32_t frame_seq;
     uint32_t chunk_seq;
     uint64_t ts_us;
+    // Sent only when the producer measured it; see wcom_sensor_stream_push_timed().
+    bool has_ts_uncertainty;
+    uint32_t ts_uncertainty_us;
     const uint8_t *data;
     size_t size;
     size_t offset;
@@ -73,16 +81,6 @@ static struct sensor_stream {
 static uint64_t _schedule_clock;
 
 static void _done_sending_chunk(int link_id, const struct wcom_tx_chunk *chunk, bool success);
-
-// Writes the payload tag and length but not the bytes: those go out as their
-// own tx chunk, straight from the producer's buffer. Every length that has to
-// cover them is worked out arithmetically in _send_chunk() instead.
-static bool _encode_payload_hole(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
-{
-    size_t size = *(const size_t *)*arg;
-    return pb_encode_tag_for_field(stream, field) &&
-           pb_encode_varint(stream, size);
-}
 
 // Queues the next chunk of this frame. Anything but OK
 // means nothing was queued: BAD_STATE if the client is gone, UNKNOWN_ERROR if
@@ -116,14 +114,21 @@ static WendyComResult _send_chunk(struct sensor_frame *frame)
     sensor_data.frame_seq = frame->frame_seq;
     sensor_data.chunk_seq = frame->chunk_seq;
     sensor_data.ts_us = frame->ts_us;
+    sensor_data.has_ts_uncertainty_us = frame->has_ts_uncertainty;
+    sensor_data.ts_uncertainty_us = frame->ts_uncertainty_us;
     sensor_data.flags = flags;
-    // size is a stack local, consumed synchronously by the encode below.
-    sensor_data.payload.funcs.encode = _encode_payload_hole;
-    sensor_data.payload.arg = &size;
 
+    // The payload has no encoder, so pb_encode() writes the scalars only. Its
+    // tag and length are appended by hand, last: the bytes themselves go out
+    // as their own tx chunk, straight from the producer's buffer, and have to
+    // follow their length directly. A field numbered above the payload's would
+    // otherwise be encoded between the two. Every length that has to cover the
+    // payload bytes is worked out arithmetically below.
     uint8_t inner[_INNER_SIZE];
     pb_ostream_t inner_stream = pb_ostream_from_buffer(inner, sizeof(inner));
-    if (!pb_encode(&inner_stream, wendy_lite_sensorlink_SensorData_fields, &sensor_data)) {
+    if (!pb_encode(&inner_stream, wendy_lite_sensorlink_SensorData_fields, &sensor_data) ||
+        !pb_encode_tag(&inner_stream, PB_WT_STRING, wendy_lite_sensorlink_SensorData_payload_tag) ||
+        !pb_encode_varint(&inner_stream, size)) {
         ESP_LOGE(TAG, "pb_encode chunk: %s", PB_GET_ERROR(&inner_stream));
         return WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR;
     }
@@ -313,10 +318,10 @@ WendyComResult wcom_sensor_stream_begin(int client_id, uint32_t channel_id)
     return WendyComResult_WENDY_COM_RESULT_BUSY;
 }
 
-WendyComResult wcom_sensor_stream_push(int client_id, uint32_t channel_id,
-                                       const void *data, size_t size,
-                                       uint64_t ts_us,
-                                       void (*done)(uint32_t channel_id))
+static WendyComResult _push(int client_id, uint32_t channel_id,
+                            const void *data, size_t size,
+                            uint64_t ts_us, bool has_ts_uncertainty, uint32_t ts_uncertainty_us,
+                            void (*done)(uint32_t channel_id))
 {
     struct sensor_stream *stream = _find_stream(client_id, channel_id);
     if (!stream || !stream->active || !data || size == 0)
@@ -347,12 +352,30 @@ WendyComResult wcom_sensor_stream_push(int client_id, uint32_t channel_id,
         .channel_id = channel_id,
         .frame_seq = stream->frame_seq++,
         .ts_us = ts_us,
+        .has_ts_uncertainty = has_ts_uncertainty,
+        .ts_uncertainty_us = ts_uncertainty_us,
         .data = data,
         .size = size,
         .done = done,
     };
     _schedule_link(link_id);
     return WendyComResult_WENDY_COM_RESULT_OK;
+}
+
+WendyComResult wcom_sensor_stream_push(int client_id, uint32_t channel_id,
+                                       const void *data, size_t size,
+                                       uint64_t ts_us,
+                                       void (*done)(uint32_t channel_id))
+{
+    return _push(client_id, channel_id, data, size, ts_us, false, 0, done);
+}
+
+WendyComResult wcom_sensor_stream_push_timed(int client_id, uint32_t channel_id,
+                                             const void *data, size_t size,
+                                             uint64_t ts_us, uint32_t ts_uncertainty_us,
+                                             void (*done)(uint32_t channel_id))
+{
+    return _push(client_id, channel_id, data, size, ts_us, true, ts_uncertainty_us, done);
 }
 
 WendyComResult wcom_sensor_stream_end(int client_id, uint32_t channel_id)

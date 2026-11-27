@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "wendy_com.h"
@@ -41,6 +42,48 @@ void wendy_core_sensor_stream_push(int client_id, uint32_t channel_id, const voi
 WendyComResult wendy_core_sensor_stream_try_push(int client_id, uint32_t channel_id,
                                                 const void *data, size_t size, uint64_t ts_us,
                                                 void (*done)(uint32_t channel_id));
+
+/// The time of a sample taken between two readings of esp_timer_get_time(),
+/// one right before it and one right after. Stores the midpoint in *ts_us and
+/// half the interval, rounded up, in *uncertainty_us: the sample was taken
+/// within *ts_us ± that many microseconds. Pass both to one of the timed
+/// pushes below.
+///
+/// Returns false when the readings are too far apart for that bound to fit
+/// its 32 bits, over two hours. *ts_us is still the midpoint, but there is no
+/// bound to send: push the frame with a plain push, which makes no claim,
+/// rather than with a smaller bound than the true one.
+static inline bool wendy_core_sensor_sample_time(uint64_t before_us, uint64_t after_us,
+                                                 uint64_t *ts_us, uint32_t *uncertainty_us)
+{
+    // The two readings bound the sample whichever way round they are given.
+    uint64_t first = before_us < after_us ? before_us : after_us;
+    uint64_t span = (before_us < after_us ? after_us : before_us) - first;
+    uint64_t half = span / 2 + span % 2;
+    *ts_us = first + span / 2;
+    if (half > UINT32_MAX)
+        return false;
+    *uncertainty_us = (uint32_t)half;
+    return true;
+}
+
+/// Like wendy_core_sensor_stream_push(), and also tells the host how well
+/// ts_us is known: the frame's first sample was taken within
+/// ts_us ± ts_uncertainty_us microseconds. Use it only for a bound the caller
+/// measured, such as the one wendy_core_sensor_sample_time() stores. The
+/// plain pushes make no claim, and the host then takes the uncertainty as
+/// unknown, not as zero.
+void wendy_core_sensor_stream_push_timed(int client_id, uint32_t channel_id,
+                                         const void *data, size_t size,
+                                         uint64_t ts_us, uint32_t ts_uncertainty_us,
+                                         void (*done)(uint32_t channel_id));
+
+/// Like wendy_core_sensor_stream_try_push(), with the uncertainty of ts_us as
+/// in wendy_core_sensor_stream_push_timed().
+WendyComResult wendy_core_sensor_stream_try_push_timed(int client_id, uint32_t channel_id,
+                                                      const void *data, size_t size,
+                                                      uint64_t ts_us, uint32_t ts_uncertainty_us,
+                                                      void (*done)(uint32_t channel_id));
 
 /// Closes the stream. Call it only once the last frame's done has run.
 /// done runs once the stream is closed; from then on begin can be called

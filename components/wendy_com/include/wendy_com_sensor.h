@@ -44,6 +44,17 @@ WendyComResult wcom_sensor_stream_push(int client_id, uint32_t channel_id,
                                        uint64_t ts_us,
                                        void (*done)(uint32_t channel_id));
 
+/// Like wcom_sensor_stream_push(), and also tells the host how well ts_us is
+/// known: the frame's first sample was taken within ts_us ± ts_uncertainty_us
+/// microseconds, on the clock ts_us is read from. Use it when the caller
+/// measured that itself, for example from clock readings taken right before
+/// and right after the sample. wcom_sensor_stream_push() makes no such claim,
+/// and the host then takes the uncertainty as unknown, not as zero.
+WendyComResult wcom_sensor_stream_push_timed(int client_id, uint32_t channel_id,
+                                             const void *data, size_t size,
+                                             uint64_t ts_us, uint32_t ts_uncertainty_us,
+                                             void (*done)(uint32_t channel_id));
+
 /// Close the stream. A waiting frame is released immediately. A chunk already
 /// queued to the transport finishes before its buffer is released, and no
 /// further chunks of that frame are sent. The frame's done still runs exactly
