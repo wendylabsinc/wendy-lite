@@ -25,14 +25,15 @@ For an opt-in C5/S3 PSRAM networking experiment, see the
 [network throughput qualification profile](docs/network-throughput-profile.md).
 
 [Wendy Net](docs/wendy-net.md) connects enrolled Lite devices to other devices
-and services in the same tenant over Wi-Fi or BLE. It is off by default.
+and services in the same tenant over Wi-Fi or BLE. Firmware with a supported
+carrier enables Wendy Net by default.
 C5 devices with PSRAM can route traffic between several peers; smaller C6 devices
 use one BLE or Wi-Fi connection through a neighbour. Applications can publish
 and browse mesh services, and existing management and SensorLink operations can
 use mesh connections. The XIAO ESP32S3, ESP32-S31 Korvo-1 and Mosaico profiles
 also include this interface alongside their physical sensors and management.
 ESP32-P4 board profiles include both carriers through their ESP-Hosted C6
-radio, with mesh state in PSRAM; runtime participation still starts disabled.
+radio, with mesh state in PSRAM.
 
 ## Optional WASM support
 

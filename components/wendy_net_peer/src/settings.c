@@ -229,6 +229,38 @@ bool wn_settings_restart_due(void)
 {
     return atomic_load(&restart_ready);
 }
+/* A missing record uses the firmware defaults. An unreadable or incompatible
+ * record must not silently enable participation. */
+static esp_err_t load_saved(WendyComNetConfig *config)
+{
+    nvs_handle_t h;
+    esp_err_t result = nvs_open_from_partition("wendy_pki", "net-settings", NVS_READONLY, &h);
+    if (result != ESP_OK)
+        return result;
+    struct record r;
+    size_t size = sizeof r;
+    result = nvs_get_blob(h, "config", &r, &size);
+    nvs_close(h);
+    if (result != ESP_OK)
+        return result;
+    if (size != sizeof r || r.magic != SETTINGS_MAGIC || (r.flags & ~63u))
+        return ESP_ERR_INVALID_ARG;
+
+    WendyComNetConfig c = {.enabled = (r.flags & 1) != 0,
+                           .ble = (r.flags & 2) != 0,
+                           .infrastructure_wifi = (r.flags & 4) != 0,
+                           .nan = (r.flags & 8) != 0,
+                           .ble_profile = (WendyComBleProfile)(r.flags >> 4),
+                           .max_links = r.links,
+                           .ble_links = r.ble,
+                           .wifi_links = r.wifi,
+                           .nan_links = r.nan};
+    result = normalize(&c);
+    if (result == ESP_OK)
+        *config = c;
+    return result;
+}
+
 esp_err_t wn_settings_init(void)
 {
     esp_err_t ready = nvs_flash_init_partition("wendy_pki");
@@ -236,31 +268,16 @@ esp_err_t wn_settings_init(void)
         return ready;
     pthread_mutex_lock(&lock);
     if (!loaded) {
-        saved = (WendyComNetConfig){.ble = CONFIG_WENDY_NET_BLE && !WENDY_NET_NON_TRANSIT,
-                                    .infrastructure_wifi = CONFIG_WENDY_WIFI_ENABLED};
+        saved = (WendyComNetConfig){
+            .ble = CONFIG_WENDY_NET_BLE && (!WENDY_NET_NON_TRANSIT || !CONFIG_WENDY_WIFI_ENABLED),
+            .infrastructure_wifi = CONFIG_WENDY_WIFI_ENABLED,
+        };
+        saved.enabled = saved.ble || saved.infrastructure_wifi;
         (void)normalize(&saved);
-        nvs_handle_t h;
-        if (nvs_open_from_partition("wendy_pki", "net-settings", NVS_READONLY, &h) == ESP_OK) {
-            struct record r;
-            size_t size = sizeof r;
-            if (nvs_get_blob(h, "config", &r, &size) == ESP_OK && size == sizeof r &&
-                r.magic == SETTINGS_MAGIC && !(r.flags & ~63u)) {
-                WendyComNetConfig c = {.enabled = (r.flags & 1) != 0,
-                                       .ble = (r.flags & 2) != 0,
-                                       .infrastructure_wifi = (r.flags & 4) != 0,
-                                       .nan = (r.flags & 8) != 0,
-                                       .ble_profile = (WendyComBleProfile)(r.flags >> 4),
-                                       .max_links = r.links,
-                                       .ble_links = r.ble,
-                                       .wifi_links = r.wifi,
-                                       .nan_links = r.nan};
-                if (normalize(&c) == ESP_OK)
-                    saved = c;
-                else
-                    ESP_LOGW("net-settings",
-                             "saved policy unsupported by this firmware; mesh starts disabled");
-            }
-            nvs_close(h);
+        ready = load_saved(&saved);
+        if (ready != ESP_OK && ready != ESP_ERR_NVS_NOT_FOUND) {
+            saved.enabled = false;
+            ESP_LOGW("net-settings", "saved policy unavailable (%d); mesh starts disabled", ready);
         }
         static const struct wcom_net_delegate delegate = {
             .get = get,

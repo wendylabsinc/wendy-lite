@@ -8,7 +8,8 @@ must not touch it; established connections using other contexts can continue.
 The portable state machine performs no socket, timer or task operations.
 Its outer driver supplies I/O readiness, timer deadlines and crypto completions.
 Native and guest service adapters and WendyCom settings use the same bounded
-runtime. It is off by default; disabling it releases its tasks and managed heap.
+runtime. Firmware with a supported carrier enables it by default. Disabling it
+releases its tasks and managed heap.
 
 The existing management server registers `wendy_pki_work_enable()` when ready
 and polls CPU and I/O work for its lifetime. Shutdown first quiesces submissions,

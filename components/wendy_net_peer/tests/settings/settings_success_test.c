@@ -39,7 +39,7 @@ WendyComResult wn_peer_topology(const WendyComNetTopologyParams *params,
                                 WendyComNetTopologyPage *page)
 {
     assert(!params->cursor);
-    assert(page->has_status && !page->status.desired.enabled);
+    assert(page->has_status && page->status.desired.enabled == wn_settings_get().enabled);
     return WendyComResult_WENDY_COM_RESULT_OK;
 }
 void wnt_page_release(WendyComNetTopologyPage *page)
@@ -104,13 +104,22 @@ static void applied(uint32_t token, bool drained)
 }
 int main(void)
 {
+    have_record = true;
+    assert(wn_settings_init() == ESP_OK && !wn_settings_get().enabled && !writes);
+    have_record = loaded = false;
+    registrations = 0;
+
     bool boot_ble_selected, boot_wifi_selected;
     assert(wendy_net_peer_boot_radios(&boot_ble_selected, &boot_wifi_selected) == ESP_OK &&
            delegate && registrations == 1 && !writes);
     assert(wn_settings_init() == ESP_OK && registrations == 1);
     WendyComNetStatus status;
     uint32_t token = 999;
-    assert(delegate->get(&status) == WendyComResult_WENDY_COM_RESULT_OK && !status.desired.enabled);
+    assert(delegate->get(&status) == WendyComResult_WENDY_COM_RESULT_OK);
+    assert(status.desired.enabled && status.desired.infrastructure_wifi == !!CONFIG_WENDY_WIFI_ENABLED);
+    assert(status.desired.ble ==
+           !!(CONFIG_WENDY_NET_BLE && (!WENDY_NET_NON_TRANSIT || !CONFIG_WENDY_WIFI_ENABLED)));
+    assert(boot_ble_selected == status.desired.ble && boot_wifi_selected == !!CONFIG_WENDY_WIFI_ENABLED);
     assert(status.ble_supported == !!CONFIG_WENDY_NET_BLE &&
            status.wifi_supported == !!CONFIG_WENDY_WIFI_ENABLED && !status.nan_supported);
     WendyComNetTopologyParams query = WendyComNetTopologyParams_init_zero;
@@ -137,11 +146,7 @@ int main(void)
            !token && !writes);
 #endif
     WendyComNetConfig config = status.desired;
-    config.enabled = true;
-    if (!config.ble && !config.infrastructure_wifi) {
-        config.ble = CONFIG_WENDY_NET_BLE;
-        config.infrastructure_wifi = CONFIG_WENDY_WIFI_ENABLED;
-    }
+    config.enabled = false;
     assert(delegate->set(&config, &status, &token) == WendyComResult_WENDY_COM_RESULT_OK && token &&
            writes == 1);
     uint32_t first = token;
@@ -159,7 +164,9 @@ int main(void)
     assert(changes == 1 && !wn_settings_pending());
     assert(delegate->set(&config, &status, &token) == WendyComResult_WENDY_COM_RESULT_OK &&
            !token && writes == 1);
-    config.enabled = false;
+    loaded = false;
+    assert(wn_settings_init() == ESP_OK && !wn_settings_get().enabled && writes == 1);
+    config.enabled = true;
     assert(delegate->set(&config, &status, &token) == WendyComResult_WENDY_COM_RESULT_OK && token &&
            writes == 2);
  /* Old callbacks cannot complete a later settings generation. */
@@ -171,11 +178,11 @@ int main(void)
     now += 5000000;
     wn_settings_poll(false);
     assert(changes == 2 && !wn_settings_pending());
-    config.enabled = true;
+    config.enabled = false;
     fail_write = true;
     assert(delegate->set(&config, &status, &token) ==
                WendyComResult_WENDY_COM_RESULT_UNKNOWN_ERROR &&
-           !token && !status.desired.enabled && !wn_settings_pending());
+           !token && status.desired.enabled && !wn_settings_pending());
     fail_write = false;
     WendyComNetConfig unsupported = config;
     unsupported.nan = true;
@@ -201,6 +208,7 @@ int main(void)
            WendyComResult_WENDY_COM_RESULT_NET_ONE_CARRIER_ONLY);
     bool ble, wifi;
     assert(wendy_net_peer_boot_radios(&ble, &wifi) == ESP_OK && !ble && wifi);
+    config.enabled = true;
     config.ble = true;
     config.infrastructure_wifi = false;
     assert(delegate->set(&config, &status, &token) ==
