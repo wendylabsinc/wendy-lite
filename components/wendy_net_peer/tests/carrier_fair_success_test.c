@@ -221,6 +221,35 @@ int main(void)
     assert(c.queued == before && allocations == objects && c.class_frames[WNC_IP] == 1);
     drain(&c);
     wnc_deinit(&c);
+    /* A packed writer keeps the exact legacy stream, even when TLS blocks
+     * after seeing the bundle and new higher-priority work arrives. */
+    struct wire legacy = {0};
+    for (unsigned batched = 0; batched < 2; batched++) {
+        wire = (struct wire){.block = true};
+        init(&c, &wire, scratch, 4);
+        c.batch_ip = batched != 0;
+        for (unsigned id = 0; id < 3; id++)
+            assert(!wnc_enqueue_packet(&c, packet, sizeof packet, id));
+        assert(wnc_pump(&c, 1000, receive, NULL) == 0);
+        if (batched)
+            assert(wire.retry_size == 3 * (WN_MTU + 28));
+        drain(&c);
+        if (!batched)
+            legacy = wire;
+        else
+            assert(wire.size == legacy.size && !memcmp(wire.data, legacy.data, wire.size));
+        wnc_deinit(&c);
+    }
+    wire = (struct wire){.block = true};
+    init(&c, &wire, scratch, 4);
+    c.batch_ip = true;
+    for (unsigned id = 0; id < 3; id++)
+        assert(!wnc_enqueue_packet(&c, packet, sizeof packet, id));
+    assert(wnc_pump(&c, 1000, receive, NULL) == 0);
+    enqueue(&c, 'R', 0);
+    drain(&c);
+    assert(wire.size == legacy.size + 8 && !memcmp(wire.data, legacy.data, legacy.size));
+    wnc_deinit(&c);
     /* Normal OFF while several queues own frames releases every allocation. */
     wire = (struct wire){0};
     init(&c, &wire, scratch, 4);

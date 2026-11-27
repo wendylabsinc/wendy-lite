@@ -2343,6 +2343,10 @@ static void record_failure(const char *operation, int error)
         return;
     ESP_LOGW("wendy_pki", "TLS record %s failed: tls=%d", operation, error);
 }
+void wendy_pki_retain_input_record(wendy_pki_connection *c, size_t bytes)
+{
+    c->retained_input_record = bytes;
+}
 ssize_t wendy_pki_read(void* v, void* b, size_t n)
 {
     wendy_pki_connection* c = v;
@@ -2354,7 +2358,7 @@ ssize_t wendy_pki_read(void* v, void* b, size_t n)
     int received = mbedtls_ssl_read(&c->ssl, b, n);
     record_failure("read", received);
 #if defined(MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH)
-    if (c->compact_records)
+    if (c->compact_records && c->ssl.MBEDTLS_PRIVATE(in_buf_len) > c->retained_input_record)
         mbedtls_ssl_compact_input_buffer(&c->ssl);
 #endif
     wendy_net_memory_scope_leave(previous);
