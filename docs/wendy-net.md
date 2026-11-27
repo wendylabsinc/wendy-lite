@@ -143,9 +143,15 @@ and activate ESP-IDF 6.0.3 before running:
 tools/espnow-companion/build.sh managed_components/espressif__esp_hosted /tmp/wendy-hosted-espnow
 ```
 
-The companion image is `slave/build/network_adapter.bin` under the staging
-directory. Install that application on the companion through ESP-Hosted OTA
-or with the board's companion programming interface.
+Use `slave/build/network_adapter.bin` under the staging directory for
+ESP-Hosted OTA. For a blank or unresponsive C6, build a complete flash image
+with the bootloader and partition table, then use the board's C6 programming
+pads and USB-to-TTL adapter. [DFRobot's C6 firmware update guide](https://wiki.dfrobot.com/dfr1172/docs/21646)
+shows the connections and how to write the merged image at offset 0.
+
+```sh
+idf.py -C /tmp/wendy-hosted-espnow/slave merge-bin -o /tmp/network_adapter.factory.bin
+```
 
 Disable participation with:
 
