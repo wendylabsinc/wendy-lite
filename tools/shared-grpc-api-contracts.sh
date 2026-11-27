@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Immutable source pin for firmware and console generation.
-SHARED_GRPC_API_CONTRACTS_REF="0d26c4d59df2c51c208dad1b5436a267bb9c8a87"
+SHARED_GRPC_API_CONTRACTS_REF="ea85cfb447109dcef67e55b1de56f771bd5e68ad"
 SHARED_GRPC_API_CONTRACTS_INPUT="https://github.com/wendylabsinc/service-protos.git#ref=$SHARED_GRPC_API_CONTRACTS_REF"
 SHARED_GRPC_API_CONTRACTS_PROTOS=(
     "wendylite/v1/wendy_com_msg.proto"
