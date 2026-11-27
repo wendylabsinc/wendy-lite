@@ -15,6 +15,10 @@ WendyComResult wcom_cmd_reboot(bool app_auto_start, uint32_t app_auto_start_dela
 WendyComResult wcom_cmd_app_push_begin(int client_id, size_t size, WendyComAppType app_type);
 WendyComResult wcom_cmd_app_push_data(int client_id, size_t offset, const uint8_t *data, size_t size);
 WendyComResult wcom_cmd_app_push_end(int client_id);
+WendyComResult wcom_cmd_get_hosted_companion(WendyComHostedCompanionInfo *out);
+WendyComResult wcom_cmd_hosted_companion_ota_begin(int client_id, size_t size);
+WendyComResult wcom_cmd_hosted_companion_ota_write(int client_id, size_t offset, const uint8_t *data, size_t size);
+WendyComResult wcom_cmd_hosted_companion_ota_end(int client_id);
 WendyComResult wcom_cmd_conf_push_begin(int client_id, size_t size, WendyComConfPushMode mode, bool wifi_only);
 WendyComResult wcom_cmd_conf_push_data(int client_id, size_t offset, const uint8_t *data, size_t size);
 WendyComResult wcom_cmd_conf_push_end(int client_id);
@@ -34,6 +38,7 @@ WendyComResult wcom_cmd_sensor_link_unsubscribe(int client_id, const uint32_t *c
 void wcom_cmd_client_disconnected(int client_id);
 
 void wcom_cmd_set_app_delegate(const struct wcom_app_delegate *delegate);
+void wcom_cmd_set_hosted_companion_delegate(const struct wcom_hosted_companion_delegate *delegate);
 void wcom_cmd_set_bluetooth_power_delegate(const struct wcom_bluetooth_power_delegate *);
 WendyComResult wcom_cmd_bluetooth_power_get(WendyComBluetoothPowerStatus *);
 WendyComResult wcom_cmd_bluetooth_power_set(const WendyComBluetoothPowerConfig *,

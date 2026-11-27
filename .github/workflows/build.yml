@@ -382,6 +382,31 @@ jobs:
           name: ${{ matrix.asset_name }}
           path: build/${{ matrix.asset_name }}.bin
 
+      - name: Build the ESP-Hosted C6 companion
+        if: matrix.companion == 'esp32c6'
+        shell: bash
+        env:
+          ASSET_NAME: ${{ matrix.asset_name }}
+        run: |
+          set -euo pipefail
+          . "$IDF_PATH/export.sh"
+          staging="$RUNNER_TEMP/hosted-companion"
+          tools/espnow-companion/build.sh managed_components/espressif__esp_hosted "$staging"
+          build_id="$(tools/espnow-companion/build.sh --build-id)"
+          grep -Fx "#define CONFIG_APP_PROJECT_VER \"$build_id\"" "$staging/slave/build/config/sdkconfig.h"
+          cp "$staging/slave/build/network_adapter.bin" "build/${ASSET_NAME}_companion.bin"
+          echo "$build_id" > "build/${ASSET_NAME}_companion.id"
+
+      - name: Upload companion build artifact
+        if: matrix.companion == 'esp32c6'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}_companion
+          path: |
+            build/${{ matrix.asset_name }}_companion.bin
+            build/${{ matrix.asset_name }}_companion.id
+          if-no-files-found: error
+
   nightly:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: build
@@ -395,9 +420,16 @@ jobs:
         uses: actions/download-artifact@v4
 
       - name: Update nightly release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          mapfile -t binaries < <(jq -r '.binaries[] |
+            ."name" as $name |
+            "wendy_mcu_\($name)/wendy_mcu_\($name).bin",
+            (select(.companion) | "wendy_mcu_\($name)_companion/wendy_mcu_\($name)_companion.bin")
+          ' catalog.json)
           # Delete existing nightly release and tag if present
           gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
           # Create new nightly pre-release at current commit. catalog.json ships
@@ -407,7 +439,7 @@ jobs:
             --prerelease \
             --title "Nightly" \
             --notes "Automated nightly build from \`main\` ($(date -u '+%Y-%m-%d %H:%M UTC')), commit ${{ github.sha }}" \
-            $(jq -r '.binaries[] | "wendy_mcu_\(.name)/wendy_mcu_\(.name).bin"' catalog.json) \
+            "${binaries[@]}" \
             catalog.json
 
   release:
@@ -430,6 +462,7 @@ jobs:
           {
             echo 'files<<EOF'
             jq -r '.binaries[] | "wendy_mcu_\(.name)/wendy_mcu_\(.name).bin"' catalog.json
+            jq -r '.binaries[] | select(.companion) | "wendy_mcu_\(.name)_companion/wendy_mcu_\(.name)_companion.bin"' catalog.json
             echo catalog.json
             echo EOF
           } >> "$GITHUB_OUTPUT"
@@ -442,7 +475,7 @@ jobs:
   # Publish firmware to the GCS bucket + manifests that `wendy os install`
   # reads from (firmware/<chip>/<version>/ and manifests/<chip>.json +
   # manifests/master.json). Mirrors the OS-image publish flow in
-  # wendylabsinc/meta-wendyos-jetson by reusing its tools/publisher CLI.
+  # wendylabsinc/WendyOS-Builder by reusing its tools/publisher CLI.
   # Tag-triggered (stable releases) only.
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -467,7 +500,7 @@ jobs:
       - name: Check out publisher tool
         uses: actions/checkout@v5
         with:
-          repository: wendylabsinc/meta-wendyos-jetson
+          repository: wendylabsinc/WendyOS-Builder
           path: builder
 
       - name: Set up Go
@@ -495,6 +528,11 @@ jobs:
           # artifacts/bins on disk have the wendy_mcu_ prefix.
           for variant in $(jq -r '.binaries[].name' catalog.json); do
             bin="wendy_mcu_${variant}/wendy_mcu_${variant}.bin"
+            companion_args=()
+            if jq -e --arg name "$variant" 'any(.binaries[]; .name == $name and .companion == "esp32c6")' catalog.json >/dev/null; then
+              companion="wendy_mcu_${variant}_companion/wendy_mcu_${variant}_companion"
+              companion_args=(--companion-file "$companion.bin" --companion-build-id "$(cat "$companion.id")")
+            fi
             echo "Publishing ${variant} v${VERSION} from ${bin}"
             # Sequential loop keeps master.json writes serial (no race).
             "$RUNNER_TEMP/publisher" \
@@ -502,5 +540,6 @@ jobs:
               --chip "$variant" \
               --version "$VERSION" \
               --file "$bin" \
+              "${companion_args[@]}" \
               --notify-discord=false </dev/null
           done

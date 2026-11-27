@@ -422,6 +422,10 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
     // Enrollment, trust replacement, and time bootstrap remain physical-only.
     if (((cmd->which_params == WendyComCommand_conf_push_begin_tag &&
           cmd->params.conf_push_begin.mode != WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE) ||
+         cmd->which_params == WendyComCommand_get_hosted_companion_tag ||
+         cmd->which_params == WendyComCommand_hosted_companion_ota_begin_tag ||
+         cmd->which_params == WendyComCommand_hosted_companion_ota_write_tag ||
+         cmd->which_params == WendyComCommand_hosted_companion_ota_end_tag ||
          cmd->which_params == WendyComCommand_enrollment_challenge_tag ||
          cmd->which_params == WendyComCommand_enrollment_reset_tag ||
          cmd->which_params == WendyComCommand_sync_time_tag) &&
@@ -499,6 +503,21 @@ static void _process_command(struct _agent_link *link, const WendyComCommand *cm
     case WendyComCommand_app_push_begin_tag:
         resp->result = wcom_cmd_app_push_begin(client_id, cmd->params.app_push_begin.size,
                                                cmd->params.app_push_begin.app_type);
+        break;
+    case WendyComCommand_get_hosted_companion_tag:
+        resp->which_data = WendyComResponse_hosted_companion_tag;
+        resp->result = wcom_cmd_get_hosted_companion(&resp->data.hosted_companion);
+        break;
+    case WendyComCommand_hosted_companion_ota_begin_tag:
+        resp->result = wcom_cmd_hosted_companion_ota_begin(client_id, cmd->params.hosted_companion_ota_begin.size);
+        break;
+    case WendyComCommand_hosted_companion_ota_write_tag:
+        if (data_span->data)
+            resp->result = wcom_cmd_hosted_companion_ota_write(client_id, cmd->params.hosted_companion_ota_write.offset,
+                                                              data_span->data, data_span->size);
+        break;
+    case WendyComCommand_hosted_companion_ota_end_tag:
+        resp->result = wcom_cmd_hosted_companion_ota_end(client_id);
         break;
     case WendyComCommand_app_push_data_tag:
         if (data_span->data)
@@ -620,32 +639,23 @@ static void _process_message(struct _agent_link *link, const uint8_t *body, size
         return;
     }
 
-    // Pre-set only the now-identified oneof path so nanopb preserves the
-    // callback in the second pass. The first pass skipped callback bytes.
-    if (req.which_msg == WendyComMessage_command_tag &&
-        req.msg.command.which_params == WendyComCommand_app_push_data_tag) {
+    // Pre-set only the identified upload oneof so nanopb captures the chunk
+    // on the second pass without allocating storage for it.
+    pb_size_t tag = req.which_msg == WendyComMessage_command_tag ? req.msg.command.which_params : 0;
+    if (tag == WendyComCommand_app_push_data_tag || tag == WendyComCommand_conf_push_data_tag ||
+        tag == WendyComCommand_hosted_companion_ota_write_tag) {
         req = (WendyComMessage)WendyComMessage_init_zero;
         req.which_msg = WendyComMessage_command_tag;
-        req.msg.command.which_params = WendyComCommand_app_push_data_tag;
-        req.msg.command.params.app_push_data.data.funcs.decode = _capture_span;
-        req.msg.command.params.app_push_data.data.arg = &data_span;
-        stream = pb_istream_from_buffer(body, size);
-        if (!pb_decode_noinit(&stream, WendyComMessage_fields, &req)) {
-            ESP_LOGE(TAG, "link %d pb_decode: %s", link->link_id, PB_GET_ERROR(&stream));
-            wcom_close(link->link_id);
-            return;
-        }
-    }
-
-    // Only one callback-bearing oneof path can be pre-set per decode.
-    if (req.which_msg == WendyComMessage_command_tag &&
-        req.msg.command.which_params == WendyComCommand_conf_push_data_tag) {
-        data_span = (struct _span){NULL, 0};
-        req = (WendyComMessage)WendyComMessage_init_zero;
-        req.which_msg = WendyComMessage_command_tag;
-        req.msg.command.which_params = WendyComCommand_conf_push_data_tag;
-        req.msg.command.params.conf_push_data.data.funcs.decode = _capture_span;
-        req.msg.command.params.conf_push_data.data.arg = &data_span;
+        req.msg.command.which_params = tag;
+        pb_callback_t *payload;
+        if (tag == WendyComCommand_app_push_data_tag)
+            payload = &req.msg.command.params.app_push_data.data;
+        else if (tag == WendyComCommand_conf_push_data_tag)
+            payload = &req.msg.command.params.conf_push_data.data;
+        else
+            payload = &req.msg.command.params.hosted_companion_ota_write.data;
+        payload->funcs.decode = _capture_span;
+        payload->arg = &data_span;
         stream = pb_istream_from_buffer(body, size);
         if (!pb_decode_noinit(&stream, WendyComMessage_fields, &req)) {
             ESP_LOGE(TAG, "link %d pb_decode: %s", link->link_id, PB_GET_ERROR(&stream));

@@ -134,9 +134,10 @@ Firmware with ESP-NOW reads saved settings from older firmware. If you roll
 back to a build without ESP-NOW, it reads the settings last saved by the older
 firmware. Reapply any carrier changes you want to keep after a rollback.
 
-For the P4, build the C6 companion application from a trusted copy of the
-same ESP-Hosted 2.x release used on the host. The companion was built and tested
-with ESP-IDF 6.0.3. With ESP-IDF activated, run:
+For a FireBeetle P4 release that includes a C6 companion image, `wendy install`
+checks and updates the radio over native USB after installing Wendy Lite. To
+build a companion manually, use the ESP-Hosted 2.13.1 source used on the host
+and activate ESP-IDF 6.0.3 before running:
 
 ```sh
 tools/espnow-companion/build.sh managed_components/espressif__esp_hosted /tmp/wendy-hosted-espnow

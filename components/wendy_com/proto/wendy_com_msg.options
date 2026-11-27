@@ -4,6 +4,7 @@
 wendylite/v1/wendy_com_msg.proto exclude:"wendylite/v1/sensorlink.proto" include:"sensorlink.pb.h"
 
 WendyComAppPushDataParams.data   type:FT_CALLBACK
+WendyComHostedCompanionOtaWriteParams.data type:FT_CALLBACK
 WendyComConfPushDataParams.data  type:FT_CALLBACK
 WendyComConsoleData.data         type:FT_CALLBACK
 
@@ -27,3 +28,4 @@ WendyComNetTopologyRecord.owner_instance max_size:16
 WendyComBluetoothPowerStatus.supported_levels_dbm max_count:13
 WendyComBluetoothPowerStatus.connections max_count:8
 WendyComBluetoothPowerStatus.error max_size:128
+WendyComHostedCompanionInfo.build_id max_size:32
