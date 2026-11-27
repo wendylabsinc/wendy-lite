@@ -130,6 +130,10 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         s_reconnect_pending = false;
         s_connected = true;
         xEventGroupSetBits(s_wifi_events, WIFI_CONNECTED_BIT);
+#if CONFIG_WENDY_CLOUD
+        // A broker retry backed off while the network was down; retry now.
+        wendy_cloud_wake();
+#endif
         // DHCP may complete after the synchronous connection wait timed out.
         // Keep service startup and its retries off the system event task.
         xTaskNotifyGive(s_services_task);

@@ -30,7 +30,7 @@
      /* In case we tried to reuse a session but it failed */
      if (ssl->session_negotiate->peer_cert != NULL) {
          mbedtls_x509_crt_free(ssl->session_negotiate->peer_cert);
-@@ -787,20 +791,34 @@
+@@ -787,20 +791,50 @@
  #endif /* MBEDTLS_SSL_CLI_C */
      }
  
@@ -41,6 +41,8 @@
 +     * candidates. Wire matches and explicitly supplied local candidates both
 +     * undergo normal verification against the unchanged configured anchors. */
      mbedtls_x509_crt *tail=ssl->session_negotiate->peer_cert;
++    mbedtls_x509_crt *wire=tail ? tail->next : NULL;
++    int prefer_local=0;
 -    mbedtls_x509_crt *saved[8];
 +    mbedtls_x509_crt *saved[24], *candidates[24];
      size_t count=ssl->handshake->wendy_peer_issuer_count;
@@ -53,13 +55,28 @@
 +        if (added > 16) return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
 +        for (size_t i=0;i<added;i++) {
 +            int duplicate=0;
++            /* An older classical peer can send a self-issued twin. Try the
++             * equivalent parent-signed candidate first, since path building
++             * otherwise stops after choosing the unusable wire parent. */
++            if (wire && !wire->next &&
++                wire->issuer_raw.len == wire->subject_raw.len &&
++                memcmp(wire->issuer_raw.p, wire->subject_raw.p, wire->subject_raw.len) == 0 &&
++                wire->subject_raw.len == local[i]->subject_raw.len &&
++                memcmp(wire->subject_raw.p, local[i]->subject_raw.p, wire->subject_raw.len) == 0 &&
++                wire->subject_key_id.len &&
++                wire->subject_key_id.len == local[i]->subject_key_id.len &&
++                memcmp(wire->subject_key_id.p, local[i]->subject_key_id.p,
++                       wire->subject_key_id.len) == 0) {
++                prefer_local=1;
++            }
 +            for (size_t j=0;j<count;j++)
 +                if (candidates[j]==local[i]) duplicate=1;
 +            if (!duplicate) candidates[count++]=local[i];
 +        }
 +    }
      if (tail && count) {
-         while (tail->next) tail=tail->next;
+-        while (tail->next) tail=tail->next;
++        if (!prefer_local) while (tail->next) tail=tail->next;
          for (size_t i=0;i<count;i++) {
 -            mbedtls_x509_crt *ca=ssl->handshake->wendy_peer_issuer_refs[i];
 +            mbedtls_x509_crt *ca=candidates[i];
@@ -67,15 +84,16 @@
 -            ca->next=i+1<count ? ssl->handshake->wendy_peer_issuer_refs[i+1] : NULL;
 -        }
 -        tail->next=ssl->handshake->wendy_peer_issuer_refs[0];
-+            ca->next=i+1<count ? candidates[i+1] : NULL;
++            ca->next=i+1<count ? candidates[i+1] : prefer_local ? wire : NULL;
 +        }
 +        tail->next=candidates[0];
      }
      int ret=mbedtls_ssl_verify_certificate(ssl, authmode,
                                           ssl->session_negotiate->peer_cert,
-@@ -809,7 +827,7 @@
+@@ -809,7 +843,7 @@
      if (tail && count) {
-         tail->next=NULL;
+-        tail->next=NULL;
++        tail->next=prefer_local ? wire : NULL;
          for (size_t i=0;i<count;i++)
 -            ssl->handshake->wendy_peer_issuer_refs[i]->next=saved[i];
 +            candidates[i]->next=saved[i];

@@ -93,6 +93,21 @@ will not advertise or accept connections over BLE, and WASM BLE exports are
 unavailable. The profile can be combined with `boards/wasm.defaults`; put
 `boards/no-ble.defaults` last.
 
+### Boards without PSRAM
+
+A board without PSRAM enrolls on the P-256 certificate chain and runs Wi-Fi,
+TLS and Bluetooth in internal RAM alone. Each TLS handshake, such as a
+SensorLink gateway or the Cloud broker connecting, needs a large block for a
+short time. With Bluetooth on, a busy board can fail those handshakes with
+`tls=-141` (out of memory).
+
+Choose the trade-off for the board's role. A sensor that is reached over
+Wi-Fi should append `boards/no-ble.defaults`; it then cannot be discovered or
+reached over BLE. A board that must stay reachable over BLE keeps Bluetooth
+and accepts fewer simultaneous TLS connections. At boot the firmware logs
+`Bluetooth built in: yes` or `Bluetooth built in: no` with its free internal
+heap, and warns when Bluetooth is compiled in on a board without PSRAM.
+
 ## Supported Hardware
 
 Wendy Lite has firmware configurations for six ESP-IDF targets. ESP32-S31 is

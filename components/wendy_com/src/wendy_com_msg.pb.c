@@ -33,6 +33,21 @@ PB_BIND(WendyComAppStartParams, WendyComAppStartParams, AUTO)
 PB_BIND(WendyComAppStopParams, WendyComAppStopParams, AUTO)
 
 
+PB_BIND(WendyComGetHostedCompanionParams, WendyComGetHostedCompanionParams, AUTO)
+
+
+PB_BIND(WendyComHostedCompanionOtaBeginParams, WendyComHostedCompanionOtaBeginParams, AUTO)
+
+
+PB_BIND(WendyComHostedCompanionOtaWriteParams, WendyComHostedCompanionOtaWriteParams, AUTO)
+
+
+PB_BIND(WendyComHostedCompanionOtaEndParams, WendyComHostedCompanionOtaEndParams, AUTO)
+
+
+PB_BIND(WendyComHostedCompanionInfo, WendyComHostedCompanionInfo, AUTO)
+
+
 PB_BIND(WendyComConfPushBeginParams, WendyComConfPushBeginParams, AUTO)
 
 

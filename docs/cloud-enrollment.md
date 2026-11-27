@@ -110,9 +110,26 @@ roots. Missing, partial, or malformed installed trust fails closed, with no
 fallback to a different trust source. Network peers cannot write this configuration.
 Wi-Fi-only configuration updates preserve it; replacing or erasing the entire
 configuration removes it. Existing enrolled boards require operator recovery to
-change enrollment through the CLI. Those root bundles do not rotate remotely.
-The separate Lite operator anchor described below can rotate through authenticated
-renewal; changes to device, TSA and HTTPS roots require USB enrollment recovery.
+change enrollment through the CLI. The installed issuance, TSA and HTTPS roots
+require USB enrollment recovery. The separate Lite operator anchor described
+below can rotate through authenticated renewal.
+
+During identity maintenance, firmware with Wendy Net and ML-DSA verification
+refreshes peer CA certificates through the tenant's existing EST `/cacerts` endpoint.
+USB enrollment saves Wendy-hosted EST URLs. Set `--est-url` to save an exact
+EST refresh URL for self-hosted PKI, including when supplying private roots.
+`--ca-certs-url` also supports legacy CA discovery formats during enrollment.
+Boards with an older enrollment can derive it from a recognized Wendy CSR hostname.
+The board authenticates the EST server using its configured HTTPS roots.
+
+Classical Lite keeps its own Lite Device CA and selects the tenant's published
+regular Device Identity and Operator Authority CAs, including overlapping
+generations. Regular Lite requests the parent-signed Lite CA path and uses it
+as untrusted intermediate material under its existing anchors. The firmware
+validates a complete bounded response before replacing the saved snapshot.
+A complete verified snapshot can withdraw a regular CA role that was revoked
+without a successor.
+A failed refresh keeps the last snapshot and leaves identity renewal independent.
 
 If an enrolled board reports `Invalid or missing device CA bundle` after a
 firmware update and both LAN TLS and Cloud stop working, first check the firmware

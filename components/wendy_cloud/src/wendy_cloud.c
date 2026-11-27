@@ -21,15 +21,29 @@ static pthread_mutex_t s_start_lock = PTHREAD_MUTEX_INITIALIZER;
 unsigned wendy_cloud_connect_failures(void) { return atomic_load(&s_failures); }
 void wendy_cloud_reset_failures(void) { atomic_store(&s_failures, 0); }
 static TaskHandle_t s_task;
-static SemaphoreHandle_t s_stopped, s_wake;
+static SemaphoreHandle_t s_stopped;
+/* This binary semaphore coalesces notifications and lives for the firmware lifetime.
+ * The Wi-Fi event task can signal it as soon as cloud_start_locked publishes it. */
+static _Atomic(SemaphoreHandle_t) s_wake;
 static pthread_mutex_t s_connection_lock = PTHREAD_MUTEX_INITIALIZER;
 static int s_outer_fd = -1;
+static void signal_wake(void)
+{
+    SemaphoreHandle_t wake = atomic_load(&s_wake);
+    if (wake) xSemaphoreGive(wake);
+}
 void wendy_cloud_network_changed(void)
 {
     pthread_mutex_lock(&s_connection_lock);
     if (s_outer_fd >= 0) shutdown(s_outer_fd, SHUT_RDWR);
     pthread_mutex_unlock(&s_connection_lock);
-    if (s_wake) xSemaphoreGive(s_wake);
+    signal_wake();
+}
+void wendy_cloud_wake(void)
+{
+#if CONFIG_WENDY_CLOUD_TUNNEL
+    signal_wake();
+#endif
 }
 
 /* idf.py build does not read a changed Kconfig. Without this check, an old build
@@ -38,31 +52,47 @@ void wendy_cloud_network_changed(void)
 #error "Old sdkconfig: run idf.py reconfigure"
 #endif
 
+#if CONFIG_WENDY_CLOUD_TUNNEL
+/* Each attempt is a full TLS handshake, the costliest work on a board without
+ * PSRAM, so consecutive failures double the delay up to this cap. */
+#define CLOUD_RECONNECT_MAX_DELAY_MS (60 * 1000)
+#endif
+
 #if !CONFIG_WENDY_CLOUD_TUNNEL
 /* Each check holds the identity lock, and a LAN accept waits for that lock. A
  * device with no internet retries forever, so a retry must not come too often. */
-#define CLOUD_CHECK_PERIOD_MS (60 * 60 * 1000)
 #define CLOUD_CHECK_RETRY_MS (60 * 1000)
 #endif
 
 static void cloud_task(void *unused)
 {
     (void)unused;
+    SemaphoreHandle_t wake = atomic_load(&s_wake);
+#if CONFIG_WENDY_CLOUD_TUNNEL
+    const unsigned base_delay = CONFIG_WENDY_CLOUD_RECONNECT_DELAY_MS;
+    const unsigned max_delay = base_delay > CLOUD_RECONNECT_MAX_DELAY_MS ? base_delay
+                                                                          : CLOUD_RECONNECT_MAX_DELAY_MS;
+    unsigned delay = base_delay;
+#endif
     while (!s_stop) {
         s_state = WENDY_CLOUD_STATE_CONNECTING;
 #if CONFIG_WENDY_CLOUD_TUNNEL
         wendy_pki_connection *outer = NULL;
         struct wendy_lite_trust *trust = calloc(1, sizeof *trust);
         int fd = -1;
-        bool planned_renewal = false;
+        bool planned_renewal = false, stayed_up = false;
         if (trust && wendy_pki_connect(&outer) == ESP_OK) {
             s_state = WENDY_CLOUD_STATE_CONNECTED;
             atomic_store(&s_failures, 0);
             pthread_mutex_lock(&s_connection_lock);
             s_outer_fd = wendy_pki_fd(outer);
             pthread_mutex_unlock(&s_connection_lock);
+            TickType_t connected_at = xTaskGetTickCount();
             fd = wendy_pki_relay_upgrade(outer, trust);
             planned_renewal = fd == WENDY_PKI_RELAY_RENEW;
+            /* Losing a connection that outlived the longest delay is not one
+             * more failure in a row. */
+            stayed_up = xTaskGetTickCount() - connected_at >= pdMS_TO_TICKS(max_delay);
             pthread_mutex_lock(&s_connection_lock);
             s_outer_fd = -1;
             pthread_mutex_unlock(&s_connection_lock);
@@ -80,8 +110,15 @@ static void cloud_task(void *unused)
         // immediately; shared broker caps prevent claiming it a second time.
         // A planned stop retired a healthy waiter. Reopen it promptly;
         // the normal transport/connect failure path retains its retry backoff.
-        if (fd < 0 && !s_stop && !planned_renewal)
-            xSemaphoreTake(s_wake, pdMS_TO_TICKS(CONFIG_WENDY_CLOUD_RECONNECT_DELAY_MS));
+        if (fd < 0 && !s_stop && !planned_renewal) {
+            if (stayed_up)
+                delay = base_delay;
+            /* A new IP address wakes the wait and makes the next delay short. */
+            bool woken = xSemaphoreTake(wake, pdMS_TO_TICKS(delay)) == pdTRUE;
+            delay = woken ? base_delay : (delay > max_delay / 2 ? max_delay : delay * 2);
+        } else {
+            delay = base_delay;
+        }
 #else
         /* No tunnel: this task only keeps the time and the identity current. */
         bool checked = wendy_pki_maintain() == ESP_OK;
@@ -91,8 +128,8 @@ static void cloud_task(void *unused)
             atomic_fetch_add(&s_failures, 1);
         s_state = WENDY_CLOUD_STATE_DISCONNECTED;
         if (!s_stop)
-            xSemaphoreTake(s_wake,
-                           pdMS_TO_TICKS(checked ? CLOUD_CHECK_PERIOD_MS : CLOUD_CHECK_RETRY_MS));
+            xSemaphoreTake(wake,
+                           pdMS_TO_TICKS(checked ? wendy_pki_maintenance_wait_ms() : CLOUD_CHECK_RETRY_MS));
 #endif
     }
     s_state = WENDY_CLOUD_STATE_IDLE;
@@ -106,10 +143,16 @@ static esp_err_t cloud_start_locked(void)
     if (s_task) return ESP_OK;
     if (!wendy_conf_has_enrollment()) return ESP_ERR_INVALID_STATE;
     if (!s_stopped) s_stopped = xSemaphoreCreateBinary();
-    if (!s_wake) s_wake = xSemaphoreCreateBinary();
-    if (!s_stopped || !s_wake) return ESP_ERR_NO_MEM;
+    if (!s_stopped) return ESP_ERR_NO_MEM;
+    SemaphoreHandle_t wake = atomic_load(&s_wake);
+    if (wake) {
+        xSemaphoreTake(wake, 0);
+    } else {
+        wake = xSemaphoreCreateBinary();
+        if (!wake) return ESP_ERR_NO_MEM;
+        atomic_store(&s_wake, wake);
+    }
     xSemaphoreTake(s_stopped, 0);
-    xSemaphoreTake(s_wake, 0);
     s_stop = false;
     if (xTaskCreatePinnedToCore(cloud_task, "wendy_cloud", CONFIG_WENDY_CLOUD_TASK_STACK_SIZE,
         NULL, CONFIG_WENDY_CLOUD_TASK_PRIORITY, &s_task, CONFIG_WENDY_CLOUD_TASK_CORE_AFFINITY) != pdPASS) {

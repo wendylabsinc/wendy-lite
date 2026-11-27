@@ -46,6 +46,10 @@ void wendy_cloud_reset_failures(void);
 /* Wake the cloud task after a route change. Call outside the lwIP core thread. */
 void wendy_cloud_network_changed(void);
 
+/* Retry a broker connection that waits to reconnect; a healthy one is kept.
+ * No-op without CONFIG_WENDY_CLOUD_TUNNEL. */
+void wendy_cloud_wake(void);
+
 #ifdef __cplusplus
 }
 #endif
