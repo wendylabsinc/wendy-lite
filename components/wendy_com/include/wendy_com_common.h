@@ -48,6 +48,14 @@ struct wcom_app_delegate {
                                bool *wasm_app_support, bool *native_app_support);
 };
 
+struct wcom_hosted_companion_delegate {
+    WendyComResult (*on_get)(WendyComHostedCompanionInfo *out);
+    WendyComResult (*on_begin)(size_t size);
+    WendyComResult (*on_write)(size_t offset, const uint8_t *data, size_t size);
+    WendyComResult (*on_end)(void);
+    void (*on_abort)(void);
+};
+
 // A single sensor/camera/microphone channel, as reported to the delegate.
 // Mirrors wendy.lite.sensorlink.SensorDescriptor without exposing pb_callback_t
 // or the oneof union machinery: strings are plain `const char *`, kept alive

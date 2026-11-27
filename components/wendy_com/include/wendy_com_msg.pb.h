@@ -165,7 +165,7 @@ typedef struct _WendyComHostedCompanionOtaEndParams {
 typedef struct _WendyComHostedCompanionInfo {
     /* Version from the running co-processor's ESP-IDF application descriptor.
  Empty for a radio whose ESP-Hosted protocol predates that descriptor RPC. */
-    pb_callback_t build_id;
+    char build_id[32];
 } WendyComHostedCompanionInfo;
 
 /* Params for WENDY_COM_CMD_CONF_PUSH_BEGIN */
@@ -694,7 +694,7 @@ extern "C" {
 #define WendyComHostedCompanionOtaBeginParams_init_default {0}
 #define WendyComHostedCompanionOtaWriteParams_init_default {0, {{NULL}, NULL}}
 #define WendyComHostedCompanionOtaEndParams_init_default {0}
-#define WendyComHostedCompanionInfo_init_default {{{NULL}, NULL}}
+#define WendyComHostedCompanionInfo_init_default {""}
 #define WendyComConfPushBeginParams_init_default {0, _WendyComConfPushMode_MIN}
 #define WendyComConfPushDataParams_init_default  {0, {{NULL}, NULL}}
 #define WendyComConfPushEndParams_init_default   {0}
@@ -749,7 +749,7 @@ extern "C" {
 #define WendyComHostedCompanionOtaBeginParams_init_zero {0}
 #define WendyComHostedCompanionOtaWriteParams_init_zero {0, {{NULL}, NULL}}
 #define WendyComHostedCompanionOtaEndParams_init_zero {0}
-#define WendyComHostedCompanionInfo_init_zero    {{{NULL}, NULL}}
+#define WendyComHostedCompanionInfo_init_zero    {""}
 #define WendyComConfPushBeginParams_init_zero    {0, _WendyComConfPushMode_MIN}
 #define WendyComConfPushDataParams_init_zero     {0, {{NULL}, NULL}}
 #define WendyComConfPushEndParams_init_zero      {0}
@@ -1068,8 +1068,8 @@ X(a, CALLBACK, SINGULAR, BYTES,    data,              2)
 #define WendyComHostedCompanionOtaEndParams_DEFAULT NULL
 
 #define WendyComHostedCompanionInfo_FIELDLIST(X, a) \
-X(a, CALLBACK, SINGULAR, STRING,   build_id,          1)
-#define WendyComHostedCompanionInfo_CALLBACK pb_default_field_callback
+X(a, STATIC,   SINGULAR, STRING,   build_id,          1)
+#define WendyComHostedCompanionInfo_CALLBACK NULL
 #define WendyComHostedCompanionInfo_DEFAULT NULL
 
 #define WendyComConfPushBeginParams_FIELDLIST(X, a) \
@@ -1613,7 +1613,6 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 /* Maximum encoded size of messages (where known) */
 /* WendyComAppPushDataParams_size depends on runtime parameters */
 /* WendyComHostedCompanionOtaWriteParams_size depends on runtime parameters */
-/* WendyComHostedCompanionInfo_size depends on runtime parameters */
 /* WendyComConfPushDataParams_size depends on runtime parameters */
 /* WendyComDeviceIdentity_size depends on runtime parameters */
 /* WendyComNetTopologyRecord_size depends on runtime parameters */
@@ -1654,6 +1653,7 @@ extern const pb_msgdesc_t WendyComMessage_msg;
 #define WendyComGetDeviceInfoParams_size         0
 #define WendyComGetHostedCompanionParams_size    0
 #define WendyComHandshake_size                   20
+#define WendyComHostedCompanionInfo_size         33
 #define WendyComHostedCompanionOtaBeginParams_size 6
 #define WendyComHostedCompanionOtaEndParams_size 0
 #define WendyComNetConfig_size                   50
