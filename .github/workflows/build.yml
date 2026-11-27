@@ -381,6 +381,7 @@ jobs:
         with:
           name: ${{ matrix.asset_name }}
           path: build/${{ matrix.asset_name }}.bin
+          if-no-files-found: error
 
       - name: Build the ESP-Hosted C6 companion
         if: matrix.companion == 'esp32c6'
@@ -425,12 +426,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          artifact_paths="$(jq -r '.binaries[] |
+          artifact_paths="$(jq -er '.binaries[] |
             ."name" as $name |
             "wendy_mcu_\($name)/wendy_mcu_\($name).bin",
             (select(.companion) | "wendy_mcu_\($name)_companion/wendy_mcu_\($name)_companion.bin")
           ' catalog.json)"
-          mapfile -t binaries <<< "$artifact_paths"
+          binaries=()
+          while IFS= read -r binary; do
+            if [[ ! -s "$binary" ]]; then
+              echo "::error::Missing firmware asset $binary"
+              exit 1
+            fi
+            binaries+=("$binary")
+          done <<< "$artifact_paths"
           # Delete existing nightly release and tag if present
           gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
           # Create new nightly pre-release at current commit. catalog.json ships
@@ -472,6 +480,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ steps.assets.outputs.files }}
+          fail_on_unmatched_files: true
 
   # Publish firmware to the GCS bucket + manifests that `wendy os install`
   # reads from (firmware/<chip>/<version>/ and manifests/<chip>.json +
@@ -527,20 +536,20 @@ jobs:
           VERSION="${REF_NAME#v}"
           # catalog.json names are the firmwareId key that `wendy os install` queries;
           # artifacts/bins on disk have the wendy_mcu_ prefix.
-          for variant in $(jq -r '.binaries[].name' catalog.json); do
+          variants="$(jq -er '.binaries[].name' catalog.json)"
+          while IFS= read -r variant; do
             bin="wendy_mcu_${variant}/wendy_mcu_${variant}.bin"
-            companion_args=()
+            publish_args=(--notify-discord=false)
             if jq -e --arg name "$variant" 'any(.binaries[]; .name == $name and .companion == "esp32c6")' catalog.json >/dev/null; then
               companion="wendy_mcu_${variant}_companion/wendy_mcu_${variant}_companion"
-              companion_args=(--companion-file "$companion.bin" --companion-build-id "$(cat "$companion.id")")
+              publish_args+=(--companion-file "$companion.bin" --companion-build-id "$(cat "$companion.id")")
             fi
             echo "Publishing ${variant} v${VERSION} from ${bin}"
-            # Sequential loop keeps master.json writes serial (no race).
+            # Keep the manifest update sequence simple within this release.
             "$RUNNER_TEMP/publisher" \
               --firmware \
               --chip "$variant" \
               --version "$VERSION" \
               --file "$bin" \
-              "${companion_args[@]}" \
-              --notify-discord=false </dev/null
-          done
+              "${publish_args[@]}" </dev/null
+          done <<< "$variants"
