@@ -163,7 +163,8 @@ typedef struct _WendyComHostedCompanionOtaEndParams {
 } WendyComHostedCompanionOtaEndParams;
 
 typedef struct _WendyComHostedCompanionInfo {
-    /* Version from the running co-processor's ESP-IDF application descriptor. */
+    /* Version from the running co-processor's ESP-IDF application descriptor.
+ Empty for a radio whose ESP-Hosted protocol predates that descriptor RPC. */
     char build_id[32];
 } WendyComHostedCompanionInfo;
 
