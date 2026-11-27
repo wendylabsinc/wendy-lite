@@ -239,8 +239,20 @@ static inline int ble_hs_id_copy_addr(uint8_t type, uint8_t *address, int *nrpa)
 }
 static inline int ble_hs_synced(void) { return 1; }
 extern bool test_nimble_initialized;
+#if CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI
+static esp_err_t test_nimble_init_error;
+static int test_gatt_add_error;
+#endif
 static inline esp_err_t nimble_port_init(void) {
+#if CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI
+    if (test_nimble_init_error)
+        return test_nimble_init_error;
+#endif
     test_nimble_initialized = true;
+    return ESP_OK;
+}
+static inline esp_err_t nimble_port_deinit(void) {
+    test_nimble_initialized = false;
     return ESP_OK;
 }
 static inline void nimble_port_run(void) {}
@@ -250,6 +262,10 @@ static inline void ble_svc_gap_init(void) {}
 static inline void ble_svc_gatt_init(void) {}
 static inline int ble_gatts_count_cfg(const struct ble_gatt_svc_def *svcs) { return 0; }
 static inline int ble_gatts_add_svcs(const struct ble_gatt_svc_def *svcs) {
+#if CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI
+    if (test_gatt_add_error)
+        return test_gatt_add_error;
+#endif
     test_services = svcs; return 0;
 }
 static inline int ble_svc_gap_device_name_set(const char *name) {
