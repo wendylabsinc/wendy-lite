@@ -47,11 +47,6 @@ static const char tenant[] = "2558fd76-afc7-466e-9613-6b715296a526";
 static const char self[] = "00000000-0000-4000-8000-000000000004";
 static const int64_t wall = 1790000000000;
 static unsigned signing_calls;
-static bool wnrs_receive_paused(const struct wnrs *s)
-{
-    (void)s;
-    return false;
-}
 ssize_t wendy_pki_read(void *context, void *data, size_t size)
 {
     wendy_pki_connection *c = context;
