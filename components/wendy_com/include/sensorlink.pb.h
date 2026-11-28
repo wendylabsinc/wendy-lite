@@ -77,9 +77,22 @@ typedef struct _wendy_lite_sensorlink_SensorData {
     uint32_t channel_id;
     uint32_t frame_seq; /* wraps at 32 bits */
     uint32_t chunk_seq;
+    /* When the first sample in the frame was taken, in microseconds on the
+ * source's own clock. That clock need not be wall time: a Wendy Lite counts
+ * from its boot. A source that does not stamp its frames leaves this zero. */
     uint64_t ts_us;
     uint32_t flags; /* bit0 = keyframe, bit1 = last chunk in frame */
     pb_callback_t payload;
+    /* How far ts_us may be from the instant that sample was really taken, in
+ * microseconds on the same clock: the sample was taken no earlier than
+ * ts_us - ts_uncertainty_us and no later than ts_us + ts_uncertainty_us.
+ * The source that took the sample measures it, for example as half the time
+ * the read took. It says nothing about how the source's clock relates to any
+ * other clock. Absent means the source makes no claim, which is not the same
+ * as zero. Receivers read it from the first chunk of a frame, as they do
+ * ts_us. */
+    bool has_ts_uncertainty_us;
+    uint32_t ts_uncertainty_us;
 } wendy_lite_sensorlink_SensorData;
 
 typedef struct _wendy_lite_sensorlink_Ping {
@@ -136,7 +149,7 @@ extern "C" {
 #define wendy_lite_sensorlink_GetSensorManifest_init_default {0}
 #define wendy_lite_sensorlink_Subscribe_init_default {0, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}}
 #define wendy_lite_sensorlink_Unsubscribe_init_default {0, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}}
-#define wendy_lite_sensorlink_SensorData_init_default {0, 0, 0, 0, 0, {{NULL}, NULL}}
+#define wendy_lite_sensorlink_SensorData_init_default {0, 0, 0, 0, 0, {{NULL}, NULL}, false, 0}
 #define wendy_lite_sensorlink_Ping_init_default  {0}
 #define wendy_lite_sensorlink_Envelope_init_default {0, {wendy_lite_sensorlink_SensorManifest_init_default}}
 #define wendy_lite_sensorlink_VideoFormat_init_zero {_wendy_lite_sensorlink_VideoFormat_Codec_MIN, 0, 0, 0}
@@ -147,7 +160,7 @@ extern "C" {
 #define wendy_lite_sensorlink_GetSensorManifest_init_zero {0}
 #define wendy_lite_sensorlink_Subscribe_init_zero {0, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}}
 #define wendy_lite_sensorlink_Unsubscribe_init_zero {0, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}}
-#define wendy_lite_sensorlink_SensorData_init_zero {0, 0, 0, 0, 0, {{NULL}, NULL}}
+#define wendy_lite_sensorlink_SensorData_init_zero {0, 0, 0, 0, 0, {{NULL}, NULL}, false, 0}
 #define wendy_lite_sensorlink_Ping_init_zero     {0}
 #define wendy_lite_sensorlink_Envelope_init_zero {0, {wendy_lite_sensorlink_SensorManifest_init_zero}}
 
@@ -177,6 +190,7 @@ extern "C" {
 #define wendy_lite_sensorlink_SensorData_ts_us_tag 4
 #define wendy_lite_sensorlink_SensorData_flags_tag 5
 #define wendy_lite_sensorlink_SensorData_payload_tag 6
+#define wendy_lite_sensorlink_SensorData_ts_uncertainty_us_tag 7
 #define wendy_lite_sensorlink_Ping_ts_us_tag     1
 #define wendy_lite_sensorlink_Envelope_manifest_tag 1
 #define wendy_lite_sensorlink_Envelope_subscribe_tag 2
@@ -246,7 +260,8 @@ X(a, STATIC,   SINGULAR, UINT32,   frame_seq,         2) \
 X(a, STATIC,   SINGULAR, UINT32,   chunk_seq,         3) \
 X(a, STATIC,   SINGULAR, UINT64,   ts_us,             4) \
 X(a, STATIC,   SINGULAR, UINT32,   flags,             5) \
-X(a, CALLBACK, SINGULAR, BYTES,    payload,           6)
+X(a, CALLBACK, SINGULAR, BYTES,    payload,           6) \
+X(a, STATIC,   OPTIONAL, UINT32,   ts_uncertainty_us,   7)
 #define wendy_lite_sensorlink_SensorData_CALLBACK pb_default_field_callback
 #define wendy_lite_sensorlink_SensorData_DEFAULT NULL
 

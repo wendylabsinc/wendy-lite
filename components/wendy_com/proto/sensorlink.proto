@@ -39,9 +39,21 @@ message SensorData {
   uint32 channel_id = 1;
   uint32 frame_seq = 2; // wraps at 32 bits
   uint32 chunk_seq = 3;
+  // When the first sample in the frame was taken, in microseconds on the
+  // source's own clock. That clock need not be wall time: a Wendy Lite counts
+  // from its boot. A source that does not stamp its frames leaves this zero.
   uint64 ts_us = 4;
   uint32 flags = 5;   // bit0 = keyframe, bit1 = last chunk in frame
   bytes payload = 6;
+  // How far ts_us may be from the instant that sample was really taken, in
+  // microseconds on the same clock: the sample was taken no earlier than
+  // ts_us - ts_uncertainty_us and no later than ts_us + ts_uncertainty_us.
+  // The source that took the sample measures it, for example as half the time
+  // the read took. It says nothing about how the source's clock relates to any
+  // other clock. Absent means the source makes no claim, which is not the same
+  // as zero. Receivers read it from the first chunk of a frame, as they do
+  // ts_us.
+  optional uint32 ts_uncertainty_us = 7;
 }
 message Ping { uint64 ts_us = 1; }
 

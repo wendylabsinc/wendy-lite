@@ -64,6 +64,14 @@ these timestamps do not provide precise capture timing or audio/video
 synchronization. That requires capture timestamps and a buffer queue that
 preserves them through transmission.
 
+For the same reason camera and microphone frames carry no timestamp
+uncertainty (`SensorData.ts_uncertainty_us`): the time they send is not
+measured around the capture, so there is no honest bound to report, and the
+host takes it as unknown. A source that reads its sensor between two readings
+of the clock can report one with `wendy_core_sensor_sample_time()` and
+`wendy_core_sensor_stream_push_timed()`, as the chip temperature fixture in
+`main/wendy_net_sensor_probe.c` does.
+
 Dependencies are pinned to `esp_video` 2.5.0 and `esp_codec_dev` 2.0.0-beta4.
 The latter provides the ES8389 channel mapping and TDM APIs used here. The
 component uses those drivers directly, without a display/BSP dependency.

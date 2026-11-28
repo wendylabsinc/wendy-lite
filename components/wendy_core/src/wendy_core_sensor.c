@@ -42,6 +42,8 @@ struct sensor_push_op {
     const void *data;
     size_t size;
     uint64_t ts_us;
+    bool has_ts_uncertainty;
+    uint32_t ts_uncertainty_us;
     void (*done)(uint32_t channel_id);
 };
 
@@ -95,9 +97,13 @@ static void stream_push_exec(struct wcom_operation *base)
     const void *data = op->data;
     size_t size = op->size;
     uint64_t ts_us = op->ts_us;
+    bool has_ts_uncertainty = op->has_ts_uncertainty;
+    uint32_t ts_uncertainty_us = op->ts_uncertainty_us;
     void (*done)(uint32_t channel_id) = op->done;
     atomic_store(&op->pending, false);
-    WendyComResult result = wcom_sensor_stream_push(client_id, channel_id, data, size, ts_us, done);
+    WendyComResult result = has_ts_uncertainty
+        ? wcom_sensor_stream_push_timed(client_id, channel_id, data, size, ts_us, ts_uncertainty_us, done)
+        : wcom_sensor_stream_push(client_id, channel_id, data, size, ts_us, done);
     // Accepted frames own the callback. Refused frames never reached the
     // transport, so their buffers return to the producer here.
     if (result != WendyComResult_WENDY_COM_RESULT_OK && done)
@@ -117,9 +123,10 @@ void wendy_core_sensor_stream_begin(int client_id, uint32_t channel_id)
     wcom_exec(&op->base);
 }
 
-WendyComResult wendy_core_sensor_stream_try_push(int client_id, uint32_t channel_id,
-                                                const void *data, size_t size, uint64_t ts_us,
-                                                void (*done)(uint32_t channel_id))
+static WendyComResult try_push(int client_id, uint32_t channel_id,
+                               const void *data, size_t size, uint64_t ts_us,
+                               bool has_ts_uncertainty, uint32_t ts_uncertainty_us,
+                               void (*done)(uint32_t channel_id))
 {
     if (!data || size == 0)
         return WendyComResult_WENDY_COM_RESULT_BAD_STATE;
@@ -133,6 +140,8 @@ WendyComResult wendy_core_sensor_stream_try_push(int client_id, uint32_t channel
         op->data = data;
         op->size = size;
         op->ts_us = ts_us;
+        op->has_ts_uncertainty = has_ts_uncertainty;
+        op->ts_uncertainty_us = ts_uncertainty_us;
         op->done = done;
         wcom_exec(&op->base);
         return WendyComResult_WENDY_COM_RESULT_OK;
@@ -140,11 +149,37 @@ WendyComResult wendy_core_sensor_stream_try_push(int client_id, uint32_t channel
     return WendyComResult_WENDY_COM_RESULT_BUSY;
 }
 
+WendyComResult wendy_core_sensor_stream_try_push(int client_id, uint32_t channel_id,
+                                                const void *data, size_t size, uint64_t ts_us,
+                                                void (*done)(uint32_t channel_id))
+{
+    return try_push(client_id, channel_id, data, size, ts_us, false, 0, done);
+}
+
+WendyComResult wendy_core_sensor_stream_try_push_timed(int client_id, uint32_t channel_id,
+                                                      const void *data, size_t size,
+                                                      uint64_t ts_us, uint32_t ts_uncertainty_us,
+                                                      void (*done)(uint32_t channel_id))
+{
+    return try_push(client_id, channel_id, data, size, ts_us, true, ts_uncertainty_us, done);
+}
+
 void wendy_core_sensor_stream_push(int client_id, uint32_t channel_id, const void *data,
                                    size_t size, uint64_t ts_us, void (*done)(uint32_t channel_id))
 {
     WendyComResult result = wendy_core_sensor_stream_try_push(client_id, channel_id,
                                                              data, size, ts_us, done);
+    if (result != WendyComResult_WENDY_COM_RESULT_OK && done)
+        done(channel_id);
+}
+
+void wendy_core_sensor_stream_push_timed(int client_id, uint32_t channel_id,
+                                         const void *data, size_t size,
+                                         uint64_t ts_us, uint32_t ts_uncertainty_us,
+                                         void (*done)(uint32_t channel_id))
+{
+    WendyComResult result = wendy_core_sensor_stream_try_push_timed(client_id, channel_id, data, size,
+                                                                   ts_us, ts_uncertainty_us, done);
     if (result != WendyComResult_WENDY_COM_RESULT_OK && done)
         done(channel_id);
 }

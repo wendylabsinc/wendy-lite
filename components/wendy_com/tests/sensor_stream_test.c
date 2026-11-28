@@ -33,6 +33,10 @@ static uint32_t order[512];
 static bool slow_links, mixed_links;
 static size_t wire_bytes, first_message_bytes;
 static unsigned tx_nodes;
+// What every chunk on the wire must say about its frame's sample time.
+static uint64_t expected_ts_us = UINT64_MAX;
+static bool expected_has_uncertainty;
+static uint32_t expected_uncertainty_us;
 
 size_t wcom_link_sensor_message_limit(int link_id)
 {
@@ -171,7 +175,11 @@ static void pump_message(void)
     size_t i = channel_index(data.channel_id);
     assert(data.frame_seq == frame_seq[i]);
     assert(data.chunk_seq == chunks[i]++);
-    assert(data.ts_us == UINT64_MAX);
+    assert(data.ts_us == expected_ts_us);
+    // A frame claims an uncertainty only when its producer measured one, and
+    // then every chunk of the frame carries it.
+    assert(data.has_ts_uncertainty_us == expected_has_uncertainty);
+    if (expected_has_uncertainty) assert(data.ts_uncertainty_us == expected_uncertainty_us);
     assert(data.flags & 1); // Independent frame/keyframe flag.
     data = (wendy_lite_sensorlink_SensorData)wendy_lite_sensorlink_SensorData_init_zero;
     data.payload.funcs.decode = decode_payload;
@@ -363,6 +371,75 @@ static void test_core_queue(void)
     for (size_t i = 0; i < 4; i++) { assert(end_completions[i] == 1); open_stream(i, 1); }
 }
 
+static void expect_time(unsigned seq, uint64_t ts_us, bool has_uncertainty, uint32_t uncertainty_us)
+{
+    received[3] = chunks[3] = 0;
+    frame_seq[3] = seq;
+    expected_ts_us = ts_us;
+    expected_has_uncertainty = has_uncertainty;
+    expected_uncertainty_us = uncertainty_us;
+}
+
+static void test_timed(void)
+{
+    open_stream(3, 1);
+    // A producer that measured when it took the sample says how well it knows.
+    expect_time(0, 123456, true, 250);
+    assert(wcom_sensor_stream_push_timed(1, channels[3], payload[3], FRAME_SIZE, 123456, 250, frame_done) == OK);
+    drain();
+    assert(completions[3] == 1 && chunks[3] == expected_chunks(10));
+    // Zero is a claim too and goes on the wire: it is not "no claim".
+    expect_time(1, 123456, true, 0);
+    assert(wcom_sensor_stream_push_timed(1, channels[3], payload[3], FRAME_SIZE, 123456, 0, frame_done) == OK);
+    drain();
+    // The largest values still fit the fixed prefix of a chunk.
+    expect_time(2, UINT64_MAX, true, UINT32_MAX);
+    assert(wcom_sensor_stream_push_timed(1, channels[3], payload[3], FRAME_SIZE, UINT64_MAX, UINT32_MAX, frame_done) == OK);
+    drain();
+    assert(completions[3] == 3 && chunks[3] == expected_chunks(10));
+    // The plain push makes no claim, so the host sees none.
+    expect_time(3, UINT64_MAX, false, 0);
+    push(3, 1);
+    drain();
+    // The same two choices through wendy_core, callable from any task.
+    expect_time(4, 42, true, 7);
+    assert(wendy_core_sensor_stream_try_push_timed(1, channels[3], payload[3], FRAME_SIZE, 42, 7, frame_done) == OK);
+    run_ops(); drain();
+    expect_time(5, 43, true, 8);
+    wendy_core_sensor_stream_push_timed(1, channels[3], payload[3], FRAME_SIZE, 43, 8, frame_done);
+    run_ops(); drain();
+    expect_time(6, 44, false, 0);
+    assert(wendy_core_sensor_stream_try_push(1, channels[3], payload[3], FRAME_SIZE, 44, frame_done) == OK);
+    run_ops(); drain();
+    assert(completions[3] == 7 && received[3] == FRAME_SIZE);
+    // A refused timed push hands the buffer back, as the plain one does.
+    assert(wendy_core_sensor_stream_try_push_timed(1, channels[3], NULL, 1, 45, 9, frame_done) == BAD_STATE);
+    assert(completions[3] == 7);
+}
+
+static void test_sample_time(void)
+{
+    uint64_t ts = 0;
+    uint32_t uncertainty = 99;
+    // Two readings in the same microsecond: the time is known to that tick.
+    assert(wendy_core_sensor_sample_time(1000, 1000, &ts, &uncertainty) && ts == 1000 && uncertainty == 0);
+    // Otherwise the midpoint, with half the interval rounded up, so that
+    // [time - uncertainty, time + uncertainty] covers both readings.
+    assert(wendy_core_sensor_sample_time(1000, 1001, &ts, &uncertainty) && ts == 1000 && uncertainty == 1);
+    assert(wendy_core_sensor_sample_time(1000, 1400, &ts, &uncertainty) && ts == 1200 && uncertainty == 200);
+    assert(wendy_core_sensor_sample_time(1000, 1401, &ts, &uncertainty) && ts == 1200 && uncertainty == 201);
+    // Readings passed the wrong way round describe the same interval. They
+    // must not turn into a claim that the time is known exactly.
+    assert(wendy_core_sensor_sample_time(1400, 1000, &ts, &uncertainty) && ts == 1200 && uncertainty == 200);
+    // The widest interval whose bound still fits the field.
+    assert(wendy_core_sensor_sample_time(0, 2 * (uint64_t)UINT32_MAX, &ts, &uncertainty) &&
+           ts == UINT32_MAX && uncertainty == UINT32_MAX);
+    // A wider one has no bound that can be sent. That is no claim, never a
+    // smaller claim than the truth: the caller pushes the frame without one.
+    assert(!wendy_core_sensor_sample_time(0, 2 * (uint64_t)UINT32_MAX + 1, &ts, &uncertainty));
+    assert(!wendy_core_sensor_sample_time(0, UINT64_MAX, &ts, &uncertainty) && ts == UINT64_MAX / 2);
+}
+
 static void *producer(void *arg)
 {
     size_t i = *(size_t *)arg;
@@ -403,6 +480,8 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[1], "link_failure")) test_link_failure();
     else if (!strcmp(argv[1], "core_queue")) test_core_queue();
     else if (!strcmp(argv[1], "core_parallel")) test_core_parallel();
+    else if (!strcmp(argv[1], "timed")) test_timed();
+    else if (!strcmp(argv[1], "sample_time")) test_sample_time();
     else assert(!"unknown scenario");
     return 0;
 }

@@ -39,15 +39,28 @@ static void produce(void *argument)
     wendy_core_sensor_stream_begin(stream->client, TEMPERATURE_CHANNEL);
     while (!atomic_load(&stream->stop)) {
         float celsius;
+        /* Read the clock on both sides of the sensor: the reading was taken
+         * somewhere in between, and the host is told how wide that is. */
+        uint64_t before_us = (uint64_t)esp_timer_get_time();
         if (temperature_sensor_get_celsius(sensor, &celsius) == ESP_OK) {
+            uint64_t sampled_us;
+            uint32_t uncertainty_us;
+            bool bounded = wendy_core_sensor_sample_time(
+                before_us, (uint64_t)esp_timer_get_time(), &sampled_us, &uncertainty_us);
             uint32_t bits;
             memcpy(&bits, &celsius, sizeof bits);
             for (unsigned i = 0; i < 4; i++)
                 stream->sample[i] = (uint8_t)(bits >> (8 * i));
             atomic_store(&stream->pending, true);
-            if (wendy_core_sensor_stream_try_push(
-                    stream->client, TEMPERATURE_CHANNEL, stream->sample, sizeof stream->sample,
-                    esp_timer_get_time(), frame_done) != WendyComResult_WENDY_COM_RESULT_OK)
+            /* A read that took too long to bound is sent without a claim. */
+            WendyComResult pushed = bounded
+                ? wendy_core_sensor_stream_try_push_timed(
+                      stream->client, TEMPERATURE_CHANNEL, stream->sample, sizeof stream->sample,
+                      sampled_us, uncertainty_us, frame_done)
+                : wendy_core_sensor_stream_try_push(
+                      stream->client, TEMPERATURE_CHANNEL, stream->sample, sizeof stream->sample,
+                      sampled_us, frame_done);
+            if (pushed != WendyComResult_WENDY_COM_RESULT_OK)
                 atomic_store(&stream->pending, false);
             while (atomic_load(&stream->pending))
                 vTaskDelay(pdMS_TO_TICKS(10));
