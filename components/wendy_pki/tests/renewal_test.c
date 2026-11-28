@@ -38,6 +38,7 @@ static int test_bundle_import(const uint8_t *p, size_t n, uint8_t *out, size_t c
 static size_t build_roots_size = 1;
 #include "../src/wendy_pki.c"
 #include <assert.h>
+#include <errno.h>
 
 /* The separate cache fixture covers storage; this flow verifies that every
  * certificate install passes its invalidation boundary before replacing it. */
@@ -82,6 +83,7 @@ static bool issuance_received, fail_post_issue_time;
 static time_t issued_not_before, issued_expiry;
 static time_t broker_chain_end;
 static int timestamp_calls;
+static void (*timestamp_exchange)(void);
 static bool reject_radio_time;
 static uint64_t mesh_reserved;
 static int mesh_connect_calls;
@@ -111,6 +113,12 @@ static WendyConfEnrollment config = {
     .broker_host = "broker.example",
     .broker_port = 5055,
 };
+
+static void check_identity_lock_held(void)
+{
+    int lock_result = pthread_mutex_trylock(&identity_lock);
+    assert(lock_result == EBUSY);
+}
 
 time_t time(time_t *out)
 {
@@ -332,6 +340,7 @@ size_t wendy_pki_time_request(uint8_t out[128], const uint8_t nonce[32]) { retur
 int wendy_pki_verify_time(const uint8_t *input, size_t size, const uint8_t nonce[32],
                           const uint8_t *roots, size_t roots_size, time_t floor, time_t *out)
 {
+    if (timestamp_exchange) check_identity_lock_held();
     if (reject_radio_time && input && size == 3 && !memcmp(input, "tsa", 3)) return -1;
     assert(roots == (config.provision_trust ? usb_roots : wendy_pki_tsa_roots_start));
     verifier_floor = floor;
@@ -386,6 +395,7 @@ int pki_http_post(const char *url, const char *type, const char *token, const vo
     if (!strcmp(type, "application/timestamp-query"))
     {
         timestamp_calls++;
+        if (timestamp_exchange) timestamp_exchange();
         if (issuance_received && fail_post_issue_time) return -1;
         *response = malloc(1);
         *response_size = 1;
@@ -510,6 +520,7 @@ static void reset(void)
     /* Far enough that only the identity sets the stop date. */
     broker_chain_end = signed_now + 3650 * 86400;
     timestamp_calls = 0;
+    timestamp_exchange = NULL;
     response_authority = "valid-new-authority";
     fail_set = NULL;
     authority_writes = lite_accepts = operator_accepts = lan_accepts = 0;
@@ -1185,6 +1196,65 @@ static void test_signed_clock_generation(void)
     mesh_verified_generation = 0;
     reset();
 }
+
+static void check_time_exchange_unlocked(void)
+{
+    /* Try the same mutex another identity user would need during the wait. */
+    int lock_result = pthread_mutex_trylock(&identity_lock);
+    assert(lock_result == 0);
+    pthread_mutex_unlock(&identity_lock);
+}
+
+static void time_exchange_with_reenrollment(void)
+{
+    check_time_exchange_unlocked();
+    snapshot_generation++;
+}
+
+static int run_background_time_refresh(const struct wendy_conf_enrollment_data *data)
+{
+    pthread_mutex_lock(&identity_lock);
+    int result = refresh_time_source(1, config.time_url, data, NULL, NULL, true);
+    check_identity_lock_held();
+    pthread_mutex_unlock(&identity_lock);
+    return result;
+}
+
+static void test_background_time_refresh(void)
+{
+    reset();
+    snapshot_generation = 7;
+    reply_seconds = signed_now + 10;
+    const struct wendy_conf_enrollment_data data = {
+        .generation = snapshot_generation,
+        .tsa_roots = {wendy_pki_tsa_roots_start, 1},
+        .https_roots = {wendy_pki_https_roots_start, 1},
+    };
+    timestamp_exchange = check_time_exchange_unlocked;
+    assert(!run_background_time_refresh(&data));
+    assert(floor_writes == 1 && durable_floor == reply_seconds);
+    assert(mesh_verified_seconds == reply_seconds && mesh_verified_generation == 7);
+
+    timestamp_exchange = check_identity_lock_held;
+    pthread_mutex_lock(&identity_lock);
+    assert(!refresh_time_via(1, config.time_url, &data, NULL));
+    pthread_mutex_unlock(&identity_lock);
+
+    timestamp_exchange = check_time_exchange_unlocked;
+    reply_seconds += 10;
+    issuance_received = fail_post_issue_time = true;
+    assert(run_background_time_refresh(&data) != 0);
+    issuance_received = fail_post_issue_time = false;
+
+    timestamp_exchange = time_exchange_with_reenrollment;
+    assert(run_background_time_refresh(&data) != 0);
+    assert(timestamp_calls == 4 && snapshot_generation == 8);
+    assert(clock_now == signed_now + 10 && mesh_verified_seconds == clock_now);
+    assert(mesh_verified_generation == 7);
+    mesh_verified_seconds = 0;
+    mesh_verified_generation = 0;
+    reset();
+}
 #if defined(WENDY_PKI_BOOT_PERSISTENCE_HOST_TEST)
 static void test_normal_boot_persistence(void)
 {
@@ -1371,6 +1441,7 @@ int main(int argc, char **argv)
     }
 #endif
     test_signed_clock_generation();
+    test_background_time_refresh();
     test_mesh_certificate_clock();
     test_peer_roots_selection();
     assert(argc == 2);
