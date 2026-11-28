@@ -866,41 +866,16 @@ static void com_get_device_identity(const char **id, const char **name, const ch
     *enrolled_device_id = device;
 }
 
-#define _STRINGIFY(x) #x
-#define _TOSTRING(x) _STRINGIFY(x)
-
-// WENDY_CORE_COMPONENT_VERSION is defined by CMakeLists.txt from the COMPONENT_VERSION property.
-#ifndef WENDY_CORE_COMPONENT_VERSION
-#define WENDY_CORE_COMPONENT_VERSION ""
-#endif
-
-static const char *get_version(void)
-{
-#if CONFIG_WENDY_FIRMWARE_VERSION_MAJOR == 0 && CONFIG_WENDY_FIRMWARE_VERSION_MINOR == 0 && CONFIG_WENDY_FIRMWARE_VERSION_PATCH == 0
-    if (WENDY_CORE_COMPONENT_VERSION[0] == 0) {
-        return "dev";
-    } else {
-        // CONFIG_WENDY_FIRMWARE_VERSION_* only carries a real version on a
-        // release build of this repo (injected from the git tag by
-        // .github/workflows/build.yml), so it stays at 0.0.0 when the
-        // component is embedded in someone else's IDF project. There, report
-        // the version the IDF Component Manager resolved for wendy_core
-        // instead: the released version, or the commit for a git dependency.
-        return WENDY_CORE_COMPONENT_VERSION;
-    }
-#else
-    return _TOSTRING(CONFIG_WENDY_FIRMWARE_VERSION_MAJOR) "."
-            _TOSTRING(CONFIG_WENDY_FIRMWARE_VERSION_MINOR) "."
-            _TOSTRING(CONFIG_WENDY_FIRMWARE_VERSION_PATCH);
-#endif
-}
-
+/* get_device_info and get_build_info report the same version:
+   CONFIG_WENDY_VERSION, which tools/configure.py writes from git (X.Y.Z or
+   the full commit hash). It is empty when the build was not configured with
+   configure.py. */
 static void com_get_device_info(const char **os, const char **os_version,
                                 const char **cpu_architecture, const char **target,
                                 bool *wasm_app_support, bool *native_app_support)
 {
     *os = "wendy-lite";
-    *os_version = get_version();
+    *os_version = CONFIG_WENDY_VERSION;
     *cpu_architecture = CONFIG_IDF_TARGET_ARCH;
     *target = CONFIG_IDF_TARGET;
 #if CONFIG_WENDY_WASM
@@ -913,6 +888,19 @@ static void com_get_device_info(const char **os, const char **os_version,
     /* native push is compiled in unconditionally but only works if the
        partition table has an OTA update partition */
     *native_app_support = esp_ota_get_next_update_partition(NULL) != NULL;
+}
+
+/* CONFIG_WENDY_VERSION (the same version as get_device_info) and
+   CONFIG_WENDY_BUILD_PROFILE are written by tools/configure.py, and empty
+   when the build was not configured with it. IDF_VER is the ESP-IDF version
+   that the ESP-IDF build system defines for all components, the string that
+   esp_get_idf_version() returns. */
+static void com_get_build_info(const char **os_version, const char **build_profile,
+                               const char **build_tool)
+{
+    *os_version = CONFIG_WENDY_VERSION;
+    *build_profile = CONFIG_WENDY_BUILD_PROFILE;
+    *build_tool = "idf-" IDF_VER;
 }
 
 /* ── HAL initialization ─────────────────────────────────────────────── */
@@ -975,16 +963,16 @@ esp_err_t wendy_core_init(void)
 #endif
 
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "  Wendy MCU Firmware v%d.%d.%d",
-             CONFIG_WENDY_FIRMWARE_VERSION_MAJOR,
-             CONFIG_WENDY_FIRMWARE_VERSION_MINOR,
-             CONFIG_WENDY_FIRMWARE_VERSION_PATCH);
+    /* CONFIG_WENDY_VERSION: the version that get_device_info reports. */
+    ESP_LOGI(TAG, "  Wendy Lite");
+    ESP_LOGI(TAG, "  Version: %s",
+             CONFIG_WENDY_VERSION[0] != '\0' ? CONFIG_WENDY_VERSION : "unknown");
+    ESP_LOGI(TAG, "  Target: %s", CONFIG_IDF_TARGET);
 #if CONFIG_WENDY_WASM
     ESP_LOGI(TAG, "  WASM Runtime: WAMR (C)");
 #else
     ESP_LOGI(TAG, "  Runtime: native applications");
 #endif
-    ESP_LOGI(TAG, "  Target: %s", CONFIG_IDF_TARGET);
     ESP_LOGI(TAG, "========================================");
 
     esp_vfs_eventfd_config_t cfg = ESP_VFS_EVENTD_CONFIG_DEFAULT();
@@ -1061,6 +1049,7 @@ esp_err_t wendy_core_init(void)
         .on_reboot              = com_reboot,
         .on_get_device_identity = com_get_device_identity,
         .on_get_device_info     = com_get_device_info,
+        .on_get_build_info      = com_get_build_info,
     };
     wcom_set_app_delegate(&app_delegate);
     wcom_start();

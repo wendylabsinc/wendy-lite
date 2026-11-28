@@ -42,9 +42,12 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
 
-      # The version a device reports comes from CONFIG_WENDY_FIRMWARE_VERSION_*
-      # (components/wendy_core/Kconfig), whose defaults are a dev placeholder.
-      # On a tag build the real version is derived from the tag here. The file
+      # CONFIG_WENDY_FIRMWARE_VERSION_* (components/wendy_core/Kconfig), whose
+      # defaults are a dev placeholder, gives the version in the boot log, in
+      # the WASM sys_firmware_version API and in the app descriptor. The
+      # version that WendyCom reports is CONFIG_WENDY_VERSION, which only
+      # tools/configure.py writes. On a tag build the real version is derived
+      # from the tag here. The file
       # is always written, even when empty: a file listed in SDKCONFIG_DEFAULTS
       # that does not exist is a CMake FATAL_ERROR, and keeping the build
       # command uniform means PRs exercise this path too.
@@ -229,8 +232,12 @@ jobs:
           for option in ("WENDY_WIFI_ENABLED", "WENDY_BLE",
                          "BT_NIMBLE_ENABLED", "WENDY_CLOUD", "WENDY_PKI",
                          "WENDY_CORE_WATCHDOG", "BOOTLOADER_WDT_DISABLE_IN_USER_CODE",
-                         "MBEDTLS_USE_BUNDLED_PQC", "MBEDTLS_SSL_TLS1_3_SIG_MLDSA65"):
+                         "MBEDTLS_USE_BUNDLED_PQC"):
               assert config.get(option), f"{option} must be enabled"
+          # The ML-DSA device chain needs PSRAM (WDY-4140): only the boards
+          # with PSRAM verify it.
+          assert bool(config.get("MBEDTLS_SSL_TLS1_3_SIG_MLDSA65")) == bool(config.get("SPIRAM")), \
+              "MBEDTLS_SSL_TLS1_3_SIG_MLDSA65 must be enabled exactly when SPIRAM is"
           for option in ("WENDY_CORE_WASM_APP_SUPPORT", "MBEDTLS_DYNAMIC_BUFFER"):
               assert not config.get(option), f"{option} must be disabled"
           assert config["BT_NIMBLE_L2CAP_COC_MAX_NUM"] == (4 if config.get("WENDY_NET_PEER") else 1)

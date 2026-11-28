@@ -5,13 +5,6 @@ idf_component_register(
     PRIV_REQUIRES esp_hal_wdt wendy_pki wendy_net_peer
 )
 
-# COMPONENT_VERSION is set by the IDF Component Manager from the top-level
-# `version:` field of idf_component.yml. It is the empty string when the
-# manifest declares no version.
-idf_component_get_property(wendy_core_version wendy_core COMPONENT_VERSION)
-target_compile_definitions(${COMPONENT_LIB} PRIVATE
-    WENDY_CORE_COMPONENT_VERSION="${wendy_core_version}")
-
 # Fail the configure step if the PSRAM throughput profile is enabled with
 # unsupported or stale settings. It is here, not in the top-level
 # CMakeLists.txt, so that native apps (which use wendy_core) also run it.

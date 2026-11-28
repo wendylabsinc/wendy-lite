@@ -7,6 +7,10 @@ build
 sdkconfig
 sdkconfig.old
 
+# The configuration of the Wendy Lite build on the device, written by
+# `wendy run` (or tools/configure.py --app of wendy-lite in CI).
+sdkconfig.defaults.wendy
+
 # Managed components — fetched by the IDF component manager from
 # components.espressif.com on `idf.py set-target` / `reconfigure`.
 # The dependency manifests (main/idf_component.yml,

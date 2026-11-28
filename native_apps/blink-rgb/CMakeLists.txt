@@ -10,5 +10,8 @@ cmake_minimum_required(VERSION 3.16)
 #    "${CMAKE_CURRENT_LIST_DIR}/../wendy-lite/components"
 #)
 
+# Wendy Lite: the configuration of the device (sdkconfig.defaults.wendy), then the app's own defaults, which win.
+set(SDKCONFIG_DEFAULTS "sdkconfig.defaults.wendy;sdkconfig.defaults")
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(blink-rgb)

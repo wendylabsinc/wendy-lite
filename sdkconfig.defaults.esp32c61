@@ -1,3 +1,6 @@
+# tools/configure.py does not read this file: master_config.yaml has a copy
+# of these settings. Change both.
+
 # Target: ESP32-C61 (single-chip Wi-Fi 6 + BLE 5 board, RISC-V, no 802.15.4).
 # Mirrors the C6 overlay; the firmware-side knobs we care about are the same
 # shape: 4 MB flash, native Wi-Fi + BT.

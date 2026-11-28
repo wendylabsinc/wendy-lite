@@ -56,6 +56,8 @@ static void identity(const char **id, const char **name, const char **display, c
 { management_calls++; }
 static void info(const char **os, const char **version, const char **arch, const char **target,
                  bool *wasm, bool *native) { management_calls++; }
+static void build_info(const char **version, const char **profile, const char **tool)
+{ management_calls++; }
 static enum wcom_sensor_link_result manifest(struct wcom_sensor_descriptor *sensors, size_t max, size_t *count)
 { sensor_calls++; *count = 0; return WCOM_SENSOR_LINK_OK; }
 static enum wcom_sensor_link_result subscribe(int id, const uint32_t *channels, size_t count)
@@ -188,6 +190,9 @@ static void check_device_commands(struct wire *wire, int id, uint8_t channel)
                                                          : WendyComResult_WENDY_COM_RESULT_BAD_STATE));
         assert(management_calls == initial_management);
     }
+    assert(command(wire, id, channel, WendyComCommand_get_build_info_tag) ==
+           WendyComResult_WENDY_COM_RESULT_BAD_STATE);
+    assert(management_calls == initial_management);
     assert(sensor_calls == initial_sensors + 3);
     /* Preserve a source's busy result through dispatch and wire encoding. */
     subscription_result = WCOM_SENSOR_LINK_BUSY;
@@ -215,6 +220,7 @@ int main(void)
         .on_app_push_end = managed, .on_app_start = managed, .on_app_stop = managed,
         .on_conf_push_begin = conf_begin, .on_conf_push_data = push_data, .on_conf_push_end = managed,
         .on_get_device_identity = identity, .on_get_device_info = info,
+        .on_get_build_info = build_info,
     };
     static const struct wcom_sensor_link_delegate sensors = {
         .on_sensor_link_get_manifest = manifest, .on_sensor_link_subscribe = subscribe,
@@ -277,6 +283,9 @@ int main(void)
     assert(exchange(&wire, full, 0, &wifi).msg.response.result == WendyComResult_WENDY_COM_RESULT_OK);
     assert(last_wifi_only);
     assert(command(&wire, full, 0, WendyComCommand_conf_push_end_tag) == WendyComResult_WENDY_COM_RESULT_OK);
+    initial_management = management_calls;
+    assert(command(&wire, full, 0, WendyComCommand_get_build_info_tag) == WendyComResult_WENDY_COM_RESULT_OK);
+    assert(management_calls == initial_management + 1);
     wcom_remove_link(full);
     expected_permission = WCOM_LINK_PERMISSION_SENSOR_ONLY;
     device = wcom_add_socket_link_with_permission(&ops, &wire, NULL, expected_permission);
