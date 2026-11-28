@@ -35,6 +35,10 @@ static const char *TAG = "wendy_ble";
 
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
+#if CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI
+#include "esp_hosted.h"
+#include "esp_hosted_host_fw_ver.h"
+#endif
 #include "host/ble_hs.h"
 #include "host/ble_gap.h"
 #if CONFIG_BT_NIMBLE_EXT_ADV
@@ -972,16 +976,60 @@ static void _session_task(void *arg)
 
 //--- public functions ---//
 
+#if CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI
+static esp_err_t _start_hosted_controller(bool *started)
+{
+    esp_err_t err = esp_hosted_connect_to_slave();
+    if (err != ESP_OK)
+        return err;
+
+    /* ESP-Hosted 2.5.2 moved controller startup to the host. The factory
+     * FireBeetle firmware starts its own controller and predates the
+     * version RPC. In that case let NimBLE check the running controller. */
+    esp_hosted_coprocessor_fwver_t version = {0};
+    if (esp_hosted_get_coprocessor_fwversion(&version) != ESP_OK ||
+        ESP_HOSTED_VERSION_VAL(version.major1, version.minor1, version.patch1) <
+            ESP_HOSTED_VERSION_VAL(2, 5, 2))
+        return ESP_OK;
+
+    err = esp_hosted_bt_controller_init();
+    if (err != ESP_OK)
+        return err;
+    err = esp_hosted_bt_controller_enable();
+    if (err != ESP_OK) {
+        (void)esp_hosted_bt_controller_deinit(false);
+        return err;
+    }
+    *started = true;
+    return ESP_OK;
+}
+
+static void _stop_hosted_controller(void)
+{
+    (void)esp_hosted_bt_controller_disable();
+    (void)esp_hosted_bt_controller_deinit(false);
+}
+#endif
+
 esp_err_t wendy_ble_host_init(void)
 {
     wendy_ble_power_init();
     if (_host_initialized)
         return ESP_OK;
 
-    esp_err_t err = nimble_port_init();
+    esp_err_t err;
+#if CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI
+    bool hosted_started = false;
+    err = _start_hosted_controller(&hosted_started);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "ESP-Hosted Bluetooth startup failed: %s", esp_err_to_name(err));
+        return err;
+    }
+#endif
+    err = nimble_port_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nimble_port_init failed: %s", esp_err_to_name(err));
-        return err;
+        goto stop_controller;
     }
 
     ble_hs_cfg.sync_cb  = _on_sync;
@@ -993,12 +1041,12 @@ esp_err_t wendy_ble_host_init(void)
     int rc = ble_gatts_count_cfg(_gatt_svcs);
     if (rc != 0) {
         ESP_LOGE(TAG, "ble_gatts_count_cfg failed: %d", rc);
-        return ESP_FAIL;
+        goto stop_nimble;
     }
     rc = ble_gatts_add_svcs(_gatt_svcs);
     if (rc != 0) {
         ESP_LOGE(TAG, "ble_gatts_add_svcs failed: %d", rc);
-        return ESP_FAIL;
+        goto stop_nimble;
     }
 
     // The host task must start last: services have to be registered before the
@@ -1008,6 +1056,16 @@ esp_err_t wendy_ble_host_init(void)
     _host_initialized = true;
     ESP_LOGI(TAG, "NimBLE host started");
     return ESP_OK;
+
+stop_nimble:
+    (void)nimble_port_deinit();
+    err = ESP_FAIL;
+stop_controller:
+#if CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI
+    if (hosted_started)
+        _stop_hosted_controller();
+#endif
+    return err;
 }
 
 esp_err_t wendy_ble_start(void)

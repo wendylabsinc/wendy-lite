@@ -32,6 +32,16 @@ foreach(pki 0 1)
     endforeach()
 endforeach()
 
+add_executable(hosted_controller_success_test hosted_controller_success_test.c)
+target_include_directories(hosted_controller_success_test PRIVATE stubs ../include)
+target_compile_definitions(hosted_controller_success_test PRIVATE
+    CONFIG_WENDY_BLE=1 CONFIG_WENDY_PKI=0 CONFIG_WENDY_BLE_REQUIRE_MTLS=0
+    CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI=1 CONFIG_WENDY_BLE_PSM=128
+    CONFIG_WENDY_BLE_TASK_PRIORITY=5 CONFIG_WENDY_BLE_TASK_CORE_AFFINITY=0)
+target_compile_options(hosted_controller_success_test PRIVATE
+    -UNDEBUG -Wall -Wextra -Werror -Wno-unused-parameter)
+add_test(NAME hosted_controller_startup COMMAND hosted_controller_success_test)
+
 add_executable(constrained_management_advertising_success_test
     constrained_management_advertising_success_test.c)
 target_include_directories(constrained_management_advertising_success_test PRIVATE stubs ../include)
