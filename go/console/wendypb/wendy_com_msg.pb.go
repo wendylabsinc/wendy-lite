@@ -168,7 +168,7 @@ func (WendyComBluetoothPowerMode) EnumDescriptor() ([]byte, []int) {
 	return file_wendy_com_msg_proto_rawDescGZIP(), []int{2}
 }
 
-// Native Wendy Net policy. Disabled by default; carrier choices are retained
+// Native Wendy Net policy. Carrier choices are retained
 // independently. Limits are local resource policy, never a special leaf role.
 // A single radio profile covers advertising, discovery and connected data.
 type WendyComBleProfile int32

@@ -6,9 +6,10 @@ services without being on the same physical LAN. Devices with PSRAM can also
 forward traffic between peers. The smaller ESP32-C6 profile connects through
 one neighbour and does not forward traffic for other devices.
 
-Wendy Net is optional and **off by default**. Use matching WendyOS and Lite
-firmware: the current binary protocol replaces the old special-purpose leaf
-protocol and does not support it.
+Wendy Net is **on by default** when the firmware supports a carrier. It joins
+after enrollment when a peer is reachable. ESP32-C6 defaults to Wi-Fi when
+available. Multi-carrier profiles use their compiled Wi-Fi and BLE carriers.
+Saved settings take precedence.
 
 Devices automatically reuse known certificate authorities during connection
 setup. Only the leaf and missing intermediates need transmitting; no manual
@@ -60,7 +61,7 @@ idf.py -B build/p4-net build
 This profile supports native apps; it does not enable WASM. Use the same
 enrollment and runtime carrier commands below as for a PSRAM-equipped C5.
 
-## Enable and configure
+## Configure participation
 
 [Enroll the device over USB](cloud-enrollment.md) and, for a Wi-Fi carrier,
 configure its Wi-Fi connection first. Select it through its existing management
