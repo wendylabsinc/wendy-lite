@@ -8,6 +8,18 @@ menu "Wendy PKI"
         help
             Generate the identity key on-device, redeem a real pki-core credential,
             and verify signed time before making cloud mTLS connections.
+    config WENDY_PKI_BLE_RESUMPTION
+        bool "Enable BLE device carrier TLS resumption"
+        depends on WENDY_PKI
+        default y if SPIRAM
+        default n
+        select MBEDTLS_SERVER_SSL_SESSION_TICKETS
+        select MBEDTLS_CLIENT_SSL_SESSION_TICKETS
+        select MBEDTLS_SSL_TLS1_3_KEXM_PSK_EPHEMERAL
+        help
+            RAM-only, scoped TLS 1.3 tickets. No early application data.
+            Enabled by default when PSRAM support is enabled. Builds without
+            PSRAM support can opt in. Tickets apply only to BLE device carriers.
     config WENDY_PKI_DEVICE_ROOTS
         string "PEM device identity trust bundle, optional build-time fallback"
         depends on WENDY_PKI

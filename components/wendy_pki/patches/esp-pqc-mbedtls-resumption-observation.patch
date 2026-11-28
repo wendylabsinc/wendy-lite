@@ -1,0 +1,33 @@
+--- a/include/mbedtls/ssl.h
++++ b/include/mbedtls/ssl.h
+@@ -1639,6 +1639,9 @@
+      * Miscellaneous
+      */
+     int MBEDTLS_PRIVATE(state);                  /*!< SSL handshake: current state     */
++    /* Set only at completed TLS1.3 key-schedule wrapup. A configured/offered
++     * ticket is not evidence of accepted resumption. Survives handshake free. */
++    unsigned char MBEDTLS_PRIVATE(wendy_tls13_resumed);
+ 
+     /** Mask of `MBEDTLS_SSL_CONTEXT_FLAG_XXX`.
+      * See `mbedtls_ssl_context_flags_t` in ssl_misc.h.
+--- a/library/ssl_tls.c
++++ b/library/ssl_tls.c
+@@ -1501,6 +1501,7 @@
+     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+ 
+     mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_HELLO_REQUEST);
++    ssl->wendy_tls13_resumed = 0;
+     ssl->flags &= MBEDTLS_SSL_CONTEXT_FLAGS_KEEP_AT_SESSION;
+     ssl->tls_version = ssl->conf->max_tls_version;
+ 
+--- a/library/ssl_tls13_generic.c
++++ b/library/ssl_tls13_generic.c
+@@ -1633,6 +1633,8 @@
+ 
+     MBEDTLS_SSL_DEBUG_MSG(3, ("=> handshake wrapup"));
+ 
++    ssl->wendy_tls13_resumed = ssl->handshake->resume && mbedtls_ssl_tls13_key_exchange_mode_with_psk(ssl);
++
+     MBEDTLS_SSL_DEBUG_MSG(1, ("Switch to application keys for inbound traffic"));
+     mbedtls_ssl_set_inbound_transform(ssl, ssl->transform_application);
+ 

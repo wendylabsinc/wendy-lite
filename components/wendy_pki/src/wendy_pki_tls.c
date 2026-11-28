@@ -1,4 +1,5 @@
 #include "wendy_conf.h"
+#include "wendy_pki_resumption.h"
 #include "artifact_crypto.h"
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -70,7 +71,12 @@ static wendy_net_memory_scope_t connection_scope(wendy_pki_connection *c)
 static int connection_read(wendy_pki_connection *c, unsigned char *bytes, size_t size)
 {
     wendy_net_memory_scope_t previous = connection_scope(c);
-    int result = mbedtls_ssl_read(&c->ssl, bytes, size);
+    int result;
+    do {
+        result = mbedtls_ssl_read(&c->ssl, bytes, size);
+        if (result == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET)
+            pki_resumption_received_ticket(c);
+    } while (result == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET);
     wendy_net_memory_scope_leave(previous);
     return result;
 }
@@ -253,6 +259,7 @@ static void release_lite_issuers(wendy_pki_connection *c)
     }
     free(c->lite_issuer_der);
     c->lite_issuer_der = NULL;
+    c->lite_issuer_size = 0;
 }
 
 static int seed_lite_issuers(wendy_pki_connection *c, struct pki_tls_owned_identity *owned)
@@ -264,6 +271,7 @@ static int seed_lite_issuers(wendy_pki_connection *c, struct pki_tls_owned_ident
         return -1;
     mbedtls_x509_crt_init(c->lite_peer_issuers);
     c->lite_issuer_der = owned->lite_issuer_der;
+    c->lite_issuer_size = owned->lite_issuer_size;
     owned->lite_issuer_der = NULL;
     if (pki_parse_certificate_bundle(c->lite_peer_issuers, c->lite_issuer_der,
                                      owned->lite_issuer_size, true))
@@ -479,6 +487,20 @@ static void issuer_omit_status(wendy_pki_connection *c)
             all |= 1u << i;
     c->issuers->omit = all && (c->issuers->omit_mask & all) == all;
 }
+size_t pki_tls_server_issuer_alias(wendy_pki_connection *c, bool *leaf)
+{
+    *leaf = false;
+    if (!c->issuers ||
+        pki_issuer_recovery_active(&pki_issuer_process_recovery, esp_timer_get_time()))
+        return 0;
+    const uint8_t *hello = c->ssl.MBEDTLS_PRIVATE(in_msg);
+    size_t size = c->ssl.MBEDTLS_PRIVATE(in_hslen);
+    const char *protocol = mbedtls_ssl_get_alpn_protocol(&c->ssl);
+    size_t selected = protocol ? pki_leaf_select(c->issuers, protocol, hello, size) : 0;
+    *leaf = selected != 0;
+    return selected ? selected : pki_issuer_select(c->issuers, hello, size);
+}
+
 static int select_server_issuers(mbedtls_ssl_context *ssl)
 {
     wendy_pki_connection *c = ssl->MBEDTLS_PRIVATE(p_bio);
@@ -486,10 +508,8 @@ static int select_server_issuers(mbedtls_ssl_context *ssl)
         struct pki_issuer_state *s = c->issuers;
         const uint8_t *hello = ssl->MBEDTLS_PRIVATE(in_msg);
         size_t size = ssl->MBEDTLS_PRIVATE(in_hslen);
-        bool recovering = pki_issuer_recovery_active(&pki_issuer_process_recovery, esp_timer_get_time());
-        const char *protocol = mbedtls_ssl_get_alpn_protocol(ssl);
-        size_t leaf = recovering || !protocol ? 0 : pki_leaf_select(s, protocol, hello, size);
-        size_t selected = leaf ? leaf : recovering ? 0 : pki_issuer_select(s, hello, size);
+        bool leaf;
+        size_t selected = pki_tls_server_issuer_alias(c, &leaf);
         if (selected) {
             ssl->MBEDTLS_PRIVATE(alpn_chosen) = s->hint;
             ssl->MBEDTLS_PRIVATE(wendy_alpn_chosen_length) = selected;
@@ -692,6 +712,7 @@ void wendy_pki_close(wendy_pki_connection *c)
     mbedtls_pk_free(&c->key);
     release_mesh_roots(c);
     pki_public_chain_free(c->public_chain);
+    pki_resumption_close(c);
     pki_owned_free(c->authenticated_peer);
     pki_owned_free(c->authenticated_operator);
     pki_owned_free(c->issuers);
@@ -901,6 +922,7 @@ static int handshake_step_direct(wendy_pki_connection *c, bool compact_server)
                 issuers->omit_mask |= 1u << i;
         issuer_omit_status(c);
     }
+    pki_resumption_before_step(c);
     int result = mbedtls_ssl_handshake_step(&c->ssl);
     if (result == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED && issuers &&
         pki_issuer_shortened(issuers->application,
@@ -1647,6 +1669,12 @@ static int finish_mesh(wendy_pki_connection *c, const char *tenant, const char *
                        time_t self_verified_until, struct wendy_conf_span roots, bool native_router)
 {
     (void)gateway;
+    bool operator_router = false;
+    int resumed = pki_resumption_finish(c, router, protocol);
+    if (resumed < 0)
+        return -1;
+    if (resumed > 0)
+        goto authenticated;
     {
         const char *alpn = mbedtls_ssl_get_alpn_protocol(&c->ssl);
         const mbedtls_x509_crt *peer = mbedtls_ssl_get_peer_cert(&c->ssl);
@@ -1658,7 +1686,7 @@ static int finish_mesh(wendy_pki_connection *c, const char *tenant, const char *
         /* A primary operator terminates the ordinary incoming app protocol.
          * It has no enrolled UUID: keep its typed role and never put its URI in
          * mesh_peer. Carrier and outgoing device pins remain device-only. */
-        bool operator_router = role == WENDY_PEER_ROLE_OPERATOR && c->allow_operator_router &&
+        operator_router = role == WENDY_PEER_ROLE_OPERATOR && c->allow_operator_router &&
                                !gateway && !router && protocol &&
                                !strcmp(protocol, "wendy-net-operator-router/1") &&
                                c->config.MBEDTLS_PRIVATE(endpoint) == MBEDTLS_SSL_IS_SERVER;
@@ -1725,6 +1753,9 @@ static int finish_mesh(wendy_pki_connection *c, const char *tenant, const char *
         if (pki_limit_session(c, now, esp_timer_get_time()))
             goto fail;
         c->peer_role = role;
+    }
+authenticated:
+    {
         if (protocol && !strcmp(protocol, "wendy-app-mesh-tls/1")) {
             release_verified_paths(c);
         } else if (native_router) {
@@ -1732,10 +1763,13 @@ static int finish_mesh(wendy_pki_connection *c, const char *tenant, const char *
                 struct wendy_pki_mesh_peer verified;
                 if (wendy_pki_mesh_authenticated_peer(c, &verified))
                     goto fail;
-                c->authenticated_peer = pki_owned_malloc(sizeof verified);
+                if (!c->authenticated_peer &&
+                    !pki_resumption_share_authenticated_peer(c, &verified))
+                    c->authenticated_peer = pki_owned_malloc(sizeof verified);
                 if (!c->authenticated_peer)
                     goto fail;
                 *c->authenticated_peer = verified;
+                release_known_issuers(c->issuers);
                 release_session_certificates(c);
                 if (c->public_chain->load_trust) {
                     c->lazy_trust = true;
@@ -1869,6 +1903,10 @@ static int open_tls(const char *host, unsigned port, const uint8_t *key, size_t 
     int64_t deadline = esp_timer_get_time() + 30000000;
     if (stream) {
         c->stream = *stream;
+        if (mesh) {
+            pki_resumption_prepare(c, protocol);
+            pki_resumption_client_start(c, router);
+        }
         if (native_stream)
             deadline = esp_timer_get_time() + INT64_C(45000000);
     } else if (incoming)
@@ -1953,7 +1991,7 @@ static int open_tls(const char *host, unsigned port, const uint8_t *key, size_t 
     stage = "certificate verification";
     release_presented_chain(c);
     tls_error = (int)mbedtls_ssl_get_verify_result(&c->ssl);
-    if (tls_error)
+    if (tls_error && !(mesh && c->ssl.MBEDTLS_PRIVATE(wendy_tls13_resumed)))
         goto fail;
     if (mesh && finish_mesh(c, tenant, device, router, gateway, protocol, self_verified_until,
                             roots, native_router))
@@ -2351,7 +2389,7 @@ ssize_t wendy_pki_read(void* v, void* b, size_t n)
         (c->relay_expires_us && esp_timer_get_time() >= c->relay_expires_us))
         return -1;
     wendy_net_memory_scope_t previous = connection_scope(c);
-    int received = mbedtls_ssl_read(&c->ssl, b, n);
+    int received = connection_read(c, b, n);
     record_failure("read", received);
 #if defined(MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH)
     if (c->compact_records)
@@ -3216,6 +3254,8 @@ int pki_tls_net_begin(const struct wendy_pki_stream *stream, bool server, const 
     if (!result) {
         memcpy(c->mesh_tenant, tenant, 37);
         memcpy(c->mesh_device, device, 37);
+        if (!application)
+            pki_resumption_prepare(c, carrier_alpn[0]);
         *out = c;
     } else
         wendy_pki_close(c);
@@ -3252,6 +3292,7 @@ const struct wendy_pki_operator_peer *wendy_pki_mesh_authenticated_operator(wend
 }
 static int net_advance(wendy_pki_connection *c, bool application, const char *peer)
 {
+    if (!application) pki_resumption_client_start(c, peer);
     if (c->ssl.MBEDTLS_PRIVATE(state) != MBEDTLS_SSL_HANDSHAKE_OVER) {
         int r = handshake_step(c, application);
         if (r == MBEDTLS_ERR_SSL_WANT_READ)
@@ -3266,7 +3307,7 @@ static int net_advance(wendy_pki_connection *c, bool application, const char *pe
             return 1;
     }
     release_presented_chain(c);
-    if (mbedtls_ssl_get_verify_result(&c->ssl))
+    if (mbedtls_ssl_get_verify_result(&c->ssl) && !c->ssl.MBEDTLS_PRIVATE(wendy_tls13_resumed))
         return -1;
     const char *protocol = application ? "wendy-app-mesh-tls/1" : "wendy-local-mesh-ble/2";
     if (!application && c->allow_operator_router) {

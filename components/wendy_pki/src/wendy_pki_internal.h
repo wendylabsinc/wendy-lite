@@ -51,12 +51,14 @@ struct wendy_pki_connection
 {
     mbedtls_ssl_config config;
     mbedtls_ssl_context ssl;
+    struct pki_resumption *resumption;
     mbedtls_x509_crt roots, certificate;
     mbedtls_pk_context key;
     int fd;
     struct pki_issuer_state *issuers;
     mbedtls_x509_crt *lite_peer_issuers;
     uint8_t *lite_issuer_der;
+    size_t lite_issuer_size;
     wendy_net_memory_scope_t allocation_scope;
     wendy_net_memory_reservation_t raw_roots_reservation;
     bool mesh_roots_prefixed;
