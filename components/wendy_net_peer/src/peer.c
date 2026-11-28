@@ -1949,8 +1949,8 @@ static int admit_link(struct peer_state *root, struct peer_state *link)
             other->candidate.medium != link->candidate.medium || !same_peer(other, link))
             continue;
         if (link->operator_peer ||
-            !wn_link_replaces(link->identity.device, link->authenticated_peer, other->setup_server,
-                              link->setup_server)) {
+            !wn_link_replaces(link->candidate.medium, link->identity.device,
+                              link->authenticated_peer, other->setup_server, link->setup_server)) {
             ESP_LOGI(TAG, "keeping authenticated incumbent: peer=%s medium=%u",
                      link->authenticated_peer, (unsigned)link->candidate.medium);
             return -1;

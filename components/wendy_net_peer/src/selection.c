@@ -6,11 +6,13 @@
 #define FAILURE_PENALTY_MS WN_CANDIDATE_FAILURE_PENALTY_MS
 #define FAILURE_RETRY_MS 5000
 
-bool wn_link_replaces(const char *self, const char *peer, bool incumbent_incoming,
-                      bool replacement_incoming)
+bool wn_link_replaces(enum wn_medium medium, const char *self, const char *peer,
+                      bool incumbent_incoming, bool replacement_incoming)
 {
-    return incumbent_incoming != replacement_incoming &&
-           replacement_incoming == (strcmp(self, peer) > 0);
+    int order = strcmp(self, peer);
+    bool preferred_incoming = medium == WN_BLE ? order < 0 : order > 0;
+    return order != 0 && incumbent_incoming != replacement_incoming &&
+           replacement_incoming == preferred_incoming;
 }
 
 void wn_selection_init(struct wn_selection *s)
